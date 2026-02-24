@@ -7,6 +7,7 @@ echo [2/3] Starting PyInstaller (Bundling internal tools)...
 pyinstaller --noconfirm --onefile --windowed ^
 --add-data "wowsunpack.exe;." ^
 --add-data "pfsunpack.exe;." ^
+--add-data "msgunfmt.exe;." ^
 --add-data "GameParams.py;." ^
 --hidden-import="GameParams" ^
 --name "WowsAnalyzer" ^
