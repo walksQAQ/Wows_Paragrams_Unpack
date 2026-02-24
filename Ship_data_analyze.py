@@ -765,8 +765,7 @@ class ShipDataAnalyzer:
                             "minRadius": mR,
                             "idealDistance": iD
                         }
-                        sample_item = next(item for item in valid_items if item['name'] == name and item['barrels'] == barrels)
-                        h_formula = self.get_dispersion_formula(sample_item)
+                        h_formula = self.get_dispersion_formula(temp_data)
 
                         if cat_key == "Torpedoes":
                             # 鱼雷不显示公式和纵向系数，显示型号和装填
