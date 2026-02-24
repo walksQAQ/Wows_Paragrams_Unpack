@@ -324,7 +324,7 @@ class AppUI:
 
     # 初始化
     def initialization(self):
-        if getattr(self, "frozen", False):
+        if getattr(sys, "frozen", False):
             self.exe_dir = os.path.dirname(sys.executable)
         else:
             self.exe_dir = os.path.dirname(os.path.abspath(__file__))

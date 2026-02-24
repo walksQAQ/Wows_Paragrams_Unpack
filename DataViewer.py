@@ -1,5 +1,6 @@
 import os
 import json
+import sys
 import tkinter as tk
 
 from Ship_data_analyze import ShipDataAnalyzer
@@ -12,6 +13,12 @@ class DataViewer:
         self.file_listbox = file_listbox
         self.display_area = display_area
         # 确保路径指向主程序目录下的 data/split
+        if getattr(sys, 'frozen', False):
+            # 打包后的路径
+            self.main_dir = os.path.dirname(sys.executable)
+        else:
+            # 源码运行路径
+            self.main_dir = os.path.dirname(os.path.abspath(__file__))
         self.base_path = os.path.join(os.getcwd(), "data", "split")
         self.current_folder = ""
         self.ship_analyzer = ShipDataAnalyzer()  # 实例化一次，加载一次映射表

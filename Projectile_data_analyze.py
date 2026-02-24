@@ -52,7 +52,7 @@ class ProjectileDataAnalyzer:
     def __init__(self):
         if getattr(sys, 'frozen', False):
             # 如果是打包后的路径
-            self.base_dir = sys._MEIPASS
+            self.base_dir = os.path.dirname(sys.executable)
         else:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))

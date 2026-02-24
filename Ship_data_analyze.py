@@ -115,10 +115,11 @@ class ShipDataAnalyzer:
         self.rage_name_mapping = {}
         # 使用脚本所在绝对路径，增加健壮性
         if getattr(sys, 'frozen', False):
-            # 如果是打包后的路径
-            self.base_dir = sys._MEIPASS
+            # 如果是打包后的 EXE 运行，sys.executable 是 EXE 的全路径
+            # 我们取它的目录名
+            self.base_dir = os.path.dirname(sys.executable)
         else:
-            # 如果是源代码路径
+            # 如果是源码运行
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.load_ability_map()
         self.load_name_mapping()
