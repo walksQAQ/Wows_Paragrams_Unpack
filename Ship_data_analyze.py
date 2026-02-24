@@ -250,6 +250,25 @@ class ShipDataAnalyzer:
 
         return info
 
+    def get_dispersion_formula(self, weapon_data):
+        """
+        根据统一逻辑解析横向散布公式: Rh = (IR-MR)/(ID/1000) * R + MR*30
+        """
+        ir = weapon_data.get('idealRadius')
+        mr = weapon_data.get('minRadius')
+        id_dist = weapon_data.get('idealDistance')
+
+        if ir is None or mr is None or id_dist is None:
+            return "数据缺失"
+
+        # 1. 计算斜率 (处理 ID 差异)
+        slope = (ir - mr) / (id_dist / 1000)
+        # 2. 计算截距 (MR * 30)
+        intercept = mr * 30
+
+        # 返回格式化后的字符串
+        return f"{round(slope, 2)}R + {round(intercept, 2)}"
+
     def analyze(self, display_area, data):
         # --- 基础信息处理 ---
         ship_index = data.get("index", "Unknown")
@@ -549,10 +568,18 @@ class ShipDataAnalyzer:
                             "name": sv.get("name", sk),  # 使用数据中的名字 (PAGS057...)
                             "is_aura": False,
                             "barrels": barrels,
-                            "reload_time": guns_list[0].get("shotDelay",
-                                                            sv.get("shotDelay", 0)) if guns_list else sv.get(
-                                "shotDelay", 0),
-                            "ammo": sv.get("ammoList", guns_list[0].get("ammoList", []) if guns_list else [])
+                            "reload_time": guns_list[0].get("shotDelay",sv.get("shotDelay", 0)) if guns_list else sv.get("shotDelay", 0),
+                            "ammo": sv.get("ammoList", guns_list[0].get("ammoList", []) if guns_list else []),
+
+                            # --- 从当前炮塔 sv 中提取散布核心参数 ---
+                            "idealRadius": sv.get("idealRadius"),
+                            "minRadius": sv.get("minRadius"),
+                            "idealDistance": sv.get("idealDistance"),
+
+                            "r_zero": sv.get("radiusOnZero", 0),
+                            "r_delim": sv.get("radiusOnDelim", 0),
+                            "r_max": sv.get("radiusOnMax", 0),
+                            "delim": sv.get("delim", 0)
                         }
                         for letter in target_letters:
                             combined_stats[letter][matched_cat].append(weapon_info)
@@ -721,12 +748,32 @@ class ShipDataAnalyzer:
                         barrels = item.get('barrels')
                         reload_val = item.get('reload_time')
                         ammo = tuple(item.get('ammo', []))
-                        key = (name, barrels, reload_val, ammo)
+                        iR = item.get('idealRadius',0)
+                        mR = item.get('minRadius',0)
+                        iD = item.get('idealDistance',0)
+                        rz = item.get('r_zero', 0)
+                        rd = item.get('r_delim', 0)
+                        rm = item.get('r_max', 0)
+                        dl = item.get('delim', 0)
+                        key = (name, barrels, reload_val, ammo, iR, mR, iD, rz, rd, rm, dl)
                         wp_counts[key] = wp_counts.get(key, 0) + 1
 
-                    for (name, barrels, reload_val, ammo), count in wp_counts.items():
+                    for (name, barrels, reload_val, ammo, iR, mR, iD, rz, rd, rm, dl), count in wp_counts.items():
                         ammo_str = " / ".join(ammo) if ammo else "无"
-                        display_area.insert(tk.END,
-                                            f"    - 炮塔: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                        temp_data = {
+                            "idealRadius": iR,  # 这里需要确保 key 匹配
+                            "minRadius": mR,
+                            "idealDistance": iD
+                        }
+                        sample_item = next(item for item in valid_items if item['name'] == name and item['barrels'] == barrels)
+                        h_formula = self.get_dispersion_formula(sample_item)
+
+                        if cat_key == "Torpedoes":
+                            # 鱼雷不显示公式和纵向系数，显示型号和装填
+                            display_area.insert(tk.END,f"    - 鱼雷发射管: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                        else:
+                            display_area.insert(tk.END,f"    - 炮塔: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                            display_area.insert(tk.END,f"      - 横向散布公式: {h_formula}\n")
+                            display_area.insert(tk.END,f"      - 纵向散步系数: {rz} ~ {rd}(R={dl * 100:.0f}%) ~ {rm}\n")
 
                 display_area.insert(tk.END, "-" * 40 + "\n\n")
