@@ -1,12 +1,14 @@
 import sys
 import threading
-import tkinter as tk
-from tkinter import scrolledtext, filedialog, messagebox
 import os
 import json
 import shutil
-from DataViewer import DataViewer
+import subprocess
+import requests
+import tkinter as tk
 
+from tkinter import scrolledtext, filedialog, messagebox
+from DataViewer import DataViewer
 from GameParams_processer import GameParamsProcessor
 
 class AppUI:
@@ -118,15 +120,15 @@ class AppUI:
         )
         self.btn_refresh_gui.pack(padx=10, pady=5)
 
-        # 按钮-加载scripts文件夹
-        self.btn_unpack_scripts = tk.Button(
+        # 按钮-加载语言文件
+        self.btn_getnamefromweb = tk.Button(
             self.btn_frame,
-            text="加载scripts",
+            text="加载语言文件",
             width=16,
             anchor=tk.CENTER,
-            command=self.unpack_scripts
+            command=self.getnamefromweb
         )
-        self.btn_unpack_scripts.pack(padx=10, pady=5)
+        self.btn_getnamefromweb.pack(padx=10, pady=5)
 
         # 左下侧-运行日志区
         # 运行日志框架（Frame）
@@ -195,7 +197,7 @@ class AppUI:
             self.root.after(10, lambda: self.btn_unpack_data.config(state=tk.NORMAL))
         threading.Thread(target=worker, daemon=True).start()
 
-    def unpack_scripts(self):
+    def getnamefromweb(self):
         if self.wows_type == "未选择":
             messagebox.showerror("错误", "请先在“设置”菜单中选择游戏服务器")
             return
@@ -203,31 +205,118 @@ class AppUI:
             messagebox.showerror("错误", "请先在“设置”菜单中选择游戏目录")
             return
 
-        self.btn_unpack_scripts.config(state=tk.DISABLED)
-        self.log("正在准备提取 scripts 文件夹...")
+        self.btn_getnamefromweb.config(state=tk.DISABLED)
+        self.log(f"正在加载 {self.wows_type} 客户端文本数据...")
 
         def worker():
+            # 定义转换逻辑的内部工具函数
+            def run_convert():
+                self.log("正在使用原生 Python 库转换数据...")
+                try:
+                    import polib
+
+                    mo_path = os.path.normpath(os.path.abspath(os.path.join(self.data_dir, "global.mo")))
+                    po_path = os.path.normpath(os.path.abspath(os.path.join(self.data_dir, "global.po")))
+
+                    # 1. 加载二进制 MO 文件
+                    mo = polib.mofile(mo_path)
+
+                    # 2. 创建一个新的 PO 对象
+                    po = polib.POFile()
+                    po.metadata = mo.metadata
+
+                    # 3. 将 MO 的条目逐个填入 PO
+                    for entry in mo:
+                        po.append(entry)
+
+                    # 4. 保存为 PO 文本格式
+                    po.save(po_path)
+
+                    # 5. 清理临时的 MO 文件
+                    if os.path.exists(mo_path):
+                        os.remove(mo_path)
+
+                    self.log("原生转换成功！已生成 data/global.po")
+
+                except Exception as e:
+                    raise Exception(f"原生转换失败: {str(e)}")
+
             try:
-                from GameParams_extractor import GameParams_extractor
-                extractor = GameParams_extractor(self.game_path, self.wows_type)
+                import requests
+                import urllib.request
 
-                # 调用你之前定义的独立方法
-                success, result_msg = extractor.extract_scripts()
+                if self.wows_type == "Wargaming":
+                    bin_root = os.path.join(self.game_path, "bin")
+                    if not os.path.exists(bin_root):
+                        raise Exception("找不到游戏 bin 目录")
 
-                if success:
-                    self.log(f"成功: {result_msg}")
-                    messagebox.showinfo("完成", "Scripts 文件夹提取成功！\n文件已存放在 data/scripts 目录下。")
-                else:
-                    self.log(f"失败: {result_msg}")
-                    messagebox.showerror("提取失败", result_msg)
+                    folders = [f for f in os.listdir(bin_root) if
+                               f.isdigit() and os.path.isdir(os.path.join(bin_root, f))]
+                    if not folders:
+                        raise Exception("未找到有效的版本文件夹")
+                    latest_bin = sorted(folders, key=int)[-1]
+
+                    # 路径尝试：zh_sg -> zh_cn
+                    mo_src_path = os.path.join(bin_root, latest_bin, "res/texts/zh_sg/LC_MESSAGES/global.mo")
+                    if not os.path.exists(mo_src_path):
+                        alt_path = os.path.join(bin_root, latest_bin, "res/texts/zh_cn/LC_MESSAGES/global.mo")
+                        if os.path.exists(alt_path):
+                            mo_src_path = alt_path
+                        else:
+                            raise Exception("本地目录找不到 global.mo 文件")
+
+                    shutil.copy2(mo_src_path, os.path.join(self.data_dir, "global.mo"))
+                    self.log(f"已从本地提取 global.mo")
+                    run_convert()  # 修正：调用时不传 self
+
+                elif self.wows_type == "Lesta":
+                    # 增加 jsDelivr 镜像源提高国内成功率
+                    urls = [
+                        "https://github.com/LocalizedKorabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
+                        "https://gitlab.com/localizedkorabli/korabli-lesta-l10n/-/raw/main/Localizations/latest/global.mo",
+                        "https://gitee.com/localized-korabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
+                    ]
+
+                    self.log(f"正在从仓库下载最新的 global.mo...")
+
+                    # 自动获取系统代理设置
+                    system_proxies = urllib.request.getproxies()
+                    success_download = False
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+                    for url in urls:
+                        try:
+                            self.log(f"尝试从服务器下载: {url.split('/')[2]}...")
+                            response = requests.get(url, headers=headers, timeout=15, proxies=system_proxies)
+                            response.raise_for_status()
+
+                            with open(os.path.join(self.data_dir, "global.mo"), "wb") as f:
+                                f.write(response.content)
+
+                            self.log("下载成功！")
+                            success_download = True
+                            break
+
+                        except Exception:
+                            self.log(f"当前节点不可用，尝试切换...")
+                            continue
+
+                    if not success_download:
+                        raise Exception("所有节点均无法连接，请检查网络或开启代理。")
+
+                    run_convert()  # 修正：调用时不传 self
+
+                self.log("处理完成！数据已存入 data/global.po")
+                messagebox.showinfo("完成", "游戏文本数据提取并转换成功！")
+
             except Exception as e:
-                self.log(f"提取脚本时发生异常: {str(e)}")
-                messagebox.showerror("异常", f"程序运行出错: {e}")
-            finally:
-                # 恢复按钮点击
-                self.root.after(10, lambda: self.btn_unpack_scripts.config(state=tk.NORMAL))
+                self.log(f"处理失败: {str(e)}")
+                messagebox.showerror("错误", f"处理过程中出错:\n{e}")
 
-        # 3. 开启后台线程执行，防止 UI 卡死
+            finally:
+                self.root.after(10, lambda: self.btn_getnamefromweb.config(state=tk.NORMAL))
+
+        # 开启后台线程
         threading.Thread(target=worker, daemon=True).start()
 
     def click_data_processor(self):
