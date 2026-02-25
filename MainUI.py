@@ -6,6 +6,7 @@ import shutil
 import tkinter as tk
 
 from tkinter import scrolledtext, filedialog, messagebox
+
 from DataViewer import DataViewer
 from POToolKit import POToolkit
 from GameParams_processer import GameParamsProcessor
@@ -310,6 +311,8 @@ class AppUI:
                 try:
                     tool.run_all()
                     self.log("分拆语言文件成功")
+                    self.log("正在重载分析器映射...")
+                    self.viewer.reload_all_analyzers(log_func=self.log)
                     self.log("正在刷新界面列表...")
                     self.root.after(10, self.viewer.refresh)
                 except Exception as e:
