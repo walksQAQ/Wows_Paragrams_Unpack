@@ -3,8 +3,6 @@ import threading
 import os
 import json
 import shutil
-import subprocess
-import requests
 import tkinter as tk
 
 from tkinter import scrolledtext, filedialog, messagebox

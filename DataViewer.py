@@ -6,6 +6,7 @@ import tkinter as tk
 from Ship_data_analyze import ShipDataAnalyzer
 from Projectile_data_analyze import ProjectileDataAnalyzer
 from Gun_data_analyze import GunDataAnalyzer
+from Modernization_data_analyze import ModernizationDataAnalyzer
 
 class DataViewer:
     def __init__(self, folder_listbox, file_listbox, display_area):
@@ -24,6 +25,7 @@ class DataViewer:
         self.ship_analyzer = ShipDataAnalyzer()  # 实例化一次，加载一次映射表
         self.projectile_analyzer = ProjectileDataAnalyzer()  # 实例化一次，加载一次映射表
         self.gun_analyzer = GunDataAnalyzer()  # 实例化一次，加载一次映射表
+        self.modernization_analyzer = ModernizationDataAnalyzer() # 实例化一次，加载一次映射表
 
     def refresh(self):
         self.folder_listbox.delete(0, tk.END)
@@ -66,6 +68,8 @@ class DataViewer:
                 self.projectile_analyzer.analyze(self.display_area, data)
             elif self.current_folder == "Gun":
                 self.gun_analyzer.analyze(self.display_area, data)
+            elif self.current_folder == "Modernization":
+                self.modernization_analyzer.analyze(self.display_area, data)
             else:
                 # 默认逻辑：显示原始 JSON 格式化文本
                 self._display_raw_json(data)
