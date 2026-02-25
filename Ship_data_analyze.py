@@ -123,11 +123,24 @@ class ShipDataAnalyzer:
         self.rage_name_mapping = {}
         self.gun_name_mapping = {}
         self.ammo_name_mapping = {}
+        self.initialize_mapping()
+
+    def initialize_mapping(self):
         self.load_ability_map()
         self.load_name_mapping()
         self.load_rage_name_mapping()
         self.load_gun_name_mapping()
         self.load_ammo_name_mapping()
+
+    def reload_mappings(self):
+        """
+        供外部（MainUI）调用的重新初始化接口
+        当 POToolkit 更新了 json 文件后，点击按钮即可刷新内存中的字典
+        """
+        print("正在重新加载本地化数据...")
+        # 重新执行一遍所有的加载方法
+        self.initialize_mapping()
+        print("数据刷新完成。")
 
     def load_name_mapping(self):
         mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")

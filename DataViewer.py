@@ -34,6 +34,21 @@ class DataViewer:
         for f in sorted(folders):
             self.folder_listbox.insert(tk.END, f"📁 {f}")
 
+    def reload_all_analyzers(self, log_func=None):
+        """
+        统一刷新所有内嵌分析器的翻译映射，并发送日志到 UI
+        """
+        if log_func:
+            log_func("正在同步所有分析器的本地化字典...")
+        self.ship_analyzer.initialize_mapping()
+        # TODO:还没写的初始化映射表
+        # self.projectile_analyzer.initialize_mapping()
+        # self.gun_analyzer.initialize_mapping()
+        # self.modernization_analyzer.initialize_mapping()
+        # 如果需要，也可以在此处打印日志确认
+        if log_func:
+            log_func("分析器映射表重载完成")
+
     def on_folder_select(self, event):
         selection = self.folder_listbox.curselection()
         if not selection: return
