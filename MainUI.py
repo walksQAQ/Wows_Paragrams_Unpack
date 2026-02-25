@@ -7,6 +7,7 @@ import tkinter as tk
 
 from tkinter import scrolledtext, filedialog, messagebox
 from DataViewer import DataViewer
+from POToolKit import POToolkit
 from GameParams_processer import GameParamsProcessor
 
 class AppUI:
@@ -304,8 +305,17 @@ class AppUI:
 
                     run_convert()  # 修正：调用时不传 self
 
-                self.log("处理完成！数据已存入 data/global.po")
-                messagebox.showinfo("完成", "游戏文本数据提取并转换成功！")
+                self.log("开始分拆语言文件")
+                tool = POToolkit(input_po_name="data/global.po")
+                try:
+                    tool.run_all()
+                    self.log("分拆语言文件成功")
+                    self.log("正在刷新界面列表...")
+                    self.root.after(10, self.viewer.refresh)
+                except Exception as e:
+                    self.log(f"po转json出错: {str(e)}")
+                    messagebox.showinfo("错误", f"po转json出错: {str(e)}")
+                messagebox.showinfo("完成", "游戏文本提取完成！")
 
             except Exception as e:
                 self.log(f"处理失败: {str(e)}")
