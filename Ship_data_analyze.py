@@ -7,17 +7,17 @@ import tkinter as tk
 class ShipDataAnalyzer:
     # 将正则编译移出循环，提高效率
     PATTERNS = {
-        "Hull": re.compile(r'([A-Z]+)\d*_Hull'),
-        "Artillery": re.compile(r'([A-Z]+)\d*_Artillery'),
-        "ATBA": re.compile(r'([A-Z]+)\d*_ATBA'),
-        "Torpedoes": re.compile(r'([A-Z]+)\d*_Torpedoes'),
-        "DiveBomber": re.compile(r'([A-Z]+)\d*_DiveBomber'),
-        "Fighter": re.compile(r'([A-Z]+)\d*_Fighter'),
-        "SkipBomber": re.compile(r'([A-Z]+)\d*_SkipBomber'),
-        "TorpedoBomber": re.compile(r'([A-Z]+)\d*_TorpedoBomber'),
-        "AirSupport": re.compile(r'([A-Z]+)\d*_AirSupport'),
-        "AirDefense": re.compile(r'([A-Z]+)\d*_AirDefense'),
-        "DepthChargeGuns": re.compile(r"([A-Z]+)\d*_DepthChargeGuns"),
+        "Hull": re.compile(r'([A-Z]+\d*)_Hull'),
+        "Artillery": re.compile(r'([A-Z]+\d*)_Artillery'),
+        "ATBA": re.compile(r'([A-Z]+\d*)_ATBA'),
+        "Torpedoes": re.compile(r'([A-Z]+\d*)_Torpedoes'),
+        "DiveBomber": re.compile(r'([A-Z]+\d*)_DiveBomber'),
+        "Fighter": re.compile(r'([A-Z]+\d*)_Fighter'),
+        "SkipBomber": re.compile(r'([A-Z]+\d*)_SkipBomber'),
+        "TorpedoBomber": re.compile(r'([A-Z]+\d*)_TorpedoBomber'),
+        "AirSupport": re.compile(r'([A-Z]+\d*)_AirSupport'),
+        "AirDefense": re.compile(r'([A-Z]+\d*)_AirDefense'),
+        "DepthChargeGuns": re.compile(r"([A-Z]+\d*)_DepthChargeGuns"),
     }
 
     DEFAULTS = {
@@ -110,9 +110,6 @@ class ShipDataAnalyzer:
     }
 
     def __init__(self):
-        self.ability_name_map = {}
-        self.ship_name_mapping = {}
-        self.rage_name_mapping = {}
         # 使用脚本所在绝对路径，增加健壮性
         if getattr(sys, 'frozen', False):
             # 如果是打包后的 EXE 运行，sys.executable 是 EXE 的全路径
@@ -121,9 +118,16 @@ class ShipDataAnalyzer:
         else:
             # 如果是源码运行
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.ability_name_map = {}
+        self.ship_name_mapping = {}
+        self.rage_name_mapping = {}
+        self.gun_name_mapping = {}
+        self.ammo_name_mapping = {}
         self.load_ability_map()
         self.load_name_mapping()
         self.load_rage_name_mapping()
+        self.load_gun_name_mapping()
+        self.load_ammo_name_mapping()
 
     def load_name_mapping(self):
         mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")
@@ -153,6 +157,76 @@ class ShipDataAnalyzer:
                     self.rage_name_mapping = json.load(f)
         except Exception as e:
             print(f"读取战斗指令名称映射出错: {e}")
+
+    def load_gun_name_mapping(self):
+        """加载由 POToolKit 生成的武器翻译字典"""
+        # 注意：这里的路径要与 MainUI 生成的路径一致
+        guns_json_path = os.path.join(self.base_dir, "data", "guns_names.json")
+        if os.path.exists(guns_json_path):
+            try:
+                with open(guns_json_path, 'r', encoding='utf-8') as f:
+                    self.gun_name_mapping = json.load(f)
+            except Exception as e:
+                print(f"加载武器翻译失败: {e}")
+
+    def load_ammo_name_mapping(self):
+        """加载由 POToolKit 生成的弹药翻译字典"""
+        # 路径指向 POToolkit 生成的 ammo_names.json
+        ammo_json_path = os.path.join(self.base_dir, "data", "ammo_names.json")
+        if os.path.exists(ammo_json_path):
+            try:
+                with open(ammo_json_path, 'r', encoding='utf-8') as f:
+                    self.ammo_name_mapping = json.load(f)
+            except Exception as e:
+                print(f"加载弹药翻译失败: {e}")
+
+    def get_localized_weapon_name(self, raw_id):
+        """
+        增强版映射逻辑：
+        1. 处理 IDS_ 前缀
+        2. 强制转为大写匹配，防止大小写导致匹配失败
+        """
+        if not raw_id:
+            return "Unknown"
+
+        # 处理逻辑：去掉 IDS_ 并统一转为大写
+        clean_id = raw_id.replace("IDS_", "").upper()
+
+        # 1. 尝试直接在映射表中查找（假设 mapping 里的 key 也是大写）
+        if clean_id in self.gun_name_mapping:
+            return self.gun_name_mapping[clean_id]
+
+        # 2. 如果映射表的 Key 保持了原始大小写，则遍历匹配
+        for k, v in self.gun_name_mapping.items():
+            if k.upper() == clean_id:
+                return v
+
+        # 3. 实在查不到返回原名
+        return raw_id
+
+    def get_localized_ammo_names(self, ammo_list):
+        """
+        专门执行弹药表查询的代码块
+        输入: ['PAPA001_...', 'PAPA002_...']
+        返回: '203 mm AP Mk19 / 203 mm HE/HC Mk25'
+        """
+        if not ammo_list:
+            return "无"
+
+        translated = []
+        for ammo_id in ammo_list:
+            # 清洗 ID：去掉 IDS_ 前缀并转大写
+            clean_id = ammo_id.replace("IDS_", "").upper().strip()
+
+            # 1. 优先从弹药映射表找
+            # 2. 找不到则去武器映射表找
+            # 3. 再找不到显示原始 ID
+            name = self.ammo_name_mapping.get(clean_id) or \
+                   self.gun_name_mapping.get(clean_id) or \
+                   ammo_id
+            translated.append(name)
+
+        return " / ".join(translated)
 
     def parse_rage_mode_advanced(self, rage_data, ship_index, current_species):
         info = []
@@ -537,6 +611,8 @@ class ShipDataAnalyzer:
 
                     # A. 识别防空圈 (Aura, Far, Medium, Near)
                     if any(kw in sk for kw in ["Aura", "Far", "Medium", "Near"]):
+                        raw_id = sv.get("name", sk)
+                        display_name = self.get_localized_weapon_name(raw_id)
                         is_bubble_layer = "_Bubbles" in sk
 
                         # 既然炮座里没数据，直接取防空圈本身的基础伤害
@@ -544,7 +620,7 @@ class ShipDataAnalyzer:
 
                         info = {
                             "id": sk,
-                            "name": sv.get("name", sk),
+                            "name": display_name,
                             "is_aura": True,
                             "is_bubble_layer": is_bubble_layer,
                             "min_dist": sv.get("minDistance", 0),
@@ -567,12 +643,15 @@ class ShipDataAnalyzer:
                             break
 
                     if matched_cat:
+                        raw_id = sv.get("name", sk)
+                        # --- 使用兼容方法获取名称 ---
+                        display_name = self.get_localized_weapon_name(raw_id)
                         guns_list = sv.get("Guns", [])
                         barrels = guns_list[0].get("numBarrels", sv.get("numBarrels", 0)) if guns_list else sv.get(
                             "numBarrels", 0)
                         weapon_info = {
                             "id": sk,
-                            "name": sv.get("name", sk),  # 使用数据中的名字 (PAGS057...)
+                            "name": display_name,
                             "is_aura": False,
                             "barrels": barrels,
                             "reload_time": guns_list[0].get("shotDelay",sv.get("shotDelay", 0)) if guns_list else sv.get("shotDelay", 0),
@@ -751,7 +830,8 @@ class ShipDataAnalyzer:
                     # 同样按数据名字进行分组统计显示，避免主炮/副炮位也出现 1-32 号刷屏
                     wp_counts = {}
                     for item in valid_items:
-                        name = item.get('name')
+                        raw_id = item.get('name', 'Unknown')
+                        name = self.get_localized_weapon_name(raw_id)
                         barrels = item.get('barrels')
                         reload_val = item.get('reload_time')
                         ammo = tuple(item.get('ammo', []))
@@ -766,7 +846,20 @@ class ShipDataAnalyzer:
                         wp_counts[key] = wp_counts.get(key, 0) + 1
 
                     for (name, barrels, reload_val, ammo, iR, mR, iD, rz, rd, rm, dl), count in wp_counts.items():
-                        ammo_str = " / ".join(ammo) if ammo else "无"
+                        if ammo:
+                            # 这里的 ammo 是一个 tuple (来自上面 wp_counts 的 key)
+                            # 调用你之前定义的专门处理弹药列表翻译的方法
+                            translated_ammo_list = []
+                            for aid in ammo:
+                                clean_id = aid.replace("IDS_", "").upper().strip()
+                                # 依次从弹药表、武器表查询，找不到则显示原 ID
+                                a_name = self.ammo_name_mapping.get(clean_id) or \
+                                         self.gun_name_mapping.get(clean_id) or \
+                                         aid
+                                translated_ammo_list.append(a_name)
+                            ammo_str = " / ".join(translated_ammo_list)
+                        else:
+                            ammo_str = "无"
                         temp_data = {
                             "idealRadius": iR,  # 这里需要确保 key 匹配
                             "minRadius": mR,
@@ -777,6 +870,10 @@ class ShipDataAnalyzer:
                         if cat_key == "Torpedoes":
                             # 鱼雷不显示公式和纵向系数，显示型号和装填
                             display_area.insert(tk.END,f"    - 鱼雷发射管: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                        elif cat_key == "DepthChargeGuns":
+                            # 深弹：只显示基础信息，不显示散布和系数
+                            display_area.insert(tk.END,
+                                                f"    - 深水炸弹: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
                         else:
                             display_area.insert(tk.END,f"    - 炮塔: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
                             display_area.insert(tk.END,f"      - 横向散布公式: {h_formula}\n")
