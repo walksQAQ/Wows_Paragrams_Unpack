@@ -838,9 +838,8 @@ class ShipDataAnalyzer:
                         display_area.insert(tk.END, "    [面板秒伤]:\n")
                         for a in dps_layers:
                             # 确定射程标签
-                            label = "远程" if a['max_dist'] > 4500 else "中程" if a['max_dist'] > 2500 else "近程"
                             display_area.insert(tk.END,
-                                                f"      - {label}-{a['name']}:\n        射程: {a['min_dist']}-{a['max_dist']}m | 防空圈基础伤害: {a['net_dmg']} | 防空圈秒伤: {a['final_dmg']} | 命中率: {int(a['hit_chance'] * 100)}%\n")
+                                                f"      - {a['name']}:\n        射程: {a['min_dist']}-{a['max_dist']}m | 防空圈基础伤害: {a['net_dmg']} | 防空圈秒伤: {a['final_dmg']} | 命中率: {int(a['hit_chance'] * 100)}%\n")
 
                     # 2. 渲染黑云
                     bubble_layers = [a for a in sorted_items if a.get('is_bubble_layer')]
