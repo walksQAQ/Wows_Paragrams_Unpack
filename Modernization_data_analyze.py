@@ -24,6 +24,7 @@ class ModernizationDataAnalyzer:
         "AACritProb": "防空炮瘫痪的风险",
         "AARepairTime": "防空炮修理时间",
         "AAExtraBubbles": "防空齐射炮弹爆炸次数",
+        "AABubbleDamageBonus": "防空炮弹爆炸伤害",
         # 鱼雷发射管
         "GTCritProb": "鱼雷发射管瘫痪的风险",
         "GTShotDelay": "鱼雷发射管装填时间",
@@ -194,9 +195,9 @@ class ModernizationDataAnalyzer:
                         value = f"+{value}" if value > 0 else f"{value}"
                         display_area.insert(tk.END, f"  - {label}: {value}\n")
                     elif key in FACTOR_KEYS:
-                        result = round(value * 100, 3)
+                        result = round(value * 7, 3)
                         sign = "+" if result > 0 else ""
-                        display_area.insert(tk.END, f"      {label}: {sign}{result}\n")
+                        display_area.insert(tk.END, f"      {label}: {sign}{result:.0f}\n")
                     elif key in SECOND_KEYS:
                         value = f"+{value}" if value > 0 else f"{value}"
                         display_area.insert(tk.END, f"  - {label}: {value}s\n")
