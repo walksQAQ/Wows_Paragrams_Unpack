@@ -152,7 +152,7 @@ class ShipDataAnalyzer:
             print(f"读取船名映射出错: {e}")
 
     def load_ability_map(self):
-        file_path = os.path.join(self.base_dir, "data", "ability_names.json")
+        file_path = os.path.join(self.base_dir, "data", "consumable_names.json")
         try:
             if os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -423,13 +423,35 @@ class ShipDataAnalyzer:
             slot_options = []
             for abil_pair in abils:
                 if isinstance(abil_pair, list) and len(abil_pair) >= 2:
-                    type_id = abil_pair[0].upper()
-                    name_zh = self.ability_name_map.get(type_id) or \
-                              self.ability_name_map.get(type_id.replace("PREMIUM", "").strip("_")) or type_id
+                    # 1. 获取原始 ID 并统一转大写
+                    raw_id = str(abil_pair[0]).upper().strip()
+
+                    # 2. 提取前缀编号 (例如从 "PCY009_CRASHCREW" 提取 "PCY009")
+                    #    如果匹配失败，prefix 将保持为 raw_id 确保后续匹配不报错
+                    prefix_match = re.match(r'^(PCY\d+)', raw_id)
+                    prefix = prefix_match.group(1) if prefix_match else raw_id
+
+                    # 3. 核心检索逻辑：优先在字典中寻找以 prefix 开头的任意一个键
+                    name_zh = None
+
+                    # 先尝试精确匹配全名 (最高优先级)
+                    if raw_id in self.ability_name_map:
+                        name_zh = self.ability_name_map[raw_id]
+                    else:
+                        # 如果精确匹配失败，遍历字典寻找包含该编号的第一个键
+                        for k, v in self.ability_name_map.items():
+                            if k.startswith(prefix):
+                                name_zh = v
+                                break
+
+                    # 4. 最终兜底：如果字典里彻底没这个编号，显示原始 ID
+                    if not name_zh:
+                        name_zh = raw_id
+
                     slot_options.append(f"{name_zh} [{abil_pair[1]}]")
             if slot_options:
                 num = slot_data.get('slot', slot_key.replace("AbilitySlot", ""))
-                ability_slots.append(f"  槽位 {num}: {' / '.join(slot_options)}")
+                ability_slots.append(f"  槽位 {num+1}: {' / '.join(slot_options)}")
 
         if ability_slots:
             display_area.insert(tk.END, "消耗品: \n" + "\n".join(ability_slots) + "\n\n")
@@ -641,8 +663,9 @@ class ShipDataAnalyzer:
                         display_name = self.get_localized_weapon_name(raw_id)
                         is_bubble_layer = "_Bubbles" in sk
 
-                        # 既然炮座里没数据，直接取防空圈本身的基础伤害
+                        # 取防空圈本身的基础伤害
                         net_dmg = sv.get("areaDamage", 0)
+                        net_period = sv.get("areaDamagePeriod", 0)
 
                         info = {
                             "id": sk,
@@ -651,10 +674,10 @@ class ShipDataAnalyzer:
                             "is_bubble_layer": is_bubble_layer,
                             "min_dist": sv.get("minDistance", 0),
                             "max_dist": sv.get("maxDistance", 0),
-                            "net_dmg": round(net_dmg, 2),  # 记录本圈原始净秒伤
-                            "dmg": round(net_dmg, 2),  # 初始化总秒伤
+                            "net_dmg": net_dmg,
+                            "final_dmg": round(net_dmg/net_period, 2),
                             "hit_chance": sv.get("hitChance", 0),
-                            "bubble_dmg": sv.get("bubbleDamage", 0),
+                            "bubble_dmg": (sv.get("bubbleDamage", 0)*7),
                             "bubbles": int(sv.get("outerBubbleCount", 0) + sv.get("innerBubbleCount", 0))
                         }
                         for letter in target_letters:
@@ -817,7 +840,7 @@ class ShipDataAnalyzer:
                             # 确定射程标签
                             label = "远程" if a['max_dist'] > 4500 else "中程" if a['max_dist'] > 2500 else "近程"
                             display_area.insert(tk.END,
-                                                f"      - {label}-{a['name']}:\n        射程: {a['min_dist']}-{a['max_dist']}m | areaDamage: {a['dmg']} | 命中率: {int(a['hit_chance'] * 100)}%\n")
+                                                f"      - {label}-{a['name']}:\n        射程: {a['min_dist']}-{a['max_dist']}m | 防空圈基础伤害: {a['net_dmg']} | 防空圈秒伤: {a['final_dmg']} | 命中率: {int(a['hit_chance'] * 100)}%\n")
 
                     # 2. 渲染黑云
                     bubble_layers = [a for a in sorted_items if a.get('is_bubble_layer')]
@@ -825,7 +848,7 @@ class ShipDataAnalyzer:
                         display_area.insert(tk.END, "    [爆炸属性]:\n")
                         for b in bubble_layers:
                             display_area.insert(tk.END,
-                                                f"      - {b['name']}:\n        射程: {b['min_dist']}-{b['max_dist']}m | bubbleDamage: {b['bubble_dmg']} | 数量: {b['bubbles']} 朵\n")
+                                                f"      - {b['name']}:\n        射程: {b['min_dist']}-{b['max_dist']}m | 爆炸伤害: {b['bubble_dmg']} | 数量: {b['bubbles']} 朵\n")
 
                     # 3. 实体炮座统计 (合并同型号显示)
                     guns = [x for x in sorted_items if not x.get('is_aura')]
