@@ -18,13 +18,19 @@ class POToolkit:
         return os.path.dirname(os.path.abspath(__file__))
 
     def load_po_file(self):
-        """加载文件内容，返回布尔值表示是否成功"""
+        """加载文件内容，并统一特殊字符"""
         try:
             if not os.path.exists(self.input_po_path):
                 return False, f"File not found: {self.input_po_path}"
 
             with open(self.input_po_path, 'r', encoding='utf-8', errors='ignore') as f:
-                self.content = f.read()
+                content = f.read()
+
+            # --- 新增功能：统一间隔符 ---
+            # 将所有不规范的 ˙ (U+02D9) 替换为标准中点 · (U+00B7)
+            self.content = content.replace('˙', '·')
+            # --------------------------
+
             return True, "Success"
         except Exception as e:
             return False, str(e)

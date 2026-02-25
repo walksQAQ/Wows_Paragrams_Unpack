@@ -354,7 +354,12 @@ class ShipDataAnalyzer:
         # --- 基础信息处理 ---
         ship_index = data.get("index", "Unknown")
         ship_id = data.get("id", "N/A")
-        real_name = self.ship_name_mapping.get(ship_index, data.get("name", "未知"))
+        raw_id = ship_index.upper().replace("IDS_", "")
+        real_name = self.ship_name_mapping.get(raw_id)
+        if not real_name and "_" in raw_id:
+            real_name = self.ship_name_mapping.get(raw_id.split("_")[0], ship_index)
+        else:
+            real_name = real_name or ship_index
 
         type_info = data.get("typeinfo", {})
         raw_nation = type_info.get("nation", "Unknown")
