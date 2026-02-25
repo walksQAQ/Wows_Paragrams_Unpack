@@ -354,12 +354,20 @@ class ShipDataAnalyzer:
         # --- 基础信息处理 ---
         ship_index = data.get("index", "Unknown")
         ship_id = data.get("id", "N/A")
-        raw_id = ship_index.upper().replace("IDS_", "")
-        real_name = self.ship_name_mapping.get(raw_id)
-        if not real_name and "_" in raw_id:
-            real_name = self.ship_name_mapping.get(raw_id.split("_")[0], ship_index)
-        else:
-            real_name = real_name or ship_index
+
+        # --- 2. 舰船名称映射 (只针对 index 处理) ---
+        # 强制转字符串并清洗前缀
+        raw_key = str(ship_index).upper().replace("IDS_", "").strip()
+
+        # 执行映射查询
+        real_name = self.ship_name_mapping.get(raw_key)
+
+        # 如果全名没搜到，尝试截断下划线 (如 PASA598_Wasp -> PASA598)
+        if not real_name and "_" in raw_key:
+            real_name = self.ship_name_mapping.get(raw_key.split("_")[0])
+
+        # 最终保底：如果字典里实在没有，则显示原始 index
+        real_name = real_name or ship_index
 
         type_info = data.get("typeinfo", {})
         raw_nation = type_info.get("nation", "Unknown")
