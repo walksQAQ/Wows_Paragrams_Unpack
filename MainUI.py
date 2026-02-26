@@ -174,33 +174,11 @@ class AppUI:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
-    # --- 后台线程安全的辅助函数 ---
-    def log(self, msg):
-        def _append():
-            self.log_area.insert(tk.END, f"{msg}\n")
-            self.log_area.see(tk.END)
-
-        self.root.after(0, _append)
-
     def viewer_refresh_adapter(self):
         def _task():
             self.viewer.refresh()
 
         threading.Thread(target=_task, daemon=True).start()
-
-    def load_config(self):
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except:
-            pass
-        return self.default_config()
-
-    def save_config(self, data=None):
-        target = data if data else self.config_data
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(target, f, indent=4, ensure_ascii=False)
 
     def setup_menu(self):
         """保持原有的原生菜单功能，因为 CTK 对原生菜单支持最好"""
@@ -550,28 +528,43 @@ class AppUI:
         threading.Thread(target=worker,daemon=True).start()
 
     def log(self, msg):
-        """向左侧日志框输出"""
-        self.log_area.insert(tk.END, f"{msg}\n")
-        self.log_area.see(tk.END)
+        """向左侧日志框输出 (增加线程安全支持)"""
+        def _append():
+            self.log_area.insert(tk.END, f"{msg}\n")
+            self.log_area.see(tk.END)
+        # 使用 after 确保在主线程更新 UI，防止打包后多线程操作 UI 崩溃
+        self.root.after(0, _append)
 
-    def save_config(self):
-        with open(self.config_file, "w", encoding="utf-8") as f:
-            json.dump(self.config_data, f, indent=4, ensure_ascii=False)
+    def save_config(self, data=None):
+        """
+        修复 TypeError: 增加可选参数 data
+        :param data: 如果传入字典则保存该字典，否则保存内存中的 self.config_data
+        """
+        # 核心修复：如果 init_data_and_config 传了 config 进来，就用传进来的
+        target_to_save = data if data is not None else self.config_data
+
+        try:
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(target_to_save, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            self.log(f"保存配置失败: {e}")
 
     def load_config(self):
+        """读取配置，确保返回完整的默认字典"""
+        default = self.default_config()
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if isinstance(data, dict):
+                        # 建议：将读取到的数据与默认值合并，防止老版本配置文件缺失字段
+                        for key, value in default.items():
+                            if key not in data:
+                                data[key] = value
                         return data
             except Exception as e:
                 print(f"读取配置失败: {e}")
-                messagebox.showwarning("警告", f"配置文件读取失败，将尝试使用备份或默认设置。\n错误: {e}")
-        return {
-                    # 初始化设置文件配置
-                    "game_path": "未设置"
-                }
+        return default
 
     # 设置-选择游戏目录
     def select_game_path(self):
