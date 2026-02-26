@@ -4,6 +4,8 @@ import re
 import sys
 import tkinter as tk
 
+from NameMapping import Mapping as NameMapping
+
 class ShipDataAnalyzer:
     # 将正则编译移出循环，提高效率
     PATTERNS = {
@@ -40,73 +42,6 @@ class ShipDataAnalyzer:
         "AirDefense": re.compile(r'(HP_[A-Z]GA_\d+|Aura_\d+|(Far|Medium|Near)\d*(_Bubbles)?)'),
         "Torpedoes": re.compile(r'HP_[A-Z]GT_\d+'),
         "DepthChargeGuns": re.compile(r"HP_[A-Z]GB_\d+"),
-    }
-
-    BUFF_MAP = {
-        "GMIdealRadius": "主炮最大散步",
-        "GMPenetrationCoeffHE": "主炮高爆弹穿深",
-        "GMMaxDist": "主炮最大射程",
-        "GMDamageCoeff": "主炮炮弹标伤",
-        "GMAPDamageCoeff": "主炮穿甲弹标伤",
-        "artilleryKruppMultiplier": "主炮穿甲弹穿深",
-        "torpedoDamageCoeff": "鱼雷标伤",
-        "torpedoRangeCoefficient": "鱼雷射程",
-        "allConsumableReloadTime": "消耗品的准备和装填时间",
-        "planeSpawnTime": "中队整备时间",
-        "GSShotDelay": "副炮装填时间",
-        "GSIdealRadius": "副炮最大散步",
-        "GSMaxDist": "副炮最大射程",
-        "GSPenetrationCoeffHE": "副炮高爆弹穿深",
-        "healthRegen": "每秒回复血量",
-        "AAAuraDamage": "防空炮每秒伤害",
-        "vulnerabilityBurn": "受到的火灾伤害",
-        "vulnerabilityFlood": "受到的进水伤害"
-    }
-
-    DETAIL_MAP = {
-        "requiredCount": "所需次数",
-        "radius": "有效半径",
-        "separateTracking": "独立计数",
-        "subRibbons": "有效勋带",
-        "timeLimit": "时间限制",
-        "progress": "进度",
-        "progressName": "进度标识",
-        "stateName": "状态标识",
-        "RibbonActivator": "缎带/勋章触发",
-        "RageModeProgressAction": "累加战斗指令进度",
-        "healPerSecond": "每秒回复血量",
-        "duration": "持续时间",
-        "triggerName": "触发标识",
-        "isRepeating": "可重复",
-        "isVisible": "是否显示",
-        "isEnabled": "是否启用",
-        "consumableTypes": "消耗品类型",
-        "count": "数量",
-        "potentialDamageShift": "所受的潜在伤害",
-        "planeName": "飞机型号",
-        "reduceTime": "减少整备时间",
-    }
-
-    RIBBON_MAP = {
-        "13": "副炮组命中",
-        "14": "主炮过度击穿",
-        "15": "主炮击穿",
-        "16": "主炮未击穿",
-        "17": "主炮跳弹",
-        "19": "发现",
-        "28": "主炮命中防雷鼓包",
-        "47": "掩护",
-        "56": "吸引火力",
-        "59": "协助校射",
-    }
-
-    SPECIES_MAP = {
-        "Destroyer": "驱逐舰",
-        "Cruiser": "巡洋舰",
-        "Battleship": "战列舰",
-        "AirCarrier": "航空母舰",
-        "Submarine": "潜艇",
-        "Auxiliary": "其他"
     }
 
     def __init__(self):
@@ -283,14 +218,14 @@ class ShipDataAnalyzer:
                             # 将 rid 转为字符串去匹配 map，如果找不到则显示 "未知勋带(ID)"
                             ribbon_names = []
                             for rid in v:
-                                name = self.RIBBON_MAP.get(str(rid), f"未知勋带({rid})")
+                                name = NameMapping.RIBBON_MAP.get(str(rid), f"未知勋带({rid})")
                                 ribbon_names.append(name)
 
                             # 格式化输出： 勋带名称1, 勋带名称2 (原始ID列表)
-                            info.append(f"    - {self.DETAIL_MAP.get(k, k)}: {', '.join(ribbon_names)}")
+                            info.append(f"    - {NameMapping.DETAIL_MAP.get(k, k)}: {', '.join(ribbon_names)}")
                         else:
                             unit = "m" if k == "radius" else ""
-                            info.append(f"    - {self.DETAIL_MAP.get(k, k)}: {v} {unit}")
+                            info.append(f"    - {NameMapping.DETAIL_MAP.get(k, k)}: {v} {unit}")
 
                 # 拆解执行动作 (Action)
                 actions_found = {k: v for k, v in trigger.items() if k.startswith("Action") and isinstance(v, dict)}
@@ -304,7 +239,7 @@ class ShipDataAnalyzer:
 
                         for k, v in aln.items():
                             if k != "type":
-                                label = self.DETAIL_MAP.get(k, k)
+                                label = NameMapping.DETAIL_MAP.get(k, k)
                                 unit = "s" if k == "reduceTime" else ""
                                 info.append(f"    - {label}: {v}{unit}")
 
@@ -313,7 +248,7 @@ class ShipDataAnalyzer:
         if mods:
             info.append(f"  [加成效果]")
             for k, v in mods.items():
-                label = self.BUFF_MAP.get(k, k)
+                label = NameMapping.MODIFIER_MAP.get(k, k)
 
                 # 情况 A: 值是一个字典 (如 GSMaxDist)
                 if isinstance(v, dict):
@@ -322,7 +257,7 @@ class ShipDataAnalyzer:
                     if factor is not None:
                         percent = round((factor - 1.0) * 100)
                         # 翻译舰种名用于提示
-                        type_label = self.SPECIES_MAP.get(current_species, current_species)
+                        type_label = NameMapping.SHIP_CLASS_MAP.get(current_species, current_species)
                         info.append(f"    - {label}: {percent:+.0f}%")
                     else:
                         # 如果没有匹配到当前舰种，通常不显示，或者你可以选择遍历显示全部
@@ -388,29 +323,15 @@ class ShipDataAnalyzer:
         raw_group = data.get("group", "standard")
         raw_level = data.get("level", 0)
 
-        nation_map = {
-            "USA": "美国", "Japan": "日本", "Germany": "德国", "Russia": "苏联",
-            "United_Kingdom": "英国", "France": "法国", "Italy": "意大利", "Pan_Asia": "泛亚",
-            "Europe": "欧洲", "Netherlands": "荷兰", "Commonwealth": "英联邦",
-            "Pan_America": "泛美", "Spain": "西班牙", "Events": "其他"
-        }
-        group_map = {
-            "start": "初始", "preserved": "已移除", "upgradeable": "可研发", "earlyAccess": "抢先体验",
-            "superShip": "超级战舰", "premium": "加值", "ultimate": "特殊", "special": "特殊",
-            "specialUnsellable": "特殊", "disabled": "禁用", "clan": "军团", "coopOnly": "仅人机",
-            "demoWithoutStatsPrem": "加值测试", "demoWithoutStats": "测试", "unavailable": "不可用"
-        }
-        roman_map = ["0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "★"]
-
         # --- UI 渲染基础信息 ---
         display_area.insert(tk.END, f"舰船名称: {real_name}\n")
         display_area.insert(tk.END, f"ID: {ship_id}\n")
         display_area.insert(tk.END, f"编号: {ship_index}\n")
-        display_area.insert(tk.END, f"所属国家: {nation_map.get(raw_nation, raw_nation)}\n")
-        display_area.insert(tk.END, f"舰船种类: {self.SPECIES_MAP.get(raw_species, raw_species)}\n")
-        level_roman = roman_map[raw_level] if 0 <= raw_level < len(roman_map) else str(raw_level)
+        display_area.insert(tk.END, f"所属国家: {NameMapping.NATION_MAP.get(raw_nation, raw_nation)}\n")
+        display_area.insert(tk.END, f"舰船种类: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}\n")
+        level_roman = NameMapping.LEVEL_MAP[raw_level] if 0 <= raw_level < len(NameMapping.LEVEL_MAP) else str(raw_level)
         display_area.insert(tk.END, f"舰船等级: {level_roman}\n")
-        display_area.insert(tk.END, f"舰船类别: {group_map.get(raw_group, raw_group)}\n\n")
+        display_area.insert(tk.END, f"舰船类别: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}\n\n")
 
         # --- 消耗品逻辑 ---
         ship_abilities = data.get("ShipAbilities", {})
@@ -625,7 +546,7 @@ class ShipDataAnalyzer:
                     if mods:
                         buffs.append("- 加成效果:")
                         for mk, mv in mods.items():
-                            label = self.BUFF_MAP.get(mk, mk)
+                            label = NameMapping.MODIFIER_MAP.get(mk, mk)
                             if isinstance(mv, (float, int)):
                                 p = round((mv - 1.0) * 100)
                                 buffs.append(f" - {label}: {p:+.0f}%")

@@ -2,52 +2,9 @@ import os
 import sys
 import tkinter as tk
 
+from NameMapping import Mapping as NameMapping
 
 class ProjectileDataAnalyzer:
-    # 统一国家名称映射
-    NATION_MAP = {
-        "USA": "美国", "Japan": "日本", "Germany": "德国", "Russia": "苏联",
-        "United_Kingdom": "英国", "France": "法国", "Italy": "意大利",
-        "Pan_Asia": "泛亚", "Europe": "欧洲", "Netherlands": "荷兰",
-        "Commonwealth": "英联邦", "Pan_America": "泛美", "Spain": "西班牙",
-        "Events": "其他"
-    }
-
-    SHIP_CLASS_MAP = {
-        "Destroyer": "驱逐舰",
-        "Cruiser": "巡洋舰",
-        "Battleship": "战列舰",
-        "AirCarrier": "航空母舰",
-        "Submarine": "潜艇",
-        "Auxiliary": "其他类型",
-        "default": "默认"
-    }
-
-    # 弹药类型显示名
-    AMMO_NAME_MAP = {
-        "HE": "HE",
-        "AP": "AP",
-        "CS": "SAP",
-    }
-
-    SPECIES_NAME_MAP = {
-        "Artillery": "火炮炮弹",
-        "Bomb": "炸弹",
-        "DepthCharge": "深水炸弹",
-        "Laser": "激光",
-        "Rocket": "火箭弹",
-        "Torpedo": "鱼雷",
-        "Wave": "波浪"
-    }
-
-    # 潜艇深度状态映射
-    BUOYANCY_MAP = {
-        "SURFACE": "水面状态",
-        "PERISCOPE": "潜望镜深度",
-        "SEMI_DEEP_WATER": "半潜深度",
-        "DEEP_WATER": "作业深度",
-        "DEEP_WATER_INVUL": "最大深度"
-    }
 
     def __init__(self):
         if getattr(sys, 'frozen', False):
@@ -70,12 +27,12 @@ class ProjectileDataAnalyzer:
         species = type_info.get("species", "Unknown")
         raw_ammo_type = str(data.get("ammoType", "Unknown")).upper()
 
-        ammo_sub_type = self.AMMO_NAME_MAP.get(raw_ammo_type, "Unknown")
+        ammo_sub_type = NameMapping.AMMO_TYPE_MAP.get(raw_ammo_type, "Unknown")
 
         nation_raw = type_info.get("nation", "Unknown")
-        nation = self.NATION_MAP.get(nation_raw, nation_raw)
+        nation = NameMapping.NATION_MAP.get(nation_raw, nation_raw)
 
-        display_type = self.SPECIES_NAME_MAP.get(species, self.SPECIES_NAME_MAP.get(raw_ammo_type.lower(), species))
+        display_type = NameMapping.PROJECTILE_TYPE_MAP.get(species, NameMapping.PROJECTILE_TYPE_MAP.get(raw_ammo_type.lower(), species))
 
         display_area.insert(tk.END, f"弹药名称: {proj_name}\n"
                                     f"编号: {proj_index}\n"
@@ -163,7 +120,7 @@ class ProjectileDataAnalyzer:
                 for state in order:
                     if state in buoyancy:
                         coeff = buoyancy[state]
-                        display_area.insert(tk.END, f"    * {self.BUOYANCY_MAP.get(state)}: {coeff * 100:.0f}%\n")
+                        display_area.insert(tk.END, f"    * {NameMapping.BUOYANCY_MAP.get(state)}: {coeff * 100:.0f}%\n")
 
             # 物理与下潜参数
             display_area.insert(tk.END, f"\n  - 下潜速度: {data.get('speed', 0)} m/s\n")
@@ -203,7 +160,7 @@ class ProjectileDataAnalyzer:
             # 深水鱼雷限制
             if is_deep:
                 ignore_list = data.get("ignoreClasses", [])
-                zh_ignores = [self.SHIP_CLASS_MAP.get(c, c) for c in ignore_list]
+                zh_ignores = [NameMapping.SHIP_CLASS_MAP.get(c, c) for c in ignore_list]
                 display_area.insert(tk.END, f"  - 无法攻击目标: {', '.join(zh_ignores)}\n")
 
             # 航速与射程校准 (原始值 * 30 / 1000)
@@ -236,7 +193,7 @@ class ProjectileDataAnalyzer:
                     if drop_dist:
                         display_area.insert(tk.END, "  - 导引脱锁距离:\n")
                         for ship_class, dist_list in drop_dist.items():
-                            zh_class = self.SHIP_CLASS_MAP.get(ship_class, ship_class)
+                            zh_class = NameMapping.SHIP_CLASS_MAP.get(ship_class, ship_class)
                             val = dist_list[0] if isinstance(dist_list, list) else dist_list
                             display_area.insert(tk.END, f"    * {zh_class}: {val} m\n")
 

@@ -2,24 +2,10 @@ import os
 import sys
 import tkinter as tk
 
+from NameMapping import Mapping as NameMapping
+
 
 class GunDataAnalyzer:
-    # 国家名称映射 (延用你的配置)
-    NATION_MAP = {
-        "USA": "美国", "Japan": "日本", "Germany": "德国", "Russia": "苏联",
-        "United_Kingdom": "英国", "France": "法国", "Italy": "意大利",
-        "Pan_Asia": "泛亚", "Europe": "欧洲", "Netherlands": "荷兰",
-        "Commonwealth": "英联邦", "Pan_America": "泛美", "Spain": "西班牙"
-    }
-
-    # 武器种类映射
-    SPECIES_MAP = {
-        "Main": "主炮",
-        "Secondary": "副炮",
-        "Torpedo": "鱼雷发射管",
-        "AAircraft": "防空炮",
-        "DCharge": "深弹发射器"
-    }
 
     def __init__(self):
         if getattr(sys, 'frozen', False):
@@ -40,10 +26,10 @@ class GunDataAnalyzer:
 
         type_info = data.get("typeinfo", {})
         species_raw = type_info.get("species", "Unknown")
-        species = self.SPECIES_MAP.get(species_raw, species_raw)
+        species = NameMapping.WEAPON_SPECIES_MAP.get(species_raw, species_raw)
 
         nation_raw = type_info.get("nation", "Unknown")
-        nation = self.NATION_MAP.get(nation_raw, nation_raw)
+        nation = NameMapping.NATION_MAP.get(nation_raw, nation_raw)
 
         display_area.insert(tk.END, f"组件名称: {gun_name}\n"
                                     f"组件编号: {gun_index}\n"

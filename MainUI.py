@@ -14,7 +14,7 @@ from GameParams_processer import GameParamsProcessor
 class AppUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Mir Korabley游戏数据查看工具")
+        self.root.title("Mir Korabley/World of Warships游戏数据查看工具")
         self.root.geometry("1600x900")
 
         # 初始化
