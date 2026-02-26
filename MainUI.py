@@ -3,162 +3,240 @@ import threading
 import os
 import json
 import shutil
+import hashlib
+import requests
 import tkinter as tk
+import customtkinter as ctk
 
-from tkinter import scrolledtext, filedialog, messagebox
-
+from tkinter import filedialog, messagebox
 from DataViewer import DataViewer
 from POToolKit import POToolkit
 from GameParams_processer import GameParamsProcessor
 
+# 设置外观主题
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
+
 class AppUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Mir Korabley/World of Warships游戏数据查看工具")
-        self.root.geometry("1600x900")
+        # 1. 立即隐藏主窗口，防止渲染时的闪烁和位移
+        self.root.withdraw()
 
-        # 初始化
-        self.initialization()
+        self.root.title("Mir Korabley/World of Warships 游戏数据分析工具")
+        self.root.geometry("1400x850")
 
-        # 顶部菜单栏
-        self.menubar = tk.Menu(self.root)
+        # 2. 【核心修改】先初始化路径并加载配置数据到内存，但不涉及UI操作
+        self.exe_dir = self.get_executable_dir()
+        self.config_file = os.path.join(self.exe_dir, "config.json")
+        self.data_dir = os.path.join(self.exe_dir, "data")
 
-        # 子菜单-设置
-        self.setting_menu = tk.Menu(self.menubar, tearoff=0)
-        self.setting_menu.add_command(label="设置游戏目录", command=self.select_game_path)
-        self.setting_menu.add_command(label="重置软件设置", command=self.reset_config)
-        # 分割线
-        self.setting_menu.add_separator()
-        self.setting_menu.add_radiobutton(
-            label="Wargaming服(直营服)/360服(国服)",
-            variable = self.wows_type_var,
-            value = "Wargaming",
-            command = self.update_wows_type_setting
-        )
-        self.setting_menu.add_radiobutton(
-            label="Lesta服(俄服)",
-            variable = self.wows_type_var,
-            value = "Lesta",
-            command = self.update_wows_type_setting
-        )
+        # 预加载配置 (此时 self.server_switch 还没创建，所以只读数据)
+        self.config_data = self.load_config()
+        self.wows_type = self.config_data.get("wows_type", "Wargaming")
+        self.game_path = self.config_data.get("game_path", "未设置")
 
-        # 向顶部菜单添加子菜单
-        self.menubar.add_cascade(label="设置", menu=self.setting_menu)
-        self.root.config(menu=self.menubar)
+        # 定义变量并赋予从 config 读取的初值
+        self.wows_type_var = tk.StringVar(value=self.wows_type)
 
-        # 左侧侧边拦容器 (Frame)
-        self.left_side = tk.Frame(self.root, width=300)
-        self.left_side.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=10)
-        self.left_side.pack_propagate(False)
+        # 3. 构建布局 (此时 setup_ui_layout 内部可以使用 self.wows_type)
+        self.setup_ui_layout()
 
-        # 中间：数据分类 (向左对齐)
-        self.folder_frame = tk.Frame(self.root, width=200)
-        self.folder_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=10)
-        f_list_container = tk.Frame(self.folder_frame)
-        f_list_container.pack(fill=tk.BOTH, expand=True)
-        self.folder_listbox = tk.Listbox(f_list_container, width=25, font=("微软雅黑", 10), exportselection=False)
-        self.folder_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.folder_scrollbar = tk.Scrollbar(f_list_container, orient=tk.VERTICAL, command=self.folder_listbox.yview)
-        self.folder_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.folder_listbox.config(yscrollcommand=self.folder_scrollbar.set)
-
-        # 中间：分类内容列表 (向左对齐)
-        self.file_frame = tk.Frame(self.root, width=250)
-        self.file_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=10)
-        file_list_container = tk.Frame(self.file_frame)
-        file_list_container.pack(fill=tk.BOTH, expand=True)
-        self.file_listbox = tk.Listbox(file_list_container, width=35, font=("微软雅黑", 10), exportselection=False)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.file_scrollbar = tk.Scrollbar(file_list_container, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_listbox.config(yscrollcommand=self.file_scrollbar.set)
-
-        # 最右侧：JSON 详情展示 (填充剩余空间)
-        self.detail_frame = tk.Frame(self.root)
-        self.detail_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=10)
-        self.detail_area = scrolledtext.ScrolledText(self.detail_frame, font=("Consolas", 10), bg="#f8f8f8")
-        self.detail_area.pack(fill=tk.BOTH, expand=True)
-
-        # 初始化 DataViewer 并绑定二级点击事件
+        # 4. 绑定查看器
         self.viewer = DataViewer(self.folder_listbox, self.file_listbox, self.detail_area)
         self.folder_listbox.bind("<<ListboxSelect>>", self.viewer.on_folder_select)
         self.file_listbox.bind("<<ListboxSelect>>", self.viewer.on_file_select)
 
-        # 左侧侧边栏 - 按钮容器（Frame）
-        self.btn_frame = tk.Frame(self.left_side)
-        self.btn_frame.pack(anchor="w", padx=10, pady=10)
-        self.left_side.pack_propagate(False)
+        # 5. 异步显示：仅处理耗时的磁盘检查和窗口显示
+        self.root.after(50, self.async_boot_process)
 
-        # 按钮-加载数据文件
-        self.btn_unpack_data = tk.Button(
-            self.btn_frame,
-            text="加载数据文件",
-            width=16,
-            anchor=tk.CENTER,
-            command=self.click_load_data
-        )
-        self.btn_unpack_data.pack(padx=10, pady=5)
+    def get_executable_dir(self):
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
 
-        # 按钮-解析数据文件
-        self.btn_data_processor = tk.Button(
-            self.btn_frame,
-            text="解析数据文件",
-            width=16,
-            anchor=tk.CENTER,
-            command=self.click_data_processor,
-            state=tk.DISABLED
-        )
-        self.btn_data_processor.pack(padx=10, pady=5)
+    def setup_ui_layout(self):
+        """仅构建UI骨架，不加载任何实际数据"""
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_columnconfigure(2, weight=1)
+        self.root.grid_columnconfigure(3, weight=3)
+        self.root.grid_rowconfigure(0, weight=1)
 
-        # 按钮-刷新数据信息
-        self.btn_refresh_gui = tk.Button(
-            self.btn_frame,
-            text="刷新数据信息",
-            width=16,
-            anchor=tk.CENTER,
-            command=self.viewer.refresh
-        )
-        self.btn_refresh_gui.pack(padx=10, pady=5)
+        # 侧边栏
+        self.sidebar_frame = ctk.CTkFrame(self.root, width=220, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
 
-        # 按钮-加载语言文件
-        self.btn_getnamefromweb = tk.Button(
-            self.btn_frame,
-            text="加载语言文件",
-            width=16,
-            anchor=tk.CENTER,
-            command=self.getnamefromweb
-        )
-        self.btn_getnamefromweb.pack(padx=10, pady=5)
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="WOWS 数据工具",
+                                       font=ctk.CTkFont(size=20, weight="bold"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
-        # 左下侧-运行日志区
-        # 运行日志框架（Frame）
-        self.log_frame = tk.Frame(self.left_side)
-        self.log_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 功能按钮 (默认全部启用或根据初始状态)
+        self.btn_unpack_data = ctk.CTkButton(self.sidebar_frame, text="加载数据文件", command=self.click_load_data)
+        self.btn_unpack_data.grid(row=1, column=0, padx=20, pady=10)
 
-        # 标题
-        self.log_label = tk.Label(self.log_frame, text="运行日志")
-        self.log_label.pack(anchor="w", padx=15, pady=5)
+        self.btn_data_processor = ctk.CTkButton(self.sidebar_frame, text="解析数据文件", state="disabled",
+                                                command=self.click_data_processor)
+        self.btn_data_processor.grid(row=2, column=0, padx=20, pady=10)
 
-        # 日志显示区
-        self.log_area = scrolledtext.ScrolledText(self.log_frame, width=32, height=18, font=("Consolas", 9))
-        self.log_area.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
+        self.btn_refresh_gui = ctk.CTkButton(self.sidebar_frame, text="刷新界面", border_width=2,
+                                             command=self.viewer_refresh_adapter)
+        self.btn_refresh_gui.grid(row=3, column=0, padx=20, pady=10)
 
-        # 初始填充一行文字# 初始填充信息
-        self.root.after(10, self.viewer.refresh)
-        self.log(f"当前设置的游戏目录：{self.game_path}")
-        if self.wows_type == "未选择":
-            self.log(f"当前未选择对应游戏服务器")
+        self.btn_getnamefromweb = ctk.CTkButton(self.sidebar_frame, text="加载语言文件", command=self.getnamefromweb)
+        self.btn_getnamefromweb.grid(row=4, column=0, padx=20, pady=10)
+
+        self.btn_settings = ctk.CTkButton(self.sidebar_frame, text="设置游戏目录", fg_color="#555",
+                                          command=self.select_game_path)
+        self.btn_settings.grid(row=5, column=0, padx=20, pady=10)
+
+        # --- 服务器选择滑条 (Segmented Button) ---
+        self.server_label = ctk.CTkLabel(self.sidebar_frame, text="当前服务器环境:", font=ctk.CTkFont(size=12))
+        self.server_label.grid(row=6, column=0, padx=20, pady=(5, 0))
+
+        self.server_switch = ctk.CTkSegmentedButton(self.sidebar_frame,
+                                                    values=["Wargaming", "Lesta"],
+                                                    command=self.update_wows_type_setting)
+        self.server_switch.grid(row=7, column=0, padx=20, pady=(5, 15))
+        self.server_switch.set(self.wows_type)
+
+        # 日志
+        self.log_area = ctk.CTkTextbox(self.sidebar_frame, width=200, font=("Consolas", 11))
+        self.log_area.grid(row=6, column=0, padx=10, pady=10, sticky="nsew")
+
+        # 列表区
+        self.folder_listbox = self.create_styled_listbox(self.root, "数据分类", 1)
+        self.file_listbox = self.create_styled_listbox(self.root, "内容列表", 2)
+
+        # 详情区
+        self.detail_frame = ctk.CTkFrame(self.root, corner_radius=0)
+        self.detail_frame.grid(row=0, column=3, sticky="nsew", padx=(1, 10), pady=10)
+        self.detail_area = ctk.CTkTextbox(self.detail_frame, font=("Consolas", 12), corner_radius=5)
+        self.detail_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.setup_menu()
+
+    def create_styled_listbox(self, parent, label_text, col):
+        frame = ctk.CTkFrame(parent, corner_radius=0, fg_color="transparent")
+        frame.grid(row=0, column=col, sticky="nsew", padx=1, pady=0)
+        ctk.CTkLabel(frame, text=label_text, font=ctk.CTkFont(weight="bold")).pack(pady=5)
+        container = ctk.CTkFrame(frame, fg_color="#ffffff", corner_radius=6)
+        container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar = ctk.CTkScrollbar(container, orientation="vertical")
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=2, pady=2)
+        lb = tk.Listbox(container, bg="#ffffff", fg="black", borderwidth=0, highlightthickness=0,
+                        font=("微软雅黑", 10), selectbackground="#1f538d", yscrollcommand=scrollbar.set)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=5)
+        scrollbar.configure(command=lb.yview)
+        return lb
+
+    def async_boot_process(self):
+        """异步启动逻辑：先处理配置，再显示窗口"""
+        # 1. 耗时IO：加载配置 (在后台处理)
+        self.init_data_and_config()
+
+        self.check_data_file()
+
+        # 居中显示窗口
+        self.center_window()
+        self.root.deiconify()
+
+        self.log(f"当前选择的服务器: {self.wows_type}")
+        self.viewer_refresh_adapter()
+
+    def init_data_and_config(self):
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+
+        config = self.load_config()
+        default = self.default_config()
+        changed = False
+        for k, v in default.items():
+            if k not in config:
+                config[k] = v
+                changed = True
+        if changed: self.save_config(config)
+
+        self.config_data = config
+        self.game_path = config["game_path"]
+        self.game_version = config["game_version"]
+        self.game_data_state = config["game_data_state"]
+        self.wows_type = config["wows_type"]
+        self.wows_type_var.set(self.wows_type)
+        self.check_data_file()
+
+    def center_window(self):
+        """计算屏幕居中位置，防止位移"""
+        self.root.update_idletasks()
+        width = 1400
+        height = 850
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+
+    # --- 后台线程安全的辅助函数 ---
+    def log(self, msg):
+        def _append():
+            self.log_area.insert(tk.END, f"{msg}\n")
+            self.log_area.see(tk.END)
+
+        self.root.after(0, _append)
+
+    def viewer_refresh_adapter(self):
+        def _task():
+            self.viewer.refresh()
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def load_config(self):
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except:
+            pass
+        return self.default_config()
+
+    def save_config(self, data=None):
+        target = data if data else self.config_data
+        with open(self.config_file, "w", encoding="utf-8") as f:
+            json.dump(target, f, indent=4, ensure_ascii=False)
+
+    def setup_menu(self):
+        """保持原有的原生菜单功能，因为 CTK 对原生菜单支持最好"""
+        self.menubar = tk.Menu(self.root)
+        self.setting_menu = tk.Menu(self.menubar, tearoff=0)
+        self.setting_menu.add_command(label="重置软件设置", command=self.reset_config)
+        self.setting_menu.add_separator()
+        self.menubar.add_cascade(label="高级选项", menu=self.setting_menu)
+        self.root.configure(menu=self.menubar)
+
+    def update_wows_type_setting(self, value=None):
+        """
+        兼容滑条和菜单切换的回调函数，解决参数个数报错问题
+        """
+        if value is not None:
+            # 滑条触发
+            selected_type = value
+            self.wows_type_var.set(selected_type)
         else:
-            self.log(f"当前选择的游戏服务器:{self.wows_type}")
+            # 菜单触发
+            selected_type = self.wows_type_var.get()
+            self.server_switch.set(selected_type)
+
+        self.wows_type = selected_type
+        self.config_data["wows_type"] = selected_type
+        self.save_config()
+        self.log(f"切换至服务器: {selected_type}")
 
     def check_data_file(self):
         target_names = ["GameParams_py2.data","GameParams.data"]
         exists = any(os.path.exists(os.path.join(self.data_dir, f)) for f in target_names)
 
         if exists and self.game_data_state:
-            self.btn_data_processor.config(state=tk.NORMAL)
+            self.btn_data_processor.configure(state=tk.NORMAL)
         else:
-            self.btn_data_processor.config(state=tk.DISABLED)
+            self.btn_data_processor.configure(state=tk.DISABLED)
         return exists
 
     def click_load_data(self):
@@ -168,7 +246,7 @@ class AppUI:
             messagebox.showerror("错误","请先在“设置”菜单中选择游戏目录")
             return
 
-        self.btn_unpack_data.config(state=tk.DISABLED)
+        self.btn_unpack_data.configure(state=tk.DISABLED)
         self.log("正在加载游戏数据")
 
         def worker():
@@ -194,8 +272,38 @@ class AppUI:
                 self.log(f"错误,{result}")
                 messagebox.showerror("错误", result)
 
-            self.root.after(10, lambda: self.btn_unpack_data.config(state=tk.NORMAL))
+            self.root.after(10, lambda: self.btn_unpack_data.configure(state=tk.NORMAL))
         threading.Thread(target=worker, daemon=True).start()
+
+    def fetch_remote_sha(self, repo_path):
+        """
+        通过 GitHub API 获取远程文件的 Git-SHA 指纹
+        用于判断云端 global.mo 是否有更新
+        """
+        import requests
+        import urllib.request
+
+        api_url = f"https://api.github.com/repos/{repo_path}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        try:
+            # 获取系统代理设置
+            proxies = urllib.request.getproxies()
+            # 发起 API 请求
+            response = requests.get(api_url, headers=headers, timeout=8, proxies=proxies)
+
+            if response.status_code == 200:
+                sha = response.json().get('sha')
+                return sha
+            else:
+                # 如果 API 限制频率或报错，返回 None 触发普通下载逻辑
+                return None
+        except Exception:
+            # 网络超时或异常，返回 None 以确保后续下载逻辑能作为保底运行
+            return None
 
     def getnamefromweb(self):
         if self.wows_type == "未选择":
@@ -205,7 +313,7 @@ class AppUI:
             messagebox.showerror("错误", "请先在“设置”菜单中选择游戏目录")
             return
 
-        self.btn_getnamefromweb.config(state=tk.DISABLED)
+        self.btn_getnamefromweb.configure(state=tk.DISABLED)
         self.log(f"正在加载 {self.wows_type} 客户端文本数据...")
 
         def worker():
@@ -269,42 +377,114 @@ class AppUI:
                     self.log(f"已从本地提取 global.mo")
                     run_convert()  # 修正：调用时不传 self
 
+
                 elif self.wows_type == "Lesta":
-                    # 增加 jsDelivr 镜像源提高国内成功率
-                    urls = [
-                        "https://github.com/LocalizedKorabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
-                        "https://gitlab.com/localizedkorabli/korabli-lesta-l10n/-/raw/main/Localizations/latest/global.mo",
-                        "https://gitee.com/localized-korabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
-                    ]
 
-                    self.log(f"正在从仓库下载最新的 global.mo...")
+                    # 1. 检查版本指纹 (SHA)
 
-                    # 自动获取系统代理设置
-                    system_proxies = urllib.request.getproxies()
-                    success_download = False
-                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                    repo_api_path = "LocalizedKorabli/Korabli-LESTA-L10N/contents/Localizations/latest/global.mo"
 
-                    for url in urls:
+                    self.log("正在检查远程版本指纹...")
+
+                    cloud_sha = self.fetch_remote_sha(repo_api_path)  # 调用刚才写的 API 方法
+
+                    # 本地路径定义
+
+                    mo_path = os.path.join(self.data_dir, "global.mo")
+
+                    po_path = os.path.join(self.data_dir, "global.po")
+
+                    version_file = os.path.join(self.data_dir, "version.json")
+
+                    # 读取本地记录的指纹
+
+                    local_sha = None
+
+                    if os.path.exists(version_file):
+
                         try:
-                            self.log(f"尝试从服务器下载: {url.split('/')[2]}...")
-                            response = requests.get(url, headers=headers, timeout=15, proxies=system_proxies)
-                            response.raise_for_status()
 
-                            with open(os.path.join(self.data_dir, "global.mo"), "wb") as f:
-                                f.write(response.content)
+                            with open(version_file, "r") as f:
 
-                            self.log("下载成功！")
-                            success_download = True
-                            break
+                                local_sha = json.load(f).get("global_mo_sha")
 
-                        except Exception:
-                            self.log(f"当前节点不可用，尝试切换...")
-                            continue
+                        except:
+                            local_sha = None
 
-                    if not success_download:
-                        raise Exception("所有节点均无法连接，请检查网络或开启代理。")
+                    # --- 校验逻辑：哈希匹配且本地文件存在 ---
 
-                    run_convert()  # 修正：调用时不传 self
+                    if cloud_sha and local_sha == cloud_sha and os.path.exists(mo_path):
+
+                        self.log("✅ 校验一致：本地数据已是最新，跳过下载。")
+
+                        success_download = True
+
+                        # 如果 global.po 被删了，即使 mo 还在也要转一次
+
+                        if not os.path.exists(po_path):
+                            run_convert()
+
+                    else:
+
+                        # 2. 否则执行原有的多节点轮询逻辑
+
+                        urls = [
+
+                            "https://github.com/LocalizedKorabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
+
+                            "https://gitlab.com/localizedkorabli/korabli-lesta-l10n/-/raw/main/Localizations/latest/global.mo",
+
+                            "https://gitee.com/localized-korabli/Korabli-LESTA-L10N/raw/main/Localizations/latest/global.mo",
+
+                        ]
+
+                        self.log(f"版本过时或本地缺失，开始同步最新 global.mo...")
+
+                        system_proxies = urllib.request.getproxies()
+
+                        success_download = False
+
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+                        for url in urls:
+
+                            try:
+
+                                self.log(f"尝试从节点下载: {url.split('/')[2]}...")
+
+                                response = requests.get(url, headers=headers, timeout=15, proxies=system_proxies)
+
+                                response.raise_for_status()
+
+                                with open(mo_path, "wb") as f:
+
+                                    f.write(response.content)
+
+                                self.log("下载成功！")
+
+                                success_download = True
+
+                                # 下载成功后立即保存新的指纹
+
+                                if cloud_sha:
+                                    with open(version_file, "w") as f:
+                                        json.dump({"global_mo_sha": cloud_sha}, f)
+
+                                break
+
+
+                            except Exception as e:
+
+                                self.log(f"当前节点连接失败，正在切换...")
+
+                                continue
+
+                        if not success_download:
+                            raise Exception("所有同步节点均无法连接，请检查网络或代理。")
+
+                        # 只有真正下载了新文件才转换
+
+                        run_convert()
 
                 self.log("开始分拆语言文件")
                 tool = POToolkit(input_po_name="data/global.po")
@@ -325,7 +505,7 @@ class AppUI:
                 messagebox.showerror("错误", f"处理过程中出错:\n{e}")
 
             finally:
-                self.root.after(10, lambda: self.btn_getnamefromweb.config(state=tk.NORMAL))
+                self.root.after(10, lambda: self.btn_getnamefromweb.configure(state=tk.NORMAL))
 
         # 开启后台线程
         threading.Thread(target=worker, daemon=True).start()
@@ -338,7 +518,7 @@ class AppUI:
             shutil.rmtree(split_dir)
             self.log(f"已清空目录{split_dir}")
 
-        self.btn_data_processor.config(state=tk.DISABLED)
+        self.btn_data_processor.configure(state=tk.DISABLED)
 
         data_folder = "data"
         def worker():
@@ -366,7 +546,7 @@ class AppUI:
                 self.log(f"数据解析出错，{e}")
                 messagebox.showerror("错误",f"数据解析出错，{e}")
             finally:
-                self.root.after(10, lambda: self.btn_data_processor.config(state=tk.NORMAL))
+                self.root.after(10, lambda: self.btn_data_processor.configure(state=tk.NORMAL))
         threading.Thread(target=worker,daemon=True).start()
 
     def log(self, msg):
@@ -415,13 +595,6 @@ class AppUI:
             self.wows_type_var.set("未选择")
             messagebox.showinfo("设置","已重置完成")
 
-    def update_wows_type_setting(self):
-        selected_type = self.wows_type_var.get()
-        self.wows_type = selected_type
-        self.config_data["wows_type"] = selected_type
-        self.save_config()
-        self.log(f"已将游戏服务器切换为{selected_type}")
-
     # 初始化
     def initialization(self):
         if getattr(sys, "frozen", False):
@@ -456,6 +629,52 @@ class AppUI:
         self.wows_type_var.set(self.wows_type)
 
         self.root.after(10, self.check_data_file)
+
+
+
+    def get_local_file_hash(self, file_path):
+        """计算本地文件的 SHA256 哈希值"""
+        if not os.path.exists(file_path):
+            return None
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            # 分块读取，防止大文件撑爆内存
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+
+    def smart_download_by_hash(self, url, filename, cloud_hash):
+        """
+        通过哈希值判断是否需要下载。
+        返回: (bool_是否成功/跳过, str_状态描述)
+        """
+        save_path = os.path.join(self.base_path, filename)
+        local_hash = self.get_local_file_hash(save_path)
+
+        # 1. 校验本地哈希
+        if local_hash and local_hash.lower() == cloud_hash.lower():
+            return True, f"本地校验通过: {filename} 已是最新。"
+
+        # 2. 执行下载
+        try:
+            # 使用 stream=True 避免大文件占用过多内存
+            response = requests.get(url, stream=True, timeout=30)
+            if response.status_code != 200:
+                return False, f"下载失败: HTTP {response.status_code}"
+
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            # 3. 下载后校验
+            new_local_hash = self.get_local_file_hash(save_path)
+            if new_local_hash and new_local_hash.lower() == cloud_hash.local():
+                return True, f"同步完成: {filename} 下载并校验成功。"
+            else:
+                return False, f"校验失败: {filename} 运行哈希不匹配。"
+
+        except Exception as e:
+            return False, f"网络错误: {str(e)}"
 
     # 默认配置
     def default_config(self):

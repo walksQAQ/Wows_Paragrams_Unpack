@@ -1,3 +1,6 @@
+import json
+import os
+import sys
 import tkinter as tk
 
 import NameMapping
@@ -6,8 +9,41 @@ from NameMapping import Mapping as NameMapping
 
 class ModernizationDataAnalyzer:
 
-    def __init__(self, name_mapping=None):
-        self.name_mapping = name_mapping or {}
+    def __init__(self):
+        # 1. 自动获取基础路径（支持打包后的 exe 和 源代码路径）
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        self.name_mapping ={}
+        self.ship_name_mapping ={}
+        # 2. 初始化时加载 JSON
+        self.load_mod_names()
+        self.load_ship_names()
+
+    def load_mod_names(self):
+        json_path = os.path.join(self.base_dir, "data", "modernization_names.json")
+
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8-sig') as f:
+                    raw_data = json.load(f)
+                    # 关键：统一转为大写，防止 JSON 里的 Key 大小写不统一
+                    self.name_mapping = {str(k).upper(): v for k, v in raw_data.items()}
+            except Exception as e:
+                print(f"加载升级品翻译失败: {e}")
+        else:
+            print(f"找不到映射文件: {json_path}")
+
+    def load_ship_names(self):
+        mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")
+        try:
+            if os.path.exists(mapping_path):
+                with open(mapping_path, 'r', encoding='utf-8') as f:
+                    self.ship_name_mapping = json.load(f)
+        except Exception as e:
+            print(f"读取船名映射出错: {e}")
 
     def analyze(self, display_area, data):
         """
@@ -19,7 +55,7 @@ class ModernizationDataAnalyzer:
         raw_name = data.get("name", mod_index)
 
         # 尝试获取映射名，如果没有则美化原始 ID
-        display_name = self.name_mapping.get(mod_index, raw_name)
+        display_name = self.name_mapping.get(raw_name.upper(), raw_name)
 
         cost = data.get("costCR", 0)
         slot = data.get("slot", 0)
@@ -97,12 +133,12 @@ class ModernizationDataAnalyzer:
         # --- 3. 限制条件 (Restrictions) ---
         # 检查是否有特定的限制列表
         restrictions = [
-            ("禁用舰船", data.get("excludes", [])),
-            ("可用分类", data.get("group", [])),
-            ("可用舰船", data.get("ships", [])),
-            ("可用国籍", data.get("nation", [])),
+            ("禁用舰船", self.ship_name_map_restrict_list(data.get("excludes", []), self.ship_name_mapping)),
+            ("可用舰船", self.ship_name_map_restrict_list(data.get("ships", []), self.ship_name_mapping)),
+            ("可用分类", self.map_restrict_list(data.get("group", []), NameMapping.SHIP_GROUP_MAP)),
+            ("可用国籍", self.map_restrict_list(data.get("nation", []), NameMapping.NATION_MAP)),
+            ("可用舰种", self.map_restrict_list(data.get("shiptype", []), NameMapping.SHIP_CLASS_MAP)),
             ("可用等级", data.get("shiplevel", [])),
-            ("可用舰种", data.get("shiptype", [])),
         ]
 
         # 只有当限制列表不为空时才显示
@@ -114,3 +150,35 @@ class ModernizationDataAnalyzer:
                     display_area.insert(tk.END, f"  - {label}: {', '.join(map(str, items))}\n")
 
         display_area.insert(tk.END, "\n" + "-" * 45 + "\n")
+
+    # 内部工具函数：将 ID 列表转为中文名
+    def map_restrict_list(self, items, mapping_dict, fallback_prefix=""):
+        if not items: return []
+        result = []
+        for i in items:
+            key = str(i)
+            # 优先级：映射表 -> 加上前缀后的映射表(针对等级等) -> 原样返回
+            name = mapping_dict.get(key, mapping_dict.get(f"{fallback_prefix}{key}", key))
+            result.append(name)
+        return result
+
+    def ship_name_map_restrict_list(self, items, mapping_dict):
+        """
+        专项处理：解决 PASB012_North_Carolina_1945 匹配 PASB012 的问题
+        """
+        if not items:
+            return []
+
+        result = []
+        for raw_id in items:
+            # 1. 处理长 ID：截取第一个下划线前的部分 (如 PASB012)
+            # 2. 统一转大写
+            clean_id = str(raw_id).split('_')[0].upper()
+
+            # 3. 匹配策略
+            name = mapping_dict.get(clean_id) or \
+                   mapping_dict.get(f"IDS_{clean_id}") or \
+                   raw_id  # 找不到则显示原始长 ID
+
+            result.append(name)
+        return result

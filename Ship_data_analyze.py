@@ -152,30 +152,6 @@ class ShipDataAnalyzer:
         # 3. 实在查不到返回原名
         return raw_id
 
-    def get_localized_ammo_names(self, ammo_list):
-        """
-        专门执行弹药表查询的代码块
-        输入: ['PAPA001_...', 'PAPA002_...']
-        返回: '203 mm AP Mk19 / 203 mm HE/HC Mk25'
-        """
-        if not ammo_list:
-            return "无"
-
-        translated = []
-        for ammo_id in ammo_list:
-            # 清洗 ID：去掉 IDS_ 前缀并转大写
-            clean_id = ammo_id.replace("IDS_", "").upper().strip()
-
-            # 1. 优先从弹药映射表找
-            # 2. 找不到则去武器映射表找
-            # 3. 再找不到显示原始 ID
-            name = self.ammo_name_mapping.get(clean_id) or \
-                   self.gun_name_mapping.get(clean_id) or \
-                   ammo_id
-            translated.append(name)
-
-        return " / ".join(translated)
-
     def parse_rage_mode_advanced(self, rage_data, ship_index, current_species):
         info = []
         # 1. 标题识别逻辑：完全移除 descriptionIDS，仅基于 rageModeName

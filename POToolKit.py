@@ -128,6 +128,32 @@ class POToolkit:
 
         return self._save_json(ammo_map, "ammo_names.json"), len(ammo_map)
 
+    def extract_modernization_names(self):
+        """
+        提取升级品（插件）名称
+        匹配类似: PCM001, PCM012, PCM912_T11_SS_SUpgrade_Mod_III_TEST 等
+        """
+        # 正则逻辑：
+        # 1. 匹配以 IDS_TITLE_ 或 IDS_MODERNIZATION_ 开头的 msgid
+        # 2. 核心 ID 必须包含 PCM (普通/传奇插件) 或 PUM (某些特殊插件)
+        # 3. 排除一些常见的无关前缀，确保只抓取名称
+        pattern = re.compile(
+            r'msgid "IDS_(?:TITLE_|MODERNIZATION_)?(P[CU]M\d{3}[A-Z0-9_]*?)"\s+msgstr "(.*?)"',
+            re.MULTILINE
+        )
+
+        matches = pattern.findall(self.content)
+
+        mod_map = {}
+        for core_id, msgstr in matches:
+            msgstr = msgstr.strip()
+            # 过滤掉空翻译和系统占位符
+            if msgstr and not msgstr.startswith("IDS_"):
+                # 键统一转大写，增强 ModernizationDataAnalyzer 的匹配兼容性
+                mod_map[core_id.upper()] = msgstr
+
+        return self._save_json(mod_map, "modernization_names.json"), len(mod_map)
+
     def run_all(self):
         """
         供外部程序调用的主接口
@@ -143,11 +169,13 @@ class POToolkit:
         path3, count3 = self.extract_ship_names()
         path4, count4 = self.extract_gun_names()
         path5, count5 = self.extract_ammo_names()
+        path6, count6 = self.extract_modernization_names()
 
         stats["abilities"] = {"path": path1, "count": count1}
         stats["rage_mode"] = {"path": path2, "count": count2}
         stats["ship_names"] = {"path": path3, "count": count3}
         stats["weapons"] = {"path": path4, "count": count4}
         stats["ammos"] = {"path": path5, "count": count5}
+        stats["modernizations"] = {"path": path6, "count": count6}
 
         return True, stats

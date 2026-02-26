@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tkinter as tk
@@ -13,6 +14,22 @@ class ProjectileDataAnalyzer:
         else:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.ammo_name_mapping = {}
+        self.initialize_mapping()
+
+    def initialize_mapping(self):
+        self.load_ammo_name_mapping()
+
+    def load_ammo_name_mapping(self):
+        """加载由 POToolKit 生成的弹药翻译字典"""
+        # 路径指向 POToolkit 生成的 ammo_names.json
+        ammo_json_path = os.path.join(self.base_dir, "data", "ammo_names.json")
+        if os.path.exists(ammo_json_path):
+            try:
+                with open(ammo_json_path, 'r', encoding='utf-8') as f:
+                    self.ammo_name_mapping = json.load(f)
+            except Exception as e:
+                print(f"加载弹药翻译失败: {e}")
 
     def analyze(self, display_area, data):
         """
@@ -22,6 +39,7 @@ class ProjectileDataAnalyzer:
         proj_name = data.get("name", "Unknown_Projectile")
         proj_id = data.get("id", "N/A")
         proj_index = data.get("index", "N/A")
+        final_name = self.ammo_name_mapping.get(proj_name.upper(), proj_name)
 
         type_info = data.get("typeinfo", {})
         species = type_info.get("species", "Unknown")
@@ -34,7 +52,7 @@ class ProjectileDataAnalyzer:
 
         display_type = NameMapping.PROJECTILE_TYPE_MAP.get(species, NameMapping.PROJECTILE_TYPE_MAP.get(raw_ammo_type.lower(), species))
 
-        display_area.insert(tk.END, f"弹药名称: {proj_name}\n"
+        display_area.insert(tk.END, f"弹药名称: {final_name}\n"
                                     f"编号: {proj_index}\n"
                                     f"ID: {proj_id}\n"
                                     f"国家: {nation}\n"
