@@ -16,6 +16,9 @@ class PlaneDataAnalyzer:
         self.ability_name_map = {}
         self.plane_name_mapping = {}
         self.ammo_name_mapping = {}
+        self.initialize_mapping()
+
+    def initialize_mapping(self):
         self.load_plane_name_mapping()
         self.load_ability_name_map()
         self.load_ammo_name_mapping()
@@ -50,7 +53,7 @@ class PlaneDataAnalyzer:
             except Exception as e:
                 self.log_func(f"加载弹药翻译失败: {e}")
 
-    def _log(self, message):
+    def log_func(self, message):
         """内部调用的日志工具"""
         if self.log_func:
             self.log_func(message)  # 如果有回调，发给 UI

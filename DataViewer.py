@@ -49,10 +49,10 @@ class DataViewer:
         if log_func:
             log_func("正在同步所有分析器的本地化字典...")
         self.ship_analyzer.initialize_mapping()
-        # TODO:还没写的初始化映射表
-        # self.projectile_analyzer.initialize_mapping()
-        # self.gun_analyzer.initialize_mapping()
-        # self.modernization_analyzer.initialize_mapping()
+        self.projectile_analyzer.initialize_mapping()
+        self.gun_analyzer.initialize_mapping()
+        self.modernization_analyzer.initialize_mapping()
+        self.plane_analyzer.initialize_mapping()
         # 如果需要，也可以在此处打印日志确认
         if log_func:
             log_func("分析器映射表重载完成")

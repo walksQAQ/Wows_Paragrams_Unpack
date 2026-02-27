@@ -4,7 +4,6 @@ import tkinter as tk
 
 from NameMapping import Mapping as NameMapping
 
-
 class GunDataAnalyzer:
 
     def __init__(self, log_func=None):
@@ -15,6 +14,9 @@ class GunDataAnalyzer:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.log_func = log_func  # 核心：保存 UI 传入的日志函数
+
+    def initialize_mapping(self):
+        self._log("Nothing to initialize")
 
     def _log(self, message):
         """内部调用的日志工具"""

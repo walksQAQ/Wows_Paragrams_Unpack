@@ -623,8 +623,6 @@ class AppUI:
 
         self.root.after(10, self.check_data_file)
 
-
-
     def get_local_file_hash(self, file_path):
         """计算本地文件的 SHA256 哈希值"""
         if not os.path.exists(file_path):
