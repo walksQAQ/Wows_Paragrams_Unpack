@@ -238,3 +238,11 @@ class Mapping:
         "56": "吸引火力",
         "59": "协助校射",
     }
+
+    # 深度
+    DEPTH_MAP = {
+        "SURFACE": "水面",
+        "PERISCOPE": "潜望镜深度",
+        "DEEP_WATER": "工作深度",
+        "DEEP_WATER_INVUL": "最大深度",
+    }
