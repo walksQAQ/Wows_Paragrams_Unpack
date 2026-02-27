@@ -25,6 +25,25 @@ class GunDataAnalyzer:
         else:
             print(message)  # 否则打印到控制台
 
+    def get_dispersion_formula(self, weapon_data):
+        """
+        根据统一逻辑解析横向散布公式: Rh = (IR-MR)/(ID/1000) * R + MR*30
+        """
+        ir = weapon_data.get('idealRadius')
+        mr = weapon_data.get('minRadius')
+        id_dist = weapon_data.get('idealDistance')
+
+        if ir is None or mr is None or id_dist is None:
+            return "数据缺失"
+
+        # 1. 计算斜率 (处理 ID 差异)
+        slope = (ir - mr) / (id_dist / 1000)
+        # 2. 计算截距 (MR * 30)
+        intercept = mr * 30
+
+        # 返回格式化后的字符串
+        return f"{round(slope, 2)}R + {round(intercept, 2)}"
+
     def analyze(self, display_area, data):
         """
         解析并向 UI 插入武器模块详细数据
@@ -93,7 +112,6 @@ class GunDataAnalyzer:
             if t_angles:
                 display_area.insert(tk.END, f"  - 鱼雷散布界: {t_angles}°\n")
                 display_area.insert(tk.END, f"  - 鱼雷最短射击间隔: {data.get('timeBetweenShots',0)} s\n")
-            # display_area.insert(tk.END, f"  - 射击扇区: {data.get('shootSector', [])}°\n")
 
             # 弹鼓/序列装填参数
             drum_params = data.get("drumChargeTimeParams", [])
@@ -108,14 +126,18 @@ class GunDataAnalyzer:
 
         # 散布参数 (主炮/副炮)
         if "idealRadius" in data:
-            display_area.insert(tk.END, f"\n[精度参数]\n")
-            # display_area.insert(tk.END, f"  - Sigma: {data.get('minRadius', 'N/A')}\n")
+            display_area.insert(tk.END, f"\n[精度与散布参数]\n")
 
-            # 纵向散步系数
-            r_zero = data.get("radiusOnZero", 0)
-            r_delim = data.get("radiusOnDelim", 0)
-            r_max = data.get("radiusOnMax", 0)
-            delim = data.get("delim", 0)
-            display_area.insert(tk.END, f"  - 纵向散步系数: {r_zero} ~ {r_delim}(R={delim*100:.0f}%) ~ {r_max}\n")
+            # 调用提取出的公式函数
+            h_formula = self.get_dispersion_formula(data)
+
+            # 纵向散步系数 (Raw)
+            rz = data.get("radiusOnZero", 0)
+            rd = data.get("radiusOnDelim", 0)
+            rm = data.get("radiusOnMax", 0)
+            dl = data.get("delim", 0)
+
+            display_area.insert(tk.END, f"  - 默认横向散布公式: {h_formula}\n")
+            display_area.insert(tk.END, f"  - 默认纵向散步系数: {rz} ~ {rd}(R={dl*100:.0f}%) ~ {rm}\n")
 
         display_area.insert(tk.END, "\n" + "-" * 45 + "\n")
