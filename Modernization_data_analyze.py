@@ -9,18 +9,26 @@ from NameMapping import Mapping as NameMapping
 
 class ModernizationDataAnalyzer:
 
-    def __init__(self):
+    def __init__(self, log_func=None):
         # 1. 自动获取基础路径（支持打包后的 exe 和 源代码路径）
         if getattr(sys, 'frozen', False):
             self.base_dir = os.path.dirname(sys.executable)
         else:
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
 
+        self.log_func = log_func  # 核心：保存 UI 传入的日志函数
         self.name_mapping ={}
         self.ship_name_mapping ={}
         # 2. 初始化时加载 JSON
         self.load_mod_names()
         self.load_ship_names()
+
+    def _log(self, message):
+        """内部调用的日志工具"""
+        if self.log_func:
+            self.log_func(message)  # 如果有回调，发给 UI
+        else:
+            print(message)  # 否则打印到控制台
 
     def load_mod_names(self):
         json_path = os.path.join(self.base_dir, "data", "modernization_names.json")
@@ -32,9 +40,9 @@ class ModernizationDataAnalyzer:
                     # 关键：统一转为大写，防止 JSON 里的 Key 大小写不统一
                     self.name_mapping = {str(k).upper(): v for k, v in raw_data.items()}
             except Exception as e:
-                print(f"加载升级品翻译失败: {e}")
+                self.log_func(f"加载升级品翻译失败: {e}")
         else:
-            print(f"找不到映射文件: {json_path}")
+            self.log_func(f"找不到映射文件: {json_path}")
 
     def load_ship_names(self):
         mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")
@@ -43,7 +51,7 @@ class ModernizationDataAnalyzer:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     self.ship_name_mapping = json.load(f)
         except Exception as e:
-            print(f"读取船名映射出错: {e}")
+            self.log_func(f"读取船名映射出错: {e}")
 
     def analyze(self, display_area, data):
         """

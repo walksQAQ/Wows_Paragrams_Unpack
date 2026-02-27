@@ -154,6 +154,26 @@ class POToolkit:
 
         return self._save_json(mod_map, "modernization_names.json"), len(mod_map)
 
+    def extract_plane_name(self):
+        # 修改点 1：正则增加第二个捕获组 (.*?) 来抓取 msgstr 里的内容
+        # 修改点 2：增加 \s+msgstr " 来匹配中间的换行和固定字符
+        pattern = re.compile(
+            r'msgid "IDS_(P[A-Z]A[BDFS][A-Z0-9_]*)"\s+msgstr "(.*?)"',
+            re.MULTILINE
+        )
+
+        matches = pattern.findall(self.content)
+        plane_map = {}
+
+        # 现在 matches 的每一项都是 (ID, 翻译) 的元组，可以正常解包了
+        for core_id, msgstr in matches:
+            msgstr = msgstr.strip()
+            # 过滤掉未翻译的条目
+            if msgstr and not msgstr.startswith("IDS_"):
+                plane_map[core_id.upper()] = msgstr
+
+        return self._save_json(plane_map, "plane_names.json"), len(plane_map)
+
     def run_all(self):
         """
         供外部程序调用的主接口
@@ -170,6 +190,7 @@ class POToolkit:
         path4, count4 = self.extract_gun_names()
         path5, count5 = self.extract_ammo_names()
         path6, count6 = self.extract_modernization_names()
+        path7, count7 = self.extract_plane_name()
 
         stats["abilities"] = {"path": path1, "count": count1}
         stats["rage_mode"] = {"path": path2, "count": count2}
@@ -177,5 +198,6 @@ class POToolkit:
         stats["weapons"] = {"path": path4, "count": count4}
         stats["ammos"] = {"path": path5, "count": count5}
         stats["modernizations"] = {"path": path6, "count": count6}
+        stats["planes"] = {"path": path7, "count": count7}
 
         return True, stats

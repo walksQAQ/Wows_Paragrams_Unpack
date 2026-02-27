@@ -44,7 +44,7 @@ class ShipDataAnalyzer:
         "DepthChargeGuns": re.compile(r"HP_[A-Z]GB_\d+"),
     }
 
-    def __init__(self):
+    def __init__(self, log_func=None):
         # 使用脚本所在绝对路径，增加健壮性
         if getattr(sys, 'frozen', False):
             # 如果是打包后的 EXE 运行，sys.executable 是 EXE 的全路径
@@ -53,11 +53,13 @@ class ShipDataAnalyzer:
         else:
             # 如果是源码运行
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.log_func = log_func  # 核心：保存 UI 传入的日志函数
         self.ability_name_map = {}
         self.ship_name_mapping = {}
         self.rage_name_mapping = {}
         self.gun_name_mapping = {}
         self.ammo_name_mapping = {}
+        self.plane_name_mapping = {}
         self.initialize_mapping()
         self._cached_mod_data = {}  # 显式定义缓存属性
 
@@ -67,16 +69,24 @@ class ShipDataAnalyzer:
         self.load_rage_name_mapping()
         self.load_gun_name_mapping()
         self.load_ammo_name_mapping()
+        self.load_plane_name_mapping()
+
+    def _log(self, message):
+        """内部调用的日志工具"""
+        if self.log_func:
+            self.log_func(message)  # 如果有回调，发给 UI
+        else:
+            print(message)  # 否则打印到控制台
 
     def reload_mappings(self):
         """
         供外部（MainUI）调用的重新初始化接口
         当 POToolkit 更新了 json 文件后，点击按钮即可刷新内存中的字典
         """
-        print("正在重新加载本地化数据...")
+        self.log_func("正在重新加载本地化数据...")
         # 重新执行一遍所有的加载方法
         self.initialize_mapping()
-        print("数据刷新完成。")
+        self.log_func("数据刷新完成。")
 
     def load_name_mapping(self):
         mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")
@@ -85,7 +95,7 @@ class ShipDataAnalyzer:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     self.ship_name_mapping = json.load(f)
         except Exception as e:
-            print(f"读取船名映射出错: {e}")
+            self.log_func(f"读取船名映射出错: {e}")
 
     def load_ability_map(self):
         file_path = os.path.join(self.base_dir, "data", "consumable_names.json")
@@ -95,7 +105,7 @@ class ShipDataAnalyzer:
                     raw_json = json.load(f)
                     self.ability_name_map = {k.upper(): v for k, v in raw_json.items()}
         except Exception as e:
-            print(f"读取技能映射出错: {e}")
+            self.log_func(f"读取技能映射出错: {e}")
 
     def load_rage_name_mapping(self):
         """加载从 .po 文件提取的战斗指令名称映射表"""
@@ -105,7 +115,7 @@ class ShipDataAnalyzer:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     self.rage_name_mapping = json.load(f)
         except Exception as e:
-            print(f"读取战斗指令名称映射出错: {e}")
+            self.log_func(f"读取战斗指令名称映射出错: {e}")
 
     def load_gun_name_mapping(self):
         """加载由 POToolKit 生成的武器翻译字典"""
@@ -116,7 +126,7 @@ class ShipDataAnalyzer:
                 with open(guns_json_path, 'r', encoding='utf-8') as f:
                     self.gun_name_mapping = json.load(f)
             except Exception as e:
-                print(f"加载武器翻译失败: {e}")
+                self.log_func(f"加载武器翻译失败: {e}")
 
     def load_ammo_name_mapping(self):
         """加载由 POToolKit 生成的弹药翻译字典"""
@@ -127,7 +137,16 @@ class ShipDataAnalyzer:
                 with open(ammo_json_path, 'r', encoding='utf-8') as f:
                     self.ammo_name_mapping = json.load(f)
             except Exception as e:
-                print(f"加载弹药翻译失败: {e}")
+                self.log_func(f"加载弹药翻译失败: {e}")
+
+    def load_plane_name_mapping(self):
+        plane_json_path = os.path.join(self.base_dir, "data", "plane_names.json")
+        if os.path.exists(plane_json_path):
+            try:
+                with open(plane_json_path, 'r', encoding='utf-8') as f:
+                    self.plane_name_mapping = json.load(f)
+            except Exception as e:
+                self.log_func(f"加载飞机翻译失败: {e}")
 
     def get_localized_weapon_name(self, raw_id):
         """
@@ -151,6 +170,38 @@ class ShipDataAnalyzer:
                 return v
 
         # 3. 实在查不到返回原名
+        return raw_id
+
+    def get_localized_plane_name(self, raw_id):
+        """
+        专门针对飞机映射表 (plane_name_mapping) 的检索逻辑
+        """
+        if not raw_id:
+            return "Unknown"
+
+        # 1. 格式清洗：移除 IDS_ 前缀，统一转大写，剔除首尾空格
+        clean_id = raw_id.replace("IDS_", "").upper().strip()
+
+        # 确保映射表存在且是字典
+        table = getattr(self, 'plane_name_mapping', {})
+        if not table:
+            if self.log_func:
+                self.log_func("❌ 错误：plane_name_mapping 未加载或为空")
+            return raw_id
+
+        # 2. 快速匹配 (最推荐的方式，效率为 O(1))
+        if clean_id in table:
+            return table[clean_id]
+
+        # 3. 模糊/大小写兼容匹配 (防止 Key 在 JSON 中不是全大写)
+        for k, v in table.items():
+            if k.upper() == clean_id:
+                return v
+
+        # 4. 如果没找到，记录到 UI 日志框，并返回原始 ID
+        if self.log_func:
+            self.log_func(f"🔎 飞机映射缺失: {raw_id}")
+
         return raw_id
 
     def parse_rage_mode_advanced(self, rage_data, ship_index, current_species):
@@ -191,6 +242,7 @@ class ShipDataAnalyzer:
                     for k, v in act.items():
                         if k == "type":
                             continue
+                        # --- 核心修改：精准匹配飞机 ID 键 ---
                         elif k == "subRibbons" and isinstance(v, list):
                             # 将 rid 转为字符串去匹配 map，如果找不到则显示 "未知勋带(ID)"
                             ribbon_names = []
@@ -210,15 +262,24 @@ class ShipDataAnalyzer:
                 if actions_found:
                     info.append(f"  [执行动作]")
                     for action_key, aln in actions_found.items():
-                        # 如果有多个 Action，打印一下标识（可选）
                         action_label = f" ({action_key})" if len(actions_found) > 1 else ""
                         info.append(f"    - 行为类型{action_label}: {aln.get('type', 'Unknown')}")
 
                         for k, v in aln.items():
-                            if k != "type":
+                            if k == "type":
+                                continue
+
+                            # --- 修正后的拦截逻辑：同时匹配 planeId 和 planeName ---
+                            if k in ["planeId", "planeName"]:
+                                label = "飞机型号"
+                                value = self.get_localized_plane_name(v)
+                            else:
                                 label = NameMapping.DETAIL_MAP.get(k, k)
-                                unit = "s" if k == "reduceTime" else ""
-                                info.append(f"    - {label}: {v}{unit}")
+                                value = v
+
+                            # 统一处理单位
+                            unit = "s" if k in ["reduceTime", "workTime"] else ""
+                            info.append(f"    - {label}: {value}{unit}")
 
         # 5. 属性加成 (Modifiers)
         mods = rage_data.get("modifiers", {})
@@ -294,10 +355,10 @@ class ShipDataAnalyzer:
                     self._cached_mod_data[mod_filename] = data
                     return data
             except Exception as e:
-                print(f"提取插件文件 {mod_filename} 失败: {e}")
+                self.log_func(f"提取插件文件 {mod_filename} 失败: {e}")
                 return {}  # 返回空字典而不是 None，防止后续 .get() 报错
         else:
-            print(f"找不到插件文件: {json_path}")
+            self.log_func(f"找不到插件文件: {json_path}")
             return {}
 
     def get_conceal_coeff(self, species, level, nation, ship_index):
@@ -753,7 +814,13 @@ class ShipDataAnalyzer:
                 if items:
                     display_area.insert(tk.END, f"  {cat_label}:\n")
                     for idx, item in enumerate(items, 1):
-                        planes_str = " / ".join(item.get("planes", []))
+                        # 获取原始 ID 列表
+                        raw_planes = item.get("planes", [])
+                        # 对每个飞机 ID 进行映射翻译
+                        translated_planes = [self.get_localized_plane_name(p) for p in raw_planes]
+
+                        # 使用翻译后的名称生成字符串
+                        planes_str = " / ".join(translated_planes)
                         display_area.insert(tk.END, f"    - 飞机型号-{idx}: {planes_str}\n")
                     display_area.insert(tk.END, "-" * 40 + "\n\n")
 
@@ -774,18 +841,24 @@ class ShipDataAnalyzer:
                     "smoke": "烟幕释放机",
                     "scout": "伴航校射侦察机",
                     "damage": "空袭",
-                    "asw": "空袭"
+                    "asw": "反潜空袭"  # 建议区分 damage 和 asw，便于识别
                 }
                 for as_conf in as_items:
                     u_type = as_conf['ui_type']
                     label = ui_map.get(u_type, u_type.capitalize())
+
+                    # --- 新增：本地化映射逻辑 ---
+                    raw_plane_id = as_conf.get('plane_id', 'Unknown')
+                    translated_plane_name = self.get_localized_plane_name(raw_plane_id)
+                    # ---------------------------
 
                     # 处理 Infinity 情况
                     max_d = as_conf['max_dist']
                     dist_str = f"{as_conf['min_dist']}-{max_d}m" if str(
                         max_d).lower() != 'inf' and max_d < 999999 else "全图范围"
 
-                    display_area.insert(tk.END, f"    - [{label}] 型号: {as_conf['plane_id']}\n")
+                    # 使用翻译后的名称 translated_plane_name
+                    display_area.insert(tk.END, f"    - [{label}] 型号: {translated_plane_name}\n")
                     display_area.insert(tk.END,
                                         f"      数量: {as_conf['charges']} | 装填: {as_conf['reload']}s | 可选择范围: {dist_str}\n")
                     if as_conf.get('work_time'):
