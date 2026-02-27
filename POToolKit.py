@@ -158,7 +158,7 @@ class POToolkit:
         # 修改点 1：正则增加第二个捕获组 (.*?) 来抓取 msgstr 里的内容
         # 修改点 2：增加 \s+msgstr " 来匹配中间的换行和固定字符
         pattern = re.compile(
-            r'msgid "IDS_(P[A-Z]A[BDFS][A-Z0-9_]*)"\s+msgstr "(.*?)"',
+            r'msgid "IDS_(P[A-Z]A[BDFMLSX][A-Z0-9_]*)"\s+msgstr "(.*?)"',
             re.MULTILINE
         )
 

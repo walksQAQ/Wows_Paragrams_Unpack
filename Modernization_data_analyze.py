@@ -3,8 +3,6 @@ import os
 import sys
 import tkinter as tk
 
-import NameMapping
-
 from NameMapping import Mapping as NameMapping
 
 class ModernizationDataAnalyzer:
@@ -15,7 +13,6 @@ class ModernizationDataAnalyzer:
             self.base_dir = os.path.dirname(sys.executable)
         else:
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
-
         self.log_func = log_func  # 核心：保存 UI 传入的日志函数
         self.name_mapping ={}
         self.ship_name_mapping ={}

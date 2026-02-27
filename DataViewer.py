@@ -7,6 +7,7 @@ from Ship_data_analyze import ShipDataAnalyzer
 from Projectile_data_analyze import ProjectileDataAnalyzer
 from Gun_data_analyze import GunDataAnalyzer
 from Modernization_data_analyze import ModernizationDataAnalyzer
+from Plane_data_analyze import PlaneDataAnalyzer
 
 class DataViewer:
     def __init__(self, folder_listbox, file_listbox, display_area, log_func=None):
@@ -27,6 +28,7 @@ class DataViewer:
         self.projectile_analyzer = ProjectileDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
         self.gun_analyzer = GunDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
         self.modernization_analyzer = ModernizationDataAnalyzer(log_func=self.log_func) # 实例化一次，加载一次映射表
+        self.plane_analyzer = PlaneDataAnalyzer(log_func=self.log_func)
 
     def write_log(self, message):
         """如果 MainUI 没传 log_func，可以在这里自定义一个默认的日志处理"""
@@ -91,6 +93,8 @@ class DataViewer:
                 self.gun_analyzer.analyze(self.display_area, data)
             elif self.current_folder == "Modernization":
                 self.modernization_analyzer.analyze(self.display_area, data)
+            elif self.current_folder == "Aircraft":
+                self.plane_analyzer.analyze(self.display_area, data)
             else:
                 # 默认逻辑：显示原始 JSON 格式化文本
                 self._display_raw_json(data)

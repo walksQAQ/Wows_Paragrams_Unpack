@@ -173,6 +173,16 @@ class Mapping:
         "default": "默认"
     }
 
+    AIRCRAFT_CLASS_MAP = {
+        "Bomber": "鱼雷轰炸机",
+        "Dive": "俯冲轰炸机",
+        "Fighter": "战斗机",
+        "Mine": "水雷轰炸机",
+        "Scout": "侦察机",
+        "Skip": "弹跳轰炸机",
+        "Auxiliary": "其他飞机",
+    }
+
     # 弹种类型
     AMMO_TYPE_MAP = {
         "HE": "HE",
