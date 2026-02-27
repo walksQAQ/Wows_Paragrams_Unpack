@@ -9,10 +9,11 @@ from Gun_data_analyze import GunDataAnalyzer
 from Modernization_data_analyze import ModernizationDataAnalyzer
 
 class DataViewer:
-    def __init__(self, folder_listbox, file_listbox, display_area):
+    def __init__(self, folder_listbox, file_listbox, display_area, log_func=None):
         self.folder_listbox = folder_listbox
         self.file_listbox = file_listbox
         self.display_area = display_area
+        self.log_func = log_func  # 接收来自 MainUI 的日志方法
         # 确保路径指向主程序目录下的 data/split
         if getattr(sys, 'frozen', False):
             # 打包后的路径
@@ -22,10 +23,15 @@ class DataViewer:
             self.main_dir = os.path.dirname(os.path.abspath(__file__))
         self.base_path = os.path.join(os.getcwd(), "data", "split")
         self.current_folder = ""
-        self.ship_analyzer = ShipDataAnalyzer()  # 实例化一次，加载一次映射表
-        self.projectile_analyzer = ProjectileDataAnalyzer()  # 实例化一次，加载一次映射表
-        self.gun_analyzer = GunDataAnalyzer()  # 实例化一次，加载一次映射表
-        self.modernization_analyzer = ModernizationDataAnalyzer() # 实例化一次，加载一次映射表
+        self.ship_analyzer = ShipDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
+        self.projectile_analyzer = ProjectileDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
+        self.gun_analyzer = GunDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
+        self.modernization_analyzer = ModernizationDataAnalyzer(log_func=self.log_func) # 实例化一次，加载一次映射表
+
+    def write_log(self, message):
+        """如果 MainUI 没传 log_func，可以在这里自定义一个默认的日志处理"""
+        if self.log_func:
+            self.log_func(message)
 
     def refresh(self):
         self.folder_listbox.delete(0, tk.END)

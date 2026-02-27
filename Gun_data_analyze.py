@@ -7,13 +7,21 @@ from NameMapping import Mapping as NameMapping
 
 class GunDataAnalyzer:
 
-    def __init__(self):
+    def __init__(self, log_func=None):
         if getattr(sys, 'frozen', False):
             # 如果是打包后的路径
             self.base_dir = os.path.dirname(sys.executable)
         else:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.log_func = log_func  # 核心：保存 UI 传入的日志函数
+
+    def _log(self, message):
+        """内部调用的日志工具"""
+        if self.log_func:
+            self.log_func(message)  # 如果有回调，发给 UI
+        else:
+            print(message)  # 否则打印到控制台
 
     def analyze(self, display_area, data):
         """
