@@ -33,9 +33,10 @@ class ShipHullDataAnalyze:
                     "rudderTime": {"name": "转舵时间", "val": hull_data.get("rudderTime") * 0.77, "unit": "s", "order": 4},
                     "vis_sea": {"name": "基础水面隐蔽", "val": hull_data.get("visibilityFactor"), "unit": "km", "order": 5},
                     "vis_plane": {"name": "基础空中隐蔽", "val": hull_data.get("visibilityFactorByPlane"), "unit": "km", "order": 6},
-                    "has_cit":{"name": "是否存在核心区模块", "val": has_cit, "unit": "", "order": 7},
-                    "hull_regenper":{"name": "船体回复率", "val": hull_data.get("Hull", {}).get("regeneratedHPPart"), "unit": "", "order": 8},
-                    "cit_regenper":{"name": "核心回复率", "val": hull_data.get("Cit", {}).get("regeneratedHPPart"), "unit": "", "order": 9},
+                    "has_cit": {"name": "是否存在核心区模块", "val": has_cit, "unit": "", "order": 7},
+                    "hull_regenper": {"name": "船体回复率", "val": hull_data.get("Hull", {}).get("regeneratedHPPart"), "unit": "", "order": 8},
+                    "cit_regenper": {"name": "核心回复率", "val": hull_data.get("Cit", {}).get("regeneratedHPPart"), "unit": "", "order": 9},
+                    "engine_power": {"name": "引擎马力", "val": hull_data.get("enginePower"), "unit": "HP", "order": 10},
                 }
             },
             "submarine_sp_data": {

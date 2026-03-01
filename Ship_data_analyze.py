@@ -423,7 +423,7 @@ class ShipDataAnalyzer:
         for mod_key, module_data in ship_data.items():
             hull_id = None
 
-            if mod_key == "HullDefault":
+            if mod_key in {"HullDefault","Hull_A"}:
                 hull_id = "A"
                 # 关键：将存储键名改为 A_Hull，让 UI 的 .startswith("A") 能匹配到
                 save_key = "A_Hull"
@@ -762,8 +762,8 @@ class ShipDataAnalyzer:
 
         # --- UI 渲染基础信息 ---
         display_area.insert(tk.END, f"舰船名称: {real_name}\n")
-        display_area.insert(tk.END, f"ID: {ship_id}\n")
-        display_area.insert(tk.END, f"编号: {ship_index}\n")
+        display_area.insert(tk.END, f"舰船ID: {ship_id}\n")
+        display_area.insert(tk.END, f"舰船编号: {ship_index}\n")
         display_area.insert(tk.END, f"所属国家: {NameMapping.NATION_MAP.get(raw_nation, raw_nation)}\n")
         display_area.insert(tk.END, f"舰船种类: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}\n")
         level_roman = NameMapping.LEVEL_MAP[raw_level] if 0 <= raw_level < len(NameMapping.LEVEL_MAP) else str(raw_level)
@@ -806,6 +806,7 @@ class ShipDataAnalyzer:
             invul_speed_multiplier = invul_data.get('speed_multiplier', 1.0) # 默认 1.0 防止报错
             display_area.insert(tk.END, f"  基础血量: {base['health']['val']}\n"
                                         f"  基础最大航速: {base['maxSpeed']['val']} {base['maxSpeed']['unit']}\n"
+                                        f"    - 引擎出力: {base['engine_power']['val']:.0f} {base['engine_power']['unit']}\n"
                                         f"  转向半径: {base['turningRadius']['val']} {base['turningRadius']['unit']}\n"
                                         f"  基础转舵时间: {base['rudderTime']['val']:.2f} {base['rudderTime']['unit']}\n"
                                         f"  隐蔽:\n"

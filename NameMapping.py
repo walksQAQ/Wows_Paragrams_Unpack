@@ -147,7 +147,8 @@ class Mapping:
         "start": "初始", "preserved": "已移除", "upgradeable": "可研发", "earlyAccess": "抢先体验",
         "superShip": "超级战舰", "premium": "加值", "ultimate": "特殊", "special": "特殊",
         "specialUnsellable": "特殊", "disabled": "禁用", "clan": "仅军团", "coopOnly": "仅人机",
-        "demoWithoutStatsPrem": "加值测试", "demoWithoutStats": "测试", "unavailable": "不可用"
+        "demoWithoutStatsPrem": "加值测试", "demoWithoutStats": "测试", "unavailable": "不可用",
+        "event": "仅事件"
     }
 
     # 舰船等级
