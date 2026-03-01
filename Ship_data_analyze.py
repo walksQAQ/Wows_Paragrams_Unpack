@@ -24,7 +24,7 @@ class ShipDataAnalyzer:
         "DepthChargeGuns": re.compile(r"([A-Z]+\d*)_DepthChargeGuns"),
     }
     PATTERNS_NEW = {
-        "Hull": re.compile(r'([A-Z]\d*)_Hull|HullDefault'),
+        "Hull": re.compile(r'([A-Z]\d*)_Hull'),
     }
 
     DEFAULTS = {
@@ -415,28 +415,33 @@ class ShipDataAnalyzer:
 
         return skill_bonus * upgrade_bonus
 
-    # 新船体数据解析
+    # 新·船体数据解析
     def analyze_ship_data(self, ship_data):
         all_hulls_results = {}
         analyzer = ShipHullDataAnalyze()
 
-        # 1. 遍历原始 JSON 数据
         for mod_key, module_data in ship_data.items():
+            hull_id = None
 
-            # 2. 识别是否为船体模块 (使用你之前的正则逻辑)
-            match = self.PATTERNS_NEW["Hull"].match(mod_key)
-            if match:
-                # 3. 提取 ID (如 A, B, 或 Default)
-                hull_id = match.group(1) if (match.lastindex and match.group(1)) else "Default"
+            if mod_key == "HullDefault":
+                hull_id = "A"
+                # 关键：将存储键名改为 A_Hull，让 UI 的 .startswith("A") 能匹配到
+                save_key = "A_Hull"
+            else:
+                match = self.PATTERNS_NEW.get("Hull").match(mod_key)
+                if match:
+                    hull_id = match.group(1)
+                    save_key = mod_key  # 保持 A_Hull, B_Hull 等
 
-                # 4. 调用解析函数，接住返回的字典
-                # 这里就是你“反馈”回来的数据
-                single_hull_analysis = analyzer.analyzeShipData(module_data, hull_id)
+            if hull_id:
+                try:
+                    single_hull_analysis = analyzer.analyzeShipData(module_data, hull_id)
+                    # 统一存入 all_hulls_results，确保键名符合 UI 预期的 [Letter]_Hull 格式
+                    all_hulls_results[save_key] = single_hull_analysis
+                    print(f"成功存入: {save_key} (源: {mod_key})")
+                except Exception as e:
+                    print(f"解析 {mod_key} 失败: {e}")
 
-                # 5. 存储到汇总字典里，以 mod_key 作为键
-                all_hulls_results[mod_key] = single_hull_analysis
-
-        # 6. 最终把整条船的所有船体数据反馈给更上一级（比如 UI 界面）
         return all_hulls_results
 
     # TODO:优化原代码
