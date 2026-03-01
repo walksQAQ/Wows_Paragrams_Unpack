@@ -438,9 +438,8 @@ class ShipDataAnalyzer:
                     single_hull_analysis = analyzer.analyzeShipData(module_data, hull_id)
                     # 统一存入 all_hulls_results，确保键名符合 UI 预期的 [Letter]_Hull 格式
                     all_hulls_results[save_key] = single_hull_analysis
-                    print(f"成功存入: {save_key} (源: {mod_key})")
                 except Exception as e:
-                    print(f"解析 {mod_key} 失败: {e}")
+                    self._log(f"解析 {mod_key} 失败: {e}")
 
         return all_hulls_results
 
