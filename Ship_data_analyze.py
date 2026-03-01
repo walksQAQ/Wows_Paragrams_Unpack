@@ -5,6 +5,8 @@ import sys
 import tkinter as tk
 
 from NameMapping import Mapping as NameMapping
+from ShipHullDataAnalyze import ShipHullDataAnalyze
+
 
 class ShipDataAnalyzer:
     # 将正则编译移出循环，提高效率
@@ -20,6 +22,9 @@ class ShipDataAnalyzer:
         "AirSupport": re.compile(r'([A-Z]+\d*)_AirSupport'),
         "AirDefense": re.compile(r'([A-Z]+\d*)_AirDefense'),
         "DepthChargeGuns": re.compile(r"([A-Z]+\d*)_DepthChargeGuns"),
+    }
+    PATTERNS_NEW = {
+        "Hull": re.compile(r'([A-Z]\d*)_Hull|HullDefault'),
     }
 
     DEFAULTS = {
@@ -44,6 +49,7 @@ class ShipDataAnalyzer:
         "DepthChargeGuns": re.compile(r"HP_[A-Z]GB_\d+"),
     }
 
+    # 初始化
     def __init__(self, log_func=None):
         # 使用脚本所在绝对路径，增加健壮性
         if getattr(sys, 'frozen', False):
@@ -71,6 +77,7 @@ class ShipDataAnalyzer:
         self.load_ammo_name_mapping()
         self.load_plane_name_mapping()
 
+    # 日志
     def _log(self, message):
         """内部调用的日志工具"""
         if self.log_func:
@@ -78,6 +85,7 @@ class ShipDataAnalyzer:
         else:
             print(message)  # 否则打印到控制台
 
+    # 加载映射表
     def reload_mappings(self):
         """
         供外部（MainUI）调用的重新初始化接口
@@ -204,6 +212,7 @@ class ShipDataAnalyzer:
 
         return raw_id
 
+    # 战斗指令
     def parse_rage_mode_advanced(self, rage_data, ship_index, current_species):
         info = []
         # 1. 标题识别逻辑：完全移除 descriptionIDS，仅基于 rageModeName
@@ -296,7 +305,7 @@ class ShipDataAnalyzer:
                         percent = round((factor - 1.0) * 100)
                         # 翻译舰种名用于提示
                         type_label = NameMapping.SHIP_CLASS_MAP.get(current_species, current_species)
-                        info.append(f"    - {label}: {percent:+.0f}%")
+                        info.append(f"    - {type_label}: {percent:+.0f}%")
                     else:
                         # 如果没有匹配到当前舰种，通常不显示，或者你可以选择遍历显示全部
                         pass
@@ -317,6 +326,7 @@ class ShipDataAnalyzer:
 
         return info
 
+    # 主/副炮横向散步公式
     def get_dispersion_formula(self, weapon_data):
         """
         根据统一逻辑解析横向散布公式: Rh = (IR-MR)/(ID/1000) * R + MR*30
@@ -336,6 +346,7 @@ class ShipDataAnalyzer:
         # 返回格式化后的字符串
         return f"{round(slope, 2)}R + {round(intercept, 2)}"
 
+    # 加载隐蔽插数据
     def load_mod_file(self, mod_filename):
         """
         专门用于从 Modernization 文件夹下提取特定插件的 JSON 数据
@@ -397,7 +408,6 @@ class ShipDataAnalyzer:
             upgrade_bonus = 1.0
         else:
             # 通用过滤条件：必须全部满足 (Level + Type + Nation)
-            # 注意：由于 PCM027 的 shiptype 没写 Submarine，这里会导致 8-10 级潜艇不计算插件加成
             if (level in mod_levels and
                     species in mod_types and
                     nation in mod_nations):
@@ -405,7 +415,34 @@ class ShipDataAnalyzer:
 
         return skill_bonus * upgrade_bonus
 
+    # 新船体数据解析
+    def analyze_ship_data(self, ship_data):
+        all_hulls_results = {}
+        analyzer = ShipHullDataAnalyze()
+
+        # 1. 遍历原始 JSON 数据
+        for mod_key, module_data in ship_data.items():
+
+            # 2. 识别是否为船体模块 (使用你之前的正则逻辑)
+            match = self.PATTERNS_NEW["Hull"].match(mod_key)
+            if match:
+                # 3. 提取 ID (如 A, B, 或 Default)
+                hull_id = match.group(1) if (match.lastindex and match.group(1)) else "Default"
+
+                # 4. 调用解析函数，接住返回的字典
+                # 这里就是你“反馈”回来的数据
+                single_hull_analysis = analyzer.analyzeShipData(module_data, hull_id)
+
+                # 5. 存储到汇总字典里，以 mod_key 作为键
+                all_hulls_results[mod_key] = single_hull_analysis
+
+        # 6. 最终把整条船的所有船体数据反馈给更上一级（比如 UI 界面）
+        return all_hulls_results
+
+    # TODO:优化原代码
     def analyze(self, display_area, data):
+        # 新船体模块数据
+        hulls_info = self.analyze_ship_data(data)
         # --- 基础信息处理 ---
         ship_index = data.get("index", "Unknown")
         ship_id = data.get("id", "N/A")
@@ -429,16 +466,6 @@ class ShipDataAnalyzer:
         raw_species = type_info.get("species", "Unknown")
         raw_group = data.get("group", "standard")
         raw_level = data.get("level", 0)
-
-        # --- UI 渲染基础信息 ---
-        display_area.insert(tk.END, f"舰船名称: {real_name}\n")
-        display_area.insert(tk.END, f"ID: {ship_id}\n")
-        display_area.insert(tk.END, f"编号: {ship_index}\n")
-        display_area.insert(tk.END, f"所属国家: {NameMapping.NATION_MAP.get(raw_nation, raw_nation)}\n")
-        display_area.insert(tk.END, f"舰船种类: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}\n")
-        level_roman = NameMapping.LEVEL_MAP[raw_level] if 0 <= raw_level < len(NameMapping.LEVEL_MAP) else str(raw_level)
-        display_area.insert(tk.END, f"舰船等级: {level_roman}\n")
-        display_area.insert(tk.END, f"舰船类别: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}\n\n")
 
         # --- 消耗品逻辑 ---
         ship_abilities = data.get("ShipAbilities", {})
@@ -480,9 +507,6 @@ class ShipDataAnalyzer:
             if slot_options:
                 num = slot_data.get('slot', slot_key.replace("AbilitySlot", ""))
                 ability_slots.append(f"  槽位 {num+1}: {' / '.join(slot_options)}")
-
-        if ability_slots:
-            display_area.insert(tk.END, "消耗品: \n" + "\n".join(ability_slots) + "\n\n")
 
         # --- 模块提取核心逻辑 ---
         combined_stats = {}
@@ -530,38 +554,6 @@ class ShipDataAnalyzer:
                         if info not in combined_stats[letter][current_cat]:
                             combined_stats[letter][current_cat].append(info)
                 continue # 处理完飞机，跳过该模块后续的所有 HP 子键匹配
-
-            # 2. 船体处理
-            if current_cat == "Hull":
-                conceal_coeff = self.get_conceal_coeff(raw_species, raw_level, raw_nation, ship_index)
-                raw_vis_sea = module_data.get("visibilityFactor", 0)
-                raw_vis_plane = module_data.get("visibilityFactorByPlane", 0)
-                sub_battery = module_data.get("SubmarineBattery", {})
-                hydrophone = module_data.get("Hydrophone", {})
-                buoyancystates = module_data.get("buoyancyStates", {})
-                hull_info = {
-                    "health": module_data.get("health"),
-                    "maxSpeed": module_data.get("maxSpeed"),
-                    "turningRadius": module_data.get("turningRadius"),
-                    "ruddertime": module_data.get("rudderTime")*0.77,
-                    "visibilityFactor": raw_vis_sea,
-                    "visibilityFactorByPlane": raw_vis_plane,
-                    "calc_vis_sea": round(raw_vis_sea * conceal_coeff, 2),
-                    "calc_vis_plane": round(raw_vis_plane * conceal_coeff, 2),
-                    "bat_state": True if sub_battery else False,
-                    "bat_cap": sub_battery.get("capacity"),
-                    "bat_regen": sub_battery.get("regenRate"),
-                    "hp_state": True if hydrophone else False,
-                    "hp_radius": hydrophone.get("waveRadius"),
-                    "hp_work_states": [NameMapping.DEPTH_MAP.get(s, s) for s in hydrophone.get("workingBuoyancyStates", [])],
-                    "hp_detect_states": [NameMapping.DEPTH_MAP.get(s, s) for s in hydrophone.get("detectableBuoyancyStates", [])],
-                    "hp_freq": hydrophone.get("updateFrequency"),
-                    "buoyancy_rudder_time": module_data.get("buoyancyRudderTime")*0.77,
-                    "buoyancy_speed": module_data.get("maxBuoyancySpeed"),
-                    "states": buoyancystates,
-                }
-                for letter in target_letters:
-                    combined_stats[letter]["Hull"] = [hull_info]
 
             # 3. 空袭处理 (增强版：递归识别所有类型的空袭)
             elif current_cat == "AirSupport":
@@ -763,7 +755,22 @@ class ShipDataAnalyzer:
                             combined_stats[letter][matched_cat].append(weapon_info)
 
         # --- 最终渲染显示 ---
-        # 防空秒伤
+
+        # --- UI 渲染基础信息 ---
+        display_area.insert(tk.END, f"舰船名称: {real_name}\n")
+        display_area.insert(tk.END, f"ID: {ship_id}\n")
+        display_area.insert(tk.END, f"编号: {ship_index}\n")
+        display_area.insert(tk.END, f"所属国家: {NameMapping.NATION_MAP.get(raw_nation, raw_nation)}\n")
+        display_area.insert(tk.END, f"舰船种类: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}\n")
+        level_roman = NameMapping.LEVEL_MAP[raw_level] if 0 <= raw_level < len(NameMapping.LEVEL_MAP) else str(raw_level)
+        display_area.insert(tk.END, f"舰船等级: {level_roman}\n")
+        display_area.insert(tk.END, f"舰船类别: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}\n\n")
+
+        # 消耗品
+        if ability_slots:
+            display_area.insert(tk.END, "消耗品: \n" + "\n".join(ability_slots) + "\n\n")
+
+        # 防空炮
         for letter in combined_stats:
             ad_list = combined_stats[letter].get("AirDefense", [])
             # 1. 过滤出持续伤害层（排除黑云），按射程从远到近排序
@@ -782,25 +789,60 @@ class ShipDataAnalyzer:
             config = combined_stats[letter]
 
             # 1. 船体基础信息
-            if config["Hull"]:
-                h = config["Hull"][0]
-                display_area.insert(tk.END, f"  基础血量: {h['health']}\n  基础最大航速: {h['maxSpeed']} kt\n  转向半径: {h['turningRadius']} m\n")
-                display_area.insert(tk.END, f"  基础转舵时间: {h['ruddertime']:.2f} s\n")
-                display_area.insert(tk.END, f"  隐蔽: \n    对海隐蔽: {h['visibilityFactor']} km (最小: {h['calc_vis_sea']} km)\n")
-                display_area.insert(tk.END, f"    对空隐蔽: {h['visibilityFactorByPlane']} km (最小: {h['calc_vis_plane']} km)\n")
-                if raw_species == "Submarine":
-                    display_area.insert(tk.END,f"  潜艇专有数据:\n")
-                    display_area.insert(tk.END,f"    基础水平舵换挡时间: {h['buoyancy_rudder_time']:.2f}s\n    最大上浮和下潜速度: {h['buoyancy_speed']} m/s\n")
-                    if h.get("bat_state"):
-                        display_area.insert(tk.END, f"  [潜艇电池配置]:\n")
-                        display_area.insert(tk.END, f"    - 最大电池容量: {h['bat_cap']}\n")
-                        display_area.insert(tk.END, f"    - 电力恢复速度: {h['bat_regen']}/s\n")
-                    if h.get("hp_state"):
-                        display_area.insert(tk.END, f"  [水听器]:\n")
-                        display_area.insert(tk.END, f"    - 生效半径: {h['hp_radius'] / 1000.0} km | 频率: {h['hp_freq']}s\n")
-                        display_area.insert(tk.END, f"    - 水听器工作层级: {' / '.join(h['hp_work_states'])}\n")
-                        display_area.insert(tk.END, f"    - 可被探测深度层级: {' / '.join(h['hp_detect_states'])}\n")
-                display_area.insert(tk.END, "-" * 40 + "\n\n")
+            mod_key = next((k for k in hulls_info.keys() if k.startswith(letter)), None)
+            if not mod_key or mod_key not in hulls_info:
+                display_area.insert(tk.END, "  (未找到对应的模块数据)\n")
+                continue
+
+            base = hulls_info[mod_key]["default_data"]["items"]
+            sub = hulls_info[mod_key]["submarine_sp_data"]["items"]
+            conceal_coeff = self.get_conceal_coeff(raw_species, raw_level, raw_nation, ship_index)
+            buoyancy_list = sub['buoyancyStates'].get('val')
+            invul_data = next((item for item in buoyancy_list if item['state'] == 'DEEP_WATER_INVUL'), {})
+            invul_speed_multiplier = invul_data.get('speed_multiplier', 1.0) # 默认 1.0 防止报错
+            display_area.insert(tk.END, f"  基础血量: {base['health']['val']}\n"
+                                        f"  基础最大航速: {base['maxSpeed']['val']} {base['maxSpeed']['unit']}\n"
+                                        f"  转向半径: {base['turningRadius']['val']} {base['turningRadius']['unit']}\n"
+                                        f"  基础转舵时间: {base['rudderTime']['val']:.2f} {base['rudderTime']['unit']}\n"
+                                        f"  隐蔽:\n"
+                                        f"    - 对海隐蔽: {base['vis_sea']['val']} {base['vis_sea']['unit']} (最小: {round(base['vis_sea']['val'] * conceal_coeff, 2)} {base['vis_sea']['unit']})\n"
+                                        f"    - 对空隐蔽: {base['vis_plane']['val']} {base['vis_plane']['unit']} (最小: {round(base['vis_plane']['val'] * conceal_coeff, 2)} {base['vis_plane']['unit']})\n"
+                                        f"  血量回复率: {base['hull_regenper']['val'] * 100:.0f}%")
+            if base['has_cit']['val']:
+                display_area.insert(tk.END, f"/{base['cit_regenper']['val'] * 100:.0f}%\n")
+            else:
+                display_area.insert(tk.END, f"/0%（该舰船无核心区模块）\n")
+            if raw_species == "Submarine":
+                display_area.insert(tk.END, f"  潜艇专有数据:\n"
+                                            f"    - 基础水平舵换挡时间: {sub['buoyancy_rudder_time']['val']:.2f} {sub['buoyancy_rudder_time']['unit']}\n"
+                                            f"    - 最大上浮和下潜速度: {sub['buoyancy_speed']['val']} {sub['buoyancy_speed']['unit']}\n"
+                                            f"    - 最大水下航速 {base['maxSpeed']['val'] * invul_speed_multiplier:.2f} {base['maxSpeed']['unit']}\n"
+                                            f"    - 深度数据:\n")
+                b_map = {item['state']: item for item in buoyancy_list}
+                order = ["SURFACE", "PERISCOPE", "DEEP_WATER", "DEEP_WATER_INVUL"]
+                for state_key in order:
+                    if state_key in b_map:
+                        data = b_map[state_key]
+                        cn_name = NameMapping.DEPTH_MAP.get(state_key, state_key)  # 使用你的 DEPTH_MAP 转换
+                        d_range = data.get('depth_range', [0, 0])
+
+                        # 独立显示每一行，数字部分做了右对齐微调，让排版更整齐
+                        display_area.insert(tk.END,
+                                            f"        ◈ [{cn_name}]: {d_range[0]:>5}m 至 {d_range[1]:>5}m\n"
+                                            )
+                if sub['has_battery']['val']:
+                    display_area.insert(tk.END, f"    - 下潜能力:\n"
+                                                f"      - 基础电池容量: {sub['bat_cap']['val']}\n"
+                                                f"      - 基础电力恢复速度: {sub['bat_regen']['val']} {sub['bat_regen']['unit']}\n")
+                if sub['has_hydrophone']['val']:
+                    work_states = [NameMapping.DEPTH_MAP.get(s, s) for s in sub['hp_work_states']['val']]
+                    detect_states = [NameMapping.DEPTH_MAP.get(s, s) for s in sub['hp_detect_states']['val']]
+                    display_area.insert(tk.END, f"    - 水听器:\n"
+                                                f"      - 生效半径: {sub['hp_radius']['val']/1000} {sub['hp_radius']['unit']}\n"
+                                                f"      - 刷新周期: {sub['hp_frep']['val']} {sub['hp_frep']['unit']}\n"
+                                                f"      - 水听器工作层级: {' / '.join(work_states)}\n"
+                                                f"      - 可探测深度层级: {' / '.join(detect_states)}\n")
+            display_area.insert(tk.END, "-" * 40 + "\n\n")
 
             # 2. 飞机属性提前显示
             plane_sections = [
