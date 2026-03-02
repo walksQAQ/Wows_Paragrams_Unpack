@@ -20,6 +20,7 @@ class ProjectileDataAnalyzer:
 
     def initialize_mapping(self):
         self.load_ammo_name_mapping()
+        self._log("弹药解析器映射表已同步")
 
     def _log(self, message):
         """核心修正：安全的内部日志工具"""

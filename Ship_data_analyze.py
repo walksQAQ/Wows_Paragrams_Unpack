@@ -76,6 +76,7 @@ class ShipDataAnalyzer:
         self.load_gun_name_mapping()
         self.load_ammo_name_mapping()
         self.load_plane_name_mapping()
+        self._log("舰船解析器映射表已同步")
 
     # 日志
     def _log(self, message):

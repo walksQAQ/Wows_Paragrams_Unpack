@@ -24,6 +24,7 @@ class ModernizationDataAnalyzer:
         # 初始化加载
         self.load_mod_names()
         self.load_ship_names()
+        self._log("升级品解析器映射表已同步")
 
     def _log(self, message):
         """核心修正：内部统一调用的日志工具，不再与变量名冲突"""

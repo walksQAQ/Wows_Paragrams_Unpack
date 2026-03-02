@@ -18,10 +18,18 @@ class PlaneDataAnalyzer:
         self.ammo_name_mapping = {}
         self.initialize_mapping()
 
+    def _log(self, message):
+        """内部调用的日志工具"""
+        if self.log_func:
+            self.log_func(message)  # 如果有回调，发给 UI
+        else:
+            print(message)  # 否则打印到控制台
+
     def initialize_mapping(self):
         self.load_plane_name_mapping()
         self.load_ability_name_map()
         self.load_ammo_name_mapping()
+        self._log("飞机解析器映射表已同步")
 
     def load_ability_name_map(self):
         file_path = os.path.join(self.base_dir, "data", "consumable_names.json")
@@ -52,13 +60,6 @@ class PlaneDataAnalyzer:
                     self.ammo_name_mapping = json.load(f)
             except Exception as e:
                 self.log_func(f"加载弹药翻译失败: {e}")
-
-    def log_func(self, message):
-        """内部调用的日志工具"""
-        if self.log_func:
-            self.log_func(message)  # 如果有回调，发给 UI
-        else:
-            print(message)  # 否则打印到控制台
 
     def analyze(self, display_area, data):
         """主入口：解析机载设备 JSON 并渲染至 UI"""

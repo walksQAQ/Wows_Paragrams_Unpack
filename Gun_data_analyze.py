@@ -13,15 +13,15 @@ class GunDataAnalyzer:
         else:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.log_func = log_func  # 核心：保存 UI 传入的日志函数
+        self.log_callback = log_func  # 核心：保存 UI 传入的日志函数
 
     def initialize_mapping(self):
-        self._log("Nothing to initialize")
+        self._log("火炮解析器映射表已同步")
 
     def _log(self, message):
         """内部调用的日志工具"""
-        if self.log_func:
-            self.log_func(message)  # 如果有回调，发给 UI
+        if self.log_callback:
+            self.log_callback(message)  # 如果有回调，发给 UI
         else:
             print(message)  # 否则打印到控制台
 
