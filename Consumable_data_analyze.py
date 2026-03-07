@@ -15,10 +15,12 @@ class ConsumableAnalyzer:
         self.log_func = log_func
         self.ability_map = {}
         self.consumable_name_map = {}
+        self.plane_name_mapping = {}
 
     def initialize_mapping(self):
         """预留翻译映射初始化接口，保持与 DataViewer 调用的兼容性"""
         self.load_consumable_name_map()
+        self.load_plane_name_mapping()
         self._log("消耗品解析器映射表已同步")
 
     # 加载映射表
@@ -41,6 +43,15 @@ class ConsumableAnalyzer:
                     self.consumable_name_map = {k.upper(): v for k, v in raw_json.items()}
         except Exception as e:
             self.log_func(f"读取消耗品名映射出错: {e}")
+
+    def load_plane_name_mapping(self):
+        plane_json_path = os.path.join(self.base_dir, "data", "plane_names.json")
+        if os.path.exists(plane_json_path):
+            try:
+                with open(plane_json_path, 'r', encoding='utf-8') as f:
+                    self.plane_name_mapping = json.load(f)
+            except Exception as e:
+                self._log(f"加载飞机翻译失败: {e}")
 
     def _log(self, message):
         """内部日志工具"""
@@ -153,10 +164,10 @@ class ConsumableAnalyzer:
             isNoPreparaTime = "（该消耗品无准备时间）" if info['preparationTime'] == 0 else ""
 
             output.append(f"[消耗品标识]: {info['name']}\n"
-                                        f"  - 类型: {info['type']}\n"
-                                        f"  - 基础可用数量: {num_display}\n"
-                                        f"  - 是否自动使用: {isAutoConsumable}\n"
-                                        f"  - 准备时间: {info['preparationTime']}s{isNoPreparaTime} / 冷却时间: {info['reloadTime']}s / 持续时间: {info['workTime']}s\n")
+                          f"  - 类型: {info['type']}\n"
+                          f"  - 基础可用数量: {num_display}\n"
+                          f"  - 是否自动使用: {isAutoConsumable}\n"
+                          f"  - 准备时间: {info['preparationTime']}s{isNoPreparaTime} / 冷却时间: {info['reloadTime']}s / 持续时间: {info['workTime']}s\n")
 
             output.append(f"\n消耗品效果:\n")
             # 类型特有数据展示
@@ -171,15 +182,17 @@ class ConsumableAnalyzer:
                 output.append(f"  - 防空区域秒伤: {data_type_1}{info['areaDmgMultiplier'] * 100}%\n")
                 output.append(f"  - 黑云伤害: {data_type_2}{info['bubbleDmgMultiplier'] * 100}%\n")
             elif info['type'] == "fighter":
-                output.append(f"  - 战斗机名称: {info['fighterName']}\n"
-                                            f"  - 战斗机数量: {info['fighterNum']}\n"
-                                            f"  - 截击机: {isInterceptor}\n"
-                                            f"  - 狗斗时间: {info['dogFightTime']}s\n"
-                                            f"  - 离开时间: {info['flyAwayTime']}s\n"
-                                            f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
-                                            f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
-                                            # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
-                                            f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
+                raw_name = info.get('fighterName', '未知')
+                display_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
+                output.append(f"  - 战斗机名称: {display_name}\n"
+                              f"  - 战斗机数量: {info['fighterNum']}\n"
+                              f"  - 截击机: {isInterceptor}\n"
+                              f"  - 狗斗时间: {info['dogFightTime']}s\n"
+                              f"  - 离开时间: {info['flyAwayTime']}s\n"
+                              f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
+                              f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
+                              # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
+                              f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
             elif info['type'] == "scout":
                 DistCoeff = info['gunsDistCoeff'] - 1
                 data_type = "+" if DistCoeff > 0 else ""
@@ -222,15 +235,17 @@ class ConsumableAnalyzer:
                 data_type = "+" if info['boostCoeff'] > 0 else ""
                 output.append(f"  - 引擎冷却速度: {data_type}{info['boostCoeff'] * 100}%\n")
             elif info['type'] == "callFighters":
-                output.append(f"  - 战斗机名称: {info['fighterName']}\n"
-                                            f"  - 战斗机数量: {info['fighterNum']}\n"
-                                            f"  - 截击机: {isInterceptor}\n"
-                                            f"  - 狗斗时间: {info['dogFightTime']}s\n"
-                                            f"  - 离开时间: {info['flyAwayTime']}s\n"
-                                            f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
-                                            f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
-                                            # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
-                                            f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
+                raw_name = info.get('fighterName', '未知')
+                display_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
+                output.append(f"  - 战斗机名称: {display_name}\n"
+                              f"  - 战斗机数量: {info['fighterNum']}\n"
+                              f"  - 截击机: {isInterceptor}\n"
+                              f"  - 狗斗时间: {info['dogFightTime']}s\n"
+                              f"  - 离开时间: {info['flyAwayTime']}s\n"
+                              f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
+                              f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
+                              # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
+                              f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
             elif info['type'] == "regenerateHealth":
                 output.append(f"  - 恢复飞机中队部分生命值。在敌方战斗机攻击时使用能免于被击毁。\n")
             elif info['type'] == "depthCharges":
