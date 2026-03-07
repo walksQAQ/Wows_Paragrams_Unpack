@@ -334,7 +334,6 @@ class ConsumableAnalyzer:
                               f"      - 战舰航速: {data_type_3}{speedCoeff * 100:.2f}%\n"
                               f"      - 受到的全类型伤害: {data_type_4}{vulnerabilityAll * 100}%\n"
                               f"      - 每秒回复血量: {data_type_5}{info['healthRegenPercent'] * 100:.2f}%\n")
-        output.append("-" * 30 + "\n")
         return output
 
     def get_data_by_item_name(self, item_name):
