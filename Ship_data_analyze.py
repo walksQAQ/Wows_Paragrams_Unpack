@@ -991,7 +991,7 @@ class ShipDataAnalyzer:
         if prepared_consumable_data:
             display_area.insert(tk.END, "=== 舰船消耗品配置 ===\n")
             for slot in prepared_consumable_data:
-                display_area.insert(tk.END, f"\n[槽位 {slot['slot_num']}]\n")
+                display_area.insert(tk.END, f"[槽位 {slot['slot_num']}]\n")
                 for item in slot['items']:
                     num_val = "无限" if item['num'] == -1 else item['num']
                     display_area.insert(tk.END, f"  - 可选消耗品类型:{item['name']}[{item['config']}]\n"
