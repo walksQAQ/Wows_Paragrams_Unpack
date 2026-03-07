@@ -135,196 +135,207 @@ class ConsumableAnalyzer:
             }
 
     def analyze(self, display_area, data):
-        output = []
-        """分析并显示 (UI 逻辑放在后面)"""
         if not isinstance(data, dict): return
         self._fill_map(data)
 
-        for item_name, config in data.items():
-            if not isinstance(config, dict) or item_name == "typeinfo" or item_name == "custom":
-                continue
-            info = self.ability_map[item_name]
-            display_name = self.consumable_name_map.get(data.get('name').upper(), data.get('name'))
+        # 1. 先提取所有消耗品配置，并过滤掉非消耗品条目
+        consumable_items = [
+            (name, cfg) for name, cfg in data.items()
+            if isinstance(cfg, dict) and name not in ["typeinfo", "custom"]
+        ]
 
-            output.append(f"消耗品名称: {display_name}\n"
-                                        f"消耗品编号: {data.get('index')}\n"
-                                        f"消耗品ID: {data.get('id')}\n")
-            output.append(f"\n")
-            output.append("-" * 30 + "\n")
+        if not consumable_items:
+            return
 
-            if not info:
-                continue
+        # 2. 打印一次性表头（假设 data 本身包含该消耗品的通用名称和 ID）
+        display_name = self.consumable_name_map.get(data.get('name', '').upper(), data.get('name', '未知'))
+        header = (f"消耗品名称: {display_name}\n"
+                  f"消耗品编号: {data.get('index')}\n"
+                  f"消耗品ID: {data.get('id')}\n"
+                  f"{'=' * 30}\n")
+        display_area.insert(tk.END, header)
 
-            if info['num'] == -1:
-                num_display = "无限"
-            else:
-                num_display = info['num']
-            isAutoConsumable = "是" if info['isAutoConsumable'] else "否"
-            isInterceptor = "是" if info['isInterceptor'] else "否"
-            isNoPreparaTime = "（该消耗品无准备时间）" if info['preparationTime'] == 0 else ""
+        # 3. 循环渲染各个配置项的细节
+        for item_name, config in consumable_items:
+            info = self.ability_map.get(item_name)
+            if not info: continue
 
-            output.append(f"[消耗品标识]: {info['name']}\n"
+            # 这里仅生成该条配置的详细参数
+            output = self._generate_detail_text(info)
+            display_area.insert(tk.END, "".join(output) + "\n" + "-" * 20 + "\n")
+
+    def _generate_detail_text(self, info):
+        output = []
+
+        if info['num'] == -1:
+            num_display = "无限"
+        else:
+            num_display = info['num']
+        isAutoConsumable = "是" if info['isAutoConsumable'] else "否"
+        isInterceptor = "是" if info['isInterceptor'] else "否"
+        isNoPreparaTime = "（该消耗品无准备时间）" if info['preparationTime'] == 0 else ""
+
+        output.append(f"[消耗品标识]: {info['name']}\n"
                           f"  - 类型: {info['type']}\n"
                           f"  - 基础可用数量: {num_display}\n"
                           f"  - 是否自动使用: {isAutoConsumable}\n"
                           f"  - 准备时间: {info['preparationTime']}s{isNoPreparaTime} / 冷却时间: {info['reloadTime']}s / 持续时间: {info['workTime']}s\n")
 
-            output.append(f"\n消耗品效果:\n")
-            # 类型特有数据展示
-            if info['type'] == "crashCrew":
-                output.append(f"  - 扑灭起火、清除进水、并修复受损配件。阻止敌方潜艇发射的鱼雷进行导向。\n")
-            elif info['type'] == "regenCrew":
-                data_type = "+" if info['regenHPSpeed'] > 0 else ""
-                output.append(f"  - 每秒回复血量: {data_type}{info['regenHPSpeed'] * 100}%\n")
-            elif info['type'] == "airDefenseDisp":
-                data_type_1 = "+" if info['areaDmgMultiplier'] > 0 else ""
-                data_type_2 = "+" if info['bubbleDmgMultiplier'] > 0 else ""
-                output.append(f"  - 防空区域秒伤: {data_type_1}{info['areaDmgMultiplier'] * 100}%\n")
-                output.append(f"  - 黑云伤害: {data_type_2}{info['bubbleDmgMultiplier'] * 100}%\n")
-            elif info['type'] == "fighter":
-                raw_name = info.get('fighterName', '未知')
-                display_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
-                output.append(f"  - 战斗机名称: {display_name}\n"
-                              f"  - 战斗机数量: {info['fighterNum']}\n"
-                              f"  - 截击机: {isInterceptor}\n"
-                              f"  - 狗斗时间: {info['dogFightTime']}s\n"
-                              f"  - 离开时间: {info['flyAwayTime']}s\n"
-                              f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
-                              f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
-                              # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
-                              f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
-            elif info['type'] == "scout":
-                DistCoeff = info['gunsDistCoeff'] - 1
-                data_type = "+" if DistCoeff > 0 else ""
-                output.append(f"  - 主炮射程 {data_type}{DistCoeff * 100:.2f}%\n")
-            elif info['type'] == "smokeGenerator":
-                output.append(f"  - 烟雾生成半径: {info['radius'] * 3}m\n"
-                                            f"  - 烟雾生成高度: {info['height']}m\n"
-                                            f"  - 烟雾生成速度限制: {info['speedLimit']}kts\n"
-                                            f"  - 烟雾扩散时间: {info['lifeTime']}s\n")
-            elif info['type'] == "speedBoosters":
-                data_type_1 = "+" if info['boostCoeff'] > 0 else ""
-                data_type_2 = "+" if info['forwardEngForsag'] > 0 else ""
-                data_type_3 = "+" if info['backwardEngForsag'] > 0 else ""
-                data_type_4 = "+" if info['forwardEngForsagMaxSpd'] > 0 else ""
-                data_type_5 = "+" if info['backwardEngForsagMaxSpd'] > 0 else ""
-                output.append(f"  - 最高航速: {data_type_1}{info['boostCoeff'] * 100}%\n"
-                                            f"  - 推力加成: 前进{data_type_2}{info['forwardEngForsag'] * 100}% / 后退{data_type_3}{info['backwardEngForsag'] * 100}% \n"
-                                            f"  - 加速最大速度倍率: 前进{data_type_4}{info['forwardEngForsagMaxSpd']} / 后退{data_type_5}{info['backwardEngForsagMaxSpd']}\n")
-            elif info['type'] == "sonar":
-                ship_dist = info['distShip'] * 0.03
-                torp_dist = info['distTorpedo'] * 0.03
-                mine_dist = info['distMine'] * 0.03
-                output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n"
-                                            f"  - 鱼雷探测距离: {torp_dist:.2f} km\n"
-                                            f"  - 水雷探测距离: {mine_dist:.2f} km\n")
-            elif info['type'] == "torpedoReloader":
-                output.append(f"  - 鱼雷装填时间: {info['torpedoReloadTime']}s\n")
-            elif info['type'] == "rls":
-                ship_dist = info['distShip'] * 0.03
-                classes = info.get("affectedClasses", [])
-                output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n")
-                if classes:
-                    class_str = ", ".join([NameMapping.SHIP_CLASS_MAP.get(c, c) for c in classes])
-                    output.append(f"  - 限制探测舰种: {class_str}\n")
-            elif info['type'] == "artilleryBoosters":
-                BoostCoeff = info['boostCoeff'] - 1
-                data_type = "+" if BoostCoeff > 0 else ""
-                output.append(f"  - 主炮装填时间: {data_type}{BoostCoeff * 100:.2f}%\n")
-            elif info['type'] == "healForsage":
-                data_type = "+" if info['boostCoeff'] > 0 else ""
-                output.append(f"  - 引擎冷却速度: {data_type}{info['boostCoeff'] * 100}%\n")
-            elif info['type'] == "callFighters":
-                raw_name = info.get('fighterName', '未知')
-                display_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
-                output.append(f"  - 战斗机名称: {display_name}\n"
-                              f"  - 战斗机数量: {info['fighterNum']}\n"
-                              f"  - 截击机: {isInterceptor}\n"
-                              f"  - 狗斗时间: {info['dogFightTime']}s\n"
-                              f"  - 离开时间: {info['flyAwayTime']}s\n"
-                              f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
-                              f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
-                              # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
-                              f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
-            elif info['type'] == "regenerateHealth":
-                output.append(f"  - 恢复飞机中队部分生命值。在敌方战斗机攻击时使用能免于被击毁。\n")
-            elif info['type'] == "depthCharges":
-                output.append(f"  - 半径: {info['radius'] * 0.003:.2f}km\n")
-            elif info['type'] == "hydrophone":
-                output.append(f"  - 虚影存留时间: {info['zoneLifeTime']}s\n"
-                                            f"  - 刷新时间: {info['hpUpdFreq']}s\n"
-                                            f"  - 视野距离: {info['hpWaveRadius']* 0.001:.2f}km\n")
-            elif info['type'] == "fastRudders":
-                buoyancyRudderTimeCoeff = info['buoyancyRudderTimeCoeff'] - 1
-                buoyancySpeedCoeff = info['maxBuoyancySpeedCoeff'] - 1
-                data_type_1 = "+" if buoyancyRudderTimeCoeff > 0 else ""
-                data_type_2 = "+" if buoyancySpeedCoeff > 0 else ""
-                output.append(f"  - 水平舵换挡时间: {data_type_1}{buoyancyRudderTimeCoeff * 100:.2f}%\n"
-                                            f"  - 上浮/下潜速度: {data_type_2}{buoyancyRudderTimeCoeff * 100:.2f}%\n")
-            elif info['type'] == "subsEnergyFreeze":
-                canUseOnEmpty = "是" if info['canUseOnEmpty'] else "否"
-                output.append(f"  - 启用此消耗品后，下潜能力将停止消耗。\n"
-                                            f"  - 可在电池耗尽时启用: {canUseOnEmpty}\n")
-            elif info['type'] == "submarineLocator":
-                ship_dist = info['distShip'] * 0.03
-                output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n")
-            elif info['type'] == "planeSmokeGenerator":
-                output.append(f"  - 烟雾生效延迟: {info['activationDelay']}s\n"
-                                            f"  - 烟雾生成半径: {info['radius'] * 3}m\n"
-                                            f"  - 烟雾生成高度: {info['height']}m\n"
-                                            f"  - 烟雾生成速度限制: {info['speedLimit']}kts\n"
-                                            f"  - 烟雾扩散时间: {info['lifeTime']}s\n")
-            elif info['type'] == "vampireDamage":
-                output.append(f"  - 用于恢复生命值的伤害转化系数: {info['damageGMHealCoeff'] * 100:.2f}%\n")
-            elif info['type'] == "supportBuoy":
-                output.append(f"  - 加成区域: {info['battleDropVisualName']}\n"
-                                            f"    - 区域布置时间: {info['battleDropActTime']}s\n"
-                                            f"    - 区域持续时间: {info['supportBuoyZoneLifetime']}s\n"
-                                            f"    - 区域半径: {info['buffZoneRadius']/ 1000:.2f}km\n"
-                                            f"    - 加成效果:\n"
-                                            f"      - 效果持续时间: {info['buffDuration']}s\n")
-                if info['battleDropName'] == "PCOD071_SupportBuoy_RU":
-                    gmIdealRadius = info['gmIdealRadius'] - 1
-                    gmShotDelay = info['gmShotDelay'] - 1
-                    gsIdealRadius = info['gsIdealRadius'] - 1
-                    gsShotDelay = info['gsShotDelay'] - 1
-                    gtShotDelay = info['gtShotDelay'] - 1
-                    gs_detail = info['gsMaxDistDetail']
-                    data_type_1 = "+" if gmIdealRadius > 0 else ""
-                    data_type_2 = "+" if gmShotDelay > 0 else ""
-                    data_type_3 = "+" if gsIdealRadius > 0 else ""
-                    data_type_4 = "+" if gsShotDelay > 0 else ""
-                    data_type_5 = "+" if gtShotDelay > 0 else ""
-                    output.append(f"      - 鱼雷管装填时间: {data_type_5}{gtShotDelay * 100:.2f}%\n"
-                                                f"      - 主炮最大散步面积: {data_type_1}{gmIdealRadius * 100:.2f}%\n"
-                                                f"      - 主炮装填时间: {data_type_2}{gmShotDelay * 100:.2f}%\n"
-                                                f"      - 副炮最大散步面积: {data_type_3}{gsIdealRadius * 100:.2f}%\n"
-                                                f"      - 副炮装填时间: {data_type_4}{gsShotDelay * 100:.2f}%\n"
-                                                f"      - 副炮射程:\n")
-                    for ship_class, boost_val in gs_detail.items():
-                        cn_name = NameMapping.SHIP_CLASS_MAP.get(ship_class, ship_class)
-                        boost_pct = boost_val - 1
-                        if boost_pct != 0:
-                            output.append(f"        * {cn_name}: +{boost_pct * 100:.2f}%\n")
+        output.append(f"\n消耗品效果:\n")
+        # 类型特有数据展示
+        if info['type'] == "crashCrew":
+            output.append(f"  - 扑灭起火、清除进水、并修复受损配件。阻止敌方潜艇发射的鱼雷进行导向。\n")
+        elif info['type'] == "regenCrew":
+            data_type = "+" if info['regenHPSpeed'] > 0 else ""
+            output.append(f"  - 每秒回复血量: {data_type}{info['regenHPSpeed'] * 100}%\n")
+        elif info['type'] == "airDefenseDisp":
+            data_type_1 = "+" if info['areaDmgMultiplier'] > 0 else ""
+            data_type_2 = "+" if info['bubbleDmgMultiplier'] > 0 else ""
+            output.append(f"  - 防空区域秒伤: {data_type_1}{info['areaDmgMultiplier'] * 100}%\n")
+            output.append(f"  - 黑云伤害: {data_type_2}{info['bubbleDmgMultiplier'] * 100}%\n")
+        elif info['type'] == "fighter":
+            raw_name = info.get('fighterName', '未知')
+            display_plane_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
+            output.append(f"  - 战斗机名称: {display_plane_name}\n"
+                          f"  - 战斗机数量: {info['fighterNum']}\n"
+                          f"  - 截击机: {isInterceptor}\n"
+                          f"  - 狗斗时间: {info['dogFightTime']}s\n"
+                          f"  - 离开时间: {info['flyAwayTime']}s\n"
+                          f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
+                          f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
+                          # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
+                          f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
+        elif info['type'] == "scout":
+            DistCoeff = info['gunsDistCoeff'] - 1
+            data_type = "+" if DistCoeff > 0 else ""
+            output.append(f"  - 主炮射程 {data_type}{DistCoeff * 100:.2f}%\n")
+        elif info['type'] == "smokeGenerator":
+            output.append(f"  - 烟雾生成半径: {info['radius'] * 3}m\n"
+                          f"  - 烟雾生成高度: {info['height']}m\n"
+                          f"  - 烟雾生成速度限制: {info['speedLimit']}kts\n"
+                          f"  - 烟雾扩散时间: {info['lifeTime']}s\n")
+        elif info['type'] == "speedBoosters":
+            data_type_1 = "+" if info['boostCoeff'] > 0 else ""
+            data_type_2 = "+" if info['forwardEngForsag'] > 0 else ""
+            data_type_3 = "+" if info['backwardEngForsag'] > 0 else ""
+            data_type_4 = "+" if info['forwardEngForsagMaxSpd'] > 0 else ""
+            data_type_5 = "+" if info['backwardEngForsagMaxSpd'] > 0 else ""
+            output.append(f"  - 最高航速: {data_type_1}{info['boostCoeff'] * 100}%\n"
+                          f"  - 推力加成: 前进{data_type_2}{info['forwardEngForsag'] * 100}% / 后退{data_type_3}{info['backwardEngForsag'] * 100}% \n"
+                          f"  - 加速最大速度倍率: 前进{data_type_4}{info['forwardEngForsagMaxSpd']} / 后退{data_type_5}{info['backwardEngForsagMaxSpd']}\n")
+        elif info['type'] == "sonar":
+            ship_dist = info['distShip'] * 0.03
+            torp_dist = info['distTorpedo'] * 0.03
+            mine_dist = info['distMine'] * 0.03
+            output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n"
+                          f"  - 鱼雷探测距离: {torp_dist:.2f} km\n"
+                          f"  - 水雷探测距离: {mine_dist:.2f} km\n")
+        elif info['type'] == "torpedoReloader":
+            output.append(f"  - 鱼雷装填时间: {info['torpedoReloadTime']}s\n")
+        elif info['type'] == "rls":
+            ship_dist = info['distShip'] * 0.03
+            classes = info.get("affectedClasses", [])
+            output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n")
+            if classes:
+                class_str = ", ".join([NameMapping.SHIP_CLASS_MAP.get(c, c) for c in classes])
+                output.append(f"  - 限制探测舰种: {class_str}\n")
+        elif info['type'] == "artilleryBoosters":
+            BoostCoeff = info['boostCoeff'] - 1
+            data_type = "+" if BoostCoeff > 0 else ""
+            output.append(f"  - 主炮装填时间: {data_type}{BoostCoeff * 100:.2f}%\n")
+        elif info['type'] == "healForsage":
+            data_type = "+" if info['boostCoeff'] > 0 else ""
+            output.append(f"  - 引擎冷却速度: {data_type}{info['boostCoeff'] * 100}%\n")
+        elif info['type'] == "callFighters":
+            raw_name = info.get('fighterName', '未知')
+            display_plane_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
+            output.append(f"  - 战斗机名称: {display_plane_name}\n"
+                          f"  - 战斗机数量: {info['fighterNum']}\n"
+                          f"  - 截击机: {isInterceptor}\n"
+                          f"  - 狗斗时间: {info['dogFightTime']}s\n"
+                          f"  - 离开时间: {info['flyAwayTime']}s\n"
+                          f"  - 战斗机爬升角度: {info['flightClimbAngle']}°\n"
+                          f"  - 巡逻半径: {info['radiusToKill'] / 10}km\n"
+                          # f"  - 尝试攻击时间: {info['timeToTryingCatch']}s\n"
+                          f"  - 索敌时间: {info['timeDelayAtk']}s / 瞄准时间: {info['timeWaitDelayAtk']}s\n")
+        elif info['type'] == "regenerateHealth":
+            output.append(f"  - 恢复飞机中队部分生命值。在敌方战斗机攻击时使用能免于被击毁。\n")
+        elif info['type'] == "depthCharges":
+            output.append(f"  - 半径: {info['radius'] * 0.003:.2f}km\n")
+        elif info['type'] == "hydrophone":
+            output.append(f"  - 虚影存留时间: {info['zoneLifeTime']}s\n"
+                          f"  - 刷新时间: {info['hpUpdFreq']}s\n"
+                          f"  - 视野距离: {info['hpWaveRadius']* 0.001:.2f}km\n")
+        elif info['type'] == "fastRudders":
+            buoyancyRudderTimeCoeff = info['buoyancyRudderTimeCoeff'] - 1
+            buoyancySpeedCoeff = info['maxBuoyancySpeedCoeff'] - 1
+            data_type_1 = "+" if buoyancyRudderTimeCoeff > 0 else ""
+            data_type_2 = "+" if buoyancySpeedCoeff > 0 else ""
+            output.append(f"  - 水平舵换挡时间: {data_type_1}{buoyancyRudderTimeCoeff * 100:.2f}%\n"
+                          f"  - 上浮/下潜速度: {data_type_2}{buoyancyRudderTimeCoeff * 100:.2f}%\n")
+        elif info['type'] == "subsEnergyFreeze":
+            canUseOnEmpty = "是" if info['canUseOnEmpty'] else "否"
+            output.append(f"  - 启用此消耗品后，下潜能力将停止消耗。\n"
+                          f"  - 可在电池耗尽时启用: {canUseOnEmpty}\n")
+        elif info['type'] == "submarineLocator":
+            ship_dist = info['distShip'] * 0.03
+            output.append(f"  - 舰船探测距离: {ship_dist:.2f} km\n")
+        elif info['type'] == "planeSmokeGenerator":
+            output.append(f"  - 烟雾生效延迟: {info['activationDelay']}s\n"
+                          f"  - 烟雾生成半径: {info['radius'] * 3}m\n"
+                          f"  - 烟雾生成高度: {info['height']}m\n"
+                          f"  - 烟雾生成速度限制: {info['speedLimit']}kts\n"
+                          f"  - 烟雾扩散时间: {info['lifeTime']}s\n")
+        elif info['type'] == "vampireDamage":
+            output.append(f"  - 用于恢复生命值的伤害转化系数: {info['damageGMHealCoeff'] * 100:.2f}%\n")
+        elif info['type'] == "supportBuoy":
+            output.append(f"  - 加成区域: {info['battleDropVisualName']}\n"
+                          f"    - 区域布置时间: {info['battleDropActTime']}s\n"
+                          f"    - 区域持续时间: {info['supportBuoyZoneLifetime']}s\n"
+                          f"    - 区域半径: {info['buffZoneRadius']/ 1000:.2f}km\n"
+                          f"    - 加成效果:\n"
+                          f"      - 效果持续时间: {info['buffDuration']}s\n")
+            if info['battleDropName'] == "PCOD071_SupportBuoy_RU":
+                gmIdealRadius = info['gmIdealRadius'] - 1
+                gmShotDelay = info['gmShotDelay'] - 1
+                gsIdealRadius = info['gsIdealRadius'] - 1
+                gsShotDelay = info['gsShotDelay'] - 1
+                gtShotDelay = info['gtShotDelay'] - 1
+                gs_detail = info['gsMaxDistDetail']
+                data_type_1 = "+" if gmIdealRadius > 0 else ""
+                data_type_2 = "+" if gmShotDelay > 0 else ""
+                data_type_3 = "+" if gsIdealRadius > 0 else ""
+                data_type_4 = "+" if gsShotDelay > 0 else ""
+                data_type_5 = "+" if gtShotDelay > 0 else ""
+                output.append(f"      - 鱼雷管装填时间: {data_type_5}{gtShotDelay * 100:.2f}%\n"
+                              f"      - 主炮最大散步面积: {data_type_1}{gmIdealRadius * 100:.2f}%\n"
+                              f"      - 主炮装填时间: {data_type_2}{gmShotDelay * 100:.2f}%\n"
+                              f"      - 副炮最大散步面积: {data_type_3}{gsIdealRadius * 100:.2f}%\n"
+                              f"      - 副炮装填时间: {data_type_4}{gsShotDelay * 100:.2f}%\n"
+                              f"      - 副炮射程:\n")
+                for ship_class, boost_val in gs_detail.items():
+                    cn_name = NameMapping.SHIP_CLASS_MAP.get(ship_class, ship_class)
+                    boost_pct = boost_val - 1
+                    if boost_pct != 0:
+                        output.append(f"        * {cn_name}: +{boost_pct * 100:.2f}%\n")
 
-                elif info['battleDropName'] == "PCOD070_SupportBuoy_US":
-                    sgRudderPower = info['rudderPower'] - 1
-                    sgRudderTime = info['rudderTime'] - 1
-                    speedCoeff = info['speedCoef'] - 1
-                    vulnerabilityAll = info['vulnerability'] - 1
-                    data_type_1 = "+" if sgRudderPower > 0 else ""
-                    data_type_2 = "+" if sgRudderTime > 0 else ""
-                    data_type_3 = "+" if speedCoeff > 0 else ""
-                    data_type_4 = "+" if vulnerabilityAll > 0 else ""
-                    data_type_5 = "+" if info['healthRegenPercent'] > 0 else ""
-                    output.append(f"      - 方向舵换挡时间: {data_type_2}{sgRudderTime * 100:.2f}%\n"
-                                                f"      - 方向舵效率: {data_type_1}{sgRudderPower * 100:.2f}%\n"
-                                                f"      - 战舰航速: {data_type_3}{speedCoeff * 100:.2f}%\n"
-                                                f"      - 受到的全类型伤害: {data_type_4}{vulnerabilityAll * 100}%\n"
-                                                f"      - 每秒回复血量: {data_type_5}{info['healthRegenPercent'] * 100:.2f}%\n")
-            output.append("-" * 30 + "\n")
-
-            display_area.insert(tk.END, "".join(output))
+            elif info['battleDropName'] == "PCOD070_SupportBuoy_US":
+                sgRudderPower = info['rudderPower'] - 1
+                sgRudderTime = info['rudderTime'] - 1
+                speedCoeff = info['speedCoef'] - 1
+                vulnerabilityAll = info['vulnerability'] - 1
+                data_type_1 = "+" if sgRudderPower > 0 else ""
+                data_type_2 = "+" if sgRudderTime > 0 else ""
+                data_type_3 = "+" if speedCoeff > 0 else ""
+                data_type_4 = "+" if vulnerabilityAll > 0 else ""
+                data_type_5 = "+" if info['healthRegenPercent'] > 0 else ""
+                output.append(f"      - 方向舵换挡时间: {data_type_2}{sgRudderTime * 100:.2f}%\n"
+                              f"      - 方向舵效率: {data_type_1}{sgRudderPower * 100:.2f}%\n"
+                              f"      - 战舰航速: {data_type_3}{speedCoeff * 100:.2f}%\n"
+                              f"      - 受到的全类型伤害: {data_type_4}{vulnerabilityAll * 100}%\n"
+                              f"      - 每秒回复血量: {data_type_5}{info['healthRegenPercent'] * 100:.2f}%\n")
+        output.append("-" * 30 + "\n")
+        return output
 
     def get_data_by_item_name(self, item_name):
         return self.ability_map.get(item_name)
