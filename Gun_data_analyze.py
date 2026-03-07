@@ -118,8 +118,10 @@ class GunDataAnalyzer:
         # 弹药列表
         ammo_list = data.get("ammoList", [])
         if ammo_list:
+            # 1. 创建映射后的名称列表
             ammo_names = [self.ammo_name_mapping.get(ammo.upper(), ammo) for ammo in ammo_list]
-            display_area.insert(tk.END, f"  - 可用弹药: {', '.join(ammo_names)}\n")
+            display_info = [f"\n    - {name} ({raw_id})" for name, raw_id in zip(ammo_names, ammo_list)]
+            display_area.insert(tk.END, f"  - 可用弹药: {''.join(display_info)}\n")
 
         # --- 3. 模块血量 (HitLocation) ---
         # 寻找 JSON 中以 HitLocation 开头的键

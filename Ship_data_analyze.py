@@ -1008,38 +1008,55 @@ class ShipDataAnalyzer:
                         key = (name, barrels, reload_val, ammo, iR, mR, iD, rz, rd, rm, dl)
                         wp_counts[key] = wp_counts.get(key, 0) + 1
 
+                    # 1. 初始化缓冲区，减少 UI 刷新次数
+                    buffer = []
+
                     for (name, barrels, reload_val, ammo, iR, mR, iD, rz, rd, rm, dl), count in wp_counts.items():
+
+                        # 2. 构建美观的弹药列表
                         if ammo:
-                            # 这里的 ammo 是一个 tuple (来自上面 wp_counts 的 key)
-                            # 调用你之前定义的专门处理弹药列表翻译的方法
-                            translated_ammo_list = []
+                            display_ammo_list = []
                             for aid in ammo:
                                 clean_id = aid.replace("IDS_", "").upper().strip()
-                                # 依次从弹药表、武器表查询，找不到则显示原 ID
-                                a_name = self.ammo_name_mapping.get(clean_id) or \
-                                         self.gun_name_mapping.get(clean_id) or \
-                                         aid
-                                translated_ammo_list.append(a_name)
-                            ammo_str = " / ".join(translated_ammo_list)
+                                a_name = self.ammo_name_mapping.get(clean_id) or aid
+                                # 如果找到翻译且与原 ID 不同，则显示 "名称 (ID)"
+                                if a_name != aid:
+                                    display_ammo_list.append(f"{a_name} ({aid})")
+                                else:
+                                    display_ammo_list.append(aid)
                         else:
-                            ammo_str = "无"
-                        temp_data = {
-                            "idealRadius": iR,  # 这里需要确保 key 匹配
-                            "minRadius": mR,
-                            "idealDistance": iD
-                        }
-                        h_formula = self.get_dispersion_formula(temp_data)
+                            display_ammo_list = None
 
+                        # 3. 统一构建格式化文本片段
+                        # 提取公共部分
                         if cat_key == "Torpedoes":
-                            # 鱼雷不显示公式和纵向系数，显示型号和装填
-                            display_area.insert(tk.END,f"    - 鱼雷发射管: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                            buffer.append(f"    - 鱼雷发射管: {name} (x{count})\n")
+                            buffer.append(f"      - 联装数: {barrels:.0f}\n")
+                            buffer.append(f"      - 装填时间: {reload_val} s\n")
                         elif cat_key == "DepthChargeGuns":
-                            # 深弹：只显示基础信息，不显示散布和系数
-                            display_area.insert(tk.END,
-                                                f"    - 深水炸弹: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
+                            buffer.append(f"    - 深水炸弹: {name} (x{count})\n")
+                            buffer.append(f"      - 联装数: {barrels:.0f}\n")
+                            buffer.append(f"      - 装填时间: {reload_val} s\n")
                         else:
-                            display_area.insert(tk.END,f"    - 炮塔: {name} x{count}: {barrels:.0f}联装, 装填: {reload_val}s, 弹药: {ammo_str}\n")
-                            display_area.insert(tk.END,f"      - 横向散布公式: {h_formula}\n")
-                            display_area.insert(tk.END,f"      - 纵向散步系数: {rz} ~ {rd}(R={dl * 100:.0f}%) ~ {rm}\n")
+                            # 主副炮逻辑
+                            temp_data = {"idealRadius": iR, "minRadius": mR, "idealDistance": iD}
+                            h_formula = self.get_dispersion_formula(temp_data)
 
-                display_area.insert(tk.END, "-" * 40 + "\n\n")
+                            buffer.append(f"    - 炮塔: {name} (x{count})\n")
+                            buffer.append(f"      - 联装数: {barrels:.0f}\n")
+                            buffer.append(f"      - 装填时间: {reload_val} s\n")
+                            buffer.append(f"      - 横向散布公式: {h_formula}\n")
+                            buffer.append(f"      - 纵向散步系数: {rz} ~ {rd} (R={dl * 100:.0f}%) ~ {rm}\n")
+
+                        # 4. 统一处理弹药展示
+                        buffer.append(f"      - 可用弹药:\n")
+                        if display_ammo_list:
+                            for ammo_item in display_ammo_list:
+                                buffer.append(f"        - {ammo_item}\n")
+                        else:
+                            buffer.append(f"        - 无\n")
+
+                        buffer.append("-" * 40 + "\n\n")
+
+                    # 5. 一次性插入 UI
+                    display_area.insert(tk.END, "".join(buffer))
