@@ -16,7 +16,6 @@ class ProjectileDataAnalyzer:
         # 修正 1: 将传入函数存为 callback，避免与方法名 _log 冲突
         self.log_callback = log_func
         self.ammo_name_mapping = {}
-        self.initialize_mapping()
 
     def initialize_mapping(self):
         self.load_ammo_name_mapping()

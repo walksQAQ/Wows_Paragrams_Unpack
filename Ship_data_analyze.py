@@ -59,14 +59,13 @@ class ShipDataAnalyzer:
         else:
             # 如果是源码运行
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.log_func = log_func  # 核心：保存 UI 传入的日志函数
+        self.log_callback = log_func  # 核心：保存 UI 传入的日志函数
         self.ability_name_map = {}
         self.ship_name_mapping = {}
         self.rage_name_mapping = {}
         self.gun_name_mapping = {}
         self.ammo_name_mapping = {}
         self.plane_name_mapping = {}
-        self.initialize_mapping()
         self._cached_mod_data = {}  # 显式定义缓存属性
 
     def initialize_mapping(self):
@@ -81,8 +80,8 @@ class ShipDataAnalyzer:
     # 日志
     def _log(self, message):
         """内部调用的日志工具"""
-        if self.log_func:
-            self.log_func(message)  # 如果有回调，发给 UI
+        if self.log_callback:
+            self.log_callback(message)  # 如果有回调，发给 UI
         else:
             print(message)  # 否则打印到控制台
 
@@ -92,10 +91,10 @@ class ShipDataAnalyzer:
         供外部（MainUI）调用的重新初始化接口
         当 POToolkit 更新了 json 文件后，点击按钮即可刷新内存中的字典
         """
-        self.log_func("正在重新加载本地化数据...")
+        self._log("正在重新加载本地化数据...")
         # 重新执行一遍所有的加载方法
         self.initialize_mapping()
-        self.log_func("数据刷新完成。")
+        self._log("数据刷新完成。")
 
     def load_name_mapping(self):
         mapping_path = os.path.join(self.base_dir, "data", "ship_names.json")
@@ -104,7 +103,7 @@ class ShipDataAnalyzer:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     self.ship_name_mapping = json.load(f)
         except Exception as e:
-            self.log_func(f"读取船名映射出错: {e}")
+            self._log(f"读取船名映射出错: {e}")
 
     def load_ability_map(self):
         file_path = os.path.join(self.base_dir, "data", "consumable_names.json")
@@ -114,7 +113,7 @@ class ShipDataAnalyzer:
                     raw_json = json.load(f)
                     self.ability_name_map = {k.upper(): v for k, v in raw_json.items()}
         except Exception as e:
-            self.log_func(f"读取技能映射出错: {e}")
+            self._log(f"读取消耗品名映射出错: {e}")
 
     def load_rage_name_mapping(self):
         """加载从 .po 文件提取的战斗指令名称映射表"""
@@ -124,7 +123,7 @@ class ShipDataAnalyzer:
                 with open(mapping_path, 'r', encoding='utf-8') as f:
                     self.rage_name_mapping = json.load(f)
         except Exception as e:
-            self.log_func(f"读取战斗指令名称映射出错: {e}")
+            self._log(f"读取战斗指令名称映射出错: {e}")
 
     def load_gun_name_mapping(self):
         """加载由 POToolKit 生成的武器翻译字典"""
@@ -135,7 +134,7 @@ class ShipDataAnalyzer:
                 with open(guns_json_path, 'r', encoding='utf-8') as f:
                     self.gun_name_mapping = json.load(f)
             except Exception as e:
-                self.log_func(f"加载武器翻译失败: {e}")
+                self._log(f"加载武器翻译失败: {e}")
 
     def load_ammo_name_mapping(self):
         """加载由 POToolKit 生成的弹药翻译字典"""
@@ -146,7 +145,7 @@ class ShipDataAnalyzer:
                 with open(ammo_json_path, 'r', encoding='utf-8') as f:
                     self.ammo_name_mapping = json.load(f)
             except Exception as e:
-                self.log_func(f"加载弹药翻译失败: {e}")
+                self._log(f"加载弹药翻译失败: {e}")
 
     def load_plane_name_mapping(self):
         plane_json_path = os.path.join(self.base_dir, "data", "plane_names.json")
@@ -155,7 +154,7 @@ class ShipDataAnalyzer:
                 with open(plane_json_path, 'r', encoding='utf-8') as f:
                     self.plane_name_mapping = json.load(f)
             except Exception as e:
-                self.log_func(f"加载飞机翻译失败: {e}")
+                self._log(f"加载飞机翻译失败: {e}")
 
     def get_localized_weapon_name(self, raw_id):
         """
@@ -194,8 +193,8 @@ class ShipDataAnalyzer:
         # 确保映射表存在且是字典
         table = getattr(self, 'plane_name_mapping', {})
         if not table:
-            if self.log_func:
-                self.log_func("❌ 错误：plane_name_mapping 未加载或为空")
+            if self._log:
+                self._log("❌ 错误：plane_name_mapping 未加载或为空")
             return raw_id
 
         # 2. 快速匹配 (最推荐的方式，效率为 O(1))
@@ -208,8 +207,8 @@ class ShipDataAnalyzer:
                 return v
 
         # 4. 如果没找到，记录到 UI 日志框，并返回原始 ID
-        if self.log_func:
-            self.log_func(f"🔎 飞机映射缺失: {raw_id}")
+        if self._log:
+            self._log(f"🔎 飞机映射缺失: {raw_id}")
 
         return raw_id
 
@@ -367,10 +366,10 @@ class ShipDataAnalyzer:
                     self._cached_mod_data[mod_filename] = data
                     return data
             except Exception as e:
-                self.log_func(f"提取插件文件 {mod_filename} 失败: {e}")
+                self._log(f"提取插件文件 {mod_filename} 失败: {e}")
                 return {}  # 返回空字典而不是 None，防止后续 .get() 报错
         else:
-            self.log_func(f"找不到插件文件: {json_path}")
+            self._log(f"找不到插件文件: {json_path}")
             return {}
 
     def get_conceal_coeff(self, species, level, nation, ship_index):

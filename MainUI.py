@@ -9,6 +9,8 @@ import tkinter as tk
 import customtkinter as ctk
 
 from tkinter import filedialog, messagebox
+
+import Ship_data_analyze
 from DataViewer import DataViewer
 from POToolKit import POToolkit
 from GameParams_processer import GameParamsProcessor
@@ -43,7 +45,7 @@ class AppUI:
         self.setup_ui_layout()
 
         # 4. 绑定查看器
-        self.viewer = DataViewer(self.folder_listbox, self.file_listbox, self.detail_area)
+        self.viewer = DataViewer(self.folder_listbox, self.file_listbox, self.detail_area, log_func=self.log)
         self.folder_listbox.bind("<<ListboxSelect>>", self.viewer.on_folder_select)
         self.file_listbox.bind("<<ListboxSelect>>", self.viewer.on_file_select)
 
@@ -79,8 +81,7 @@ class AppUI:
                                                 command=self.click_data_processor)
         self.btn_data_processor.grid(row=2, column=0, padx=20, pady=10)
 
-        self.btn_refresh_gui = ctk.CTkButton(self.sidebar_frame, text="刷新界面", border_width=2,
-                                             command=self.viewer_refresh_adapter)
+        self.btn_refresh_gui = ctk.CTkButton(self.sidebar_frame, text="刷新界面", border_width=2, command=self.viewer_refresh_adapter)
         self.btn_refresh_gui.grid(row=3, column=0, padx=20, pady=10)
 
         self.btn_getnamefromweb = ctk.CTkButton(self.sidebar_frame, text="加载语言文件", command=self.getnamefromweb)
@@ -137,6 +138,9 @@ class AppUI:
 
         self.check_data_file()
 
+        # 加载映射表
+        self.viewer.reload_all_analyzers(log_func=self.log)
+
         # 居中显示窗口
         self.center_window()
         self.root.deiconify()
@@ -175,10 +179,7 @@ class AppUI:
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
     def viewer_refresh_adapter(self):
-        def _task():
-            self.viewer.refresh()
-
-        threading.Thread(target=_task, daemon=True).start()
+        self.viewer.refresh()
 
     def setup_menu(self):
         """保持原有的原生菜单功能，因为 CTK 对原生菜单支持最好"""
@@ -469,10 +470,9 @@ class AppUI:
                 try:
                     tool.run_all()
                     self.log("分拆语言文件成功")
+
                     self.log("正在重载分析器映射...")
-                    self.viewer.reload_all_analyzers(log_func=self.log)
                     self.log("正在刷新界面列表...")
-                    self.root.after(10, self.viewer.refresh)
                 except Exception as e:
                     self.log(f"po转json出错: {str(e)}")
                     messagebox.showinfo("错误", f"po转json出错: {str(e)}")
@@ -519,7 +519,8 @@ class AppUI:
                     self.game_data_state = True
                     self.config_data["game_data_state"] = True
                     self.save_config()
-                    self.root.after(10, self.viewer.refresh)
+                    self.viewer_refresh_adapter()
+
             except Exception as e:
                 self.log(f"数据解析出错，{e}")
                 messagebox.showerror("错误",f"数据解析出错，{e}")

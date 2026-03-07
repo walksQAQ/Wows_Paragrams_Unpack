@@ -16,7 +16,6 @@ class PlaneDataAnalyzer:
         self.ability_name_map = {}
         self.plane_name_mapping = {}
         self.ammo_name_mapping = {}
-        self.initialize_mapping()
 
     def _log(self, message):
         """内部调用的日志工具"""
