@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import tkinter as tk
 
 from NameMapping import Mapping as NameMapping
@@ -14,9 +15,34 @@ class GunDataAnalyzer:
             # 如果是源代码路径
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.log_callback = log_func  # 核心：保存 UI 传入的日志函数
+        self.gun_name_mapping = {}
 
     def initialize_mapping(self):
+        self.load_gun_name_mapping()
+        self.load_ammo_name_mapping()
         self._log("火炮解析器映射表已同步")
+
+    def load_gun_name_mapping(self):
+        """加载由 POToolKit 生成的武器翻译字典"""
+        # 注意：这里的路径要与 MainUI 生成的路径一致
+        guns_json_path = os.path.join(self.base_dir, "data", "guns_names.json")
+        if os.path.exists(guns_json_path):
+            try:
+                with open(guns_json_path, 'r', encoding='utf-8') as f:
+                    self.gun_name_mapping = json.load(f)
+            except Exception as e:
+                self._log(f"加载武器翻译失败: {e}")
+
+    def load_ammo_name_mapping(self):
+        """加载由 POToolKit 生成的弹药翻译字典"""
+        # 路径指向 POToolkit 生成的 ammo_names.json
+        ammo_json_path = os.path.join(self.base_dir, "data", "ammo_names.json")
+        if os.path.exists(ammo_json_path):
+            try:
+                with open(ammo_json_path, 'r', encoding='utf-8') as f:
+                    self.ammo_name_mapping = json.load(f)
+            except Exception as e:
+                self._log(f"加载弹药翻译失败: {e}")
 
     def _log(self, message):
         """内部调用的日志工具"""
@@ -53,6 +79,7 @@ class GunDataAnalyzer:
         gun_id = data.get("id", "N/A")
         gun_index = data.get("index", "N/A")
 
+        display_name = self.gun_name_mapping.get(gun_name.upper(), gun_name)
         type_info = data.get("typeinfo", {})
         species_raw = type_info.get("species", "Unknown")
         species = NameMapping.WEAPON_SPECIES_MAP.get(species_raw, species_raw)
@@ -60,7 +87,7 @@ class GunDataAnalyzer:
         nation_raw = type_info.get("nation", "Unknown")
         nation = NameMapping.NATION_MAP.get(nation_raw, nation_raw)
 
-        display_area.insert(tk.END, f"组件名称: {gun_name}\n"
+        display_area.insert(tk.END, f"组件名称: {display_name}\n"
                                     f"组件编号: {gun_index}\n"
                                     f"ID: {gun_id}\n"
                                     f"国家: {nation}\n"
@@ -91,7 +118,8 @@ class GunDataAnalyzer:
         # 弹药列表
         ammo_list = data.get("ammoList", [])
         if ammo_list:
-            display_area.insert(tk.END, f"  - 可用弹药: {', '.join(ammo_list)}\n")
+            ammo_names = [self.ammo_name_mapping.get(ammo.upper(), ammo) for ammo in ammo_list]
+            display_area.insert(tk.END, f"  - 可用弹药: {', '.join(ammo_names)}\n")
 
         # --- 3. 模块血量 (HitLocation) ---
         # 寻找 JSON 中以 HitLocation 开头的键

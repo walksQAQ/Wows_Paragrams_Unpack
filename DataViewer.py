@@ -15,7 +15,7 @@ class DataViewer:
         self.folder_listbox = folder_listbox
         self.file_listbox = file_listbox
         self.display_area = display_area
-        self.log_func = log_func  # 接收来自 MainUI 的日志方法
+        self.log_callback = log_func  # 接收来自 MainUI 的日志方法
         # 确保路径指向主程序目录下的 data/split
         if getattr(sys, 'frozen', False):
             # 打包后的路径
@@ -25,17 +25,21 @@ class DataViewer:
             self.main_dir = os.path.dirname(os.path.abspath(__file__))
         self.base_path = os.path.join(os.getcwd(), "data", "split")
         self.current_folder = ""
-        self.ship_analyzer = ShipDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
-        self.projectile_analyzer = ProjectileDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
-        self.gun_analyzer = GunDataAnalyzer(log_func=self.log_func)  # 实例化一次，加载一次映射表
-        self.modernization_analyzer = ModernizationDataAnalyzer(log_func=self.log_func) # 实例化一次，加载一次映射表
-        self.plane_analyzer = PlaneDataAnalyzer(log_func=self.log_func) # 实例化一次，加载一次映射表
-        self.consumable_analyzer = ConsumableAnalyzer(log_func=self.log_func) # 实例化一次，加载一次映射表
+        self.ship_analyzer = ShipDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
+        self.projectile_analyzer = ProjectileDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
+        self.gun_analyzer = GunDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
+        self.modernization_analyzer = ModernizationDataAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
+        self.plane_analyzer = PlaneDataAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
+        self.consumable_analyzer = ConsumableAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
 
     def write_log(self, message):
-        """如果 MainUI 没传 log_func，可以在这里自定义一个默认的日志处理"""
-        if self.log_func:
-            self.log_func(message)
+        """
+        中转站：负责决定日志是发给 UI 还是打印到控制台
+        """
+        if self.log_callback:
+            self.log_callback(message)
+        else:
+            print(f"[DataViewer] {message}")
 
     def refresh(self):
         self.folder_listbox.delete(0, tk.END)
@@ -43,6 +47,10 @@ class DataViewer:
         folders = [f for f in os.listdir(self.base_path) if os.path.isdir(os.path.join(self.base_path, f))]
         for f in sorted(folders):
             self.folder_listbox.insert(tk.END, f"📁 {f}")
+
+    def reload_all_map(self):
+        self.ship_analyzer.reload_mappings()
+        self.consumable_analyzer.reload_mappings()
 
     def reload_all_analyzers(self, log_func=None):
         """
@@ -55,6 +63,7 @@ class DataViewer:
         self.gun_analyzer.initialize_mapping()
         self.modernization_analyzer.initialize_mapping()
         self.plane_analyzer.initialize_mapping()
+        self.consumable_analyzer.initialize_mapping()
         # 如果需要，也可以在此处打印日志确认
         if log_func:
             log_func("分析器映射表重载完成")
