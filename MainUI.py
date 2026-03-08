@@ -472,6 +472,7 @@ class AppUI:
                     self.log("分拆语言文件成功")
 
                     self.log("正在重载分析器映射...")
+                    self.viewer.reload_all_analyzers(log_func=self.log)
                     self.log("正在刷新界面列表...")
                 except Exception as e:
                     self.log(f"po转json出错: {str(e)}")
