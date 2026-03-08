@@ -5,7 +5,7 @@ import tkinter as tk
 
 from NameMapping import Mapping as NameMapping
 
-class ConsumableAnalyzer:
+class ConsumableDataAnalyzer:
     def __init__(self, log_func=None):
         # 兼容打包路径逻辑
         if getattr(sys, 'frozen', False):

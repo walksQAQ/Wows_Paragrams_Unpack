@@ -8,7 +8,8 @@ from Projectile_data_analyze import ProjectileDataAnalyzer
 from Gun_data_analyze import GunDataAnalyzer
 from Modernization_data_analyze import ModernizationDataAnalyzer
 from Plane_data_analyze import PlaneDataAnalyzer
-from Consumable_data_analyze import ConsumableAnalyzer
+from Consumable_data_analyze import ConsumableDataAnalyzer
+from Crew_data_analyze import CrewDataAnalyzer
 
 class DataViewer:
     def __init__(self, folder_listbox, file_listbox, display_area, log_func=None):
@@ -30,7 +31,8 @@ class DataViewer:
         self.gun_analyzer = GunDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
         self.modernization_analyzer = ModernizationDataAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
         self.plane_analyzer = PlaneDataAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
-        self.consumable_analyzer = ConsumableAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
+        self.consumable_analyzer = ConsumableDataAnalyzer(log_func=self.write_log) # 实例化一次，加载一次映射表
+        self.crew_analyzer = CrewDataAnalyzer(log_func=self.write_log)
 
     def write_log(self, message):
         """
@@ -108,6 +110,8 @@ class DataViewer:
                 self.plane_analyzer.analyze(self.display_area, data)
             elif self.current_folder == "Ability":
                 self.consumable_analyzer.analyze(self.display_area, data)
+            elif self.current_folder == "Crew":
+                self.crew_analyzer.analyze(self.display_area, data)
             else:
                 # 默认逻辑：显示原始 JSON 格式化文本
                 self._display_raw_json(data)
