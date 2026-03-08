@@ -147,6 +147,14 @@ class ConsumableAnalyzer:
         if not consumable_items:
             return
 
+        KNOWN_CONSUMABLE_TYPES = {
+            "crashCrew", "regenCrew", "airDefenseDisp", "fighter", "scout",
+            "smokeGenerator", "speedBoosters", "sonar", "torpedoReloader", "rls",
+            "artilleryBoosters", "healForsage", "callFighters", "regenerateHealth",
+            "depthCharges", "hydrophone", "fastRudders", "subsEnergyFreeze",
+            "submarineLocator", "planeSmokeGenerator", "vampireDamage", "supportBuoy"
+        }
+
         # 2. 打印一次性表头（假设 data 本身包含该消耗品的通用名称和 ID）
         display_name = self.consumable_name_map.get(data.get('name', '').upper(), data.get('name', '未知'))
         header = (f"消耗品名称: {display_name}\n"
@@ -161,8 +169,15 @@ class ConsumableAnalyzer:
             if not info: continue
 
             # 这里仅生成该条配置的详细参数
-            output = self._generate_detail_text(info)
-            display_area.insert(tk.END, "".join(output) + "\n" + "-" * 20 + "\n")
+            if info and info.get('type') in KNOWN_CONSUMABLE_TYPES:
+                output = self._generate_detail_text(info)
+                display_area.insert(tk.END, "".join(output) + "\n" + "-" * 20 + "\n")
+            else:
+                # --- 核心：这里直接显示原始 config ---
+                display_area.insert(tk.END, f"[警告]: 类型未匹配: {info.get('type') if info else 'None'}\n")
+                display_area.insert(tk.END, f"消耗品标识: {item_name}\n")
+                raw_data_str = json.dumps(config, indent=2, ensure_ascii=False)
+                display_area.insert(tk.END, f"原始数据:\n{raw_data_str}\n" + "-" * 20 + "\n")
 
     def _generate_detail_text(self, info):
         output = []
@@ -334,6 +349,13 @@ class ConsumableAnalyzer:
                               f"      - 战舰航速: {data_type_3}{speedCoeff * 100:.2f}%\n"
                               f"      - 受到的全类型伤害: {data_type_4}{vulnerabilityAll * 100}%\n"
                               f"      - 每秒回复血量: {data_type_5}{info['healthRegenPercent'] * 100:.2f}%\n")
+        else:
+            for k, v in info.items():
+                # 过滤掉已经展示过的基本属性
+                if k not in ['name', 'type', 'num', 'isAutoConsumable', 'preparationTime', 'reloadTime', 'workTime']:
+                    # 格式化输出，处理空值或列表
+                    if v is not None and v != 0 and v != False:
+                        output.append(f"  - {k}: {v}\n")
         return output
 
     def get_data_by_item_name(self, item_name):
