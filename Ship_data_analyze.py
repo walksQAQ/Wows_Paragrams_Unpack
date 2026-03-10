@@ -996,11 +996,43 @@ class ShipDataAnalyzer:
                     num_val = "无限" if item['num'] == -1 else item['num']
                     display_area.insert(tk.END, f"  - 可选消耗品类型:{item['name']}[{item['config']}]\n"
                                                 f"    - 可用数量:{num_val} \n")
+
                     details = self._format_consumable_details(item)
+
+                    # --- 新增：通用时间参数显示 ---
+                    # 提取基础数值
+                    work_time = item.get('workTime', 0)
+                    reload_time = item.get('reloadTime', 0)
+                    prep_time = item.get('preparationTime', 0)  # 格式化基础信息条目
+                    if work_time > 0:
+                        display_area.insert(tk.END, f"    - 作用时间: {work_time}s\n")
+
+                    if reload_time > 0:
+                        display_area.insert(tk.END, f"    - 冷却时间: {reload_time}s\n")
+
+                    if prep_time > 0:
+                        display_area.insert(tk.END, f"    - 准备时间: {prep_time}s\n")
+                    elif prep_time == 0 and item.get('type') not in ["crashCrew", "depthCharges"]:
+                        # 针对有准备时间概念但当前为0的消耗品进行标注
+                        display_area.insert(tk.END, f"    - 准备时间: 0s (开局可用)\n")
+
+                    is_auto_consumable = "是" if item.get('isAutoConsumable') else "否"
+                    if item.get('isAutoConsumable'):
+                        display_area.insert(tk.END, f"    - 是否自动激活: {is_auto_consumable}\n")
+
+                    # 如果有分层（潜艇消耗品），显示可用深度
+                    buoyancy = item.get('buoyancyStates', [])
+                    if raw_group == "Submarine":
+                        states_cn = [NameMapping.DEPTH_MAP.get(s, s) for s in buoyancy]
+                        display_area.insert(tk.END, f"    - 消耗品可用深度: {' / '.join(states_cn)}\n")
+                    # --- 通用参数结束 ---
+
                     if details:
                         display_area.insert(tk.END, "    - 消耗品效果:\n")
                         for line in details:
                             display_area.insert(tk.END, f"        - {line}\n")
+
+                    display_area.insert(tk.END, "-" * 20 + "\n")  # 分隔符，区分基础属性和特殊效果
 
             display_area.insert(tk.END, "\n")  # 最后补一个空行
 
