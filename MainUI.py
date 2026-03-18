@@ -46,8 +46,9 @@ class AppUI:
 
         # 4. 绑定查看器
         self.viewer = DataViewer(self.folder_listbox, self.file_listbox, self.detail_area, log_func=self.log)
-        self.folder_listbox.bind("<<ListboxSelect>>", self.viewer.on_folder_select)
+        self.folder_listbox.bind("<<ListboxSelect>>", self.on_folder_select)
         self.file_listbox.bind("<<ListboxSelect>>", self.viewer.on_file_select)
+        self.file_search_entry.bind("<KeyRelease>", self.on_file_search_change)
 
         # 5. 异步显示：仅处理耗时的磁盘检查和窗口显示
         self.root.after(50, self.async_boot_process)
@@ -107,7 +108,7 @@ class AppUI:
 
         # 列表区
         self.folder_listbox = self.create_styled_listbox(self.root, "数据分类", 1)
-        self.file_listbox = self.create_styled_listbox(self.root, "内容列表", 2)
+        self.file_listbox = self.create_styled_listbox(self.root, "内容列表", 2, with_search=True)
 
         # 详情区
         self.detail_frame = ctk.CTkFrame(self.root, corner_radius=0)
@@ -117,10 +118,15 @@ class AppUI:
 
         self.setup_menu()
 
-    def create_styled_listbox(self, parent, label_text, col):
+    def create_styled_listbox(self, parent, label_text, col, with_search=False):
         frame = ctk.CTkFrame(parent, corner_radius=0, fg_color="transparent")
         frame.grid(row=0, column=col, sticky="nsew", padx=1, pady=0)
         ctk.CTkLabel(frame, text=label_text, font=ctk.CTkFont(weight="bold")).pack(pady=5)
+
+        if with_search:
+            self.file_search_entry = ctk.CTkEntry(frame, placeholder_text="搜索文件名...")
+            self.file_search_entry.pack(fill=tk.X, padx=5, pady=(0, 5))
+
         container = ctk.CTkFrame(frame, fg_color="#ffffff", corner_radius=6)
         container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         scrollbar = ctk.CTkScrollbar(container, orientation="vertical")
@@ -130,6 +136,15 @@ class AppUI:
         lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=5)
         scrollbar.configure(command=lb.yview)
         return lb
+
+    def on_folder_select(self, event):
+        self.viewer.on_folder_select(event)
+        keyword = self.file_search_entry.get() if hasattr(self, "file_search_entry") else ""
+        self.viewer.apply_file_filter(keyword)
+
+    def on_file_search_change(self, event=None):
+        if hasattr(self, "viewer") and hasattr(self, "file_search_entry"):
+            self.viewer.apply_file_filter(self.file_search_entry.get())
 
     def async_boot_process(self):
         """异步启动逻辑：先处理配置，再显示窗口"""

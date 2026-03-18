@@ -26,6 +26,7 @@ class DataViewer:
             self.main_dir = os.path.dirname(os.path.abspath(__file__))
         self.base_path = os.path.join(os.getcwd(), "data", "split")
         self.current_folder = ""
+        self.current_files = []
         self.ship_analyzer = ShipDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
         self.projectile_analyzer = ProjectileDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
         self.gun_analyzer = GunDataAnalyzer(log_func=self.write_log)  # 实例化一次，加载一次映射表
@@ -76,13 +77,21 @@ class DataViewer:
         self.file_listbox.delete(0, tk.END)
         self.current_folder = self.folder_listbox.get(selection[0]).replace("📁 ", "")
         target_path = os.path.join(self.base_path, self.current_folder)
+        self.current_files = []
 
         if os.path.exists(target_path):
             files = [f for f in os.listdir(target_path) if f.endswith(".json")]
-            for f in sorted(files):
-                # 核心改动：使用 splitext 移除 .json 后缀展示
-                file_name_only = os.path.splitext(f)[0]
-                self.file_listbox.insert(tk.END, f"📄 {file_name_only}")
+            self.current_files = sorted(os.path.splitext(f)[0] for f in files)
+            self.apply_file_filter("")
+
+    def apply_file_filter(self, keyword):
+        """按当前目录内文件名进行直接匹配过滤（不区分大小写）。"""
+        normalized = (keyword or "").strip().lower()
+        self.file_listbox.delete(0, tk.END)
+
+        for file_name in self.current_files:
+            if not normalized or normalized in file_name.lower():
+                self.file_listbox.insert(tk.END, f"📄 {file_name}")
 
     def on_file_select(self, event):
         selection = self.file_listbox.curselection()

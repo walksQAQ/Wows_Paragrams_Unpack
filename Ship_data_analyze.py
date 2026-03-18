@@ -636,6 +636,26 @@ class ShipDataAnalyzer:
         raw_group = data.get("group", "standard")
         raw_level = data.get("level", 0)
 
+        raw_parent_ship = str(data.get("parentShip", "")).strip()
+        if raw_parent_ship:
+            has_parent_ship = True
+            parent_ship_index = raw_parent_ship.split("_")[0].replace("IDS_", "").strip().upper()
+            parent_ship_name = self.ship_name_mapping.get(parent_ship_index, parent_ship_index)
+        else:
+            has_parent_ship = False
+            parent_ship_index = ""
+            parent_ship_name = ""
+
+        raw_origin_ship = str(data.get("originShipName", "")).strip()
+        if raw_origin_ship:
+            has_origin_ship = True
+            origin_ship_index = raw_origin_ship.split("_")[0].replace("IDS_", "").strip().upper()
+            origin_ship_name = self.ship_name_mapping.get(origin_ship_index, origin_ship_index)
+        else:
+            has_origin_ship = False
+            origin_ship_index = ""
+            origin_ship_name = ""
+
         # --- 消耗品提取逻辑 ---
         prepared_consumable_data = []  # 存储处理好的中间数据
         ship_abilities = data.get("ShipAbilities", {})
@@ -985,7 +1005,12 @@ class ShipDataAnalyzer:
         display_area.insert(tk.END, f"舰船种类: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}\n")
         level_roman = NameMapping.LEVEL_MAP[raw_level] if 0 <= raw_level < len(NameMapping.LEVEL_MAP) else str(raw_level)
         display_area.insert(tk.END, f"舰船等级: {level_roman}\n")
-        display_area.insert(tk.END, f"舰船类别: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}\n\n")
+        display_area.insert(tk.END, f"舰船类别: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}\n")
+        if has_parent_ship:
+            display_area.insert(tk.END, f"原型舰船: {parent_ship_name}({parent_ship_index})\n")
+        elif has_origin_ship:
+            display_area.insert(tk.END, f"原型舰船: {origin_ship_name}({origin_ship_index})\n")
+        display_area.insert(tk.END, f"\n")
 
         # --- 消耗品渲染部分 ---
         if prepared_consumable_data:
