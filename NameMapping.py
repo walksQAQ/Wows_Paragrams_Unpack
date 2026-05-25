@@ -27,7 +27,7 @@ class Mapping:
         "AAExtraBubbles": "防空齐射炮弹爆炸次数",
         "AABubbleDamageBonus": "防空炮弹爆炸伤害",
         "AAAuraDamage": "防空炮每秒伤害",
-        # 鱼雷发射管
+        # 鱼雷
         "GTCritProb": "鱼雷发射管瘫痪的风险",
         "GTShotDelay": "鱼雷发射管装填时间",
         "GTRepairTime": "鱼雷管修理时间",
@@ -36,6 +36,7 @@ class Mapping:
         "torpedoVisibilityFactor": "鱼雷对海被侦察范围",
         "torpedoDamageCoeff": "鱼雷伤害",
         "torpedoRangeCoefficient": "鱼雷射程",
+        "floodChanceFactorTorpedo": "舰载鱼雷造成进水的几率",
         # 声呐
         "pingerCritProb": "声呐瘫痪的风险",
         "pingerRepairTime": "声呐修理时间",
@@ -82,6 +83,7 @@ class Mapping:
         "floodProb": "进水的风险",
         "burnTime": "灭火时间",
         "floodTime": "进水恢复时间",
+        "speedCoef": "战舰航速",
         "engineBackwardForsageMaxSpeed": "倒车加速最大速度倍率",
         "engineBackwardForsagePower": "倒车加速功率",
         "engineBackwardUpTime": "倒车达到发动机全功率所需时间",
@@ -108,6 +110,8 @@ class Mapping:
         "healthRegen": "每秒回复血量",
         "vulnerabilityBurn": "受到的火灾伤害",
         "vulnerabilityFlood": "受到的进水伤害",
+        "burnChanceBonus": "造成目标起火的几率",
+        "regenerationHPSpeed": "战舰每秒生命值",
         # 消耗品
         "allConsumableReloadTime": "消耗品的准备和装填时间",
         "speedBoostersWorkTimeCoeff": "引擎增压消耗品作用时间",
@@ -131,6 +135,10 @@ class Mapping:
         "smokeGeneratorAdditionalConsumables": "发烟器消耗品装载数",
         "smokeGeneratorReloadCoeff": "发烟器消耗品冷却时间",
         "regenCrewReloadCoeff": "维修小组消耗品冷却时间",
+        "torpedoReloaderAdditionalConsumables": "鱼雷装填助推器消耗品装填数",
+        "torpedoReloaderReloadCoeff": "鱼雷装填助推器消耗品冷却时间",
+        # 特殊
+        "workTime": "生效时间",
     }
 
     # 国家名称
@@ -236,15 +244,65 @@ class Mapping:
         "reduceTime": "减少整备时间",
     }
 
+    # 触发类型映射（用于 UniqueSkills 等的 triggerType 字段本地化）
+    TRIGGER_TYPE_MAP = {
+        "enemyVehiclesDead": "敌方舰艇被击沉",
+        "rageMode": "激活作战指令",
+        "ribbons": "获得特定数量勋带",
+        "achievement": "获得特定成就",
+        "damage": "受到特定伤害",
+        "health": "战舰血量低于特定值",
+    }
+
+    # 受伤类型映射（triggerDamageType 使用）
+    DAMAGE_TYPE_MAP = {
+        "2": "潜在伤害"
+    }
+
+    # 成就名映射表（先预留，后续再补充具体条目）
+    ACHIEVEMENT_MAP = {}
+
     # 特定勋带（对应顺序为推测）
     RIBBON_MAP = {
+        "0": "主炮命中",
+        "1": "鱼雷命中",
+        "2": "炸弹命中",
+        "3": "击落飞机",
+        "5": "已摧毁",
+        "7": "造成进水",
         "8": "命中装甲区",
+        "10": "副炮命中",
+        "12": "火箭弹命中",
         "13": "副炮组命中",
         "14": "主炮过度击穿",
         "15": "主炮击穿",
         "16": "主炮未击穿",
         "17": "主炮跳弹",
         "19": "发现",
+        "20": "战略贡献",
+        "28": "主炮命中防雷鼓包",
+        "47": "掩护",
+        "56": "吸引火力",
+        "59": "协助校射",
+    }
+
+    RIBBON_MAP_CREW = {
+        "0": "主炮命中",
+        "1": "鱼雷命中",
+        "2": "炸弹命中",
+        "3": "击落飞机",
+        "5": "已摧毁",
+        "7": "造成进水",
+        "8": "命中装甲区",
+        "10": "副炮命中",
+        "12": "火箭弹命中",
+        "13": "战斗机击落飞机",
+        "14": "主炮过度击穿",
+        "15": "主炮击穿",
+        "16": "主炮未击穿",
+        "17": "主炮跳弹",
+        "19": "发现",
+        "20": "战略贡献",
         "28": "主炮命中防雷鼓包",
         "47": "掩护",
         "56": "吸引火力",
