@@ -28,8 +28,18 @@ class GameParams_extractor:
             self.unpack_exe = os.path.join(self.base_tool_path, "wowsunpack.exe")
             self.exe_name = "WorldOfWarships64.exe"
         elif wows_type == "Lesta":
-            self.unpack_exe = os.path.join(self.base_tool_path, "pfsunpack.exe")
             self.exe_name = "Korabli64.exe"
+            latest_bin = self._get_latest_bin()
+            if latest_bin:
+                version_str = self.get_game_exe_version(self.game_path, latest_bin, self.exe_name)
+                import re
+                ver_digits = [int(x) for x in re.findall(r'\d+', version_str)]
+                if ver_digits and tuple(ver_digits) >= (26, 6):
+                    self.unpack_exe = os.path.join(self.base_tool_path, "pfsunpack2.exe")
+                else:
+                    self.unpack_exe = os.path.join(self.base_tool_path, "pfsunpack.exe")
+            else:
+                self.unpack_exe = os.path.join(self.base_tool_path, "pfsunpack2.exe")
 
     def get_game_exe_version(self, game_path, latest_bin, exe_name):
         """读取文件属性版本"""
