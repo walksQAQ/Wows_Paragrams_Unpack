@@ -10,12 +10,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QLineEdit,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from app.signals import bus
 from utils.path_utils import get_split_dir
@@ -24,7 +24,7 @@ from utils.path_utils import get_split_dir
 class BrowserPanel(QWidget):
     """文件列表面板"""
 
-    file_selected = pyqtSignal(str, str)  # 分类名, 文件名(不含.json)
+    file_selected = Signal(str, str)  # 分类名, 文件名(不含.json)
 
     def __init__(self, parent=None):
         super().__init__(parent)

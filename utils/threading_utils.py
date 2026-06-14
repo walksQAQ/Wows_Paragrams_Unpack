@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from typing import Callable, Any
 
-from PyQt6.QtCore import QObject, QRunnable, pyqtSignal, QThreadPool
+from PySide6.QtCore import QObject, QRunnable, Signal, QThreadPool
 
 
 class TaskSignals(QObject):
     """任务执行过程中的信号"""
-    finished = pyqtSignal(object)   # 参数: 返回值
-    error = pyqtSignal(str)         # 参数: 错误消息
-    progress = pyqtSignal(int, str) # 参数: 百分比, 消息
+    finished = Signal(object)   # 参数: 返回值
+    error = Signal(str)         # 参数: 错误消息
+    progress = Signal(int, str) # 参数: 百分比, 消息
 
 
 class AppTask(QRunnable):

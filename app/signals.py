@@ -14,34 +14,34 @@ SignalBus —— 全局信号总线（单例模式）。
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 
 class SignalBus(QObject):
     """全局信号总线，所有通信信号在此定义"""
 
     # ── 日志 ──────────────────────────────────────────────
-    log_message = pyqtSignal(str)
+    log_message = Signal(str)
 
     # ── 状态变更 ──────────────────────────────────────────
-    data_loaded = pyqtSignal(str)           # 参数: 版本号
-    data_processed = pyqtSignal(bool)       # 参数: 成功/失败
-    localization_ready = pyqtSignal()       # 本地化文件就绪
+    data_loaded = Signal(str)           # 参数: 版本号
+    data_processed = Signal(bool)       # 参数: 成功/失败
+    localization_ready = Signal()       # 本地化文件就绪
 
     # ── 进度 ──────────────────────────────────────────────
-    task_progress = pyqtSignal(int, str)    # 参数: 百分比, 消息
+    task_progress = Signal(int, str)    # 参数: 百分比, 消息
 
     # ── 浏览器 / 导航 ────────────────────────────────────
-    folder_selected = pyqtSignal(str)       # 参数: 分类名
-    file_selected = pyqtSignal(str, str)    # 参数: 分类名, 文件名(不含.json)
+    folder_selected = Signal(str)       # 参数: 分类名
+    file_selected = Signal(str, str)    # 参数: 分类名, 文件名(不含.json)
 
     # ── 配置变更 ──────────────────────────────────────────
-    wows_type_changed = pyqtSignal(str)     # 参数: "Wargaming" | "Lesta"
-    game_path_changed = pyqtSignal(str)     # 参数: 新路径
+    wows_type_changed = Signal(str)     # 参数: "Wargaming" | "Lesta"
+    game_path_changed = Signal(str)     # 参数: 新路径
 
     # ── 按钮状态 ──────────────────────────────────────────
     # 用于统一控制 sidebar 按钮的启用/禁用
-    can_process_data = pyqtSignal(bool)
+    can_process_data = Signal(bool)
 
 
 # 全局单例 —— 整个应用共用这一个信号总线对象

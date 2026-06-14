@@ -417,6 +417,8 @@ class ShipAnalyzer(BaseAnalyzer):
         boost = rage_data.get("boostDuration", 0)
         info.append(f"  [基础属性]")
         info.append(f"    - 持续时间: {boost}s")
+        max_act = rage_data.get("maxActivationCount", -1)
+        info.append(f"    - 最大激活次数: {'无限' if max_act == -1 else f'{max_act} 次'}")
         info.append(f"    - 自动激活: {'是' if rage_data.get('isAutoUsage') else '否'}")
         info.append(f"    - 常驻生效: {'是' if rage_data.get('isModifierWorksAlways') else '否'}")
         delay = rage_data.get("decrementDelay", 0)
@@ -425,36 +427,59 @@ class ShipAnalyzer(BaseAnalyzer):
             info.append(f"    - 衰减倒计时: {delay}s")
             info.append(f"    - 衰减周期: {rage_data.get('decrementPeriod', 1)}s")
             info.append(f"    - 衰减数值: {rage_data.get('decrementCount', 0)}%")
+
+        # ── 触发器和动作 ──
+        TRIGGER_LABELS = {
+            "GameLogicTriggerOnActivation": "触发效果",
+            "GameLogicTriggerProgress": "进度积累",
+            "GameLogicTrigger": "进度积累",
+        }
         for key, trigger in rage_data.items():
             if "Trigger" in key and isinstance(trigger, dict):
+                trigger_label = TRIGGER_LABELS.get(key, key)
+                info.append(f"  [{trigger_label}]")
+
+                # 激活条件
                 act = trigger.get("Activator", {})
                 if act:
-                    info.append(f"  [激活条件]")
-                    info.append(f"    - 触发类型: {act.get('type', 'Unknown')}")
+                    atype = act.get("type", "Unknown")
+                    info.append(f"    激活: {atype}")
                     for k, v in act.items():
                         if k == "type":
                             continue
                         elif k == "subRibbons" and isinstance(v, list):
                             names = [NameMapping.RIBBON_MAP.get(str(rid), f"未知勋带({rid})") for rid in v]
-                            info.append(f"    - {NameMapping.DETAIL_MAP.get(k, k)}: {', '.join(names)}")
+                            info.append(f"    - 所需勋带: {', '.join(names)}")
+                        elif k == "requiredCount":
+                            info.append(f"    - 所需次数: {v}")
+                        elif k == "separateTracking":
+                            info.append(f"    - 独立追踪: {'是' if v else '否'}")
+                        elif k == "stateName":
+                            info.append(f"    - 状态: {v}")
                         else:
                             unit = "m" if k == "radius" else ""
-                            info.append(f"    - {NameMapping.DETAIL_MAP.get(k, k)}: {v} {unit}")
+                            label = NameMapping.DETAIL_MAP.get(k, k)
+                            info.append(f"    - {label}: {v} {unit}")
+
+                # 执行动作
                 actions_found = {k: v for k, v in trigger.items() if k.startswith("Action") and isinstance(v, dict)}
                 if actions_found:
-                    info.append(f"  [执行动作]")
                     for action_key, aln in actions_found.items():
-                        alabel = f" ({action_key})" if len(actions_found) > 1 else ""
-                        info.append(f"    - 行为类型{alabel}: {aln.get('type', 'Unknown')}")
+                        atype = aln.get("type", "Unknown")
+                        info.append(f"    动作: {atype}")
                         for k, v in aln.items():
                             if k == "type":
                                 continue
                             if k in ["planeId", "planeName"]:
                                 info.append(f"    - 飞机型号: {self.get_localized_plane_name(v)}")
+                            elif k == "progressName":
+                                info.append(f"    - 进度标识: {v}")
                             else:
                                 label = NameMapping.DETAIL_MAP.get(k, k)
                                 unit = "s" if k in ["reduceTime", "workTime"] else ""
                                 info.append(f"    - {label}: {v}{unit}")
+
+        # ── 加成效果 ──
         mods = rage_data.get("modifiers", {})
         if mods:
             info.append(f"  [加成效果]")
@@ -702,7 +727,7 @@ class ShipAnalyzer(BaseAnalyzer):
                 t.writeln()
 
         # ── 战斗指令 ──────────────────────────────────────
-        rage = raw_data.get("RageMode", {})
+        rage = raw_data.get("A_Specials", {}).get("RageMode", {})
         if rage:
             rage_lines = self.parse_rage_mode_advanced(rage, raw_species)
             for line in rage_lines:

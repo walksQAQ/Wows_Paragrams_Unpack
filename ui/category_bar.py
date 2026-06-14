@@ -7,8 +7,8 @@ CategoryBar —— 左侧分类按钮栏。
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel
+from PySide6.QtCore import Qt, Signal
 
 from app.signals import bus
 from utils.path_utils import get_split_dir
@@ -17,7 +17,7 @@ from utils.path_utils import get_split_dir
 class CategoryBar(QWidget):
     """左侧分类按钮栏"""
 
-    category_selected = pyqtSignal(str)  # 参数: 分类名
+    category_selected = Signal(str)  # 参数: 分类名
 
     # 分类定义：(显示名, 图标, 文件夹名)
     CATEGORIES = [
