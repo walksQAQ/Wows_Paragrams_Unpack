@@ -1,7 +1,12 @@
+"""
+name_mapping —— 全局中文翻译映射表。
+
+所有游戏内英文标识 → 中文翻译的静态字典。
+"""
+
+
 class Mapping:
-    # 加成词条
     MODIFIER_MAP = {
-        # 主炮
         "GMRotationSpeed": "主炮回转速度",
         "GMShotDelay": "主炮装填时间",
         "GMMaxDist": "主炮射程",
@@ -12,7 +17,6 @@ class Mapping:
         "GMDamageCoeff": "主炮炮弹伤害",
         "GMPenetrationCoeffHE": "主炮高爆弹穿深",
         "artilleryKruppMultiplier": "主炮穿甲弹穿深",
-        # 副炮
         "GSIdealRadius": "副炮炮弹的最大误差",
         "GSMaxDist": "副炮射程",
         "GSCritProb": "副炮瘫痪的风险",
@@ -20,14 +24,12 @@ class Mapping:
         "GSShotDelay": "副炮装填时间",
         "GSAlphaFactor": "副炮炮弹伤害",
         "GSPenetrationCoeffHE": "副炮高爆弹穿深",
-        # 防空炮
         "AAAuraDamageBonus": "在远程防空炮区域的持续伤害",
         "AACritProb": "防空炮瘫痪的风险",
         "AARepairTime": "防空炮修理时间",
         "AAExtraBubbles": "防空齐射炮弹爆炸次数",
         "AABubbleDamageBonus": "防空炮弹爆炸伤害",
         "AAAuraDamage": "防空炮每秒伤害",
-        # 鱼雷
         "GTCritProb": "鱼雷发射管瘫痪的风险",
         "GTShotDelay": "鱼雷发射管装填时间",
         "GTRepairTime": "鱼雷管修理时间",
@@ -37,15 +39,12 @@ class Mapping:
         "torpedoDamageCoeff": "鱼雷伤害",
         "torpedoRangeCoefficient": "鱼雷射程",
         "floodChanceFactorTorpedo": "舰载鱼雷造成进水的几率",
-        # 声呐
         "pingerCritProb": "声呐瘫痪的风险",
         "pingerRepairTime": "声呐修理时间",
         "pingerWaveSpeedCoeff": "声呐脉冲速度",
-        # 水听器
         "hydrophoneUpdateFrequencyCoeff": "脉冲间隔",
         "hydrophoneWaveSpeedCoeff": "水听器波纹扩散速度",
-        # 飞机
-        "planeExtraHangarSize": "甲板上各类型飞机的最大数量（不包括战术中队）",
+        "planeExtraHangarSize": "甲板上各类型飞机的最大数量",
         "planeSpawnTime": "飞机整备时间",
         "planeEmptyReturnSpeed": "飞行中队返回速度",
         "planeSpeed": "中队速度",
@@ -69,16 +68,12 @@ class Mapping:
         "planeTorpedoArmingTimeCoeff": "空投鱼雷触发距离",
         "planeAlphaDamageCoeff": "中队武器伤害",
         "planeSpreadMultiplier": "中队攻击最大误差",
-        # 空袭/支援中队
         "asMaxHealthCoeff": "空袭和支援中队飞机生命值",
         "asReloadTimeCoeff": "空袭和支援中队装填时间",
         "asNumPacksBonus": "空袭和支援次数",
-        # 深水炸弹
         "dcReloadTimeCoeff": "深水炸弹装填时间",
         "dcAlphaDamageMultiplier": "深水炸弹伤害",
-        # 水雷
         "minefieldLifeTimeCoeff": "水雷区生效时间",
-        # 船体
         "burnProb": "起火的风险",
         "floodProb": "进水的风险",
         "burnTime": "灭火时间",
@@ -112,7 +107,6 @@ class Mapping:
         "vulnerabilityFlood": "受到的进水伤害",
         "burnChanceBonus": "造成目标起火的几率",
         "regenerationHPSpeed": "战舰每秒生命值",
-        # 消耗品
         "allConsumableReloadTime": "消耗品的准备和装填时间",
         "speedBoostersWorkTimeCoeff": "引擎增压消耗品作用时间",
         "planeSmokeGeneratorWorkTimeCoeff": "烟幕发生器消耗品作用时间",
@@ -137,182 +131,102 @@ class Mapping:
         "regenCrewReloadCoeff": "维修小组消耗品冷却时间",
         "torpedoReloaderAdditionalConsumables": "鱼雷装填助推器消耗品装填数",
         "torpedoReloaderReloadCoeff": "鱼雷装填助推器消耗品冷却时间",
-        # 特殊
         "workTime": "生效时间",
     }
 
-    # 国家名称
     NATION_MAP = {
         "USA": "美国", "Japan": "日本", "Germany": "德国", "Russia": "苏联",
         "United_Kingdom": "英国", "France": "法国", "Italy": "意大利",
         "Pan_Asia": "泛亚", "Europe": "欧洲", "Netherlands": "荷兰",
         "Commonwealth": "英联邦", "Pan_America": "泛美", "Spain": "西班牙",
-        "Events": "其他"
+        "Events": "其他",
     }
 
-    # 舰船状态
     SHIP_GROUP_MAP = {
-        "start": "初始", "preserved": "已移除", "upgradeable": "可研发", "earlyAccess": "抢先体验",
-        "superShip": "超级战舰", "premium": "加值", "ultimate": "特殊", "special": "特殊",
-        "specialUnsellable": "特殊", "disabled": "禁用", "clan": "仅军团", "coopOnly": "仅人机",
-        "demoWithoutStatsPrem": "加值测试", "demoWithoutStats": "测试", "unavailable": "不可用",
-        "event": "仅事件"
+        "start": "初始", "preserved": "已移除", "upgradeable": "可研发",
+        "earlyAccess": "抢先体验", "superShip": "超级战舰", "premium": "加值",
+        "ultimate": "特殊", "special": "特殊", "specialUnsellable": "特殊",
+        "disabled": "禁用", "clan": "仅军团", "coopOnly": "仅人机",
+        "demoWithoutStatsPrem": "加值测试", "demoWithoutStats": "测试",
+        "unavailable": "不可用", "event": "仅事件",
     }
 
-    # 舰船等级
     LEVEL_MAP = ["0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "★"]
 
-    # 武器种类
     WEAPON_SPECIES_MAP = {
-        "Main": "主炮",
-        "Secondary": "副炮",
-        "Torpedo": "鱼雷发射管",
-        "AAircraft": "防空炮",
-        "DCharge": "深弹发射器"
+        "Main": "主炮", "Secondary": "副炮", "Torpedo": "鱼雷发射管",
+        "AAircraft": "防空炮", "DCharge": "深弹发射器",
     }
 
-    # 舰种名称
     SHIP_CLASS_MAP = {
-        "Destroyer": "驱逐舰",
-        "Cruiser": "巡洋舰",
-        "Battleship": "战列舰",
-        "AirCarrier": "航空母舰",
-        "Submarine": "潜艇",
-        "Auxiliary": "其他类型",
-        "default": "默认"
+        "Destroyer": "驱逐舰", "Cruiser": "巡洋舰", "Battleship": "战列舰",
+        "AirCarrier": "航空母舰", "Submarine": "潜艇", "Auxiliary": "其他类型",
+        "default": "默认",
     }
 
     AIRCRAFT_CLASS_MAP = {
-        "Bomber": "鱼雷轰炸机",
-        "Dive": "俯冲轰炸机",
-        "Fighter": "战斗机",
-        "Mine": "水雷轰炸机",
-        "Scout": "侦察机",
-        "Skip": "弹跳轰炸机",
+        "Bomber": "鱼雷轰炸机", "Dive": "俯冲轰炸机", "Fighter": "战斗机",
+        "Mine": "水雷轰炸机", "Scout": "侦察机", "Skip": "弹跳轰炸机",
         "Auxiliary": "其他飞机",
     }
 
-    # 弹种类型
-    AMMO_TYPE_MAP = {
-        "HE": "HE",
-        "AP": "AP",
-        "CS": "SAP",
-    }
+    AMMO_TYPE_MAP = {"HE": "HE", "AP": "AP", "CS": "SAP"}
 
-    # 投射物类型
     PROJECTILE_TYPE_MAP = {
-        "Artillery": "火炮炮弹",
-        "Bomb": "炸弹",
-        "DepthCharge": "深水炸弹",
-        "Laser": "激光",
-        "Rocket": "火箭弹",
-        "Torpedo": "鱼雷",
-        "Wave": "波浪"
+        "Artillery": "火炮炮弹", "Bomb": "炸弹", "DepthCharge": "深水炸弹",
+        "Laser": "激光", "Rocket": "火箭弹", "Torpedo": "鱼雷", "Wave": "波浪",
     }
 
-    # 深度状态
     BUOYANCY_MAP = {
-        "SURFACE": "水面状态",
-        "PERISCOPE": "潜望镜深度",
-        "SEMI_DEEP_WATER": "半潜深度",
-        "DEEP_WATER": "作业深度",
-        "DEEP_WATER_INVUL": "最大深度"
+        "SURFACE": "水面状态", "PERISCOPE": "潜望镜深度",
+        "SEMI_DEEP_WATER": "半潜深度", "DEEP_WATER": "作业深度",
+        "DEEP_WATER_INVUL": "最大深度",
     }
 
-    # 战斗指令相关
     DETAIL_MAP = {
-        "requiredCount": "所需次数",
-        "radius": "有效半径",
-        "separateTracking": "独立计数",
-        "subRibbons": "有效勋带",
-        "timeLimit": "时间限制",
-        "progress": "进度",
-        "progressName": "进度标识",
-        "stateName": "状态标识",
-        "RibbonActivator": "缎带/勋章触发",
+        "requiredCount": "所需次数", "radius": "有效半径",
+        "separateTracking": "独立计数", "subRibbons": "有效勋带",
+        "timeLimit": "时间限制", "progress": "进度", "progressName": "进度标识",
+        "stateName": "状态标识", "RibbonActivator": "缎带/勋章触发",
         "RageModeProgressAction": "累加战斗指令进度",
-        "healPerSecond": "每秒回复血量",
-        "duration": "持续时间",
-        "triggerName": "触发标识",
-        "isRepeating": "可重复",
-        "isVisible": "是否显示",
-        "isEnabled": "是否启用",
-        "consumableTypes": "消耗品类型",
-        "count": "数量",
-        "potentialDamageShift": "所受的潜在伤害",
-        "planeName": "飞机型号",
+        "healPerSecond": "每秒回复血量", "duration": "持续时间",
+        "triggerName": "触发标识", "isRepeating": "可重复",
+        "isVisible": "是否显示", "isEnabled": "是否启用",
+        "consumableTypes": "消耗品类型", "count": "数量",
+        "potentialDamageShift": "所受的潜在伤害", "planeName": "飞机型号",
         "reduceTime": "减少整备时间",
     }
 
-    # 触发类型映射（用于 UniqueSkills 等的 triggerType 字段本地化）
     TRIGGER_TYPE_MAP = {
-        "enemyVehiclesDead": "敌方舰艇被击沉",
-        "rageMode": "激活作战指令",
-        "ribbons": "获得特定数量勋带",
-        "achievement": "获得特定成就",
-        "damage": "受到特定伤害",
-        "health": "战舰血量低于特定值",
+        "enemyVehiclesDead": "敌方舰艇被击沉", "rageMode": "激活作战指令",
+        "ribbons": "获得特定数量勋带", "achievement": "获得特定成就",
+        "damage": "受到特定伤害", "health": "战舰血量低于特定值",
     }
 
-    # 受伤类型映射（triggerDamageType 使用）
-    DAMAGE_TYPE_MAP = {
-        "2": "潜在伤害"
-    }
-
-    # 成就名映射表（先预留，后续再补充具体条目）
+    DAMAGE_TYPE_MAP = {"2": "潜在伤害"}
     ACHIEVEMENT_MAP = {}
 
-    # 特定勋带（对应顺序为推测）
     RIBBON_MAP = {
-        "0": "主炮命中",
-        "1": "鱼雷命中",
-        "2": "炸弹命中",
-        "3": "击落飞机",
-        "5": "已摧毁",
-        "7": "造成进水",
-        "8": "命中装甲区",
-        "10": "副炮命中",
-        "12": "火箭弹命中",
-        "13": "副炮组命中",
-        "14": "主炮过度击穿",
-        "15": "主炮击穿",
-        "16": "主炮未击穿",
-        "17": "主炮跳弹",
-        "19": "发现",
-        "20": "战略贡献",
-        "28": "主炮命中防雷鼓包",
-        "47": "掩护",
-        "56": "吸引火力",
-        "59": "协助校射",
+        "0": "主炮命中", "1": "鱼雷命中", "2": "炸弹命中",
+        "3": "击落飞机", "5": "已摧毁", "7": "造成进水",
+        "8": "命中装甲区", "10": "副炮命中", "12": "火箭弹命中",
+        "13": "副炮组命中", "14": "主炮过度击穿", "15": "主炮击穿",
+        "16": "主炮未击穿", "17": "主炮跳弹", "19": "发现",
+        "20": "战略贡献", "28": "主炮命中防雷鼓包", "47": "掩护",
+        "56": "吸引火力", "59": "协助校射",
     }
 
     RIBBON_MAP_CREW = {
-        "0": "主炮命中",
-        "1": "鱼雷命中",
-        "2": "炸弹命中",
-        "3": "击落飞机",
-        "5": "已摧毁",
-        "7": "造成进水",
-        "8": "命中装甲区",
-        "10": "副炮命中",
-        "12": "火箭弹命中",
-        "13": "战斗机击落飞机",
-        "14": "主炮过度击穿",
-        "15": "主炮击穿",
-        "16": "主炮未击穿",
-        "17": "主炮跳弹",
-        "19": "发现",
-        "20": "战略贡献",
-        "28": "主炮命中防雷鼓包",
-        "47": "掩护",
-        "56": "吸引火力",
-        "59": "协助校射",
+        "0": "主炮命中", "1": "鱼雷命中", "2": "炸弹命中",
+        "3": "击落飞机", "5": "已摧毁", "7": "造成进水",
+        "8": "命中装甲区", "10": "副炮命中", "12": "火箭弹命中",
+        "13": "战斗机击落飞机", "14": "主炮过度击穿",
+        "15": "主炮击穿", "16": "主炮未击穿", "17": "主炮跳弹",
+        "19": "发现", "20": "战略贡献", "28": "主炮命中防雷鼓包",
+        "47": "掩护", "56": "吸引火力", "59": "协助校射",
     }
 
-    # 深度
     DEPTH_MAP = {
-        "SURFACE": "水面",
-        "PERISCOPE": "潜望镜深度",
-        "DEEP_WATER": "工作深度",
-        "DEEP_WATER_INVUL": "最大深度",
+        "SURFACE": "水面", "PERISCOPE": "潜望镜深度",
+        "DEEP_WATER": "工作深度", "DEEP_WATER_INVUL": "最大深度",
     }
