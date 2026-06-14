@@ -10,13 +10,13 @@ SidebarWidget —— 左侧边栏。
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QLabel, QTextEdit, QButtonGroup, QRadioButton,
     QSizePolicy, QFrame, QProgressBar,
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
 
 from app.signals import bus
 from app.application import app as app_ctx
@@ -230,7 +230,7 @@ class SidebarWidget(QWidget):
 
     def _on_settings(self) -> None:
         """打开游戏目录选择对话框"""
-        from PyQt6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
 
         directory = QFileDialog.getExistingDirectory(
             self, "选择游戏安装目录", app_ctx.ctx.game_path

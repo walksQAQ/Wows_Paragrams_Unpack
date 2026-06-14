@@ -7,12 +7,12 @@ SectionWidget —— 将 DataSection 渲染为 QFormLayout 的可滚动面板。
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QLabel,
     QScrollArea, QGroupBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 
 from models.analysis_result import DataSection, DataItem
 
@@ -118,7 +118,7 @@ class RichResultWidget(QWidget):
             scroll = SectionWidget(result.sections[0])
             layout.addWidget(scroll, stretch=1)
         else:
-            from PyQt6.QtWidgets import QTabWidget
+            from PySide6.QtWidgets import QTabWidget
             tabs = QTabWidget()
             tabs.setDocumentMode(True)
             tabs.setStyleSheet("""

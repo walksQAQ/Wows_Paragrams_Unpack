@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QObject
+from PySide6.QtCore import QObject
 
 from app.config import ConfigManager, AppConfig
 from app.signals import bus

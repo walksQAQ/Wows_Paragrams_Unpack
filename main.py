@@ -1,7 +1,7 @@
 """
 Wows Paragrams Unpack —— 战舰世界数据提取/分析工具
 
-PyQt6 重构版入口。
+PySide6 重构版入口。
 
 启动流程：
   1. 初始化 QApplication
@@ -15,8 +15,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
 
 # 确保项目根目录在 sys.path 中（Nuitka 打包后不需要）
 _app_dir = Path(__file__).resolve().parent
@@ -59,7 +59,7 @@ def main() -> None:
     bus.log_message.emit(f"当前服务器: {app_ctx.ctx.wows_type}")
 
     # 6. 启动后自动刷新（如果已有数据）
-    from PyQt6.QtCore import QTimer
+    from PySide6.QtCore import QTimer
     from utils.path_utils import get_split_dir
 
     def _auto_refresh():

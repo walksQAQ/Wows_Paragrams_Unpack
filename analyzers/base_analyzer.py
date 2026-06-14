@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QObject
+from PySide6.QtCore import QObject
 
 from utils.path_utils import get_data_dir
 from models.analysis_result import AnalysisResult

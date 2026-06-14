@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import json
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTextEdit,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 
 from app.signals import bus
 from models.analysis_result import AnalysisResult

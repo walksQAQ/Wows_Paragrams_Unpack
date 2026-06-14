@@ -1,5 +1,9 @@
 @echo off
+set _CL_=/utf-8
+set _LINK_=/utf-8
+chcp 65001 >nul
 
+set PYTHON="C:\Users\walks\AppData\Local\Programs\Python\Python313\python.exe"
 set OUTDIR=release
 
 if exist "%OUTDIR%" rd /s /q "%OUTDIR%"
@@ -9,16 +13,12 @@ python -m nuitka ^
 --onefile ^
 --output-dir=%OUTDIR% ^
 --windows-console-mode=disable ^
---enable-plugin=tk-inter ^
---include-data-file=wowsunpack.exe=wowsunpack.exe ^
---include-data-file=pfsunpack.exe=pfsunpack.exe ^
---include-data-file=pfsunpack2.exe=pfsunpack2.exe ^
---include-module=GameParams ^
+--enable-plugin=pyside6 ^
+--include-data-file=tools/*.exe=tools/ ^
+--include-module=services.GameParams ^
 --output-filename=WowsAnalyzer.exe ^
-MainUI.py
+main.py
 
-copy /y config.json "%OUTDIR%\config.json"
-
-rd /s /q "%OUTDIR%\MainUI.build" 2>nul
-rd /s /q "%OUTDIR%\MainUI.dist" 2>nul
-rd /s /q "%OUTDIR%\MainUI.onefile-build" 2>nul
+rd /s /q "%OUTDIR%\main.build" 2>nul
+rd /s /q "%OUTDIR%\main.dist" 2>nul
+rd /s /q "%OUTDIR%\main.onefile-build" 2>nul

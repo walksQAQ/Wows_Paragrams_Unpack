@@ -6,11 +6,11 @@ TopToolbar —— 顶部工具栏。
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QLabel,
     QButtonGroup, QRadioButton, QProgressBar, QFrame,
 )
-from PyQt6.QtCore import Qt
+from PySide6.QtCore import Qt
 
 from app.signals import bus
 from app.application import app as app_ctx
@@ -115,7 +115,7 @@ class TopToolbar(QWidget):
         run_localization()
 
     def _on_settings(self):
-        from PyQt6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
         d = QFileDialog.getExistingDirectory(self, "选择游戏目录", app_ctx.ctx.game_path)
         if d:
             app_ctx.set_game_path(d)
