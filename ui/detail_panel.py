@@ -105,7 +105,6 @@ class DetailPanel(QWidget):
     def _render(self, r: AnalysisResult) -> None:
         lines = []
         for sec in r.sections:
-            lines.append(f"【{sec.label}】")
             for item in sec.sorted_items():
                 if not item.name and not item.value:
                     lines.append("")

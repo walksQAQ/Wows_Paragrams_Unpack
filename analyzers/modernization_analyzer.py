@@ -51,13 +51,11 @@ class ModernizationAnalyzer(BaseAnalyzer):
         slot = raw_data.get("slot", 0)
         slot_str = f"第 {slot + 1} 槽位" if slot != -1 else "已禁用升级品"
 
-        t.writeln("=" * 45)
         t.writeln(f"  升级品名称: {display_name}")
         t.writeln(f"  编号: {mod_index}")
         t.writeln(f"  ID: {mod_id}")
         t.writeln(f"  价格: {cost:,} 银币")
         t.writeln(f"  安装槽位: {slot_str}")
-        t.writeln("=" * 45)
         t.writeln()
 
         # 属性加成

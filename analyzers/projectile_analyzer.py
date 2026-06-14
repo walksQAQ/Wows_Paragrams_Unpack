@@ -44,7 +44,6 @@ class ProjectileAnalyzer(BaseAnalyzer):
         t.writeln(f"ID: {proj_id}")
         t.writeln(f"国家: {nation}")
         t.writeln(f"类型: {display_type}")
-        t.writeln("=" * 45)
         t.writeln()
 
         alpha_dmg = raw_data.get("alphaDamage", 0)
@@ -192,6 +191,5 @@ class ProjectileAnalyzer(BaseAnalyzer):
             t.writeln(f"波浪覆盖扇区: {raw_data.get('waveSector', 0)}°")
 
         t.writeln()
-        t.writeln("-" * 45)
 
         return t.result(title=final_name, subtitle=f"编号: {proj_index} | {display_type}")

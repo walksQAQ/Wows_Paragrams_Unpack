@@ -26,11 +26,9 @@ class CrewAnalyzer(BaseAnalyzer):
         from models.name_mapping import Mapping as NM
         t = TextCollector()
 
-        t.writeln("=" * 45)
         t.writeln(f"  舰长名称: {raw_data.get('name', 'Unknown_Crew')}")
         t.writeln(f"  舰长编号: {raw_data.get('index', 'Unknown_Index')}")
         t.writeln(f"  所属国籍: {raw_data.get('typeinfo', {}).get('nation', 'Unknown')}")
-        t.writeln("=" * 45)
         t.writeln()
 
         # 舰长特性

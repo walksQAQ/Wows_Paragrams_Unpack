@@ -47,13 +47,11 @@ class PlaneAnalyzer(BaseAnalyzer):
         raw_speed = raw_data.get("speedMoveWithBomb", 0)
         knots = round(raw_speed * 5.25 / 15, 1)
 
-        t.writeln("=" * 45)
         t.writeln(f"  飞机型号: {display_name}")
         t.writeln(f"  编号: {idx}")
         t.writeln(f"  等级: {level}")
         t.writeln(f"  国籍: {nation}")
         t.writeln(f"  机种: {species_name}")
-        t.writeln("=" * 45)
         t.writeln()
 
         # 飞行性能
@@ -84,7 +82,6 @@ class PlaneAnalyzer(BaseAnalyzer):
             t.writeln(f"  关联弹药: {bomb_name} ({bomb_id})")
 
         t.writeln()
-        t.writeln("=" * 45)
 
         return t.result(title=display_name, subtitle=f"编号: {idx} | {species_name}")
 
