@@ -96,7 +96,7 @@ class ConsumableAnalyzer(BaseAnalyzer):
         t.writeln(f"消耗品名称: {display_name}")
         t.writeln(f"消耗品编号: {raw_data.get('index')}")
         t.writeln(f"消耗品ID: {raw_data.get('id')}")
-        t.writeln("=" * 30)
+        t.writeln("-" * 30)
         t.writeln()
 
         for item_name, config in raw_data.items():

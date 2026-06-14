@@ -43,11 +43,9 @@ class GunAnalyzer(BaseAnalyzer):
         gun_index = raw_data.get("index", "N/A")
         display_name = self.gun_name_mapping.get(gun_name.upper(), gun_name)
 
-        t.writeln("=" * 45)
         t.writeln(f"  武器名称: {display_name}")
         t.writeln(f"  编号: {gun_index}")
         t.writeln(f"  ID: {gun_id}")
-        t.writeln("=" * 45)
         t.writeln()
 
         species_raw = raw_data.get("typeinfo", {}).get("species", "Unknown")
@@ -104,6 +102,5 @@ class GunAnalyzer(BaseAnalyzer):
             t.writeln(f"  默认纵向散步系数: {rz} ~ {rd}(R={dl * 100:.0f}%) ~ {rm}")
 
         t.writeln()
-        t.writeln("-" * 45)
 
         return t.result(title=display_name, subtitle=f"编号: {gun_index}")

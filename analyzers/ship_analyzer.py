@@ -39,39 +39,16 @@ class TextCollector:
 
     def result(self, title: str, subtitle: str = "") -> AnalysisResult:
         """将收集的文本打包成 AnalysisResult"""
-        sections: list[DataSection] = []
-        current_section: list[DataItem] = []
-        current_label = ""
-
+        items: list[DataItem] = []
         for line in self._lines:
-            # 以 === 开头的是区段标题
-            if line.startswith("==="):
-                if current_section and current_label:
-                    sections.append(DataSection(label=current_label, items=current_section))
-                    current_section = []
-                # 纯 === 分割线不产生标题
-                label = line.strip("= ").strip()
-                if label:
-                    current_label = label
-                continue
-
-            # 以 【 开头的是区段标题
-            if line.startswith("【"):
-                if current_section and current_label:
-                    sections.append(DataSection(label=current_label, items=current_section))
-                    current_section = []
-                current_label = line.strip("【】").strip()
-                continue
-
             if line.strip():
-                current_section.append(DataItem(name=line, value=""))
+                items.append(DataItem(name=line, value=""))
             elif line == "":
-                current_section.append(DataItem(name="", value=""))
-
-        if current_section and current_label:
-            sections.append(DataSection(label=current_label, items=current_section))
-
-        return AnalysisResult(title=title, subtitle=subtitle, sections=sections)
+                items.append(DataItem(name="", value=""))
+        return AnalysisResult(
+            title=title, subtitle=subtitle,
+            sections=[DataSection(label=title, items=items)]
+        )
 
 
 class ShipAnalyzer(BaseAnalyzer):
@@ -223,7 +200,7 @@ class ShipAnalyzer(BaseAnalyzer):
             return "数据缺失"
         slope = (ir - mr) / (id_dist / 1000)
         intercept = mr * 30
-        return f"{round(slope, 2)}R + {round(intercept, 2)}"
+        return f"{round(slope, 2):.1f}R + {round(intercept, 2):.0f}"
 
     def load_mod_file(self, mod_filename: str) -> dict:
         if mod_filename in self._cached_mod_data:
