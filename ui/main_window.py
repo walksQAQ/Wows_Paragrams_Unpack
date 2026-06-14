@@ -19,8 +19,10 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QStatusBar, QLabel, QMenuBar, QMenu,
+    QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont
 
 from app.signals import bus
 from app.application import app
@@ -71,6 +73,21 @@ class MainWindow(QMainWindow):
         middle_layout.addWidget(content_splitter, stretch=1)
         main_layout.addWidget(middle, stretch=1)
 
+        # ── 日志面板（右下角）────────────────────────────
+        self.log_panel = QTextEdit()
+        self.log_panel.setReadOnly(True)
+        self.log_panel.setFont(QFont("Microsoft YaHei", 9))
+        self.log_panel.setFixedHeight(80)
+        self.log_panel.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e; color: #ccc;
+                border: none; border-top: 1px solid #3c3c3c;
+                padding: 4px 8px;
+            }
+        """)
+        self.log_panel.setVisible(False)
+        main_layout.addWidget(self.log_panel)
+
         # ── 状态栏 ──────────────────────────────────────
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -103,6 +120,9 @@ class MainWindow(QMainWindow):
 
     def _on_log(self, message: str) -> None:
         self.status_label.setText(message)
+        self.log_panel.append(message)
+        if not self.log_panel.isVisible():
+            self.log_panel.setVisible(True)
 
     # ── 窗口管理 ──────────────────────────────────────────
 

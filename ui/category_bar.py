@@ -35,9 +35,9 @@ class CategoryBar(QWidget):
             background-color: transparent;
             color: #ccc;
             border: none;
-            border-radius: 6px;
-            padding: 12px 16px;
-            font-size: 14px;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 12px;
             text-align: left;
         }
         QPushButton:hover {
