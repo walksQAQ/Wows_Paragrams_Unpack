@@ -278,7 +278,7 @@ class ShipAnalyzer(BaseAnalyzer):
                         "bat_cap": {"name": "电池容量", "val": sub_battery.get("capacity"), "unit": "", "fmt": ".0f", "order": 1},
                         "bat_regen": {"name": "电力恢复", "val": sub_battery.get("regenRate"), "unit": "/s", "fmt": ".2f", "order": 2},
                         "has_hydrophone": {"name": "水听器", "val": has_hydrophone, "unit": "", "fmt": "bool", "order": 3},
-                        "hp_radius": {"name": "水听器范围", "val": hydrophone.get("waveRadius"), "unit": "km", "fmt": ".2f", "order": 4},
+                        "hp_radius": {"name": "水听器范围", "val": hydrophone.get("waveRadius")/1000, "unit": "km", "fmt": ".2f", "order": 4},
                         "hp_frep": {"name": "水听器更新周期", "val": hydrophone.get("updateFrequency"), "unit": "s", "fmt": ".1f", "order": 5},
                         "hp_work_states": {"name": "水听器工作深度", "val": hydrophone.get("workingBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 6},
                         "hp_detect_states": {"name": "水听器可探测深度", "val": hydrophone.get("detectableBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 7},
@@ -603,28 +603,66 @@ class ShipAnalyzer(BaseAnalyzer):
                 name = item["name"]
                 t.writeln(f"    - {name}: {v}{unit_str}")
             # 潜艇特殊数据
-            sub_data = hull_data.get("submarine_sp_data", {})
-            sub_items = sub_data.get("items", {})
-            has_battery = sub_items.get("has_battery", {}).get("val", False)
-            if has_battery:
-                t.writeln(f"  [潜艇特殊数据]")
-                for key in sorted(sub_items, key=lambda x: sub_items[x].get("order", 0)):
-                    item = sub_items[key]
-                    if key == "has_battery":
-                        continue
-                    v = item["val"]
-                    if isinstance(v, list):
-                        for entry in v:
-                            if isinstance(entry, dict):
-                                t.writeln(f"    - {entry.get('state', '')}: 深度范围={entry.get('depth_range', '')}, 速度倍率={entry.get('speed_multiplier', '')}")
-                            else:
-                                t.writeln(f"    - {entry}")
-                    elif v not in (None, False):
-                        v = self._fmt_val(v, item.get("fmt"))
-                        unit = item.get("unit", "")
-                        unit_str = f" {unit}" if unit else ""
-                        name = item["name"]
-                        t.writeln(f"    - {name}: {v}{unit_str}")
+            if raw_species == "Submarine":
+                from models.name_mapping import Mapping as NameMapping
+                sub_data = hull_data.get("submarine_sp_data", {})
+                sub_items = sub_data.get("items", {})
+                default_items = hull_data.get("default_data", {}).get("items", {})
+                max_speed = default_items.get("maxSpeed", {}).get("val", 0) or 0
+
+                t.writeln(f"  潜艇专有数据:")
+
+                # 水平舵 + 上浮/下潜速度
+                br_time = sub_items.get("buoyancy_rudder_time", {}).get("val", 0) or 0
+                b_speed = sub_items.get("buoyancy_speed", {}).get("val", 0) or 0
+                t.writeln(f"    - 基础水平舵换挡时间: {br_time:.2f} s")
+                t.writeln(f"    - 最大上浮和下潜速度: {b_speed} m/s")
+
+                # 最大水下航速（从深度数据中取 invul 速度倍率）
+                buoyancy_list = sub_items.get("buoyancyStates", {}).get("val", []) or []
+                invul_speed_multiplier = 1.0
+                for entry in buoyancy_list:
+                    if isinstance(entry, dict) and entry.get('state') == 'DEEP_WATER_INVUL':
+                        invul_speed_multiplier = entry.get('speed_multiplier', 1.0)
+                        break
+                t.writeln(f"    - 最大水下航速: {max_speed * invul_speed_multiplier:.2f} kts")
+
+                # 深度数据（固定顺序：水面→潜望镜→工作深度→最大深度）
+                t.writeln(f"    - 深度数据:")
+                b_map = {e['state']: e for e in buoyancy_list if isinstance(e, dict)}
+                order = ["SURFACE", "PERISCOPE", "DEEP_WATER", "DEEP_WATER_INVUL"]
+                for state_key in order:
+                    if state_key in b_map:
+                        data = b_map[state_key]
+                        cn_name = NameMapping.DEPTH_MAP.get(state_key, state_key)
+                        d_range = data.get('depth_range', [0, 0])
+                        t.writeln(f"        ◈ [{cn_name}]: {d_range[0]:>5}m 至 {d_range[1]:>5}m")
+
+                # 下潜能力（电池）
+                has_battery = sub_items.get("has_battery", {}).get("val", False)
+                if has_battery:
+                    bat_cap = sub_items.get("bat_cap", {}).get("val", 0) or 0
+                    bat_regen = sub_items.get("bat_regen", {}).get("val", 0) or 0
+                    t.writeln(f"    - 下潜能力:")
+                    t.writeln(f"      - 基础电池容量: {bat_cap}")
+                    t.writeln(f"      - 基础电力恢复速度: {bat_regen} /s")
+
+                # 水听器
+                has_hydrophone = sub_items.get("has_hydrophone", {}).get("val", False)
+                if has_hydrophone:
+                    hp_radius = sub_items.get("hp_radius", {}).get("val", 0) or 0
+                    hp_frep = sub_items.get("hp_frep", {}).get("val", 0) or 0
+                    hp_work = sub_items.get("hp_work_states", {}).get("val", []) or []
+                    hp_detect = sub_items.get("hp_detect_states", {}).get("val", []) or []
+                    work_states = [NameMapping.DEPTH_MAP.get(s, s) for s in hp_work]
+                    detect_states = [NameMapping.DEPTH_MAP.get(s, s) for s in hp_detect]
+                    t.writeln(f"    - 水听器:")
+                    t.writeln(f"      - 生效半径: {hp_radius} km")
+                    t.writeln(f"      - 刷新周期: {hp_frep} s")
+                    if work_states:
+                        t.writeln(f"      - 水听器工作层级: {' / '.join(work_states)}")
+                    if detect_states:
+                        t.writeln(f"      - 可探测深度层级: {' / '.join(detect_states)}")
             t.writeln()
 
         # ── 消耗品数据 ────────────────────────────────────

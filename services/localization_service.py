@@ -157,6 +157,4 @@ def run_localization() -> None:
     def _err(msg: str):
         bus.log_message.emit(f"❌ 加载失败: {msg}")
 
-    s = run_async(_run)
-    s.finished.connect(_ok)
-    s.error.connect(_err)
+    run_async(_run, on_finished=_ok, on_error=_err)

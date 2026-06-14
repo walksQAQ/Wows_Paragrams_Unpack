@@ -18,15 +18,18 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 
-# 确保项目根目录在 sys.path 中（Nuitka 打包后不需要）
-_app_dir = Path(__file__).resolve().parent
+from utils.path_utils import get_app_dir, get_bundled_dir
+
+# 确定应用根目录（Nuitka 打包后使用 exe 所在目录）
+_app_dir = get_app_dir() if "__compiled__" in globals() else Path(__file__).resolve().parent
 if str(_app_dir) not in sys.path:
     sys.path.insert(0, str(_app_dir))
 
 
 def load_stylesheet(app: QApplication) -> None:
     """加载 QSS 样式表（可选）"""
-    style_path = _app_dir / "resources" / "styles" / "main.qss"
+    # resources/ 是打包内置资源，用 get_bundled_dir() 定位
+    style_path = get_bundled_dir() / "resources" / "styles" / "main.qss"
     if style_path.exists():
         with open(style_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())

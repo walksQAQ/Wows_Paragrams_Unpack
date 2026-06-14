@@ -72,9 +72,22 @@ def run_extract() -> None:
         idx_path = os.path.join(game_path, "bin", latest_bin, "idx")
         app_dir = get_app_dir()
 
+        # 检查解包工具是否存在
+        if not os.path.isfile(unpack_exe):
+            raise Exception(f"解包工具不存在: {unpack_exe}")
+
         command = [unpack_exe, "-x", idx_path, "-p", "../../../res_packages", "-I", "content/*.data"]
-        subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         shell=True, cwd=str(app_dir)).communicate()
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=str(app_dir))
+        try:
+            stdout, stderr = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise Exception(f"解包工具执行超时（120秒）")
+        if proc.returncode != 0:
+            err_msg = stderr.decode('utf-8', errors='replace').strip() or f"退出码 {proc.returncode}"
+            raise Exception(f"解包工具执行失败: {err_msg}")
 
         found = False
         for fn in ["GameParams.data", "GameParams_py2.data"]:
@@ -84,7 +97,7 @@ def run_extract() -> None:
                 found = True
         shutil.rmtree(str(app_dir / "content"), ignore_errors=True)
         if not found:
-            raise Exception("未生成数据文件，请检查解压工具")
+            raise Exception(f"未在 {app_dir / 'content'} 找到生成的数据文件，请检查解包工具")
         return current_ver
 
     def _ok(version: str):
@@ -97,7 +110,6 @@ def run_extract() -> None:
     def _err(msg: str):
         bus.log_message.emit(f"❌ 提取失败: {msg}")
         bus.can_process_data.emit(False)
+        bus.data_loaded.emit("")
 
-    s = run_async(_extract)
-    s.finished.connect(_ok)
-    s.error.connect(_err)
+    run_async(_extract, on_finished=_ok, on_error=_err)

@@ -1,49 +1,48 @@
 """
-线程工具 —— QThreadPool + QRunnable 封装。
+线程工具 —— threading.Thread 封装。
 
-替代旧代码中 threading.Thread 的混乱模式。
-所有耗时操作通过此模块提交到线程池，执行结果通过信号返回。
+后台任务通过回调返回结果，避免 Qt 信号跨线程的兼容问题。
 """
 
 from __future__ import annotations
 
+import threading
 from typing import Callable, Any
 
-from PySide6.QtCore import QObject, QRunnable, Signal, QThreadPool
 
+class _AppTask:
+    """后台任务（回调方式，不走 Qt 信号）"""
 
-class TaskSignals(QObject):
-    """任务执行过程中的信号"""
-    finished = Signal(object)   # 参数: 返回值
-    error = Signal(str)         # 参数: 错误消息
-    progress = Signal(int, str) # 参数: 百分比, 消息
-
-
-class AppTask(QRunnable):
-    """
-    通用后台任务。
-
-    使用方式：
-        task = AppTask(fn=lambda: do_something(arg))
-        task.signals.finished.connect(self.on_finished)
-        QThreadPool.globalInstance().start(task)
-    """
-
-    def __init__(self, fn: Callable[[], Any]):
-        super().__init__()
+    def __init__(self, fn: Callable[[], Any], on_finished=None, on_error=None):
         self.fn = fn
-        self.signals = TaskSignals()
+        self._on_finished = on_finished
+        self._on_error = on_error
+        self._thread: threading.Thread | None = None
 
-    def run(self) -> None:
+    def _run(self) -> None:
         try:
             result = self.fn()
-            self.signals.finished.emit(result)
+            if self._on_finished:
+                self._on_finished(result)
         except Exception as e:
-            self.signals.error.emit(str(e))
+            if self._on_error:
+                self._on_error(str(e))
+        finally:
+            try:
+                _running_tasks.remove(self)
+            except ValueError:
+                pass
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
 
-def run_async(fn: Callable[[], Any]) -> TaskSignals:
-    """快捷方式：提交一个任务到全局线程池，返回信号对象"""
-    task = AppTask(fn)
-    QThreadPool.globalInstance().start(task)
-    return task.signals
+# 持有所有运行中的任务引用，防止被 GC 回收
+_running_tasks: list[_AppTask] = []
+
+def run_async(fn: Callable[[], Any], on_finished=None, on_error=None) -> None:
+    """提交一个任务到后台线程，通过回调返回结果"""
+    task = _AppTask(fn, on_finished=on_finished, on_error=on_error)
+    task.start()
+    _running_tasks.append(task)

@@ -112,6 +112,4 @@ def run_process() -> None:
         bus.log_message.emit(f"❌ 解析失败: {msg}")
         bus.data_processed.emit(False)
 
-    s = run_async(_process)
-    s.finished.connect(_ok)
-    s.error.connect(_err)
+    run_async(_process, on_finished=_ok, on_error=_err)
