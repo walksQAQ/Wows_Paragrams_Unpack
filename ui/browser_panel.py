@@ -37,8 +37,8 @@ class BrowserPanel(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("🔍 搜索文件名...")
         self.search_box.setStyleSheet("""
-            QLineEdit { padding: 6px 8px; border: 1px solid #d0d0d0;
-                border-radius: 4px; font-size: 12px; }
+            QLineEdit { padding: 4px 6px; border: 1px solid #d0d0d0;
+                border-radius: 3px; font-size: 11px; }
             QLineEdit:focus { border-color: #0078d4; }
         """)
         layout.addWidget(self.search_box)
@@ -49,7 +49,7 @@ class BrowserPanel(QWidget):
         self.file_list.setStyleSheet("""
             QListWidget { background-color: #fff; border: 1px solid #d0d0d0;
                 border-radius: 4px; }
-            QListWidget::item { padding: 6px 8px; }
+            QListWidget::item { padding: 2px 6px; }
             QListWidget::item:selected { background-color: #0078d4; color: #fff; }
             QListWidget::item:hover { background-color: #e5f1fb; }
         """)

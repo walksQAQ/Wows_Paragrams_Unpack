@@ -92,6 +92,7 @@ def run_extract() -> None:
         app_ctx.set_game_data_state(True)
         bus.log_message.emit(f"✅ {version} 提取成功！")
         bus.can_process_data.emit(True)
+        bus.data_loaded.emit(version)
 
     def _err(msg: str):
         bus.log_message.emit(f"❌ 提取失败: {msg}")

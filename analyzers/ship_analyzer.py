@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -40,20 +41,23 @@ class TextCollector:
         """将收集的文本打包成 AnalysisResult"""
         sections: list[DataSection] = []
         current_section: list[DataItem] = []
-        current_label = "通用"
+        current_label = ""
 
         for line in self._lines:
             # 以 === 开头的是区段标题
             if line.startswith("==="):
-                if current_section:
+                if current_section and current_label:
                     sections.append(DataSection(label=current_label, items=current_section))
                     current_section = []
-                current_label = line.strip("= ").strip()
+                # 纯 === 分割线不产生标题
+                label = line.strip("= ").strip()
+                if label:
+                    current_label = label
                 continue
 
             # 以 【 开头的是区段标题
             if line.startswith("【"):
-                if current_section:
+                if current_section and current_label:
                     sections.append(DataSection(label=current_label, items=current_section))
                     current_section = []
                 current_label = line.strip("【】").strip()
@@ -61,8 +65,10 @@ class TextCollector:
 
             if line.strip():
                 current_section.append(DataItem(name=line, value=""))
+            elif line == "":
+                current_section.append(DataItem(name="", value=""))
 
-        if current_section:
+        if current_section and current_label:
             sections.append(DataSection(label=current_label, items=current_section))
 
         return AnalysisResult(title=title, subtitle=subtitle, sections=sections)
@@ -104,10 +110,37 @@ class ShipAnalyzer(BaseAnalyzer):
     HP_PATTERNS = {
         "Artillery": re.compile(r'HP_[A-Z]GM_\d+'),
         "ATBA": re.compile(r'HP_([A-Z]GS)_\d+'),
-        "AirDefense": re.compile(r'(HP_[A-Z]GA_\d+|Aura_\d+|(Far|Medium|Near)\d*(_Bubbles)?)'),
+        "AirDefense": re.compile(r'(HP_[A-Z]GA_\d+|HP_[A-Z]GM_\d+_HP_[A-Z]GA_\d+|Aura_\d+|(Far|Medium|Near)\d*(_Bubbles)?)'),
         "Torpedoes": re.compile(r'HP_[A-Z]GT_\d+'),
         "DepthChargeGuns": re.compile(r"HP_[A-Z]GB_\d+"),
     }
+
+    @staticmethod
+    def _dispersion_formula(ir, mr, id_dist):
+        """横向散布公式: (IR-MR)/(ID/1000) * R + MR*30"""
+        if not all(v is not None and v != 0 for v in [ir, mr, id_dist]):
+            return None
+        slope = (ir - mr) / (id_dist / 1000)
+        intercept = mr * 30
+        return f"{slope:.2f}R + {intercept:.2f}"
+
+    @staticmethod
+    def _fmt_val(v, fmt: str | None = None) -> str:
+        """格式化显示值：按 fmt 取整、布尔转中文"""
+        if fmt == "bool":
+            return "是" if v else "否"
+        if fmt and isinstance(v, (int, float)):
+            try:
+                return f"{v:{fmt}}"
+            except (ValueError, TypeError):
+                pass
+        if isinstance(v, bool):
+            return "是" if v else "否"
+        if isinstance(v, float):
+            if v == int(v):
+                return str(int(v))
+            return f"{v:.2f}"
+        return str(v)
 
     def __init__(self, log_func: Optional[Callable[[str], None]] = None):
         super().__init__(log_func)
@@ -249,33 +282,32 @@ class ShipAnalyzer(BaseAnalyzer):
                 "default_data": {
                     "label": "通用数据",
                     "items": {
-                        "hull_id": {"name": "船体模块型号", "val": hull_id, "unit": "", "order": 0},
-                        "health": {"name": "基础血量", "val": hull_data.get("health"), "unit": "", "order": 1},
-                        "maxSpeed": {"name": "最大航速", "val": hull_data.get("maxSpeed"), "unit": "kts", "order": 2},
-                        "turningRadius": {"name": "转弯半径", "val": hull_data.get("turningRadius"), "unit": "m", "order": 3},
-                        "rudderTime": {"name": "转舵时间", "val": hull_data.get("rudderTime", 0) * 0.77, "unit": "s", "order": 4},
-                        "vis_sea": {"name": "基础水面隐蔽", "val": hull_data.get("visibilityFactor"), "unit": "km", "order": 5},
-                        "vis_plane": {"name": "基础空中隐蔽", "val": hull_data.get("visibilityFactorByPlane"), "unit": "km", "order": 6},
-                        "has_cit": {"name": "是否存在核心区模块", "val": has_cit, "unit": "", "order": 7},
-                        "hull_regenper": {"name": "船体回复率", "val": hull_data.get("Hull", {}).get("regeneratedHPPart"), "unit": "", "order": 8},
-                        "cit_regenper": {"name": "核心回复率", "val": hull_data.get("Cit", {}).get("regeneratedHPPart"), "unit": "", "order": 9},
-                        "engine_power": {"name": "引擎马力", "val": hull_data.get("enginePower"), "unit": "HP", "order": 10},
+                        "health": {"name": "基础血量", "val": hull_data.get("health"), "unit": "",     "fmt": ".0f", "order": 0},
+                        "maxSpeed": {"name": "最大航速", "val": hull_data.get("maxSpeed"), "unit": "kts","fmt": ".1f", "order": 1},
+                        "turningRadius": {"name": "转弯半径", "val": hull_data.get("turningRadius"), "unit": "m", "fmt": ".0f", "order": 2},
+                        "rudderTime": {"name": "转舵时间", "val": hull_data.get("rudderTime", 0) * 0.77, "unit": "s", "fmt": ".1f", "order": 3},
+                        "vis_sea": {"name": "水面隐蔽", "val": hull_data.get("visibilityFactor"), "unit": "km", "fmt": ".2f", "order": 4},
+                        "vis_plane": {"name": "空中隐蔽", "val": hull_data.get("visibilityFactorByPlane"), "unit": "km", "fmt": ".2f", "order": 5},
+                        "has_cit": {"name": "是否有核心区模块", "val": has_cit, "unit": "", "fmt": "bool", "order": 6},
+                        "hull_regenper": {"name": "船体回复率", "val": hull_data.get("Hull", {}).get("regeneratedHPPart"), "unit": "", "fmt": ".0%", "order": 7},
+                        "cit_regenper": {"name": "核心回复率", "val": hull_data.get("Cit", {}).get("regeneratedHPPart"), "unit": "", "fmt": ".0%", "order": 8},
+                        "engine_power": {"name": "引擎马力", "val": hull_data.get("enginePower"), "unit": "HP","fmt": ".0f", "order": 9},
                     }
                 },
                 "submarine_sp_data": {
                     "label": "潜艇特殊数据",
                     "items": {
-                        "has_battery": {"name": "是否存在潜艇电力数据", "val": has_battery, "unit": "", "order": 0},
-                        "bat_cap": {"name": "电池容量", "val": sub_battery.get("capacity"), "unit": "", "order": 1},
-                        "bat_regen": {"name": "电力恢复", "val": sub_battery.get("regenRate"), "unit": "/s", "order": 2},
-                        "has_hydrophone": {"name": "是否存在水听器模块数据", "val": has_hydrophone, "unit": "", "order": 3},
-                        "hp_radius": {"name": "水听器范围", "val": hydrophone.get("waveRadius"), "unit": "km", "order": 4},
-                        "hp_frep": {"name": "水听器更新周期", "val": hydrophone.get("updateFrequency"), "unit": "s", "order": 5},
-                        "hp_work_states": {"name": "水听器工作深度", "val": hydrophone.get("workingBuoyancyStates"), "unit": "", "order": 6},
-                        "hp_detect_states": {"name": "水听器可探测深度", "val": hydrophone.get("detectableBuoyancyStates"), "unit": "", "order": 7},
-                        "buoyancyStates": {"name": "深度等级数据", "val": buoyancy_data, "unit": "", "order": 8},
-                        "buoyancy_rudder_time": {"name": "水平舵转舵时间", "val": hull_data.get("buoyancyRudderTime", 0) * 0.77, "unit": "s", "order": 9},
-                        "buoyancy_speed": {"name": "上浮/下潜速度", "val": hull_data.get("maxBuoyancySpeed"), "unit": "m/s", "order": 10},
+                        "has_battery": {"name": "潜艇电力", "val": has_battery, "unit": "", "fmt": "bool", "order": 0},
+                        "bat_cap": {"name": "电池容量", "val": sub_battery.get("capacity"), "unit": "", "fmt": ".0f", "order": 1},
+                        "bat_regen": {"name": "电力恢复", "val": sub_battery.get("regenRate"), "unit": "/s", "fmt": ".2f", "order": 2},
+                        "has_hydrophone": {"name": "水听器", "val": has_hydrophone, "unit": "", "fmt": "bool", "order": 3},
+                        "hp_radius": {"name": "水听器范围", "val": hydrophone.get("waveRadius"), "unit": "km", "fmt": ".2f", "order": 4},
+                        "hp_frep": {"name": "水听器更新周期", "val": hydrophone.get("updateFrequency"), "unit": "s", "fmt": ".1f", "order": 5},
+                        "hp_work_states": {"name": "水听器工作深度", "val": hydrophone.get("workingBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 6},
+                        "hp_detect_states": {"name": "水听器可探测深度", "val": hydrophone.get("detectableBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 7},
+                        "buoyancyStates": {"name": "深度等级数据", "val": buoyancy_data, "unit": "", "fmt": ".0f", "order": 8},
+                        "buoyancy_rudder_time": {"name": "水平舵转舵时间", "val": hull_data.get("buoyancyRudderTime", 0) * 0.77, "unit": "s", "fmt": ".1f", "order": 9},
+                        "buoyancy_speed": {"name": "上浮/下潜速度", "val": hull_data.get("maxBuoyancySpeed"), "unit": "m/s", "fmt": ".2f", "order": 10},
                     }
                 }
             }
@@ -284,11 +316,11 @@ class ShipAnalyzer(BaseAnalyzer):
             if not isinstance(module_data, dict):
                 continue
             hull_id = None
-            if mod_key in {"HullDefault", "Hull_A"}:
+            if self.DEFAULTS["Hull"].search(mod_key) or mod_key == "Hull_A":
                 hull_id = "A"
                 save_key = "A_Hull"
             else:
-                match = self.PATTERNS_NEW["Hull"].match(mod_key)
+                match = self.PATTERNS["Hull"].match(mod_key) or self.PATTERNS_NEW["Hull"].match(mod_key)
                 if match:
                     hull_id = match.group(1)
                     save_key = mod_key
@@ -315,14 +347,14 @@ class ShipAnalyzer(BaseAnalyzer):
         elif t == "airDefenseDisp":
             v1 = info.get('areaDmgMultiplier', 0)
             v2 = info.get('bubbleDmgMultiplier', 0)
-            output.append(f"防空区域秒伤: {'+' if v1 > 0 else ''}{v1 * 100}%")
-            output.append(f"黑云伤害: {'+' if v2 > 0 else ''}{v2 * 100}%")
+            output.append(f"防空区域秒伤: {'+' if v1 > 0 else ''}{v1 * 100:.2f}%")
+            output.append(f"黑云伤害: {'+' if v2 > 0 else ''}{v2 * 100:.2f}%")
         elif t == "fighter":
             raw_name = info.get('fighterName', '未知')
             display_name = self.plane_name_mapping.get(raw_name.upper(), raw_name)
             output.append(f"战斗机名称: {display_name}")
             output.append(f"战斗机数量: {info.get('fighterNum', 0)}")
-            output.append(f"截击机: {isInterceptor}")
+            output.append(f"是否为截击机: {isInterceptor}")
             output.append(f"狗斗时间: {info.get('dogFightTime', 0)}s")
             output.append(f"离开时间: {info.get('flyAwayTime', 0)}s")
             output.append(f"战斗机爬升角度: {info.get('flightClimbAngle', 0)}°")
@@ -339,7 +371,7 @@ class ShipAnalyzer(BaseAnalyzer):
         elif t == "speedBoosters":
             output.append(f"最高航速: {'+' if info.get('boostCoeff', 0) > 0 else ''}{info['boostCoeff'] * 100}%")
             output.append(f"推力加成: 前进{'+' if info.get('forwardEngForsag', 0) > 0 else ''}{info['forwardEngForsag'] * 100}% / 后退{'+' if info.get('backwardEngForsag', 0) > 0 else ''}{info['backwardEngForsag'] * 100}%")
-            output.append(f"加速最大速度倍率: 前进{info.get('forwardEngForsagMaxSpd', 0)} / 后退{info.get('backwardEngForsagMaxSpd', 0)}")
+            output.append(f"加速最大速度倍率: 前进{info.get('forwardEngForsagMaxSpd', 0) * 100}% / 后退{info.get('backwardEngForsagMaxSpd', 0) * 100}%")
         elif t == "sonar":
             output.append(f"舰船探测距离: {info.get('distShip', 0) * 0.03:.2f} km")
             output.append(f"鱼雷探测距离: {info.get('distTorpedo', 0) * 0.03:.2f} km")
@@ -509,71 +541,89 @@ class ShipAnalyzer(BaseAnalyzer):
         else:
             origin_ship_name = ""
 
+        # ── 最小隐蔽计算 ──────────────────────────────────
+        conceal_coeff = self.get_conceal_coeff(raw_species, raw_level, raw_nation, ship_index)
+        for hull_data in hulls_info.values():
+            items = hull_data.get("default_data", {}).get("items", {})
+            vis_sea = items.get("vis_sea", {})
+            if vis_sea.get("val") is not None:
+                items["vis_sea_min"] = {
+                    "name": "水面隐蔽(最小)",
+                    "val": vis_sea["val"] * conceal_coeff,
+                    "unit": "km",
+                    "fmt": ".2f",
+                    "order": 4.1,
+                }
+            vis_plane = items.get("vis_plane", {})
+            if vis_plane.get("val") is not None:
+                items["vis_plane_min"] = {
+                    "name": "空中隐蔽(最小)",
+                    "val": vis_plane["val"] * conceal_coeff,
+                    "unit": "km",
+                    "fmt": ".2f",
+                    "order": 5.1,
+                }
+
         # ── 基础信息 ──────────────────────────────────────
-        t.writeln(f"{'=' * 45}")
+        t.writeln(f"【基础属性】")
         t.writeln(f"  舰船名称: {real_name}")
         t.writeln(f"  编号: {ship_index}")
         t.writeln(f"  ID: {ship_id}")
-        t.writeln(f"{'=' * 45}")
-        t.writeln()
-
-        t.writeln(f"【基础属性】")
         t.writeln(f"  国家: {NameMapping.NATION_MAP.get(raw_nation, raw_nation)}")
         t.writeln(f"  舰种: {NameMapping.SHIP_CLASS_MAP.get(raw_species, raw_species)}")
         t.writeln(f"  等级: {NameMapping.LEVEL_MAP[raw_level] if raw_level < len(NameMapping.LEVEL_MAP) else raw_level}")
         t.writeln(f"  状态: {NameMapping.SHIP_GROUP_MAP.get(raw_group, raw_group)}")
         if parent_ship_name:
-            t.writeln(f"  父级舰船: {parent_ship_name}")
+            t.writeln(f"  原型舰船: {parent_ship_name}")
         if origin_ship_name:
             t.writeln(f"  原型舰船: {origin_ship_name}")
         t.writeln()
 
-        # ── 隐蔽系数 ──────────────────────────────────────
-        try:
-            conceal = self.get_conceal_coeff(raw_species, raw_level, raw_nation, ship_index)
-            t.writeln(f"【隐蔽系数】")
-            t.writeln(f"  舰长技能+隐蔽插件综合系数: {conceal:.2f}")
-            t.writeln()
-        except Exception as e:
-            self._log(f"隐蔽系数计算失败: {e}")
-
         # ── 船体数据 ──────────────────────────────────────
         t.writeln(f"【船体模块数据】")
-        for hull_key in ["A_Hull", "B_Hull", "C_Hull"]:
-            if hull_key in hulls_info:
-                hull_data = hulls_info[hull_key]
-                default_data = hull_data.get("default_data", {})
-                items = default_data.get("items", {})
-                t.writeln(f"  -- {hull_key.replace('_Hull', '')} 船体 --")
-                for key in sorted(items, key=lambda x: items[x].get("order", 0)):
-                    item = items[key]
+        for hull_key in sorted(hulls_info.keys()):
+            hull_data = hulls_info[hull_key]
+            default_data = hull_data.get("default_data", {})
+            items = default_data.get("items", {})
+            # 提取船体字母标识：A_Hull_1929 → A,  A_Hull → A
+            letter = hull_key.split("_")[0] if "_" in hull_key else hull_key
+            t.writeln(f"  -- {letter} 船体 --")
+            for key in sorted(items, key=lambda x: items[x].get("order", 0)):
+                item = items[key]
+                v = item["val"]
+                if v is None:
+                    v = "N/A"
+                else:
+                    fmt = item.get("fmt")
+                    v = self._fmt_val(v, fmt)
+                unit = item.get("unit", "")
+                unit_str = f" {unit}" if unit else ""
+                name = item["name"]
+                t.writeln(f"    - {name}: {v}{unit_str}")
+            # 潜艇特殊数据
+            sub_data = hull_data.get("submarine_sp_data", {})
+            sub_items = sub_data.get("items", {})
+            has_battery = sub_items.get("has_battery", {}).get("val", False)
+            if has_battery:
+                t.writeln(f"  [潜艇特殊数据]")
+                for key in sorted(sub_items, key=lambda x: sub_items[x].get("order", 0)):
+                    item = sub_items[key]
+                    if key == "has_battery":
+                        continue
                     v = item["val"]
-                    if v is None:
-                        v = "N/A"
-                    unit = item.get("unit", "")
-                    unit_str = f" {unit}" if unit else ""
-                    name = item["name"]
-                    t.writeln(f"    - {name}: {v}{unit_str}")
-                # 潜艇特殊数据
-                sub_data = hull_data.get("submarine_sp_data", {})
-                sub_items = sub_data.get("items", {})
-                has_battery = sub_items.get("has_battery", {}).get("val", False)
-                if has_battery:
-                    t.writeln(f"  [潜艇特殊数据]")
-                    for key in sorted(sub_items, key=lambda x: sub_items[x].get("order", 0)):
-                        item = sub_items[key]
-                        if key == "has_battery":
-                            continue
-                        v = item["val"]
-                        if isinstance(v, list):
-                            for entry in v:
+                    if isinstance(v, list):
+                        for entry in v:
+                            if isinstance(entry, dict):
                                 t.writeln(f"    - {entry.get('state', '')}: 深度范围={entry.get('depth_range', '')}, 速度倍率={entry.get('speed_multiplier', '')}")
-                        elif v not in (None, False):
-                            unit = item.get("unit", "")
-                            unit_str = f" {unit}" if unit else ""
-                            name = item["name"]
-                            t.writeln(f"    - {name}: {v}{unit_str}")
-                t.writeln()
+                            else:
+                                t.writeln(f"    - {entry}")
+                    elif v not in (None, False):
+                        v = self._fmt_val(v, item.get("fmt"))
+                        unit = item.get("unit", "")
+                        unit_str = f" {unit}" if unit else ""
+                        name = item["name"]
+                        t.writeln(f"    - {name}: {v}{unit_str}")
+            t.writeln()
 
         # ── 消耗品数据 ────────────────────────────────────
         ship_abilities = raw_data.get("ShipAbilities", {})
@@ -811,40 +861,67 @@ class ShipAnalyzer(BaseAnalyzer):
                     if not isinstance(sv, dict):
                         continue
                     if any(kw in sk for kw in ["Aura", "Far", "Medium", "Near"]):
+                        # 光环统一归到 AirDefense，不管它所在的模块类型
+                        aura_cat = "AirDefense"
                         raw_id = sv.get("name", sk)
                         display_name = self.get_localized_weapon_name(raw_id)
                         is_bubble_layer = "_Bubbles" in sk
                         net_dmg = sv.get("areaDamage", 0)
                         net_period = sv.get("areaDamagePeriod", 0)
+                        bubble_dmg = sv.get("bubbleDamage", 0)
+                        bubble_explosion = sv.get("explosionCount", 0)
+                        bubble_inner = sv.get("innerBubbleCount", 0)
+                        bubble_outer = sv.get("outerBubbleCount", 0)
                         info = {
                             "id": sk, "name": display_name, "is_aura": True,
                             "is_bubble_layer": is_bubble_layer,
                             "area_damage": net_dmg, "area_period": net_period,
+                            "bubble_damage": bubble_dmg,
+                            "bubble_explosion": bubble_explosion,
+                            "bubble_inner": bubble_inner,
+                            "bubble_outer": bubble_outer,
                         }
                         for letter in target_letters:
-                            combined_stats[letter][current_cat].append(info)
+                            # 确保 AirDefense 桶存在
+                            if aura_cat not in combined_stats[letter]:
+                                combined_stats[letter][aura_cat] = []
+                            combined_stats[letter][aura_cat].append(info)
+                        continue
 
-                    # HP 模块
-                    for hp_cat, hp_pattern in self.HP_PATTERNS.items():
-                        if hp_cat == current_cat and hp_pattern.match(sk):
-                            raw_gun_id = sv.get("name", sk)
-                            gun_name = self.get_localized_weapon_name(raw_gun_id)
-                            hp_val = sv.get("maxHealth", 0)
-                            caliber = sv.get("caliber", 0)
-                            reload = sv.get("reloadTime", 0)
-                            rot_speed = sv.get("rotationSpeed", 0)
-                            info = {
-                                "id": sk, "gun_name": gun_name, "hp": hp_val,
-                                "caliber": caliber, "reload": reload, "rot_speed": rot_speed,
-                                "is_hp": True,
-                            }
-                            if current_cat in ["Artillery", "ATBA"]:
-                                info.update({
-                                    "shells": sv.get("numShells", 0),
-                                    "bullets": sv.get("numBullets", 0),
-                                })
-                            for letter in target_letters:
-                                combined_stats[letter][current_cat].append(info)
+                    # HP 模块 —— 按旧代码逻辑：Artillery / ATBA 也检测 AirDefense
+                    check_hp_cats = [current_cat]
+                    if current_cat in ["Artillery", "ATBA"]:
+                        check_hp_cats.append("AirDefense")
+                    for hp_cat in check_hp_cats:
+                        hp_pattern = self.HP_PATTERNS.get(hp_cat)
+                        if not hp_pattern or not hp_pattern.match(sk):
+                            continue
+                        raw_gun_id = sv.get("name", sk)
+                        gun_name = self.get_localized_weapon_name(raw_gun_id)
+                        hp_val = sv.get("maxHealth", 0)
+                        caliber = sv.get("caliber", 0)
+                        reload = sv.get("shotDelay", 0)
+                        rot_speed = sv.get("rotationSpeed", 0)
+                        barrels = sv.get("numBarrels", 0)
+                        info = {
+                            "id": sk, "gun_name": gun_name, "hp": hp_val,
+                            "caliber": caliber, "reload": reload, "rot_speed": rot_speed,
+                            "barrels": barrels, "is_hp": True,
+                        }
+                        if hp_cat in ["Artillery", "ATBA", "Torpedoes"]:
+                            info.update({
+                                "ammo_list": sv.get("ammoList", []),
+                                "idealRadius": sv.get("idealRadius", 0),
+                                "minRadius": sv.get("minRadius", 0),
+                                "idealDistance": sv.get("idealDistance", 0),
+                                "r_zero": sv.get("radiusOnZero", 0),
+                                "r_delim": sv.get("radiusOnDelim", 0),
+                                "r_max": sv.get("radiusOnMax", 0),
+                                "delim": sv.get("delim", 0),
+                            })
+                        for letter in target_letters:
+                            combined_stats[letter][hp_cat].append(info)
+                        break
 
         # ── 渲染模块数据 ──────────────────────────────────
         for letter in sorted(combined_stats.keys()):
@@ -859,13 +936,31 @@ class ShipAnalyzer(BaseAnalyzer):
                 t.writeln(f"    Sigma: {sys_info['sigma']}")
             artillery_items = [x for x in stats.get("Artillery", []) if x.get("is_hp")]
             if artillery_items:
+                # 按 (name, barrels, reload, dispersion params) 分组
+                wp_counts = Counter()
+                for i in artillery_items:
+                    key = (i["gun_name"], i.get("barrels", 0), i.get("reload", 0),
+                           i.get("idealRadius", 0), i.get("minRadius", 0), i.get("idealDistance", 0),
+                           i.get("r_zero", 0), i.get("r_delim", 0), i.get("r_max", 0), i.get("delim", 0),
+                           tuple(sorted(i.get("ammo_list", []))))
+                    wp_counts[key] += 1
                 t.writeln(f"  主炮:")
-                for item in artillery_items:
-                    t.writeln(f"    - {item['gun_name']}")
-                    t.writeln(f"      血量: {item['hp']} | 口径: {item['caliber']}mm")
-                    t.writeln(f"      装填: {item['reload']}s | 回转: {item['rot_speed']}°/s")
-                    if item.get("shells"):
-                        t.writeln(f"      炮弹数: {item['shells']}")
+                for (name, barrels, reload, ir, mr, id_dist, rz, rd, rm, dl, ammo_tuple), count in wp_counts.items():
+                    t.writeln(f"    - {name} x{count}")
+                    t.writeln(f"      联装数: {barrels:.0f}")
+                    t.writeln(f"      装填时间: {reload}s")
+                    formula = self._dispersion_formula(ir, mr, id_dist)
+                    if formula:
+                        t.writeln(f"      横向散布公式: {formula}")
+                    t.writeln(f"      纵向散步系数: {rz} ~ {rd} (R={dl * 100:.0f}%) ~ {rm}")
+                    if ammo_tuple:
+                        display_ammo = []
+                        for a in ammo_tuple:
+                            an = self.ammo_name_mapping.get(a.upper(), a)
+                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                        t.writeln(f"      可用弹药:")
+                        for aitem in display_ammo:
+                            t.writeln(f"        - {aitem}")
             # 弹夹/弹鼓信息
             if letter in drum_configs:
                 dm = drum_configs[letter]
@@ -876,10 +971,30 @@ class ShipAnalyzer(BaseAnalyzer):
             # 副炮
             atba_items = [x for x in stats.get("ATBA", []) if x.get("is_hp")]
             if atba_items:
+                wp_counts = Counter()
+                for i in atba_items:
+                    key = (i["gun_name"], i.get("barrels", 0), i.get("reload", 0),
+                           i.get("idealRadius", 0), i.get("minRadius", 0), i.get("idealDistance", 0),
+                           i.get("r_zero", 0), i.get("r_delim", 0), i.get("r_max", 0), i.get("delim", 0),
+                           tuple(sorted(i.get("ammo_list", []))))
+                    wp_counts[key] += 1
                 t.writeln(f"  副炮:")
-                for item in atba_items:
-                    t.writeln(f"    - {item['gun_name']}")
-                    t.writeln(f"      血量: {item['hp']} | 口径: {item['caliber']}mm | 装填: {item['reload']}s")
+                for (name, barrels, reload, ir, mr, id_dist, rz, rd, rm, dl, ammo_tuple), count in wp_counts.items():
+                    t.writeln(f"    - {name} x{count}")
+                    t.writeln(f"      联装数: {barrels:.0f}")
+                    t.writeln(f"      装填时间: {reload}s")
+                    formula = self._dispersion_formula(ir, mr, id_dist)
+                    if formula:
+                        t.writeln(f"      横向散布公式: {formula}")
+                    t.writeln(f"      纵向散步系数: {rz} ~ {rd} (R={dl * 100:.0f}%) ~ {rm}")
+                    if ammo_tuple:
+                        display_ammo = []
+                        for a in ammo_tuple:
+                            an = self.ammo_name_mapping.get(a.upper(), a)
+                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                        t.writeln(f"      可用弹药:")
+                        for aitem in display_ammo:
+                            t.writeln(f"        - {aitem}")
             if stats.get("ATBA_System"):
                 sys_info = stats["ATBA_System"]
                 t.writeln(f"    副炮射程: {sys_info['max_dist'] / 1000:.1f} km" if sys_info.get('max_dist') else "")
@@ -887,10 +1002,32 @@ class ShipAnalyzer(BaseAnalyzer):
             # 鱼雷
             torp_items = [x for x in stats.get("Torpedoes", []) if x.get("is_hp")]
             if torp_items:
+                wp_counts = Counter()
+                for i in torp_items:
+                    key = (i["gun_name"], i.get("barrels", 0), i.get("reload", 0),
+                           tuple(sorted(i.get("ammo_list", []))))
+                    wp_counts[key] += 1
                 t.writeln(f"  鱼雷发射管:")
-                for item in torp_items:
-                    t.writeln(f"    - {item['gun_name']}")
-                    t.writeln(f"      血量: {item['hp']} | 装填: {item['reload']}s | 回转: {item['rot_speed']}°/s")
+                for (name, barrels, reload, ammo_tuple), count in wp_counts.items():
+                    t.writeln(f"    - {name} x{count}")
+                    t.writeln(f"      联装数: {barrels:.0f}")
+                    t.writeln(f"      装填时间: {reload}s")
+                    if ammo_tuple:
+                        display_ammo = []
+                        for a in ammo_tuple:
+                            an = self.ammo_name_mapping.get(a.upper(), a)
+                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                        t.writeln(f"      可用弹药:")
+                        for aitem in display_ammo:
+                            t.writeln(f"        - {aitem}")
+                    ammos = set()
+                    for i in torp_items:
+                        if i["gun_name"] == name:
+                            for a in i.get("ammo_list", []):
+                                ammo_name = self.ammo_name_mapping.get(a.upper(), a)
+                                ammos.add(ammo_name)
+                    if ammos:
+                        t.writeln(f"      弹药: {' | '.join(sorted(ammos))}")
 
             # 防空
             aura_items = [x for x in stats.get("AirDefense", []) if x.get("is_aura")]
@@ -898,21 +1035,30 @@ class ShipAnalyzer(BaseAnalyzer):
             if aura_items:
                 t.writeln(f"  防空光环:")
                 for item in aura_items:
-                    label = "黑云" if item.get("is_bubble_layer") else "持续伤害"
+                    is_bubble = item.get("is_bubble_layer", False)
+                    label = "黑云" if is_bubble else "持续伤害"
                     t.writeln(f"    - {item['name']} ({label})")
-                    t.writeln(f"      伤害: {item['area_damage']} | 周期: {item['area_period']}s")
+                    if is_bubble:
+                        total = item['bubble_damage'] * 2 / item['area_period'] if item['area_period'] else 0
+                        t.writeln(f"      黑云爆炸伤害: {total:.0f}")
+                    else:
+                        dps = item['area_damage'] / item['area_period'] if item['area_period'] else 0
+                        t.writeln(f"      面板秒伤: {dps:.0f}")
             if hp_aa_items:
-                t.writeln(f"  防空炮:")
-                for item in hp_aa_items:
-                    t.writeln(f"    - {item['gun_name']} | 血量: {item['hp']}")
-                    t.writeln(f"      口径: {item['caliber']}mm | 装填: {item['reload']}s")
+                # 过滤掉光环节点（Medium1, Near1 等不是真实防空炮）
+                real_guns = [i for i in hp_aa_items
+                             if not re.match(r'^(Medium|Near|Far)\d*_?', i.get("gun_name", ""))]
+                if real_guns:
+                    t.writeln(f"  防空炮:")
+                    for name, count in Counter(i["gun_name"] for i in real_guns).items():
+                        t.writeln(f"    - {name} x{count}")
 
             # 深水炸弹
             dc_items = [x for x in stats.get("DepthChargeGuns", []) if x.get("is_hp")]
             if dc_items:
                 t.writeln(f"  深水炸弹:")
-                for item in dc_items:
-                    t.writeln(f"    - {item['gun_name']} | 血量: {item['hp']}")
+                for name, count in Counter(i["gun_name"] for i in dc_items).items():
+                    t.writeln(f"    - {name} x{count}")
 
             # 舰载机
             for plane_cat in ["DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber"]:

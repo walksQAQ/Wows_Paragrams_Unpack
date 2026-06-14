@@ -11,6 +11,7 @@ import os
 import pickle
 import shutil
 import struct
+import sys
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 
@@ -18,6 +19,10 @@ from app.signals import bus
 from app.application import app as app_ctx
 from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir, get_split_dir
+
+# 将 services.GameParams 注册为 GameParams 模块，供 pickle.loads 反序列化时查找
+from services import GameParams as _GameParamsModule
+sys.modules['GameParams'] = _GameParamsModule
 
 
 class _GPEncode(json.JSONEncoder):

@@ -46,8 +46,8 @@ class TopToolbar(QWidget):
         self.btn_load = QPushButton("📦 加载数据")
         self.btn_process = QPushButton("🔧 解析数据")
         self.btn_lang = QPushButton("🌐 语言文件")
-        self.btn_refresh = QPushButton("🔄 刷新")
-        self.btn_settings = QPushButton("⚙ 设置")
+        self.btn_refresh = QPushButton("🔄 刷新界面")
+        self.btn_settings = QPushButton("⚙ 设置游戏目录")
         for b in (self.btn_load, self.btn_process, self.btn_lang, self.btn_refresh, self.btn_settings):
             b.setStyleSheet(btn_style)
             layout.addWidget(b)
@@ -90,6 +90,7 @@ class TopToolbar(QWidget):
         bus.task_progress.connect(self._on_progress)
         bus.data_loaded.connect(lambda _: self._enable_all())
         bus.localization_ready.connect(self._enable_all)
+        bus.data_processed.connect(lambda _: self._enable_all())
 
         self._sync_server()
 
