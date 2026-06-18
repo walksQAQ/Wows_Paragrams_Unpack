@@ -94,8 +94,8 @@ class ConsumableAnalyzer(BaseAnalyzer):
             raw_data.get('name', '').upper(), raw_data.get('name', '未知')
         )
         t.writeln(f"消耗品名称: {display_name}")
-        t.writeln(f"消耗品编号: {raw_data.get('index')}")
-        t.writeln(f"消耗品ID: {raw_data.get('id')}")
+        t.writeln(f"消耗品编号: {raw_data.get('index', 'N/A')}")
+        t.writeln(f"消耗品ID: {raw_data.get('id', 'N/A')}")
         t.writeln("-" * 30)
         t.writeln()
 
@@ -181,7 +181,7 @@ class ConsumableAnalyzer(BaseAnalyzer):
                 t.writeln(f"    生效延迟: {info['activationDelay']}s")
                 t.writeln(f"    烟雾半径: {info['radius'] * 3}m")
             elif ct == "supportBuoy":
-                t.writeln(f"    区域: {info.get('battleDropVisualName', '')}")
+                t.writeln(f"    区域: {info.get('battleDropVisualName', 'Unknown')}")
                 t.writeln(f"    布置时间: {info.get('battleDropActTime', 0)}s")
                 t.writeln(f"    持续时间: {info.get('supportBuoyZoneLifetime', 0)}s")
             elif ct == "vampireDamage":
@@ -189,4 +189,4 @@ class ConsumableAnalyzer(BaseAnalyzer):
             t.writeln("-" * 20)
             t.writeln()
 
-        return t.result(title=display_name, subtitle=f"编号: {raw_data.get('index')}")
+        return t.result(title=display_name, subtitle=f"编号: {raw_data.get('index', 'N/A')}")

@@ -17,6 +17,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject
 
+from app.signals import bus
 from utils.path_utils import get_data_dir
 from models.analysis_result import AnalysisResult
 
@@ -72,7 +73,7 @@ class BaseAnalyzer(QObject):
         if self._log_func:
             self._log_func(message)
         else:
-            print(f"[{self.__class__.__name__}] {message}")
+            bus.log_message.emit(f"[{self.__class__.__name__}] {message}")
 
     def set_log_func(self, log_func: Callable[[str], None]) -> None:
         self._log_func = log_func

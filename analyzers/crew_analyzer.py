@@ -44,7 +44,7 @@ class CrewAnalyzer(BaseAnalyzer):
         # 特殊技能
         unique_skills = raw_data.get("UniqueSkills", {})
         if not unique_skills:
-            return t.result(title=raw_data.get('name', 'Unknown'), subtitle=f"编号: {raw_data.get('index')}")
+            return t.result(title=raw_data.get('name', 'Unknown'), subtitle=f"编号: {raw_data.get('index', 'N/A')}")
 
         t.writeln(f"【特殊技能】")
         for sk_key, sk_val in unique_skills.items():
@@ -58,7 +58,8 @@ class CrewAnalyzer(BaseAnalyzer):
                 ach = NM.ACHIEVEMENT_MAP.get(str(sk_val["triggerAchievement"]), sk_val["triggerAchievement"])
                 t.writeln(f"    所需成就: {ach}")
             if "triggerDamageNum" in sk_val:
-                dt = NM.DAMAGE_TYPE_MAP.get(str(sk_val.get("triggerDamageType", "")), sk_val.get("triggerDamageType", ""))
+                raw_dt = sk_val.get("triggerDamageType", "")
+                dt = NM.DAMAGE_TYPE_MAP.get(str(raw_dt), raw_dt) if raw_dt else ""
                 t.writeln(f"    所需伤害: {sk_val['triggerDamageNum']} {dt}")
             if "damagePercentThreshold" in sk_val:
                 try:
@@ -86,7 +87,7 @@ class CrewAnalyzer(BaseAnalyzer):
 
             t.writeln()
 
-        return t.result(title=raw_data.get('name', 'Unknown'), subtitle=f"编号: {raw_data.get('index')}")
+        return t.result(title=raw_data.get('name', 'Unknown'), subtitle=f"编号: {raw_data.get('index', 'N/A')}")
 
     def _render_effect(self, t: TextCollector, effect: dict, indent: int = 2) -> None:
         from models.name_mapping import Mapping as NM
