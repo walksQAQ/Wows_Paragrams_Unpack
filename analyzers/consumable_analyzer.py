@@ -10,6 +10,7 @@ from typing import Callable, Optional
 from analyzers.base_analyzer import BaseAnalyzer
 from analyzers.ship_analyzer import TextCollector
 from models.analysis_result import AnalysisResult
+from utils.path_utils import get_split_dir
 
 
 class ConsumableAnalyzer(BaseAnalyzer):
@@ -20,6 +21,7 @@ class ConsumableAnalyzer(BaseAnalyzer):
         "artilleryBoosters", "healForsage", "callFighters", "regenerateHealth",
         "depthCharges", "hydrophone", "fastRudders", "subsEnergyFreeze",
         "submarineLocator", "planeSmokeGenerator", "vampireDamage", "supportBuoy",
+        "massHeal",
     }
 
     def __init__(self, log_func: Optional[Callable[[str], None]] = None):
@@ -84,6 +86,10 @@ class ConsumableAnalyzer(BaseAnalyzer):
             "buffDuration": config.get("buffDuration", 0),
             "buffZoneRadius": config.get("buffZoneRadius", 0),
             "damageGMHealCoeff": config.get("modifiers", {}).get("damageGMHealCoeff", 0),
+            "ownHealPart": config.get("ownHealPart", 0),
+            "workRadius": config.get("workRadius", 0),
+            "allyBuffName": config.get("allyBuffName", ""),
+            "allyBuffLevel": config.get("allyBuffLevel", 0),
         }
 
     def analyze(self, raw_data: dict) -> AnalysisResult:
@@ -186,6 +192,25 @@ class ConsumableAnalyzer(BaseAnalyzer):
                 t.writeln(f"    持续时间: {info.get('supportBuoyZoneLifetime', 0)}s")
             elif ct == "vampireDamage":
                 t.writeln(f"    伤害转化系数: {info.get('damageGMHealCoeff', 0) * 100:.2f}%")
+            elif ct == "massHeal":
+                hp = info.get('ownHealPart', 0) * 100
+                radius = info.get('workRadius', 0) * 3/100
+                t.writeln(f"    自身每秒回复: {hp:.1f}%")
+                buff_name = info.get('allyBuffName', '')
+                buff_level = info.get('allyBuffLevel', 1)
+                if buff_name:
+                    buff_path = get_split_dir() / "Other" / f"{buff_name}.json"
+                    if buff_path.exists():
+                        try:
+                            buff_data = json.loads(buff_path.read_text(encoding="utf-8"))
+                            level_key = f"level_{buff_level}"
+                            level_data = buff_data.get(level_key, {})
+                            ally_hp = level_data.get("allyHealthRegenPercent", 0) * 100
+                            if ally_hp:
+                                t.writeln(f"    为范围内的所有友军每秒回复: {ally_hp:.1f}%")
+                        except Exception:
+                            pass
+                t.writeln(f"    回复效果作用半径: {radius:.0f} km")
             t.writeln("-" * 20)
             t.writeln()
 
