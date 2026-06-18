@@ -68,14 +68,14 @@ class DetailPanel(QWidget):
             try:
                 a = cls(); a.initialize_mapping(); self._analyzers[name] = a
             except Exception as e:
-                print(f"{name}Analyzer 初始化失败: {e}")
+                bus.log_message.emit(f"{name}Analyzer 初始化失败: {e}")
 
     def _reload_analyzer_mappings(self) -> None:
         for name, a in self._analyzers.items():
             try:
                 a.initialize_mapping()
             except Exception as e:
-                print(f"映射表重载失败 {name}: {e}")
+                bus.log_message.emit(f"映射表重载失败 {name}: {e}")
         bus.log_message.emit("✅ 所有分析器映射表已重载")
 
     def _on_file_selected(self, category: str, filename: str) -> None:

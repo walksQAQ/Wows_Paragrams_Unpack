@@ -278,7 +278,7 @@ class ShipAnalyzer(BaseAnalyzer):
                         "bat_cap": {"name": "电池容量", "val": sub_battery.get("capacity"), "unit": "", "fmt": ".0f", "order": 1},
                         "bat_regen": {"name": "电力恢复", "val": sub_battery.get("regenRate"), "unit": "/s", "fmt": ".2f", "order": 2},
                         "has_hydrophone": {"name": "水听器", "val": has_hydrophone, "unit": "", "fmt": "bool", "order": 3},
-                        "hp_radius": {"name": "水听器范围", "val": hydrophone.get("waveRadius")/1000, "unit": "km", "fmt": ".2f", "order": 4},
+                        "hp_radius": {"name": "水听器范围", "val": (hydrophone.get("waveRadius") or 0)/1000, "unit": "km", "fmt": ".2f", "order": 4},
                         "hp_frep": {"name": "水听器更新周期", "val": hydrophone.get("updateFrequency"), "unit": "s", "fmt": ".1f", "order": 5},
                         "hp_work_states": {"name": "水听器工作深度", "val": hydrophone.get("workingBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 6},
                         "hp_detect_states": {"name": "水听器可探测深度", "val": hydrophone.get("detectableBuoyancyStates"), "unit": "", "fmt": ".0f", "order": 7},
@@ -399,11 +399,30 @@ class ShipAnalyzer(BaseAnalyzer):
         elif t == "vampireDamage":
             output.append(f"用于恢复生命值的伤害转化系数: {info.get('damageGMHealCoeff', 0) * 100:.2f}%")
         elif t == "supportBuoy":
-            output.append(f"加成区域: {info.get('battleDropVisualName', '')}")
+            output.append(f"加成区域: {info.get('battleDropVisualName', 'Unknown')}")
             output.append(f"区域布置时间: {info.get('battleDropActTime', 0)}s")
             output.append(f"区域持续时间: {info.get('supportBuoyZoneLifetime', 0)}s")
             output.append(f"区域半径: {info.get('buffZoneRadius', 0) / 1000:.2f}km")
             output.append(f"效果持续时间: {info.get('buffDuration', 0)}s")
+        elif t == "massHeal":
+            hp = info.get('ownHealPart', 0) * 100
+            radius = info.get('workRadius', 0) * 3/100
+            output.append(f"自身每秒回复: {hp:.1f}%")
+            buff_name = info.get('allyBuffName', '')
+            buff_level = info.get('allyBuffLevel', 1)
+            if buff_name:
+                buff_path = get_split_dir() / "Other" / f"{buff_name}.json"
+                if buff_path.exists():
+                    try:
+                        buff_data = json.loads(buff_path.read_text(encoding="utf-8"))
+                        level_key = f"level_{buff_level}"
+                        level_data = buff_data.get(level_key, {})
+                        ally_hp = level_data.get("allyHealthRegenPercent", 0) * 100
+                        if ally_hp:
+                            output.append(f"为范围内的所有友军每秒回复: {ally_hp:.1f}%")
+                    except Exception:
+                        pass
+            output.append(f"回复效果作用半径: {radius:.0f} km")
         return output
 
     def parse_rage_mode_advanced(self, rage_data: dict, current_species: str) -> list[str]:
@@ -682,7 +701,7 @@ class ShipAnalyzer(BaseAnalyzer):
                         file_key = str(abil_pair[0]).strip()
                         config_key = str(abil_pair[1]).strip()
                         stats = self._get_consumable_config(file_key, config_key)
-                        display_name = self.ability_name_map.get(file_key.upper(), stats.get("titleIDs", file_key))
+                        display_name = self.ability_name_map.get(file_key.upper()) or stats.get("titleIDs") or file_key
                         slot_items.append({
                             "name": display_name,
                             "num": stats.get("numConsumables", 0),
@@ -743,6 +762,10 @@ class ShipAnalyzer(BaseAnalyzer):
                             "buffZoneRadius": stats.get("buffZoneRadius", 0),
                             "supportBuoyZoneLifetime": stats.get("zoneLifetime", 0),
                             "healthRegenPercent": stats.get("healthRegenPercent", 0),
+                            "ownHealPart": stats.get("ownHealPart", 0),
+                            "workRadius": stats.get("workRadius", 0),
+                            "allyBuffName": stats.get("allyBuffName", ""),
+                            "allyBuffLevel": stats.get("allyBuffLevel", 0),
                         })
                 if slot_items:
                     prepared_consumable_data.append({
@@ -822,15 +845,25 @@ class ShipAnalyzer(BaseAnalyzer):
                 def scan_as(d):
                     for k, v in d.items():
                         if isinstance(v, dict) and "Armament" in k:
+                            plane_id = v.get("planeName", "Unknown")
+                            armament = ""
+                            plane_path = get_split_dir() / "Aircraft" / f"{plane_id}.json"
+                            if plane_path.exists():
+                                try:
+                                    plane_data = json.loads(plane_path.read_text(encoding="utf-8"))
+                                    armament = plane_data.get("bombName") or plane_data.get("armamentName", "")
+                                except Exception:
+                                    pass
                             found_list.append({
                                 "ui_type": v.get("uiType", "damage"),
-                                "plane_id": v.get("planeName", "Unknown"),
+                                "plane_id": plane_id,
                                 "charges": v.get("chargesNum", 0),
                                 "reload": v.get("reloadTime", 0),
                                 "work_time": v.get("workTime"),
                                 "max_dist": v.get("maxDist", 0),
                                 "min_dist": v.get("minDist", 0),
-                                "is_fixed": v.get("useFixedTimeToAttackPoint", False)
+                                "is_fixed": v.get("useFixedTimeToAttackPoint", False),
+                                "armament": armament,
                             })
                 scan_as(module_data)
                 for letter in target_letters:
@@ -997,7 +1030,7 @@ class ShipAnalyzer(BaseAnalyzer):
                         display_ammo = []
                         for a in ammo_tuple:
                             an = self.ammo_name_mapping.get(a.upper(), a)
-                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                            display_ammo.append(f"{an} ({a})")
                         t.writeln(f"      可用弹药:")
                         for aitem in display_ammo:
                             t.writeln(f"        - {aitem}")
@@ -1031,7 +1064,7 @@ class ShipAnalyzer(BaseAnalyzer):
                         display_ammo = []
                         for a in ammo_tuple:
                             an = self.ammo_name_mapping.get(a.upper(), a)
-                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                            display_ammo.append(f"{an} ({a})")
                         t.writeln(f"      可用弹药:")
                         for aitem in display_ammo:
                             t.writeln(f"        - {aitem}")
@@ -1056,18 +1089,10 @@ class ShipAnalyzer(BaseAnalyzer):
                         display_ammo = []
                         for a in ammo_tuple:
                             an = self.ammo_name_mapping.get(a.upper(), a)
-                            display_ammo.append(f"{an} ({a})" if an != a else a)
+                            display_ammo.append(f"{an} ({a})")
                         t.writeln(f"      可用弹药:")
                         for aitem in display_ammo:
                             t.writeln(f"        - {aitem}")
-                    ammos = set()
-                    for i in torp_items:
-                        if i["gun_name"] == name:
-                            for a in i.get("ammo_list", []):
-                                ammo_name = self.ammo_name_mapping.get(a.upper(), a)
-                                ammos.add(ammo_name)
-                    if ammos:
-                        t.writeln(f"      弹药: {' | '.join(sorted(ammos))}")
 
             # 防空
             aura_items = [x for x in stats.get("AirDefense", []) if x.get("is_aura")]
@@ -1114,7 +1139,7 @@ class ShipAnalyzer(BaseAnalyzer):
                             armament = pl.get("armamentName", "")
                             if armament:
                                 ammo_name = self.ammo_name_mapping.get(armament.upper(), armament)
-                                t.writeln(f"    弹药: {ammo_name}")
+                                t.writeln(f"    弹药: {ammo_name} ({armament})")
 
             # 空袭
             as_items = stats.get("AirSupport", [])
@@ -1127,6 +1152,10 @@ class ShipAnalyzer(BaseAnalyzer):
                         t.writeln(f"      次数: {item['charges']}")
                     if item.get('reload'):
                         t.writeln(f"      装填: {item['reload']}s")
+                    armament = item.get("armament", "")
+                    if armament:
+                        ammo_name = self.ammo_name_mapping.get(armament.upper(), armament)
+                        t.writeln(f"      弹药: {ammo_name} ({armament})")
 
             t.writeln()
 
