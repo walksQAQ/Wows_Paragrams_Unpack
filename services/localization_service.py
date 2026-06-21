@@ -153,6 +153,16 @@ def run_localization() -> None:
         for k, v in stats.items():
             bus.log_message.emit(f"  {k}: {v['count']} 条")
         bus.localization_ready.emit()
+        # 语言文件就绪后，自动触发数据库预分析（如果有数据）
+        try:
+            from services.database_service import get_db
+            db = get_db()
+            if db.exists and db.get_stats().get("total_entities", 0) > 0:
+                from services.processor_service import _run_analysis
+                bus.log_message.emit("🧠 检测到已有数据，正在预分析...")
+                _run_analysis(db)
+        except Exception:
+            pass
 
     def _err(msg: str):
         bus.log_message.emit(f"❌ 加载失败: {msg}")

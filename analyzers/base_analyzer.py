@@ -34,13 +34,40 @@ class BaseAnalyzer(QObject):
 
     # ── 映射表管理 ────────────────────────────────────────
 
+    # 文件名 → 数据库 category 映射
+    _FILE_TO_DB_CAT = {
+        "ship_names.json": "ship",
+        "ammo_names.json": "ammo",
+        "guns_names.json": "gun",
+        "consumable_names.json": "consumable",
+        "modernization_names.json": "modernization",
+        "plane_names.json": "plane",
+        "rage_mode_names.json": "rage_mode",
+    }
+
     def load_json_mapping(self, filename: str) -> dict:
-        """加载 data/ 下的 JSON 映射文件，返回 {key: value} 字典"""
+        """
+        加载名称映射，优先从数据库读取，降级到 JSON 文件。
+        返回 {key: value} 字典。
+        """
+        # 优先从数据库加载
+        db_cat = self._FILE_TO_DB_CAT.get(filename)
+        if db_cat:
+            try:
+                from services.database_service import get_db
+                db = get_db()
+                if db.exists:
+                    result = db.get_all_name_mappings(db_cat)
+                    if result:
+                        return result
+            except Exception:
+                pass
+
+        # 降级到 JSON 文件
         path = self._data_dir / filename
         if not path.exists():
             self._log(f"映射文件不存在: {path}")
             return {}
-
         import json
         try:
             with open(path, "r", encoding="utf-8") as f:

@@ -19,6 +19,7 @@ from app.signals import bus
 from app.application import app as app_ctx
 from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir, get_split_dir
+from services.database_service import DatabaseManager, get_db, reset_db
 
 # 将 services.GameParams 注册为 GameParams 模块，供 pickle.loads 反序列化时查找
 from services import GameParams as _GameParamsModule
@@ -45,6 +46,46 @@ def _write_one(key, value, index, out_dir):
             json.dump(value, f, sort_keys=True, indent=4, separators=(',', ': '))
     except Exception:
         pass
+
+
+def _run_analysis(db) -> None:
+    """对数据库中所有实体运行分析器并缓存结构化显示数据"""
+    try:
+        # 检查名称映射文件是否存在（由语言文件步骤生成）
+        from utils.path_utils import get_data_dir
+        mapping_files = ["ship_names.json", "guns_names.json", "ammo_names.json",
+                         "consumable_names.json", "plane_names.json"]
+        data_dir = get_data_dir()
+        if not all((data_dir / f).exists() for f in mapping_files):
+            bus.log_message.emit("⏳ 名称映射文件不存在，预分析已跳过（请先加载语言文件）")
+            return
+
+        # 确保全局数据库单例已初始化（分析器 load_json_mapping 依赖它）
+        get_db()
+        from services.analysis_service import AnalysisService
+        svc = AnalysisService()
+        svc.initialize()
+        if not svc.is_ready:
+            return
+        stats = db.get_stats()
+        total = stats.get("total_entities", 0)
+        if total == 0:
+            return
+        processed = 0
+        for cat_name in svc._analyzers:
+            entities = db.list_entities(cat_name)
+            for ent in entities:
+                full = db.get_entity(cat_name, ent["id"])
+                if not full:
+                    continue
+                analyzed = svc.analyze_one(cat_name, full["raw_json"])
+                if analyzed:
+                    db.update_analyzed_json(cat_name, ent["id"],
+                                            json.dumps(analyzed, ensure_ascii=False))
+                    processed += 1
+        bus.log_message.emit(f"✅ 预分析完成: {processed} 条 (已按显示逻辑分块存储)")
+    except Exception as e:
+        bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
 
 
 def run_process() -> None:
@@ -79,12 +120,35 @@ def run_process() -> None:
         elif isinstance(data, dict) and '' in data and isinstance(data[''], dict):
             source_dict = data['']
 
+        # 初始化数据库
+        db = DatabaseManager()
+        db.initialize()
+        db_batch: list[tuple[str, str, dict]] = []
+
+        def _write_one_db(k, v, index):
+            try:
+                t = v.get('typeinfo', {}).get('type', 'UnknownType')
+                db_batch.append((str(t), k, v))
+            except Exception:
+                pass
+
         sd = str(split_dir)
         if source_dict:
             ej = json.loads(json.dumps(source_dict, cls=_GPEncode, ensure_ascii=False))
             with ThreadPoolExecutor(max_workers=8) as tpe:
                 for k, v in ej.items():
                     tpe.submit(_write_one, k, v, None, sd)
+                    _write_one_db(k, v, None)
+            if db_batch:
+                db.insert_entities_batch(db_batch)
+                ms = db.import_name_mappings(str(data_dir))
+                db.rebuild_fts()
+                db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
+                                        entity_count=len(db_batch))
+                bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
+                # 自动执行全部分析并入库
+                bus.log_message.emit("🧠 正在预分析数据...")
+                _run_analysis(db)
             return True, "Wargaming 拆分完成"
         else:
             with ThreadPoolExecutor(max_workers=8) as tpe:
@@ -95,6 +159,17 @@ def run_process() -> None:
                     ej = json.loads(json.dumps(elem, cls=_GPEncode, ensure_ascii=False))
                     for k, v in ej.items():
                         tpe.submit(_write_one, k, v, ti, sd)
+                        _write_one_db(k, v, ti)
+            if db_batch:
+                db.insert_entities_batch(db_batch)
+                ms = db.import_name_mappings(str(data_dir))
+                db.rebuild_fts()
+                db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
+                                        entity_count=len(db_batch))
+                bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
+                # 自动执行全部分析并入库
+                bus.log_message.emit("🧠 正在预分析数据...")
+                _run_analysis(db)
             return True, "Lesta 拆分完成"
 
     def _ok(ret):
