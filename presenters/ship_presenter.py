@@ -283,6 +283,37 @@ class ShipPresenter(BasePresenter):
                 lines.append(f"    最大射程: {g['max_range']:.1f} km")
             if g['dispersion_formula']:
                 lines.append(f"    横向散布公式: {g['dispersion_formula']}")
+            # 弹鼓/弹夹数据（完全参照旧 ship_analyzer.py 格式）
+            drum_shots = g['drum_shots_count'] if g['drum_shots_count'] is not None else 0
+            if drum_shots > 0:
+                is_chargeable = bool(g['drum_is_chargeable'])
+                n_rounds = float(drum_shots)
+                shot_delay = g['drum_shot_delay'] or 0
+                full_reload = g['drum_full_reload_time'] or 0
+                if is_chargeable:
+                    header_name = "弹鼓炮"
+                    details = [f"连发数量: {n_rounds:.0f}", f"连发间隔: {shot_delay}s"]
+                    mode_type = g['drum_charge_mode'] or 0
+                    t_min = g['drum_charge_time_min'] or 0
+                    t_max = g['drum_charge_time_max'] or 0
+                    if mode_type == 1:
+                        details.append(f"第 1 轮装填时间: {t_min}s")
+                        details.append(f"第 2 ~ {n_rounds:.0f} 轮装填时间: {t_max}s")
+                    elif mode_type == 2:
+                        details.append(f"第 1 ~ {n_rounds - 1:.0f} 轮装填时间: {t_min}s")
+                        details.append(f"第 {n_rounds:.0f} 轮(末轮)装填时间: {t_max}s")
+                else:
+                    is_switchable = bool(g['drum_is_switchable'])
+                    switch_prefix = "可切换" if is_switchable else "强制"
+                    header_name = f"{switch_prefix}连发射击-弹夹炮"
+                    details = [
+                        f"长装填时间: {full_reload}s",
+                        f"连发间隔: {shot_delay}s",
+                        f"连发轮数: {n_rounds:.0f}"
+                    ]
+                lines.append(f"  特殊射击模式: {header_name}")
+                for d in details:
+                    lines.append(f"    - {d}")
             for a in conn.execute(
                 "SELECT ra.ammo_id, pbi.* FROM rel_ship_weapon_ammo ra "
                 "LEFT JOIN projectile_basic_info pbi ON pbi.projectile_id = ra.ammo_id "
@@ -537,7 +568,7 @@ class ShipPresenter(BasePresenter):
         # ── Artillery（火炮炮弹）────────────────────────
         if species == "Artillery":
             if proj['bullet_mass']: lines.append(f"      弹重: {proj['bullet_mass']:.0f} kg")
-            if proj['bullet_diameter']: lines.append(f"      口径: {proj['bullet_diameter']:.1f} mm")
+            if proj['bullet_diameter']: lines.append(f"      口径: {proj['bullet_diameter']*1000:.2f} mm")
             if proj['bullet_speed']: lines.append(f"      初速: {proj['bullet_speed']:.0f} m/s")
             if proj['bullet_air_drag']: lines.append(f"      阻力: {proj['bullet_air_drag']}")
             if ammo_type == "AP" and proj['bullet_krupp']:

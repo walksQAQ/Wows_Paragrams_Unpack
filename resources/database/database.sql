@@ -176,7 +176,16 @@ CREATE TABLE IF NOT EXISTS ship_module_artillery (
     radius_delim REAL,
     radius_max REAL,
     delim REAL,
-    special_mode_name TEXT,         -- 如有 F 联动、爆发射击等，触发参数写入核心动态属性子表
+    special_mode_name TEXT,                     -- 如有 F 联动、爆发射击等
+    drum_shots_count INTEGER DEFAULT 0,        -- 弹鼓/弹夹每轮射击数 (shotsCount)
+    drum_shot_delay REAL DEFAULT 0,            -- 弹鼓/弹夹射速间隔 (shotDelay)
+    drum_full_reload_time REAL DEFAULT 0,      -- 弹鼓/弹夹完整装填时间 (fullReloadTime)
+    drum_is_switchable INTEGER DEFAULT 0,      -- 是否可切换模式
+    drum_is_chargeable INTEGER DEFAULT 0,      -- 是否可充能
+    drum_charge_time_min REAL DEFAULT 0,       -- 充能时间下限
+    drum_charge_time_max REAL DEFAULT 0,       -- 充能时间上限
+    drum_charge_mode INTEGER DEFAULT 0,        -- 充能模式 (chargeTimeParams[2])
+    drum_modifiers_json TEXT DEFAULT '{}',      -- 弹鼓模式修正参数
     UNIQUE(ship_id, module_letter, gun_name)
 );
 

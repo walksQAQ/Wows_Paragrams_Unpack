@@ -85,7 +85,7 @@ class ProjectilePresenter(BasePresenter):
             if p['bullet_mass']:
                 items.append(self.make_item(f"  炮弹质量: {p['bullet_mass']:.0f} kg", "", len(items)))
             if p['bullet_diameter']:
-                items.append(self.make_item(f"  炮弹口径: {p['bullet_diameter']:.1f} mm", "", len(items)))
+                items.append(self.make_item(f"  炮弹口径: {p['bullet_diameter']*1000:.2f} mm", "", len(items)))
             if p['bullet_speed']:
                 items.append(self.make_item(f"  出膛初速: {p['bullet_speed']:.0f} m/s", "", len(items)))
             if p['bullet_air_drag']:
