@@ -28,7 +28,7 @@ class CategoryBar(QWidget):
     BTN_STYLE = """
         QPushButton {
             background-color: transparent;
-            color: #cccccc;
+            color: #000000;
             border: none;
             border-radius: 8px;
             padding: 10px 4px;

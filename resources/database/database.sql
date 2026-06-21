@@ -517,6 +517,7 @@ CREATE TABLE IF NOT EXISTS crew_unique_skills (
     trigger_ribbons_num INTEGER,
     trigger_ribbon_types TEXT,
     trigger_allowed_ships TEXT,
+    effects_json TEXT DEFAULT '{}',
     UNIQUE(crew_id, skill_key)
 );
 
