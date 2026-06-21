@@ -111,7 +111,7 @@ class AnalysisStore:
             if not isinstance(raw_data[mod_key], dict):
                 continue
             for cat, pattern in AnalysisStore.PATTERNS.items():
-                m = pattern.fullmatch(mod_key)
+                m = pattern.match(mod_key)
                 if m:
                     prefix = "".join(re.findall(r'[A-Z]+', m.group(1)))
                     if prefix == "AB":
@@ -305,7 +305,7 @@ class AnalysisStore:
             current_cat = None
 
             for cat, pattern in self.PATTERNS.items():
-                m = pattern.fullmatch(mod_key)
+                m = pattern.match(mod_key)
                 if m:
                     prefix = "".join(re.findall(r'[A-Z]+', m.group(1)))
                     if prefix == "AB":
@@ -514,7 +514,7 @@ class AnalysisStore:
             if not isinstance(val, dict):
                 continue
             # 已在模块匹配中的键跳过
-            if any(p.fullmatch(key) for p in self.PATTERNS.values()):
+            if any(p.match(key) for p in self.PATTERNS.values()):
                 continue
             # 有 planes 字段，或匹配飞机 ID 模式
             if "planes" in val or plane_key_pattern.match(key) or key in mappings:
@@ -544,7 +544,7 @@ class AnalysisStore:
         for mod_key, mod_data in raw_data.items():
             if not isinstance(mod_data, dict):
                 continue
-            m = self.PATTERNS["Hull"].fullmatch(mod_key)
+            m = self.PATTERNS["Hull"].match(mod_key)
             if not m and mod_key != "Hull_A":
                 continue
             letter = mod_key.split("_")[0] if "_" in mod_key else mod_key
@@ -585,7 +585,7 @@ class AnalysisStore:
         for mod_key, mod_data in raw_data.items():
             if not isinstance(mod_data, dict):
                 continue
-            m = self.PATTERNS["Hull"].fullmatch(mod_key)
+            m = self.PATTERNS["Hull"].match(mod_key)
             if not m and mod_key != "Hull_A":
                 continue
             lt = mod_key.split("_")[0] if "_" in mod_key else mod_key
@@ -872,12 +872,22 @@ class AnalysisStore:
                           (aid.upper(),)).fetchone() or [None])[0] or aid
             for aid in armaments
         )
-        conn.execute("""INSERT OR REPLACE INTO plane_basic_info
+        conn.execute("""INSERT INTO plane_basic_info
             (plane_id, plane_name_zh, plane_index, tier, nation_zh, aircraft_class,
              cruise_speed, max_speed, min_speed, max_health, squadron_health, restore_time, deck_capacity,
              squadron_size, attack_size, attack_count, bomb_drop_delay,
              preparation_time, aiming_time, armament_name, armament_name_zh)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(plane_id) DO UPDATE SET
+             plane_name_zh=excluded.plane_name_zh, plane_index=excluded.plane_index,
+             tier=excluded.tier, nation_zh=excluded.nation_zh, aircraft_class=excluded.aircraft_class,
+             cruise_speed=excluded.cruise_speed, max_speed=excluded.max_speed, min_speed=excluded.min_speed,
+             max_health=excluded.max_health, squadron_health=excluded.squadron_health,
+             restore_time=excluded.restore_time, deck_capacity=excluded.deck_capacity,
+             squadron_size=excluded.squadron_size, attack_size=excluded.attack_size,
+             attack_count=excluded.attack_count, bomb_drop_delay=excluded.bomb_drop_delay,
+             preparation_time=excluded.preparation_time, aiming_time=excluded.aiming_time,
+             armament_name=excluded.armament_name, armament_name_zh=excluded.armament_name_zh""",
             (plane_id, title, raw_data.get("index", plane_id),
              raw_data.get("level"),
              NM.NATION_MAP.get(
@@ -895,6 +905,8 @@ class AnalysisStore:
              raw_data.get("preparationTime"), raw_data.get("aimingTime"),
              armament_name, armament_name_zh))
         # 消耗品槽位（参照归档 plane_analyzer.py _parse_abilities）
+        # 先清理旧槽位，再写入新数据
+        conn.execute("DELETE FROM plane_ability_slots WHERE plane_id=?", (plane_id,))
         abilities = raw_data.get("PlaneAbilities", {})
         for sk in sorted(abilities.keys()):
             if "AbilitySlot" not in sk:
@@ -904,7 +916,7 @@ class AnalysisStore:
                 continue
             abils = slot_data.get("abils", [])
             slot_num = (slot_data.get('slot') or 0) + 1
-            for i, item in enumerate(abils):
+            for item in abils:
                 if isinstance(item, list) and len(item) > 0:
                     aid = item[0]
                     limit = item[1] if len(item) > 1 else None
@@ -985,6 +997,7 @@ class AnalysisStore:
             "workRadius": _g("workRadius"),
             "allyBuffName": _g("allyBuffName"),
             "allyBuffLevel": _g("allyBuffLevel"),
+            "regenerationRate": _g("regenerationRate"),
             "_slot_configs": slot_configs,  # 所有子配置，供 ship 分析时按 config_key 查询
         }
         extra_json = json.dumps(all_extra, ensure_ascii=False)
@@ -1165,7 +1178,7 @@ class AnalysisService:
             bus.task_progress.emit(100, "无数据可分析")
             return results
 
-        bus.task_progress.emit(70, "预分析数据")
+        bus.task_progress.emit(80, "预分析数据")
         for cat_name in categories:
             cat_dir = split_dir / cat_name
             if not cat_dir.exists():
@@ -1183,7 +1196,7 @@ class AnalysisService:
                     continue
                 if total_processed % 50 == 0:
                     bus.task_progress.emit(
-                        70 + min(25, total_processed * 25 // max(total_entities, 1)),
+                        80 + min(15, total_processed * 15 // max(total_entities, 1)),
                         f"预分析 {total_processed}/{total_entities}")
             results[cat_name] = success
 

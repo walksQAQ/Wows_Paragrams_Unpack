@@ -73,9 +73,7 @@ class CategoryBar(QWidget):
             layout.addWidget(btn)
             self._btns.append(btn)
 
-        # 默认选中第一个（舰船）—— 发射信号触发数据加载
-        if self._btns:
-            self._on_category("Ship")
+        # 启动时不选中任何分类，由用户点击触发
 
         layout.addStretch()
 

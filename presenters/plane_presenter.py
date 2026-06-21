@@ -36,14 +36,16 @@ class PlanePresenter(BasePresenter):
         # ── 飞行性能 ──
         items.append(self.make_item("  【飞行性能】", "", o)); o += 1
         cruise = pl['cruise_speed']
-        max_mult = pl['max_speed']
-        min_mult = pl['min_speed']
+        max_s = pl['max_speed']
+        min_s = pl['min_speed']
         if cruise:
             items.append(self.make_item(f"  巡航航速: {cruise}", "", o)); o += 1
-        if cruise is not None and max_mult is not None:
-            items.append(self.make_item(f"  最大航速: {cruise * max_mult:.0f}", "", o)); o += 1
-        if cruise is not None and min_mult is not None:
-            items.append(self.make_item(f"  最小航速: {cruise * min_mult:.0f}", "", o)); o += 1
+        if max_s is not None:
+            v = cruise * max_s if cruise else max_s
+            items.append(self.make_item(f"  最大航速: {v:.0f}", "", o)); o += 1
+        if min_s is not None:
+            v = cruise * min_s if cruise else min_s
+            items.append(self.make_item(f"  最小航速: {v:.0f}", "", o)); o += 1
         hp = pl['max_health']
         if hp:
             items.append(self.make_item(f"  单机生命值: {hp:.0f}", "", o)); o += 1

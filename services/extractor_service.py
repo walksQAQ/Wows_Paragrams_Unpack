@@ -100,7 +100,7 @@ def run_extract() -> None:
             raise Exception("无法找到有效的版本文件夹")
         app_ctx.set_bin_folder(latest_bin)
 
-        bus.task_progress.emit(15, "读取版本号")
+        bus.task_progress.emit(10, "读取版本号")
         # 读版本号
         exe_name = "WorldOfWarships64.exe" if wows_type == "Wargaming" else "Korabli64.exe"
         exe_path = os.path.join(game_path, "bin", latest_bin, "bin64", exe_name)
@@ -118,7 +118,7 @@ def run_extract() -> None:
         except Exception:
             current_ver = "Unknown"
 
-        bus.task_progress.emit(30, "执行解包工具")  # noqa: F821
+        bus.task_progress.emit(15, "执行解包工具")  # noqa: F821
         # 选择解包工具并执行
         unpack_exe = _pick_unpacker(game_path, latest_bin, wows_type)
         if not os.path.isfile(unpack_exe):

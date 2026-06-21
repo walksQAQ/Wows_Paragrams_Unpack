@@ -8,6 +8,10 @@ PySide6 重构版入口。
   2. 初始化全局应用上下文（Application 单例）
   3. 加载全局样式表
   4. 创建并显示主窗口
+
+作者: walksQAQ
+仓库: https://github.com/walksQAQ/Wows_Paragrams_Unpack
+许可证: 详见项目根目录 LICENSE 文件
 """
 
 from __future__ import annotations
@@ -38,8 +42,8 @@ def load_stylesheet(app: QApplication) -> None:
 def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
-    app.setApplicationName("WOWS Paragrams Unpack")
-    app.setApplicationVersion("2.0.0")
+    app.setApplicationName("Wows/Korabli gamedata unpack and analyze")
+    app.setApplicationVersion("3.0.0")
     app.setOrganizationName("WowsParagrams")
 
     # 2. 加载样式

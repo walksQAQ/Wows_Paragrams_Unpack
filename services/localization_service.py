@@ -118,7 +118,7 @@ def run_localization() -> None:
     data_dir = get_data_dir()
 
     def _run():
-        bus.task_progress.emit(10, "下载/复制语言文件")
+        bus.task_progress.emit(5, "下载/复制语言文件")
         # ── 下载 / 复制 global.mo ────────────────────
         if wows_type == "Wargaming":
             bin_root = os.path.join(game_path, "bin")
@@ -163,7 +163,7 @@ def run_localization() -> None:
         else:
             raise Exception("未知服务器类型")
 
-        bus.task_progress.emit(40, "转换 PO 文件")
+        bus.task_progress.emit(15, "转换 PO 文件")
         # ── MO → PO ─────────────────────────────────
         import polib
         mo = polib.mofile(os.path.join(str(data_dir), "global.mo"))
@@ -174,12 +174,12 @@ def run_localization() -> None:
         po.save(os.path.join(str(data_dir), "global.po"))
         os.remove(os.path.join(str(data_dir), "global.mo"))
 
-        bus.task_progress.emit(70, "提取映射并写入 JSON")
+        bus.task_progress.emit(25, "提取映射并写入 JSON")
         # ── PO → JSON ────────────────────────────────
         return _extract_mappings(os.path.join(str(data_dir), "global.po"), str(data_dir))
 
     def _ok(stats):
-        bus.task_progress.emit(90, "导入文本到数据库")
+        bus.task_progress.emit(45, "导入文本到数据库")
         bus.log_message.emit("✅ 语言文件加载完成")
         for k, v in stats.items():
             bus.log_message.emit(f"  {k}: {v['count']} 条")
@@ -205,6 +205,7 @@ def run_localization() -> None:
                 _run_analysis(db)
         except Exception:
             pass
+        bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")
         bus.folder_selected.emit("__REFRESH__")
 
     def _err(msg: str):

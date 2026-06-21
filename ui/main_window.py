@@ -37,8 +37,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Mir Korabley / World of Warships — 游戏数据分析工具")
-        self.resize(1420, 901)
+        self.setWindowTitle("Mir Korabley/World of Warships — 游戏数据分析工具")
+        self.resize(1440, 900)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -68,10 +68,12 @@ class MainWindow(QMainWindow):
 
         # 文件列表面板（200px 固定）
         self.browser = BrowserPanel()
+        self.browser.setVisible(False)  # 默认隐藏，选择分类后显示
         content_layout.addWidget(self.browser)
 
         # 模块选择区（80px 固定）
         self.module_select = ModuleSelect()
+        self.module_select.setVisible(False)  # 默认隐藏，有模块数据时再显示
         content_layout.addWidget(self.module_select)
 
         # 详情面板（StackedWidget, 展开）
@@ -121,8 +123,8 @@ class MainWindow(QMainWindow):
         # ── 信号连接 ────────────────────────────────────
         bus.log_message.connect(self._on_log)
         self.browser.file_selected.connect(bus.file_selected.emit)
-        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮
-        self.detail.modules_available.connect(self.module_select.set_modules)
+        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐
+        self.detail.modules_available.connect(self._on_modules_available)
         # 模块选择 → 详情页切换
         self.module_select.module_selected.connect(self.detail.switch_page)
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
@@ -159,9 +161,16 @@ class MainWindow(QMainWindow):
         self.log_panel.append(message)
 
     def _on_category_changed(self, folder: str) -> None:
-        """分类切换时控制模块选择区的显隐"""
-        # 舰长类不显示三级菜单（模块选择区）
-        self.module_select.setVisible(folder != "Crew")
+        """分类切换时控制模块选择区和浏览器的显隐"""
+        if folder != "__REFRESH__":
+            self.browser.setVisible(True)
+        # 切换分类时隐藏模块选择栏，由 _on_modules_available 决定是否显示
+        self.module_select.setVisible(False)
+
+    def _on_modules_available(self, section_labels: object) -> None:
+        """模块列表可用时更新 ModuleSelect 并控制显隐"""
+        self.module_select.set_modules(section_labels)
+        self.module_select.setVisible(section_labels is not None)
 
     # ── 窗口管理 ──────────────────────────────────────────
 

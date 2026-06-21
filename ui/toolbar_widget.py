@@ -101,7 +101,7 @@ class TopToolbar(QWidget):
         # ── 信号 ──────────────────────────────────────────
         self.btn_load.clicked.connect(self._on_load)
         self.btn_lang.clicked.connect(self._on_lang)
-        self.btn_refresh.clicked.connect(lambda: bus.folder_selected.emit("__REFRESH__"))
+        self.btn_refresh.clicked.connect(self._on_refresh)
         bus.task_progress.connect(self._on_progress)
         bus.localization_ready.connect(self._enable_all)
         bus.data_loaded.connect(self._on_extract_done)
@@ -130,7 +130,7 @@ class TopToolbar(QWidget):
             self._enable_all()
             return
         from services.processor_service import run_process
-        bus.task_progress.emit(50, "解析数据")
+        bus.task_progress.emit(30, "解析数据")
         bus.log_message.emit("📦 步骤 2/2: 正在解析数据并写入数据库...")
         run_process()
 
@@ -140,6 +140,46 @@ class TopToolbar(QWidget):
         bus.task_progress.emit(0, "开始加载文本")
         bus.log_message.emit("🌐 正在加载语言文件...")
         run_localization()
+
+    def _on_refresh(self):
+        """刷新界面：清空缓存 → 重新分析 → 刷新显示"""
+        self._disable_all()
+        bus.task_progress.emit(0, "刷新中")
+
+        def _work():
+            # 1. 清空 Presenter 缓存
+            from presenters.registry import PresenterRegistry
+            PresenterRegistry.clear_cache()
+
+            # 2. 重新从 split JSON 分析（如果 split 目录存在）
+            from utils.path_utils import get_split_dir
+            split_dir = get_split_dir()
+            if split_dir.exists() and any(split_dir.iterdir()):
+                bus.log_message.emit("🔄 正在重新分析数据文件...")
+                from services.database_service import get_db
+                from services.analysis_service import AnalysisService
+                db = get_db()
+                if db.exists:
+                    svc = AnalysisService()
+                    svc.initialize()
+                    if svc.is_ready:
+                        svc.precompute_all(db)
+                        bus.log_message.emit("✅ 数据分析完成")
+            else:
+                bus.log_message.emit("🔄 split 目录不存在，跳过重新分析")
+
+            # 3. 通知界面刷新
+            bus.folder_selected.emit("__REFRESH__")
+
+        def _done(_result=None):
+            self._enable_all()
+            bus.task_progress.emit(100, "刷新完成")
+
+        from utils.threading_utils import run_async
+        run_async(_work, on_finished=_done, on_error=lambda e: (
+            bus.log_message.emit(f"❌ 刷新出错: {e}"),
+            self._enable_all()
+        ))
 
     def _on_server(self, btn):
         app_ctx.set_wows_type(btn.text())

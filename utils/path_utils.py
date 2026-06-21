@@ -51,10 +51,8 @@ def get_data_dir() -> Path:
 
 
 def get_split_dir() -> Path:
-    """返回 data/split/ 目录，不存在则自动创建"""
-    d = get_data_dir() / "split"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """返回 data/split/ 目录（不自动创建，由 processor_service 按需创建）"""
+    return get_data_dir() / "split"
 
 
 def get_config_path() -> Path:
