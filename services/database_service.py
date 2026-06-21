@@ -151,6 +151,7 @@ class DatabaseManager:
             ("projectile_basic_info", "depth_splash_size", "REAL"),
             ("projectile_basic_info", "depth_splash_size_to_torpedo", "REAL"),
             ("projectile_basic_info", "custom_ui_postfix", "TEXT DEFAULT ''"),
+            ("crew_unique_skills", "effects_json", "TEXT DEFAULT '{}'"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")

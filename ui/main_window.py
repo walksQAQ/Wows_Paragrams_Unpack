@@ -161,9 +161,10 @@ class MainWindow(QMainWindow):
         self.log_panel.append(message)
 
     def _on_category_changed(self, folder: str) -> None:
-        """分类切换时控制模块选择区和浏览器的显隐"""
+        """分类切换时控制各面板显隐并重置详情"""
         if folder != "__REFRESH__":
             self.browser.setVisible(True)
+            self.detail.reset_to_default()
         # 切换分类时隐藏模块选择栏，由 _on_modules_available 决定是否显示
         self.module_select.setVisible(False)
 

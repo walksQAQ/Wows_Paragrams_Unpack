@@ -29,6 +29,18 @@ SHIP_MODULE_MAP: dict[str, tuple[str, str]] = {
     "深水炸弹":   ("💥", "深弹"),
     "舰载机":     ("✈️", "飞机"),
     "空袭":       ("💫", "空袭"),
+    # 舰长天赋
+    "成就触发":   ("🏆", "成就"),
+    "成就触发Ⅱ":  ("🏆", "成就Ⅱ"),
+    "受击触发":   ("💥", "受击"),
+    "友军阵亡":   ("💔", "友军"),
+    "击沉触发":   ("⚓", "击沉"),
+    "血量触发":   ("❤️", "血量"),
+    "指令触发":   ("⚡", "指令"),
+    "勋带触发":   ("🎖️", "勋带"),
+    "勋带触发Ⅱ":  ("🎖️", "勋带Ⅱ"),
+    "勋带触发Ⅲ":  ("🎖️", "勋带Ⅲ"),
+    "勋带触发Ⅳ":  ("🎖️", "勋带Ⅳ"),
 }
 SHIP_MODULE_FALLBACK = ("📄", "模块")
 
@@ -45,7 +57,7 @@ class ModuleSelect(QWidget):
     BTN_STYLE = """
         QPushButton {
             background-color: transparent;
-            color: #999999;
+            color: #000000;
             border: none;
             border-radius: 8px;
             padding: 8px 2px;

@@ -1064,20 +1064,33 @@ class AnalysisStore:
              1 if pers.get("isRetrainable") else 0))
         # 特殊技能
         unique = raw_data.get("UniqueSkills", {})
+        import json as _json
+        META_KEYS = {
+            "triggerType", "maxTriggerNum", "sortIndex", "damagePercentThreshold",
+            "triggerAllowedShips", "triggerAllowedShipTypes", "triggerRibbonsNum",
+            "triggerIsSubRibbons", "triggerJoinRibbons", "triggerRibbonsTypes",
+        }
         for sk, sv in unique.items():
+            # 收集效果数据（非 meta 字段且值为 dict 的为效果）
+            effects = {}
+            for ek, ev in sv.items():
+                if ek in META_KEYS or not isinstance(ev, dict):
+                    continue
+                effects[ek] = ev
             conn.execute("""INSERT OR REPLACE INTO crew_unique_skills
                 (crew_id, skill_key, trigger_type, max_trigger_num,
                  trigger_achievement, trigger_damage_num, trigger_damage_type,
                  damage_percent_threshold, trigger_ribbons_num,
-                 trigger_ribbon_types, trigger_allowed_ships)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                 trigger_ribbon_types, trigger_allowed_ships, effects_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (crew_id, sk,
                  sv.get("triggerType"), sv.get("maxTriggerNum"),
                  sv.get("triggerAchievement"), sv.get("triggerDamageNum"),
                  sv.get("triggerDamageType"), sv.get("damagePercentThreshold"),
                  sv.get("triggerRibbonsNum"),
                  str(sv.get("triggerRibbonsTypes", [])),
-                 str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or "")))
+                 str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
+                 _json.dumps(effects, ensure_ascii=False)))
         conn.commit()
 
 

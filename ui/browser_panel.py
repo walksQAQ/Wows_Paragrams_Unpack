@@ -128,7 +128,8 @@ class BrowserPanel(QWidget):
         self.ms_nation = MultiSelectCombo("全部国家")
         self.ms_type = MultiSelectCombo("全部舰种")
         self.ms_tier = MultiSelectCombo("全部等级")
-        for ms in (self.ms_nation, self.ms_type, self.ms_tier):
+        self.ms_crew_type = MultiSelectCombo("全部类型")
+        for ms in (self.ms_nation, self.ms_type, self.ms_tier, self.ms_crew_type):
             filter_row.addWidget(ms)
 
         self.btn_reset = QPushButton("↺")
@@ -183,6 +184,7 @@ class BrowserPanel(QWidget):
         self.ms_type.selection_changed.connect(self._apply_filter)
         self.ms_tier.selection_changed.connect(self._apply_filter)
         self.btn_reset.clicked.connect(self._reset_filters)
+        self.ms_crew_type.selection_changed.connect(self._apply_filter)
         bus.folder_selected.connect(self._on_category_selected)
 
     # ── 公共方法 ──────────────────────────────────────────
@@ -192,12 +194,13 @@ class BrowserPanel(QWidget):
         self.file_list.clear()
         self._all_entities = []
 
-        # 筛选栏仅对 Ship 类别显示
+        # 筛选栏仅对 Ship / Crew 类别显示
         is_ship = folder == "Ship"
         is_crew = folder == "Crew"
         self.ms_nation.setVisible(is_ship or is_crew)
         self.ms_type.setVisible(is_ship)
         self.ms_tier.setVisible(is_ship)
+        self.ms_crew_type.setVisible(is_crew)
         self.btn_reset.setVisible(is_ship or is_crew)
 
         if is_ship or is_crew:
@@ -217,6 +220,7 @@ class BrowserPanel(QWidget):
             self._load_other_data(db, folder)
 
         self._apply_filter()
+        self.file_list.scrollToTop()
 
     def refresh(self) -> None:
         if self._current_folder:
@@ -263,14 +267,15 @@ class BrowserPanel(QWidget):
         self.ms_tier.fill_items([(f"{NM.LEVEL_MAP[t]} 级", t) for t in tiers])
 
     def _load_crew_data(self, db):
-        """从数据库加载舰长列表（含国籍筛选）"""
+        """从数据库加载舰长列表（含国籍和类型筛选）"""
         from models.name_mapping import Mapping as NM
         rows = db._conn.execute("""
-            SELECT e.entity_id, COALESCE(c.crew_name, e.entity_id) AS display_name, e.nation
+            SELECT e.entity_id, COALESCE(c.crew_name, e.entity_id) AS display_name, e.nation,
+                   c.is_unique, c.is_elite, c.is_person, c.is_animated
             FROM entity_registry e
             LEFT JOIN crew_basic_info c ON c.crew_id = e.entity_id
             WHERE e.entity_type='crew'
-            ORDER BY e.nation, e.entity_id
+            ORDER BY e.entity_id
         """).fetchall()
         self._all_entities = [dict(r) for r in rows]
 
@@ -278,6 +283,18 @@ class BrowserPanel(QWidget):
             NM.NATION_MAP.get(r["nation"], r["nation"]) for r in self._all_entities if r["nation"]
         ))
         self.ms_nation.fill_items([(n, n) for n in nations])
+
+        # 舰长类型筛选
+        crew_types = []
+        if any(r.get("is_unique") for r in self._all_entities):
+            crew_types.append(("传奇舰长", "unique"))
+        if any(r.get("is_elite") for r in self._all_entities):
+            crew_types.append(("精英舰长", "elite"))
+        if any(r.get("is_person") for r in self._all_entities):
+            crew_types.append(("历史人物", "person"))
+        if any(r.get("is_animated") for r in self._all_entities):
+            crew_types.append(("动态立绘", "animated"))
+        self.ms_crew_type.fill_items(crew_types)
 
     def _load_other_data(self, db, folder):
         """从数据库加载非舰船类别的列表（含本地化名称）"""
@@ -315,6 +332,7 @@ class BrowserPanel(QWidget):
         nation_vals = self.ms_nation.selected_data() if self.ms_nation.isVisible() else []
         type_vals = self.ms_type.selected_data() if self.ms_type.isVisible() else []
         tier_vals = [int(t) for t in self.ms_tier.selected_data()] if self.ms_tier.isVisible() else []
+        crew_type_vals = self.ms_crew_type.selected_data() if self.ms_crew_type.isVisible() else []
 
         from models.name_mapping import Mapping as NM
 
@@ -333,6 +351,15 @@ class BrowserPanel(QWidget):
             if tier_vals:
                 if ent.get("tier") not in tier_vals:
                     continue
+            if crew_type_vals:
+                # 舰长类型：检查对应 flag 是否为 1
+                has_type = False
+                for ct in crew_type_vals:
+                    if ent.get(f"is_{ct}"):
+                        has_type = True
+                        break
+                if not has_type:
+                    continue
 
             if keyword and keyword not in dname.lower() and keyword not in eid.lower():
                 continue
@@ -350,6 +377,7 @@ class BrowserPanel(QWidget):
         self.ms_nation.reset()
         self.ms_type.reset()
         self.ms_tier.reset()
+        self.ms_crew_type.reset()
         self._apply_filter()
 
     # ── 信号槽 ──────────────────────────────────────────

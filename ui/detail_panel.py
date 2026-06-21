@@ -194,6 +194,16 @@ class DetailPanel(QWidget):
             self.stack.removeWidget(w)
             w.deleteLater()
 
+    def reset_to_default(self) -> None:
+        """重置为默认状态（切换分类时调用）"""
+        self._current_category = ""
+        self._current_filename = ""
+        self._current_raw = None
+        self._current_analyzed = None
+        self._build_default_pages()
+        self._show_hint()
+        self.modules_available.emit(None)
+
     # ── 文件选择（数据库驱动）──────────────────────────
 
     def _on_file_selected(self, category: str, filename: str) -> None:
