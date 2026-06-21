@@ -20,6 +20,21 @@ from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir
 
 
+def import_text_to_db(db) -> dict:
+    """将磁盘上的 JSON 映射文件和 PO 翻译文件写入数据库。
+
+    这是从文本/本地化角度写入数据库的独立入口，不依赖数据加载流程。
+    返回统计: {name_mappings: {filename: count}, po_translations: int}
+    """
+    from services.database_service import DatabaseManager
+    if isinstance(db, DatabaseManager) and db.exists:
+        nm = db.import_name_mappings(str(get_data_dir()))
+        po_path = get_data_dir() / "global.po"
+        po_cnt = db.import_po_translations(str(po_path)) if po_path.exists() else 0
+        return {"name_mappings": nm, "po_translations": po_cnt}
+    return {"name_mappings": {}, "po_translations": 0}
+
+
 def _extract_mappings(po_path: str, out_dir: str) -> dict:
     """从 PO 文件中提取所有翻译映射并保存为 JSON"""
     import polib
@@ -91,6 +106,7 @@ def run_localization() -> None:
     data_dir = get_data_dir()
 
     def _run():
+        bus.task_progress.emit(10, "下载/复制语言文件")
         # ── 下载 / 复制 global.mo ────────────────────
         if wows_type == "Wargaming":
             bin_root = os.path.join(game_path, "bin")
@@ -135,6 +151,7 @@ def run_localization() -> None:
         else:
             raise Exception("未知服务器类型")
 
+        bus.task_progress.emit(40, "转换 PO 文件")
         # ── MO → PO ─────────────────────────────────
         import polib
         mo = polib.mofile(os.path.join(str(data_dir), "global.mo"))
@@ -145,24 +162,38 @@ def run_localization() -> None:
         po.save(os.path.join(str(data_dir), "global.po"))
         os.remove(os.path.join(str(data_dir), "global.mo"))
 
+        bus.task_progress.emit(70, "提取映射并写入 JSON")
         # ── PO → JSON ────────────────────────────────
         return _extract_mappings(os.path.join(str(data_dir), "global.po"), str(data_dir))
 
     def _ok(stats):
+        bus.task_progress.emit(90, "导入文本到数据库")
         bus.log_message.emit("✅ 语言文件加载完成")
         for k, v in stats.items():
             bus.log_message.emit(f"  {k}: {v['count']} 条")
+        # 将文本数据写入数据库
+        try:
+            from services.database_service import get_db
+            res = import_text_to_db(get_db())
+            if res["name_mappings"]:
+                bus.log_message.emit(f"📦 名称映射已入库: {sum(res['name_mappings'].values())} 条")
+            if res["po_translations"]:
+                bus.log_message.emit(f"📦 PO 翻译已入库: {res['po_translations']} 条")
+        except Exception as e:
+            bus.log_message.emit(f"⚠️ 文本入库失败: {e}")
+        bus.task_progress.emit(100, "本地化完成")
         bus.localization_ready.emit()
-        # 语言文件就绪后，自动触发数据库预分析（如果有数据）
+        # 刷新名称映射 → 自动重跑预分析以更新显示名 + 刷新界面
         try:
             from services.database_service import get_db
             db = get_db()
             if db.exists and db.get_stats().get("total_entities", 0) > 0:
+                bus.log_message.emit("🧠 重新预分析以应用新翻译...")
                 from services.processor_service import _run_analysis
-                bus.log_message.emit("🧠 检测到已有数据，正在预分析...")
                 _run_analysis(db)
         except Exception:
             pass
+        bus.folder_selected.emit("__REFRESH__")
 
     def _err(msg: str):
         bus.log_message.emit(f"❌ 加载失败: {msg}")

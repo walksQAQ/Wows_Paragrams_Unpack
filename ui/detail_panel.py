@@ -1,176 +1,269 @@
 """
-DetailPanel —— 右侧详情展示面板。
+DetailPanel —— 右侧详情展示面板（QStackedWidget，动态页面）。
 
-完全基于数据库：优先读取预分析的 analyzed_result，
-数据库不存在时降级到 JSON 文件 + 按需加载分析器。
+完全基于数据库读取显示，不再调用分析器。
+由 ModuleSelect 控制页面切换。
 """
 
 from __future__ import annotations
 
 import json
 
+from functools import partial
+
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QTextEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
+    QTextEdit, QPushButton,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from app.signals import bus
-from models.analysis_result import AnalysisResult
-from utils.path_utils import get_split_dir
 from services.database_service import get_db
 
 
 class DetailPanel(QWidget):
-    """右侧详情面板——数据库驱动"""
+    """右侧详情面板（数据库驱动）"""
+
+    modules_available = Signal(object)
+
+    TEXT_STYLE = """
+        QTextEdit {
+            background-color: #ffffff;
+            color: #1a1a1a;
+            border: none;
+            padding: 12px;
+            font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            font-size: 13px;
+        }
+    """
+    MONO_STYLE_LIGHT = """
+        QTextEdit {
+            background-color: #fafafa;
+            color: #1a1a1a;
+            border: none;
+            padding: 12px;
+            font-family: "Consolas", "Courier New", monospace;
+            font-size: 12px;
+        }
+    """
+    MONO_STYLE_DARK = """
+        QTextEdit {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            border: none;
+            padding: 12px;
+            font-family: "Consolas", "Courier New", monospace;
+            font-size: 12px;
+        }
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-
-        # 不预加载分析器——完全依赖数据库
-        self._analyzers: dict | None = None
+        self._current_category: str = ""
+        self._current_filename: str = ""
+        self._current_raw: dict | None = None
+        self._current_analyzed: dict | None = None
+        self._is_ship_mode: bool = False
+        self._section_page_indices: dict[str, int] = {}
+        self._default_pages: list[QTextEdit] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack)
 
-        self.text_area = QTextEdit()
-        self.text_area.setReadOnly(True)
-        self.text_area.setFont(QFont("Microsoft YaHei", 11))
-        self.text_area.setStyleSheet("""
-            QTextEdit {
-                background-color: #ffffff;
-                color: #1a1a1a;
-                border: none;
-                padding: 8px;
-                font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-                font-size: 13px;
-            }
-        """)
-        layout.addWidget(self.text_area)
-
+        self._build_default_pages()
         self._show_hint()
+        # 启动时不通知 ModuleSelect，保持空白占位
         bus.file_selected.connect(self._on_file_selected)
 
-    # ── 按需加载分析器（仅降级路径使用）──────────────────
+    # ── 页面构建 ──────────────────────────────────────────
 
-    def _get_analyzer(self, category: str):
-        """按需初始化分析器（仅当数据库无预分析结果时）"""
-        if self._analyzers is None:
-            self._analyzers = {}
-        if category not in self._analyzers:
-            cls_map = {
-                "Ship": ("analyzers.ship_analyzer", "ShipAnalyzer"),
-                "Gun": ("analyzers.gun_analyzer", "GunAnalyzer"),
-                "Projectile": ("analyzers.projectile_analyzer", "ProjectileAnalyzer"),
-                "Modernization": ("analyzers.modernization_analyzer", "ModernizationAnalyzer"),
-                "Aircraft": ("analyzers.plane_analyzer", "PlaneAnalyzer"),
-                "Ability": ("analyzers.consumable_analyzer", "ConsumableAnalyzer"),
-                "Crew": ("analyzers.crew_analyzer", "CrewAnalyzer"),
-            }
-            entry = cls_map.get(category)
-            if entry:
-                try:
-                    import importlib
-                    mod = importlib.import_module(entry[0])
-                    cls = getattr(mod, entry[1])
-                    a = cls()
-                    a.initialize_mapping()
-                    self._analyzers[category] = a
-                except Exception as e:
-                    bus.log_message.emit(f"分析器({category})加载失败: {e}")
-                    return None
-        return self._analyzers.get(category)
+    def _build_default_pages(self) -> None:
+        """创建默认三页：详情 / 数据 / 原始"""
+        self._clear_pages()
+        self._is_ship_mode = False
+        self._section_page_indices = {}
+        self._default_pages = []
 
-    # ── 文件选择 ──────────────────────────────────────────
+        pages = [
+            ("detail", self.TEXT_STYLE, QFont("Microsoft YaHei", 11)),
+            ("data", self.MONO_STYLE_LIGHT, QFont("Consolas", 10)),
+            ("raw", self.MONO_STYLE_DARK, QFont("Consolas", 10)),
+        ]
+        for name, style, font in pages:
+            te = QTextEdit()
+            te.setReadOnly(True)
+            te.setFont(font)
+            te.setStyleSheet(style)
+            te.setObjectName(f"page_{name}")
+            self.stack.addWidget(te)
+            self._default_pages.append(te)
+
+        self.stack.setCurrentIndex(0)
+
+    def _build_ship_pages(self, sections: list[dict], extra: dict | None = None) -> None:
+        self._clear_pages()
+        self._is_ship_mode = True
+        self._section_page_indices = {}
+        sub_sections = (extra or {}).get("sub_sections", {})
+        for sec in sections:
+            label = sec.get("label", "未知")
+            sub_info = sub_sections.get(label)
+            if sub_info and sub_info.get("sub_labels"):
+                widget = self._build_sub_widget(sub_info)
+                idx = self.stack.addWidget(widget)
+                self._section_page_indices[label] = idx
+            else:
+                te = QTextEdit()
+                te.setReadOnly(True)
+                te.setFont(QFont("Microsoft YaHei", 11))
+                te.setStyleSheet(self.TEXT_STYLE)
+                lines = []
+                for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
+                    n = item.get("name", "")
+                    if not n:
+                        lines.append("")
+                    else:
+                        lines.append(f"  {n}")
+                te.setPlainText("\n".join(lines))
+                idx = self.stack.addWidget(te)
+                self._section_page_indices[label] = idx
+        if self._section_page_indices:
+            self.stack.setCurrentIndex(next(iter(self._section_page_indices.values())))
+
+    def _build_sub_widget(self, sub_info: dict) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        labels = sub_info.get("sub_labels", [])
+        contents = sub_info.get("sub_contents", {})
+        bar = QWidget()
+        bar.setStyleSheet("QWidget{background:#f0f0f0;border-bottom:1px solid #d0d0d0;}")
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(8, 4, 8, 4)
+        blay.setSpacing(4)
+        stack = QStackedWidget()
+        btns: list[QPushButton] = []
+        for i, sl in enumerate(labels):
+            te = QTextEdit()
+            te.setReadOnly(True)
+            te.setFont(QFont("Microsoft YaHei", 11))
+            te.setStyleSheet(self.TEXT_STYLE)
+            te.setPlainText("\n".join(contents.get(sl, [])))
+            stack.addWidget(te)
+            btn = QPushButton(sl)
+            btn.setCheckable(True)
+            btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
+                              "border-radius:4px;padding:6px 14px;font-size:12px;}"
+                              "QPushButton:hover{background:#d0d0d0;color:#333;}"
+                              "QPushButton:checked{background:#0078d4;color:#fff;}")
+            btn.clicked.connect(partial(self._on_sub_btn, stack, i, btns))
+            blay.addWidget(btn)
+            btns.append(btn)
+        blay.addStretch()
+        if btns:
+            btns[0].setChecked(True)
+        layout.addWidget(bar)
+        layout.addWidget(stack, stretch=1)
+        return container
+
+    def _clear_pages(self) -> None:
+        """清除所有页面"""
+        while self.stack.count() > 0:
+            w = self.stack.widget(0)
+            self.stack.removeWidget(w)
+            w.deleteLater()
+
+    # ── 文件选择（数据库驱动）──────────────────────────
 
     def _on_file_selected(self, category: str, filename: str) -> None:
-        # 1. 优先从数据库读取预分析结果
+        if not category or not filename:
+            return
+        self._current_category = category
+        self._current_filename = filename
+        self._current_raw = None
+        self._current_analyzed = None
+
         db = get_db()
         if db.exists:
             try:
                 entity = db.get_entity(category, filename)
                 if entity:
-                    pre = entity.get("analyzed_result")
-                    if pre:
-                        self._render_dict(pre)
+                    self._current_raw = entity.get("raw_json")
+                    analyzed = entity.get("analyzed_result")
+                    if analyzed:
+                        self._current_analyzed = analyzed
+                        self._apply_analyzed()
                         return
-                    # 有 raw_json 无预分析 → 实时分析并缓存
-                    raw = entity["raw_json"]
-                    result = self._run_and_cache(category, filename, raw, db)
-                    if result:
-                        self._render_dict(result)
-                        return
-                    # 兜底：直接显示原始 JSON
-                    self.text_area.setPlainText(json.dumps(raw, indent=4, ensure_ascii=False))
-                    return
             except Exception:
                 pass
+        self._build_default_pages()
+        self._show_msg(f"暂无数据: {category}/{filename}")
+        self.modules_available.emit(None)
 
-        # 2. 降级到文件系统
-        fp = get_split_dir() / category / f"{filename}.json"
-        if not fp.exists():
-            self.text_area.setPlainText(f"文件不存在: {fp}")
-            return
-        try:
-            with open(fp, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception as e:
-            self.text_area.setPlainText(f"读取失败: {e}")
-            return
+    # ── 应用数据 ──────────────────────────────────────────
 
-        # 3. 按需分析并显示原始 JSON
-        a = self._get_analyzer(category)
-        if a:
-            try:
-                result = a.analyze(raw)
-                self._render(result)
-                return
-            except Exception as e:
-                bus.log_message.emit(f"分析({category})失败: {e}")
-        self.text_area.setPlainText(json.dumps(raw, indent=4, ensure_ascii=False))
+    def _apply_analyzed(self) -> None:
+        """根据 analyzed 数据决定页面模式（舰船多section / 通用三页）"""
+        sections = (self._current_analyzed or {}).get("sections", [])
 
-    def _run_and_cache(self, category: str, key: str, raw: dict, db) -> dict | None:
-        """实时运行分析器并缓存到数据库"""
-        a = self._get_analyzer(category)
-        if not a:
-            return None
-        try:
-            result = a.analyze(raw)
-            analyzed = {
-                "title": result.title, "subtitle": result.subtitle,
-                "sections": [{"label": s.label, "items": [
-                    {"name": i.name, "value": i.value, "raw_value": i.raw_value,
-                     "unit": i.unit, "order": i.order} for i in s.items]}
-                    for s in result.sections],
-                "extra": result.extra,
-            }
-            db.update_analyzed_json(category, key, json.dumps(analyzed, ensure_ascii=False))
-            return analyzed
-        except Exception as e:
-            bus.log_message.emit(f"实时分析({category})失败: {e}")
-            return None
+        # 判断是否为多 section 的舰船数据（section数 > 1 且含中文模块名）
+        is_ship = len(sections) > 1
 
-    # ── 渲染 ──────────────────────────────────────────────
+        if is_ship:
+            labels = [s.get("label", "") for s in sections]
+            extra = (self._current_analyzed or {}).get("extra")
+            self._build_ship_pages(sections, extra)
+            self.modules_available.emit(labels)
+        else:
+            self._build_default_pages()
+            if self._current_analyzed:
+                self._default_pages[0].setPlainText(self._format_analyzed(self._current_analyzed))
+                self._default_pages[1].setPlainText(self._format_data(self._current_analyzed))
+            else:
+                self._default_pages[0].setPlainText("暂无分析数据")
+                self._default_pages[1].setPlainText("暂无分析数据")
 
-    def _render(self, r: AnalysisResult) -> None:
-        lines = []
-        for sec in r.sections:
-            for item in sec.sorted_items():
-                if not item.name and not item.value:
-                    lines.append("")
-                elif item.value:
-                    v = f"{item.value}{item.unit}" if item.unit else item.value
-                    lines.append(f"  {item.name}: {v}")
-                else:
-                    lines.append(f"{item.name}")
-            lines.append("")
-        self.text_area.setPlainText("\n".join(lines))
+            if self._current_raw:
+                self._default_pages[2].setPlainText(
+                    json.dumps(self._current_raw, indent=4, ensure_ascii=False)
+                )
+            else:
+                self._default_pages[2].setPlainText("暂无原始数据")
 
-    def _render_dict(self, analyzed: dict) -> None:
+            self.modules_available.emit(None)
+
+    @staticmethod
+    def _on_sub_btn(sub_stack: QStackedWidget, idx: int,
+                    all_btns: list[QPushButton], checked: bool = False) -> None:
+        """子分类按钮点击：切换子页面并更新按钮高亮"""
+        sub_stack.setCurrentIndex(idx)
+        for b in all_btns:
+            b.setChecked(False)
+        if idx < len(all_btns):
+            all_btns[idx].setChecked(True)
+
+    def _show_msg(self, msg: str) -> None:
+        for i in range(self.stack.count()):
+            w = self.stack.widget(i)
+            if isinstance(w, QTextEdit):
+                w.setPlainText(msg)
+
+    # ── 格式化 ────────────────────────────────────────────
+
+    @staticmethod
+    def _format_analyzed(analyzed: dict) -> str:
         lines = []
         for sec in analyzed.get("sections", []):
             for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
-                name, value, unit = item.get("name", ""), item.get("value", ""), item.get("unit", "")
+                name = item.get("name", "")
+                if name.startswith("__SUB_MAP__:") or name.startswith("__SUB__:"):
+                    continue
+                value, unit = item.get("value", ""), item.get("unit", "")
                 if not name and not value:
                     lines.append("")
                 elif value:
@@ -178,10 +271,47 @@ class DetailPanel(QWidget):
                 else:
                     lines.append(f"{name}")
             lines.append("")
-        self.text_area.setPlainText("\n".join(lines))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_data(analyzed: dict) -> str:
+        lines = []
+        for sec in analyzed.get("sections", []):
+            lines.append(f"【{sec.get('label', '')}】")
+            lines.append("-" * 40)
+            for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
+                name = item.get("name", "")
+                if name.startswith("__SUB_MAP__:") or name.startswith("__SUB__:"):
+                    continue
+                value = item.get("value", "")
+                unit = item.get("unit", "")
+                raw_val = item.get("raw_value", "")
+                if name and value:
+                    v = f"{value}{unit}" if unit else str(value)
+                    lines.append(f"  {name:<20} {v:>10}  (raw: {raw_val})")
+                elif name:
+                    lines.append(f"  {name}")
+            lines.append("")
+        return "\n".join(lines)
+
+    # ── 页面切换 ──────────────────────────────────────────
+
+    def switch_page(self, mod_id: str) -> None:
+        """根据模块 ID 切换页面。舰船用 section label 索引，通用用 detail/data/raw"""
+        if self._is_ship_mode:
+            idx = self._section_page_indices.get(mod_id)
+            if idx is not None:
+                self.stack.setCurrentIndex(idx)
+        else:
+            page_map = {"detail": 0, "data": 1, "raw": 2}
+            idx = page_map.get(mod_id, 0)
+            if idx < self.stack.count():
+                self.stack.setCurrentIndex(idx)
+
+    # ── 提示 ──────────────────────────────────────────────
 
     def _show_hint(self) -> None:
-        self.text_area.setPlainText(
+        hint = (
             "👈 左侧选择分类和文件\n\n"
             "1. ⚙ 设置游戏目录\n"
             "2. 📦 加载数据\n"
@@ -189,4 +319,6 @@ class DetailPanel(QWidget):
             "4. 🌐 语言文件\n"
             "5. 点击分类 → 选择文件"
         )
+        for te in self._default_pages:
+            te.setPlainText(hint)
 

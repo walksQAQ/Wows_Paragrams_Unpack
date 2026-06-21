@@ -10,13 +10,7 @@ QMainWindow {
     background-color: #f5f5f5;
 }
 
-/* ── 侧边栏 ───────────────────────────────────────────── */
-QWidget#SidebarWidget {
-    background-color: #2b2b2b;
-    border-right: 1px solid #3c3c3c;
-}
-
-/* ── 日志文本框 ────────────────────────────────────────── */
+/* ── 日志文本框（兼容旧版，新版用 QTextBrowser）────────── */
 QTextEdit#LogArea {
     background-color: #1e1e1e;
     color: #d4d4d4;
@@ -27,35 +21,23 @@ QTextEdit#LogArea {
     padding: 4px;
 }
 
-/* ── 详情面板 ─────────────────────────────────────────── */
-QTextEdit#DetailArea {
-    background-color: #ffffff;
-    color: #1a1a1a;
-    font-family: "Microsoft YaHei", "微软雅黑", "Segoe UI", sans-serif;
-    font-size: 13px;
-    border: 1px solid #d0d0d0;
-    border-radius: 4px;
-    padding: 8px;
-}
-
-/* ── QTreeView (浏览器面板) ────────────────────────────── */
-QTreeView {
+/* ── QTextBrowser (浏览器面板) ────────────────────────── */
+QListWidget {
     background-color: #ffffff;
     border: 1px solid #d0d0d0;
     border-radius: 4px;
     font-size: 12px;
-    show-decoration-selected: 1;
 }
 
-QTreeView::item {
-    padding: 4px 8px;
+QListWidget::item {
+    padding: 3px 6px;
 }
 
-QTreeView::item:selected {
+QListWidget::item:selected {
     background-color: #0078d4;
     color: #ffffff;
 }
 
-QTreeView::item:hover {
+QListWidget::item:hover {
     background-color: #e5f1fb;
 }

@@ -61,20 +61,26 @@ def main() -> None:
     bus.log_message.emit(f"数据目录: {app_ctx.ctx.data_dir}")
     bus.log_message.emit(f"当前服务器: {app_ctx.ctx.wows_type}")
 
-    # 6. 启动后自动刷新（如果已有数据）
+    # 6. 启动后自动刷新（如果已有可用数据库）
     from PySide6.QtCore import QTimer
-    from utils.path_utils import get_split_dir
 
     def _auto_refresh():
-        split_dir = get_split_dir()
-        if split_dir.exists() and any(split_dir.iterdir()):
-            # 已有 split 数据 → 刷新浏览器
-            bus.folder_selected.emit("__REFRESH__")
-            bus.log_message.emit("🔄 检测到已有数据，自动刷新")
-            # 同时更新按钮状态
-            bus.can_process_data.emit(True)
+        try:
+            from services.database_service import get_db
+            db = get_db()
+            if not db.exists:
+                return
+            stats = db.get_stats()
+            if stats.get("total_entities", 0) > 0:
+                bus.folder_selected.emit("__REFRESH__")
+                bus.log_message.emit(f"🔄 加载数据库: {db.db_path.name} ({stats['total_entities']} 实体)")
+                bus.can_process_data.emit(True)
+            else:
+                bus.log_message.emit("ℹ️ 数据库为空，请加载数据")
+        except Exception as e:
+            bus.log_message.emit(f"⚠️ 数据库检查失败: {e}")
 
-    QTimer.singleShot(100, _auto_refresh)
+    QTimer.singleShot(200, _auto_refresh)
 
     # 7. 进入事件循环
     sys.exit(app.exec())
