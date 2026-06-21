@@ -54,3 +54,4 @@
 - **walksQAQ** — 开发维护
 - 仓库: [https://github.com/walksQAQ/Wows_Paragrams_Unpack]
 - 下载编译好的程序请到 **Releases** 页面查找。
+- 当前程序版本 v3.0.0
