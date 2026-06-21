@@ -1,6 +1,8 @@
 # Wows Paragrams Unpack
 
 > 战舰世界 / Korabli 游戏数据自动化提取与分析工具
+>
+> **当前版本: v3.0.0**
 
 ---
 
