@@ -50,47 +50,36 @@ NAME_MAPPING_FILES: dict[str, str] = {
 # ══════════════════════════════════════════════════════════
 
 class DatabaseManager:
-    """SQLite 数据库管理器（线程安全，多版本支持）"""
-
-    MAX_KEEP = 2  # 最多保留 2 个版本的数据文件
+    """SQLite 数据库管理器（线程安全，固定 game_data.db）"""
 
     def __init__(self, db_path: str | Path | None = None):
         if db_path:
             self._db_path = Path(db_path)
         else:
-            # 自动选择最新的版本文件
-            latest = self._latest_db(get_data_dir())
-            self._db_path = latest or get_data_dir() / "game_data.db"
+            self._db_path = get_data_dir() / "game_data.db"
         self._local = threading.local()
-
-    @staticmethod
-    def _latest_db(data_dir: Path) -> Path | None:
-        """按修改时间取最新的 game_data 文件"""
-        files = sorted(data_dir.glob("game_data_*.db"), key=lambda f: f.stat().st_mtime, reverse=True)
-        return files[0] if files else None
 
     @staticmethod
     def _versioned_path(data_dir: Path, wows_type: str, version: str,
                         bin_folder: str = "") -> Path:
-        """生成带版本号和 bin 目录标识的 DB 路径:
-           game_data_{type}_{version}_{bin}.db"""
-        safe_ver = version.replace(" ", "_").replace(":", "-").replace("/", "_")
-        safe_bin = Path(bin_folder).name if bin_folder else ""
-        if safe_bin:
-            return data_dir / f"game_data_{wows_type}_{safe_ver}_{safe_bin}.db"
-        return data_dir / f"game_data_{wows_type}_{safe_ver}.db"
+        """统一使用 game_data.db（版本信息由内部表追踪）"""
+        return data_dir / "game_data.db"
 
     @staticmethod
     def prune_old_files(data_dir: Path) -> None:
-        """只保留 MAX_KEEP 个最新的 game_data_*.db 文件"""
-        files = sorted(data_dir.glob("game_data_*.db"), key=lambda f: f.stat().st_mtime, reverse=True)
-        for old in files[DatabaseManager.MAX_KEEP:]:
+        """清理残留的 game_data_*.db 分版本文件"""
+        for f in data_dir.glob("game_data_*.db"):
+            if f.name == "game_data.db":
+                continue
             try:
-                old.unlink()
+                f.unlink()
             except Exception:
                 pass
 
     # ── 连接管理 ──────────────────────────────────────────
+
+    # 全部分类跟踪所有已创建的连接，方便跨线程关闭
+    _all_connections: set[sqlite3.Connection] = set()
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -99,17 +88,31 @@ class DatabaseManager:
         return self._local.conn
 
     def _create_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False,
+                               timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA cache_size=-8000")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
+        type(self)._all_connections.add(conn)
         return conn
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
+            type(self)._all_connections.discard(self._local.conn)
             self._local.conn = None
+
+    @classmethod
+    def close_all_connections(cls) -> None:
+        """关闭所有已创建的数据库连接（跨线程）"""
+        for conn in list(cls._all_connections):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        cls._all_connections.clear()
 
     # ══════════════════════════════════════════════════════
     #  Schema (从 resources/database/database.sql 同步)
@@ -123,6 +126,8 @@ class DatabaseManager:
             self._conn.executescript(sql_text)
         else:
             self._init_core_tables()
+        # 创建加载版本追踪表
+        self._init_load_tracking()
         self._conn.commit()
 
         # ── 向后兼容：补充旧 DB 可能缺失的列 ──
@@ -132,6 +137,17 @@ class DatabaseManager:
             ("ship_rage_mode", "description_ids", "TEXT DEFAULT ''"),
             ("ship_rage_mode", "modifiers_json", "TEXT DEFAULT '{}'"),
             ("ship_rage_mode", "triggers_json", "TEXT DEFAULT '[]'"),
+            ("ship_module_aa", "bubble_damage", "REAL"),
+            ("plane_basic_info", "armament_name_zh", "TEXT DEFAULT ''"),
+            ("plane_basic_info", "max_speed", "REAL"),
+            ("plane_basic_info", "min_speed", "REAL"),
+            ("consumable_basic_info", "extra_json", "TEXT DEFAULT '{}'"),
+            ("projectile_basic_info", "extra_json", "TEXT DEFAULT '{}'"),
+            ("projectile_basic_info", "damage", "REAL"),
+            ("projectile_basic_info", "alpha_piercing_cs", "REAL"),
+            ("projectile_basic_info", "depth_splash_size", "REAL"),
+            ("projectile_basic_info", "depth_splash_size_to_torpedo", "REAL"),
+            ("projectile_basic_info", "custom_ui_postfix", "TEXT DEFAULT ''"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
@@ -191,12 +207,12 @@ class DatabaseManager:
             clip_size INTEGER, clip_reload_time REAL,
             burst_count INTEGER, burst_reload_time REAL)""")
         c.execute("""CREATE TABLE IF NOT EXISTS meta_schema_version (
-            version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))""")
+            version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now','localtime')))""")
         c.execute("""CREATE TABLE IF NOT EXISTS meta_game_versions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             game_version TEXT NOT NULL, wows_type TEXT NOT NULL DEFAULT '',
             bin_folder TEXT DEFAULT '', entity_count INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now')))""")
+            created_at TEXT DEFAULT (datetime('now','localtime')))""")
 
 
     def get_current_version(self) -> int:
@@ -247,17 +263,32 @@ class DatabaseManager:
             (key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
         self._conn.commit()
 
-    def insert_entities_batch(self, items: list[tuple[str, str, dict]]) -> None:
-        """批量注册实体到 entity_registry（不再存储 raw_json）"""
+    def insert_entities_batch(self, items: list[tuple[str, str, dict]],
+                              load_seq: int = 0) -> None:
+        """批量注册实体到 entity_registry（不再存储 raw_json）
+
+        如果指定 load_seq，会自动记录实体批次归属。
+        """
         rows = []
+        entity_ids = []
         for category, key, data in items:
             etype = self._entity_type(category)
             flt = self._extract_filters(data)
             rows.append((key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
+            entity_ids.append(key)
+        # 使用 UPSERT（INSERT … ON CONFLICT DO UPDATE）代替 INSERT OR REPLACE，
+        # 避免 DELETE + INSERT 触发 ON DELETE CASCADE 清空 ship_basic_info 等分析表。
         self._conn.executemany(
-            "INSERT OR REPLACE INTO entity_registry "
+            "INSERT INTO entity_registry "
             "(entity_id, entity_type, nation, shiptype, tier) "
-            "VALUES (?,?,?,?,?)", rows)
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(entity_id) DO UPDATE SET "
+            "  entity_type=excluded.entity_type,"
+            "  nation=excluded.nation,"
+            "  shiptype=excluded.shiptype,"
+            "  tier=excluded.tier", rows)
+        if load_seq > 0 and entity_ids:
+            self.record_entities_load(entity_ids, load_seq)
         self._conn.commit()
 
     # ══════════════════════════════════════════════════════
@@ -392,6 +423,8 @@ class DatabaseManager:
                         "(category, key_name, lang_zh) VALUES (?,?,?)", items)
                     self._conn.commit()
                     stats[fn] = len(items)
+                # 入库后删除 JSON 文件
+                fp.unlink(missing_ok=True)
             except Exception:
                 continue
         return stats
@@ -413,6 +446,8 @@ class DatabaseManager:
                 "INSERT OR REPLACE INTO po_translations "
                 "(msgid, msgstr, context) VALUES (?,?,?)", items)
             self._conn.commit()
+        # 入库后删除 PO 文件
+        fp.unlink(missing_ok=True)
         return len(items)
 
     # ══════════════════════════════════════════════════════
@@ -476,6 +511,86 @@ class DatabaseManager:
                 pass
         conn.commit()
 
+    # ── 加载版本追踪 ──────────────────────────────────────
+
+    def _init_load_tracking(self) -> None:
+        """创建加载版本追踪表（幂等）"""
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS meta_load_seq (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_version TEXT DEFAULT '',
+                wows_type TEXT DEFAULT '',
+                bin_folder TEXT DEFAULT '',
+                entity_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now','localtime'))
+            );
+            CREATE TABLE IF NOT EXISTS entity_load_log (
+                entity_id TEXT NOT NULL,
+                load_seq INTEGER NOT NULL,
+                PRIMARY KEY (entity_id, load_seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_load_log_seq ON entity_load_log(load_seq);
+        """)
+
+    def begin_load(self, game_version: str = '', wows_type: str = '',
+                   bin_folder: str = '', entity_count: int = 0) -> int:
+        """开始一个新的加载批次，返回 load_seq"""
+        cur = self._conn.execute(
+            "INSERT INTO meta_load_seq (game_version, wows_type, bin_folder, entity_count) "
+            "VALUES (?,?,?,?)",
+            (game_version, wows_type, bin_folder, entity_count))
+        self._conn.commit()
+        return cur.lastrowid
+
+    def record_entity_load(self, entity_id: str, load_seq: int) -> None:
+        """记录实体属于哪个加载批次（追加记录，保留历史）"""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO entity_load_log (entity_id, load_seq) VALUES (?,?)",
+            (entity_id, load_seq))
+
+    def record_entities_load(self, entity_ids: list[str], load_seq: int) -> None:
+        """批量记录实体批次归属（追加记录，保留历史）"""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO entity_load_log (entity_id, load_seq) VALUES (?,?)",
+            [(eid, load_seq) for eid in entity_ids])
+        self._conn.commit()
+
+    def purge_old_loads(self, keep_count: int = 2) -> int:
+        """只保留最近 keep_count 次加载的实体，删除更旧批次的数据。
+
+        利用 entity_load_log 找到「最新出现批次已过期」的 entity_id，
+        从 entity_registry 中删除（ON DELETE CASCADE 自动清理分析表）。
+        """
+        conn = self._conn
+        # 找到最新的 keep_count 个批次号
+        cur = conn.execute(
+            "SELECT seq FROM meta_load_seq ORDER BY seq DESC LIMIT ?", (keep_count,))
+        keep_seqs = [r[0] for r in cur.fetchall()]
+        if not keep_seqs:
+            return 0
+
+        placeholders = ','.join('?' for _ in keep_seqs)
+        # 删除「最新出现批次不在保留列表内」的实体
+        # 例如保留 [5,4]，则实体最近一次出现是 batch 3 → 被删除
+        cur = conn.execute(
+            f"DELETE FROM entity_registry WHERE entity_id IN ("
+            f"  SELECT entity_id FROM entity_load_log"
+            f"  GROUP BY entity_id"
+            f"  HAVING MAX(load_seq) NOT IN ({placeholders})"
+            f")", keep_seqs)
+        deleted = cur.rowcount
+
+        if deleted > 0:
+            # 同步清理过期日志
+            conn.execute(
+                f"DELETE FROM entity_load_log WHERE load_seq NOT IN ({placeholders})",
+                keep_seqs)
+            conn.execute(
+                f"DELETE FROM meta_load_seq WHERE seq NOT IN ({placeholders})",
+                keep_seqs)
+            conn.commit()
+        return deleted
+
     def rebuild_from_split(self, split_dir: str | Path, progress_callback=None) -> dict:
         split_path = Path(split_dir)
         if not split_path.exists():
@@ -522,6 +637,12 @@ def get_db() -> DatabaseManager:
 
 def reset_db() -> None:
     global _db
-    if _db:
-        _db.close()
     _db = None
+    # 关闭所有数据库连接（跨线程）
+    DatabaseManager.close_all_connections()
+    # 清空 Presenter 缓存，防止旧连接被 GC 后新连接 id() 撞地址
+    try:
+        from presenters.registry import PresenterRegistry
+        PresenterRegistry.clear_cache()
+    except ImportError:
+        pass

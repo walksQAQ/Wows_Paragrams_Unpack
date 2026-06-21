@@ -89,7 +89,10 @@ class MainWindow(QMainWindow):
 
         self.log_panel = QTextBrowser()
         self.log_panel.setReadOnly(True)
-        self.log_panel.setFont(QFont("Microsoft YaHei", 9))
+        _fnt = QFont()
+        _fnt.setFamilies(["Microsoft YaHei", "Segoe UI", "sans-serif"])
+        _fnt.setPointSize(9)
+        self.log_panel.setFont(_fnt)
         self.log_panel.setFixedHeight(100)
         self.log_panel.setStyleSheet("""
             QTextBrowser {

@@ -58,6 +58,15 @@ class DetailPanel(QWidget):
         }
     """
 
+    @staticmethod
+    def _make_font(family: str, size: int) -> QFont:
+        """安全创建字体，带备选族"""
+        f = QFont()
+        f.setFamilies([family, "Segoe UI", "sans-serif"])
+        safe_size = size if size > 0 else 10
+        f.setPointSize(safe_size)
+        return f
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_category: str = ""
@@ -89,9 +98,9 @@ class DetailPanel(QWidget):
         self._default_pages = []
 
         pages = [
-            ("detail", self.TEXT_STYLE, QFont("Microsoft YaHei", 11)),
-            ("data", self.MONO_STYLE_LIGHT, QFont("Consolas", 10)),
-            ("raw", self.MONO_STYLE_DARK, QFont("Consolas", 10)),
+            ("detail", self.TEXT_STYLE, self._make_font("Microsoft YaHei", 11)),
+            ("data", self.MONO_STYLE_LIGHT, self._make_font("Consolas", 10)),
+            ("raw", self.MONO_STYLE_DARK, self._make_font("Consolas", 10)),
         ]
         for name, style, font in pages:
             te = QTextEdit()
@@ -119,7 +128,7 @@ class DetailPanel(QWidget):
             else:
                 te = QTextEdit()
                 te.setReadOnly(True)
-                te.setFont(QFont("Microsoft YaHei", 11))
+                te.setFont(self._make_font("Microsoft YaHei", 11))
                 te.setStyleSheet(self.TEXT_STYLE)
                 lines = []
                 for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
@@ -151,7 +160,7 @@ class DetailPanel(QWidget):
         for i, sl in enumerate(labels):
             te = QTextEdit()
             te.setReadOnly(True)
-            te.setFont(QFont("Microsoft YaHei", 11))
+            te.setFont(self._make_font("Microsoft YaHei", 11))
             te.setStyleSheet(self.TEXT_STYLE)
             te.setPlainText("\n".join(contents.get(sl, [])))
             stack.addWidget(te)

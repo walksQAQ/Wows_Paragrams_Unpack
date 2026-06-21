@@ -46,7 +46,7 @@ class CategoryBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CategoryBar")
-        self.setFixedWidth(90)
+        self.setFixedWidth(80)
         self.setStyleSheet("""
             #CategoryBar {
                 background-color: #252526;
@@ -73,10 +73,9 @@ class CategoryBar(QWidget):
             layout.addWidget(btn)
             self._btns.append(btn)
 
-        # 默认选中第一个（舰船）
+        # 默认选中第一个（舰船）—— 发射信号触发数据加载
         if self._btns:
-            self._btns[0].setChecked(True)
-            self._active = "Ship"
+            self._on_category("Ship")
 
         layout.addStretch()
 

@@ -20,17 +20,29 @@ from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir
 
 
-def import_text_to_db(db) -> dict:
+def import_text_to_db(db=None) -> dict:
     """将磁盘上的 JSON 映射文件和 PO 翻译文件写入数据库。
 
     这是从文本/本地化角度写入数据库的独立入口，不依赖数据加载流程。
+    如果未传入 db，自动查找最新（有数据）的数据库文件。
     返回统计: {name_mappings: {filename: count}, po_translations: int}
     """
-    from services.database_service import DatabaseManager
-    if isinstance(db, DatabaseManager) and db.exists:
-        nm = db.import_name_mappings(str(get_data_dir()))
+    from services.database_service import DatabaseManager, get_db
+    # 优先使用传入的 db，否则找最新 DB
+    target = db if isinstance(db, DatabaseManager) else get_db()
+    # 如果 target 无数据，尝试查找 game_data.db
+    if not target.exists or target.get_stats().get("total_entities", 0) == 0:
+        data_dir = get_data_dir()
+        fallback = data_dir / "game_data.db"
+        if fallback.exists() and fallback != target.db_path:
+            candidate = DatabaseManager(fallback)
+            candidate.initialize()
+            if candidate.get_stats().get("total_entities", 0) > 0:
+                target = candidate
+    if target.exists:
+        nm = target.import_name_mappings(str(get_data_dir()))
         po_path = get_data_dir() / "global.po"
-        po_cnt = db.import_po_translations(str(po_path)) if po_path.exists() else 0
+        po_cnt = target.import_po_translations(str(po_path)) if po_path.exists() else 0
         return {"name_mappings": nm, "po_translations": po_cnt}
     return {"name_mappings": {}, "po_translations": 0}
 
