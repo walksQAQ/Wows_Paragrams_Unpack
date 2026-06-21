@@ -88,6 +88,12 @@ class DatabaseManager:
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = self._create_connection()
+        else:
+            # 检查连接是否已被 close_all_connections() 关闭
+            try:
+                self._local.conn.execute("SELECT 1")
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                self._local.conn = self._create_connection()
         return self._local.conn
 
     def _create_connection(self) -> sqlite3.Connection:
@@ -152,6 +158,15 @@ class DatabaseManager:
             ("projectile_basic_info", "depth_splash_size_to_torpedo", "REAL"),
             ("projectile_basic_info", "custom_ui_postfix", "TEXT DEFAULT ''"),
             ("crew_unique_skills", "effects_json", "TEXT DEFAULT '{}'"),
+            ("ship_module_artillery", "drum_shots_count", "INTEGER DEFAULT 0"),
+            ("ship_module_artillery", "drum_shot_delay", "REAL DEFAULT 0"),
+            ("ship_module_artillery", "drum_full_reload_time", "REAL DEFAULT 0"),
+            ("ship_module_artillery", "drum_is_switchable", "INTEGER DEFAULT 0"),
+            ("ship_module_artillery", "drum_is_chargeable", "INTEGER DEFAULT 0"),
+            ("ship_module_artillery", "drum_charge_time_min", "REAL DEFAULT 0"),
+            ("ship_module_artillery", "drum_charge_time_max", "REAL DEFAULT 0"),
+            ("ship_module_artillery", "drum_charge_mode", "INTEGER DEFAULT 0"),
+            ("ship_module_artillery", "drum_modifiers_json", "TEXT DEFAULT '{}'"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")

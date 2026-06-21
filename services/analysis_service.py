@@ -624,20 +624,65 @@ class AnalysisStore:
                    tuple(sorted(item.get("ammo_list", []))))
             groups.setdefault(key, []).append(item)
 
+        # 解析弹鼓/弹夹配置（仅对 artillery 表有效）
+        is_artillery = "artillery" in table
+        drum_params = {}
+        if is_artillery and drum_info:
+            conf = drum_info.get("conf", {})
+            ctp = conf.get("chargeTimeParams", [0, 0, 0])
+            drum_params = {
+                "special_mode_name": drum_info.get("name", ""),
+                "drum_shots_count": conf.get("shotsCount", 0),
+                "drum_shot_delay": conf.get("shotDelay", 0),
+                "drum_full_reload_time": conf.get("fullReloadTime", 0),
+                "drum_is_switchable": 1 if conf.get("isSwitchable") else 0,
+                "drum_is_chargeable": 1 if conf.get("isChargeable") else 0,
+                "drum_charge_time_min": ctp[0] if len(ctp) > 0 else 0,
+                "drum_charge_time_max": ctp[1] if len(ctp) > 1 else 0,
+                "drum_charge_mode": ctp[2] if len(ctp) > 2 else 0,
+                "drum_modifiers_json": json.dumps(conf.get("modifiers", {}), ensure_ascii=False),
+            }
+
         for (gun_name, barrels, reload_t, ir, mr, id_dist, ammo_tuple), group in groups.items():
             count = len(group)
             ref = group[0]
             formula = self._dispersion_formula(ir, mr, id_dist)
             max_range = None  # 系统射程由原始 JSON 获取
-            conn.execute(f"""INSERT OR REPLACE INTO {table}
-                (ship_id, module_letter, gun_name, count, num_barrels,
-                 reload_time, sigma, dispersion_formula,
-                 radius_zero, radius_delim, radius_max, delim)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (ship_id, letter, gun_name, count, barrels or 0,
-                 reload_t or 0, None, formula,
-                 ref.get("radius_zero", 0), ref.get("radius_delim", 0),
-                 ref.get("radius_max", 0), ref.get("delim", 0)))
+            if is_artillery:
+                conn.execute(f"""INSERT OR REPLACE INTO {table}
+                    (ship_id, module_letter, gun_name, count, num_barrels,
+                     reload_time, sigma, dispersion_formula,
+                     radius_zero, radius_delim, radius_max, delim,
+                     special_mode_name, drum_shots_count, drum_shot_delay,
+                     drum_full_reload_time, drum_is_switchable, drum_is_chargeable,
+                     drum_charge_time_min, drum_charge_time_max, drum_charge_mode,
+                     drum_modifiers_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,
+                            ?,?,?,?,?,?,?,?,?,?)""",
+                    (ship_id, letter, gun_name, count, barrels or 0,
+                     reload_t or 0, None, formula,
+                     ref.get("radius_zero", 0), ref.get("radius_delim", 0),
+                     ref.get("radius_max", 0), ref.get("delim", 0),
+                     drum_params.get("special_mode_name", ""),
+                     drum_params.get("drum_shots_count", 0),
+                     drum_params.get("drum_shot_delay", 0),
+                     drum_params.get("drum_full_reload_time", 0),
+                     drum_params.get("drum_is_switchable", 0),
+                     drum_params.get("drum_is_chargeable", 0),
+                     drum_params.get("drum_charge_time_min", 0),
+                     drum_params.get("drum_charge_time_max", 0),
+                     drum_params.get("drum_charge_mode", 0),
+                     drum_params.get("drum_modifiers_json", "{}")))
+            else:
+                conn.execute(f"""INSERT OR REPLACE INTO {table}
+                    (ship_id, module_letter, gun_name, count, num_barrels,
+                     reload_time, sigma, dispersion_formula,
+                     radius_zero, radius_delim, radius_max, delim)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (ship_id, letter, gun_name, count, barrels or 0,
+                     reload_t or 0, None, formula,
+                     ref.get("radius_zero", 0), ref.get("radius_delim", 0),
+                     ref.get("radius_max", 0), ref.get("delim", 0)))
 
             # 弹药关联 → rel_ship_weapon_ammo
             ammo_ids = set()
