@@ -21,6 +21,7 @@ if exist "%OUTDIR%\WowsAnalyzer.exe" del /f /q "%OUTDIR%\WowsAnalyzer.exe" 2>nul
     --include-data-file="tools/*.exe=tools/" ^
     --include-data-dir="resources=resources" ^
     --include-module=services.GameParams ^
+    --include-module=polib,requests ^
     --output-filename=WowsAnalyzer.exe ^
     main.py
 

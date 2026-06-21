@@ -76,7 +76,7 @@ def _run_analysis(db) -> None:
         svc.initialize()
         if not svc.is_ready:
             return
-        bus.task_progress.emit(70, "预分析数据")
+        bus.task_progress.emit(80, "预分析数据")
         svc.precompute_all(db)
         bus.task_progress.emit(100, "预分析完成")
     except Exception as e:
@@ -145,12 +145,12 @@ def run_process() -> None:
                     _write_one_db(k, v, None)
             if db_batch:
                 db.insert_entities_batch(db_batch, load_seq=load_seq)
-                bus.task_progress.emit(40, "写入数据库实体")
+                bus.task_progress.emit(45, "写入数据库实体")
                 ms = db.import_name_mappings(str(data_dir))
                 bus.task_progress.emit(60, "导入名称映射")
                 db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
                                         app_ctx.ctx.bin_folder, entity_count=len(db_batch))
-                bus.task_progress.emit(70, "预分析数据")
+                bus.task_progress.emit(80, "预分析数据")
                 bus.log_message.emit("🧠 正在预分析数据...")
                 _run_analysis(db)
                 bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
@@ -168,12 +168,12 @@ def run_process() -> None:
                         _write_one_db(k, v, ti)
             if db_batch:
                 db.insert_entities_batch(db_batch, load_seq=load_seq)
-                bus.task_progress.emit(40, "写入数据库实体")
+                bus.task_progress.emit(45, "写入数据库实体")
                 ms = db.import_name_mappings(str(data_dir))
                 bus.task_progress.emit(60, "导入名称映射")
                 db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
                                         app_ctx.ctx.bin_folder, entity_count=len(db_batch))
-                bus.task_progress.emit(70, "预分析数据")
+                bus.task_progress.emit(80, "预分析数据")
                 bus.log_message.emit("🧠 正在预分析数据...")
                 _run_analysis(db)
                 bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
@@ -188,6 +188,12 @@ def run_process() -> None:
                 if not app_ctx.config.keep_split_json and split_dir.exists():
                     shutil.rmtree(str(split_dir))
                     bus.log_message.emit("🧹 split 临时文件已清理")
+                # 删除原始解包的 GameParams 数据文件
+                for n in ["GameParams_py2.data", "GameParams.data"]:
+                    p = data_dir / n
+                    if p.exists():
+                        p.unlink()
+                        bus.log_message.emit(f"🧹 已删除原始数据文件: {n}")
                 # 只保留最新 2 次加载的数据，删除更旧的批次
                 deleted = db.purge_old_loads(keep_count=2)
                 if deleted:

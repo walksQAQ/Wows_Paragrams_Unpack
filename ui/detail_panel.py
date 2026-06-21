@@ -150,11 +150,18 @@ class DetailPanel(QWidget):
         layout.setSpacing(0)
         labels = sub_info.get("sub_labels", [])
         contents = sub_info.get("sub_contents", {})
+        from PySide6.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{border:none;background:#f0f0f0;}")
         bar = QWidget()
         bar.setStyleSheet("QWidget{background:#f0f0f0;border-bottom:1px solid #d0d0d0;}")
         blay = QHBoxLayout(bar)
         blay.setContentsMargins(8, 4, 8, 4)
         blay.setSpacing(4)
+        scroll.setWidget(bar)
         stack = QStackedWidget()
         btns: list[QPushButton] = []
         for i, sl in enumerate(labels):
@@ -176,7 +183,7 @@ class DetailPanel(QWidget):
         blay.addStretch()
         if btns:
             btns[0].setChecked(True)
-        layout.addWidget(bar)
+        layout.addWidget(scroll)
         layout.addWidget(stack, stretch=1)
         return container
 
@@ -321,12 +328,13 @@ class DetailPanel(QWidget):
 
     def _show_hint(self) -> None:
         hint = (
-            "👈 左侧选择分类和文件\n\n"
-            "1. ⚙ 设置游戏目录\n"
-            "2. 📦 加载数据\n"
-            "3. 🔧 解析数据\n"
-            "4. 🌐 语言文件\n"
-            "5. 点击分类 → 选择文件"
+            "📋 使用说明\n\n"
+            "1. ⚙ 设置 → 高级设置，配置游戏目录\n"
+            "2. 📦 加载数据 — 从游戏中提取并解析数据\n"
+            "3. 🌐 加载文本 — 下载语言文件（可选）\n"
+            "4. 点击左侧分类按钮选择要浏览的类别\n"
+            "5. 在文件列表中点击文件查看详情\n\n"
+            "💡 提示：加载数据后，文件列表会自动填充"
         )
         for te in self._default_pages:
             te.setPlainText(hint)

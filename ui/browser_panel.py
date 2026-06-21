@@ -174,6 +174,7 @@ class BrowserPanel(QWidget):
         # ── 状态 ─
         self._current_folder = ""
         self._all_entities: list[dict] = []
+        self._last_selected_id: str = ""  # 上次选中的实体 ID（用于刷新后恢复）
 
         # ── 信号 ─
         self.file_list.currentTextChanged.connect(self._on_file_changed)
@@ -219,7 +220,13 @@ class BrowserPanel(QWidget):
 
     def refresh(self) -> None:
         if self._current_folder:
+            # 记住当前选中的 ID
+            saved_id = self._last_selected_id
             self.show_category(self._current_folder)
+            # 恢复选中并重新触发详情面板刷新
+            if saved_id:
+                self._last_selected_id = saved_id
+                self._select_and_emit(saved_id)
 
     # ── 数据加载 ──────────────────────────────────────────
 
@@ -362,6 +369,7 @@ class BrowserPanel(QWidget):
         if item:
             eid = item.data(Qt.UserRole) or ""
             if eid:
+                self._last_selected_id = eid
                 self.file_selected.emit(self._current_folder, eid)
                 return
         # 兜底：遍历查找
@@ -369,6 +377,24 @@ class BrowserPanel(QWidget):
             eid = ent.get("entity_id") or ent.get("id") or ""
             dname = ent.get("display_name", eid)
             if dname == display:
+                self._last_selected_id = eid
                 self.file_selected.emit(self._current_folder, eid)
                 return
+        self._last_selected_id = display
         self.file_selected.emit(self._current_folder, display)
+
+    def _select_and_emit(self, entity_id: str) -> None:
+        """根据 entity_id 选中列表项并发射信号刷新详情面板"""
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item and item.data(Qt.UserRole) == entity_id:
+                # 阻止 currentTextChanged 信号重复触发
+                self.file_list.blockSignals(True)
+                self.file_list.setCurrentItem(item)
+                self.file_list.blockSignals(False)
+                self._last_selected_id = entity_id
+                self.file_selected.emit(self._current_folder, entity_id)
+                return
+        # 列表找不到（筛选后隐藏了），直接发射信号
+        self._last_selected_id = entity_id
+        self.file_selected.emit(self._current_folder, entity_id)

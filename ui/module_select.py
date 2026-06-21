@@ -35,13 +35,6 @@ SHIP_MODULE_FALLBACK = ("📄", "模块")
 # 字母模块正则：如 "A 模块" → 提取 "A"
 _RE_LETTER_MOD = re.compile(r'^([A-Z])\s*模块$')
 
-# 默认三页视图（非舰船用）：(图标, 显示名, 模块ID)
-DEFAULT_MODULES = [
-    ("📋", "详情", "detail"),
-    ("📊", "数据", "data"),
-    ("📝", "原始", "raw"),
-]
-
 
 class ModuleSelect(QWidget):
     """模块选择区（90px），图标+文字双行按钮"""
@@ -109,7 +102,7 @@ class ModuleSelect(QWidget):
         return btn
 
     def set_modules(self, section_labels: list[str] | None) -> None:
-        """设置模块列表。None=默认三页；list=使用指定 section 标签"""
+        """设置模块列表。None=清空；list=使用指定 section 标签"""
         # 隐藏占位文本
         self._placeholder.setVisible(False)
 
@@ -118,16 +111,13 @@ class ModuleSelect(QWidget):
             self._layout.removeWidget(btn)
             btn.deleteLater()
         self._btns.clear()
+        self._module_ids = []
 
         if section_labels is None:
-            # 默认视图
-            self._module_ids = [m[2] for m in DEFAULT_MODULES]
-            for icon, label, mod_id in DEFAULT_MODULES:
-                btn = self._make_btn(icon, label, mod_id)
-                self._layout.insertWidget(self._layout.count() - 1, btn)
-                self._btns.append(btn)
+            # 无模块数据，不添加任何按钮
+            self._module_ids = []
         else:
-            # 舰船动态模块
+            # 舰船/舰长动态模块
             self._module_ids = list(section_labels)
             for label in section_labels:
                 # 检查是否是字母模块

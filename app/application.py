@@ -1,6 +1,9 @@
 """
 Application —— 应用全局上下文（单例）。
 
+作者: walksQAQ
+许可证: 详见 LICENSE 文件
+
 职责：
   1. 统一管理全局状态（AppContext）
   2. 协调 ConfigManager、SignalBus 的初始化

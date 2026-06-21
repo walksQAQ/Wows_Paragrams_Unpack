@@ -1,6 +1,9 @@
 """
 数据库服务 —— 基于合并解析级架构 (Merged Analysis Schema)。
 
+作者: walksQAQ
+许可证: 详见 LICENSE 文件
+
 架构:
   1. 本地化层 — name_mappings / po_translations / enum_translations
   2. 存储层   — entity_registry (实体注册索引)
@@ -22,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from utils.path_utils import get_data_dir
+from utils.path_utils import get_data_dir, get_bundled_dir
 
 
 # ── 常量 ──────────────────────────────────────────────────
@@ -120,7 +123,7 @@ class DatabaseManager:
 
     def initialize(self) -> None:
         """创建所有表、视图、索引（幂等）"""
-        sql_path = get_data_dir().parent / "resources" / "database" / "database.sql"
+        sql_path = get_bundled_dir() / "resources" / "database" / "database.sql"
         if sql_path.exists():
             sql_text = sql_path.read_text(encoding="utf-8")
             self._conn.executescript(sql_text)
