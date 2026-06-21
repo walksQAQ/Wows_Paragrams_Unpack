@@ -383,7 +383,13 @@ CREATE TABLE IF NOT EXISTS projectile_basic_info (
     wave_sector TEXT,
     laser_heat REAL,
     laser_heat_radius REAL,
-    laser_damage_types TEXT
+    laser_damage_types TEXT,
+    damage REAL,
+    alpha_piercing_cs REAL,
+    depth_splash_size REAL,
+    depth_splash_size_to_torpedo REAL,
+    custom_ui_postfix TEXT,
+    extra_json TEXT DEFAULT '{}'
 );
 
 
@@ -399,6 +405,8 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     nation_zh TEXT,
     aircraft_class TEXT,
     cruise_speed REAL,
+    max_speed REAL,
+    min_speed REAL,
     max_health REAL,
     squadron_health REAL,
     restore_time REAL,
@@ -443,7 +451,8 @@ CREATE TABLE IF NOT EXISTS consumable_basic_info (
     area_dmg_multiplier REAL,
     bubble_dmg_multiplier REAL,
     fighter_name TEXT,
-    fighter_num INTEGER
+    fighter_num INTEGER,
+    extra_json TEXT DEFAULT '{}'
 );
 
 
@@ -538,7 +547,7 @@ FROM entity_registry;
 
 CREATE TABLE IF NOT EXISTS meta_schema_version (
     version INTEGER PRIMARY KEY,
-    applied_at TEXT DEFAULT (datetime('now'))
+    applied_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS meta_game_versions (
@@ -547,5 +556,5 @@ CREATE TABLE IF NOT EXISTS meta_game_versions (
     wows_type TEXT NOT NULL DEFAULT '',
     bin_folder TEXT DEFAULT '',
     entity_count INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now','localtime'))
 );
