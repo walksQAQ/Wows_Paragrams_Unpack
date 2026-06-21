@@ -19,12 +19,13 @@ from PySide6.QtGui import QFont
 
 from app.signals import bus
 from utils.path_utils import get_split_dir
+from services.database_service import get_db
 
 
 class BrowserPanel(QWidget):
     """文件列表面板"""
 
-    file_selected = Signal(str, str)  # 分类名, 文件名(不含.json)
+    file_selected = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,7 +34,6 @@ class BrowserPanel(QWidget):
         layout.setContentsMargins(8, 8, 4, 8)
         layout.setSpacing(6)
 
-        # ── 搜索框 ────────────────────────────────────────
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("🔍 搜索文件名...")
         self.search_box.setStyleSheet("""
@@ -43,7 +43,6 @@ class BrowserPanel(QWidget):
         """)
         layout.addWidget(self.search_box)
 
-        # ── 文件列表 ──────────────────────────────────────
         self.file_list = QListWidget()
         self.file_list.setFont(QFont("Microsoft YaHei", 10))
         self.file_list.setStyleSheet("""
@@ -55,39 +54,40 @@ class BrowserPanel(QWidget):
         """)
         layout.addWidget(self.file_list, stretch=1)
 
-        # ── 状态 ──────────────────────────────────────────
         self._current_folder = ""
         self._all_files: list[str] = []
-        self._split_dir: Path = get_split_dir()
+        self._split_dir = get_split_dir()
 
-        # ── 信号连接 ──────────────────────────────────────
         self.file_list.currentTextChanged.connect(self._on_file_changed)
         self.search_box.textChanged.connect(self._apply_filter)
         bus.folder_selected.connect(self._on_category_selected)
 
-    # ── 公共方法 ──────────────────────────────────────────
-
     def show_category(self, folder: str) -> None:
-        """显示指定分类下的文件"""
         self._current_folder = folder
         self.file_list.clear()
         self._all_files = []
 
+        # 优先使用数据库
+        db = get_db()
+        if db.exists:
+            try:
+                rows = db.list_entities(folder)
+                self._all_files = [r["id"] for r in rows]
+                self._apply_filter(self.search_box.text())
+                return
+            except Exception:
+                pass
+
+        # 降级到文件系统
         target = self._split_dir / folder
         if not target.exists():
             return
-
-        self._all_files = sorted(
-            f.stem for f in target.iterdir() if f.suffix.lower() == ".json"
-        )
+        self._all_files = sorted(f.stem for f in target.iterdir() if f.suffix.lower() == ".json")
         self._apply_filter(self.search_box.text())
 
     def refresh(self) -> None:
-        """刷新当前分类"""
         if self._current_folder:
             self.show_category(self._current_folder)
-
-    # ── 内部槽 ────────────────────────────────────────────
 
     def _on_category_selected(self, folder: str) -> None:
         if folder == "__REFRESH__":
@@ -98,12 +98,27 @@ class BrowserPanel(QWidget):
     def _on_file_changed(self, text: str) -> None:
         if not text or not self._current_folder:
             return
-        filename = text.replace("📄 ", "").strip()
-        self.file_selected.emit(self._current_folder, filename)
+        self.file_selected.emit(self._current_folder, text.replace("📄 ", "").strip())
 
     def _apply_filter(self, keyword: str) -> None:
         self.file_list.clear()
         keyword = keyword.strip().lower()
+        if not keyword:
+            for fname in self._all_files:
+                self.file_list.addItem(f"📄 {fname}")
+            return
+
+        # 数据库全文搜索
+        db = get_db()
+        if db.exists and self._current_folder:
+            try:
+                for r in db.search_entities(self._current_folder, keyword):
+                    self.file_list.addItem(f"📄 {r['id']}")
+                return
+            except Exception:
+                pass
+
+        # 内存过滤
         for fname in self._all_files:
-            if not keyword or keyword in fname.lower():
+            if keyword in fname.lower():
                 self.file_list.addItem(f"📄 {fname}")
