@@ -24,8 +24,8 @@ class AppConfig:
     game_version: str = "Unknown"
     game_data_state: bool = False
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
-
-    # 如有后续更多字段在此追加
+    keep_split_json: bool = True  # 解析后是否保留 split JSON 文件
+    bin_folder: str = ""  # 游戏 bin 子版本号（如 3859335）
 
     @classmethod
     def default(cls) -> AppConfig:
@@ -75,6 +75,24 @@ class ConfigManager:
     @wows_type.setter
     def wows_type(self, value: str) -> None:
         self._config.wows_type = value
+        self.save()
+
+    @property
+    def keep_split_json(self) -> bool:
+        return self._config.keep_split_json
+
+    @keep_split_json.setter
+    def keep_split_json(self, value: bool) -> None:
+        self._config.keep_split_json = value
+        self.save()
+
+    @property
+    def bin_folder(self) -> str:
+        return self._config.bin_folder
+
+    @bin_folder.setter
+    def bin_folder(self, value: str) -> None:
+        self._config.bin_folder = value
         self.save()
 
     # ── 供 Application 内部使用 ─────────────────────────

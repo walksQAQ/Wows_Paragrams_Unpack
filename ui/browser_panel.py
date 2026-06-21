@@ -1,18 +1,16 @@
 """
-BrowserPanel —— 文件列表面板。
+BrowserPanel —— 文件列表面板（200px 固定宽度）。
 
+匹配 main_window.ui 中 scrollArea / item_select 区域。
 不再自带分类列表，分类由主窗口 CategoryBar 提供。
 通过 bus.folder_selected 信号接收分类切换指令。
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QLineEdit,
+    QWidget, QVBoxLayout,
+    QListWidget, QLineEdit,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -23,22 +21,35 @@ from services.database_service import get_db
 
 
 class BrowserPanel(QWidget):
-    """文件列表面板"""
+    """文件列表面板（200px 固定宽度）"""
 
     file_selected = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("BrowserPanel")
+        self.setFixedWidth(200)
+        self.setStyleSheet("""
+            #BrowserPanel {
+                background-color: #f0f0f0;
+                border-right: 1px solid #d0d0d0;
+            }
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 4, 8)
+        layout.setContentsMargins(6, 8, 6, 8)
         layout.setSpacing(6)
 
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("🔍 搜索文件名...")
         self.search_box.setStyleSheet("""
-            QLineEdit { padding: 4px 6px; border: 1px solid #d0d0d0;
-                border-radius: 3px; font-size: 11px; }
+            QLineEdit {
+                padding: 4px 6px;
+                border: 1px solid #c0c0c0;
+                border-radius: 3px;
+                font-size: 11px;
+                background-color: #ffffff;
+            }
             QLineEdit:focus { border-color: #0078d4; }
         """)
         layout.addWidget(self.search_box)
@@ -46,11 +57,22 @@ class BrowserPanel(QWidget):
         self.file_list = QListWidget()
         self.file_list.setFont(QFont("Microsoft YaHei", 10))
         self.file_list.setStyleSheet("""
-            QListWidget { background-color: #fff; border: 1px solid #d0d0d0;
-                border-radius: 4px; }
-            QListWidget::item { padding: 2px 6px; }
-            QListWidget::item:selected { background-color: #0078d4; color: #fff; }
-            QListWidget::item:hover { background-color: #e5f1fb; }
+            QListWidget {
+                background-color: #ffffff;
+                border: 1px solid #d0d0d0;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                padding: 3px 6px;
+                font-size: 12px;
+            }
+            QListWidget::item:selected {
+                background-color: #0078d4;
+                color: #ffffff;
+            }
+            QListWidget::item:hover {
+                background-color: #e5f1fb;
+            }
         """)
         layout.addWidget(self.file_list, stretch=1)
 

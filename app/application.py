@@ -50,6 +50,14 @@ class AppContext:
     def game_data_state(self) -> bool:
         return self.config.game_data_state
 
+    @property
+    def keep_split_json(self) -> bool:
+        return self.config.keep_split_json
+
+    @property
+    def bin_folder(self) -> str:
+        return self.config.bin_folder
+
 
 class Application(QObject):
     """应用单例 —— 全局唯一的上下文持有者"""
@@ -106,6 +114,10 @@ class Application(QObject):
         self._config_manager.game_data_state = value
         self._refresh_ctx()
         bus.can_process_data.emit(value)
+
+    def set_bin_folder(self, value: str) -> None:
+        self._config_manager.bin_folder = value
+        self._refresh_ctx()
 
     def reset_all(self) -> None:
         """重置所有配置"""

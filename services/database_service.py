@@ -1,45 +1,48 @@
 """
-数据库服务 —— 轻量化 SQLite 数据存储。
+数据库服务 —— 基于合并解析级架构 (Merged Analysis Schema)。
 
-将 20,000+ 零散 JSON 文件整合为单个 SQLite 数据库。
-表名按模块前缀组织，保留 raw_json 列保持向后兼容。
+架构:
+  1. 本地化层 — name_mappings / po_translations / enum_translations
+  2. 存储层   — entity_registry (实体注册索引)
+  3. 分析层   — ship_* / gun_* / projectile_* / plane_* / consumable_* / modernization_* / crew_*
+  4. 元数据   — meta_schema_version / meta_game_versions
 
-数据库位置: data/game_data.db
-
-表结构:
-  entity_*      — 实体数据表（entity_Ship, entity_Gun, ...）
-  lookup_*      — 查找表（lookup_name_mappings）
-  meta_*        — 元数据（meta_schema_version, meta_game_versions）
-  fts_entities  — FTS5 全文索引
-  v_all_entities— 统一视图
+与原版差异:
+  - 取消 22 张 entity_* 分表，合并为 1 张 entity_registry
+  - 分析结果不再存 JSON blob，存入结构化分析表
+  - 本地化独立入库，支持 JSON 映射 + PO 翻译 + 枚举字典
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from utils.path_utils import get_data_dir
 
 
 # ── 常量 ──────────────────────────────────────────────────
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 
-# 所有分类列表（每个对应一张 entity_ 表）
-ALL_CATEGORIES: list[str] = [
-    "Ship", "Gun", "Projectile", "Aircraft", "Ability", "Modernization", "Crew",
-    "Achievement", "BattleScript", "Building", "Catapult", "ClanSupply",
-    "Collection", "Component", "Director", "DogTag", "Exterior", "Finder",
-    "Other", "Radar", "Sfx", "Unit",
+# 实体分类 (映射到 raw_entities.entity_type)
+ENTITY_TYPES: list[str] = [
+    "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
 ]
 
-
-def _tn(cat: str) -> str:
-    """实体表全名: entity_Ship, entity_Gun, ..."""
-    return f"entity_{cat}"
+# JSON 映射文件 → name_mappings.category
+NAME_MAPPING_FILES: dict[str, str] = {
+    "ship_names.json": "ship",
+    "ammo_names.json": "ammo",
+    "guns_names.json": "gun",
+    "consumable_names.json": "consumable",
+    "modernization_names.json": "modernization",
+    "plane_names.json": "plane",
+    "rage_mode_names.json": "rage_mode",
+}
 
 
 # ══════════════════════════════════════════════════════════
@@ -47,11 +50,45 @@ def _tn(cat: str) -> str:
 # ══════════════════════════════════════════════════════════
 
 class DatabaseManager:
-    """SQLite 数据库管理器（线程安全）"""
+    """SQLite 数据库管理器（线程安全，多版本支持）"""
+
+    MAX_KEEP = 2  # 最多保留 2 个版本的数据文件
 
     def __init__(self, db_path: str | Path | None = None):
-        self._db_path = Path(db_path) if db_path else get_data_dir() / "game_data.db"
+        if db_path:
+            self._db_path = Path(db_path)
+        else:
+            # 自动选择最新的版本文件
+            latest = self._latest_db(get_data_dir())
+            self._db_path = latest or get_data_dir() / "game_data.db"
         self._local = threading.local()
+
+    @staticmethod
+    def _latest_db(data_dir: Path) -> Path | None:
+        """按修改时间取最新的 game_data 文件"""
+        files = sorted(data_dir.glob("game_data_*.db"), key=lambda f: f.stat().st_mtime, reverse=True)
+        return files[0] if files else None
+
+    @staticmethod
+    def _versioned_path(data_dir: Path, wows_type: str, version: str,
+                        bin_folder: str = "") -> Path:
+        """生成带版本号和 bin 目录标识的 DB 路径:
+           game_data_{type}_{version}_{bin}.db"""
+        safe_ver = version.replace(" ", "_").replace(":", "-").replace("/", "_")
+        safe_bin = Path(bin_folder).name if bin_folder else ""
+        if safe_bin:
+            return data_dir / f"game_data_{wows_type}_{safe_ver}_{safe_bin}.db"
+        return data_dir / f"game_data_{wows_type}_{safe_ver}.db"
+
+    @staticmethod
+    def prune_old_files(data_dir: Path) -> None:
+        """只保留 MAX_KEEP 个最新的 game_data_*.db 文件"""
+        files = sorted(data_dir.glob("game_data_*.db"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for old in files[DatabaseManager.MAX_KEEP:]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
 
     # ── 连接管理 ──────────────────────────────────────────
 
@@ -75,115 +112,97 @@ class DatabaseManager:
             self._local.conn = None
 
     # ══════════════════════════════════════════════════════
-    #  Schema
+    #  Schema (从 resources/database/database.sql 同步)
     # ══════════════════════════════════════════════════════
 
     def initialize(self) -> None:
         """创建所有表、视图、索引（幂等）"""
-        conn = self._conn
-        parts = []
+        sql_path = get_data_dir().parent / "resources" / "database" / "database.sql"
+        if sql_path.exists():
+            sql_text = sql_path.read_text(encoding="utf-8")
+            self._conn.executescript(sql_text)
+        else:
+            self._init_core_tables()
+        self._conn.commit()
 
-        # ── 三大类：专用列 ────────────────────────────────
-        parts.append(f'''
-            CREATE TABLE IF NOT EXISTS "{_tn("Ship")}" (
-                id TEXT PRIMARY KEY, name TEXT DEFAULT '', idx TEXT DEFAULT '',
-                nation TEXT DEFAULT '', species TEXT DEFAULT '',
-                level INTEGER DEFAULT 0, group_type TEXT DEFAULT '',
-                raw_json TEXT NOT NULL, analyzed_json TEXT DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Ship")}_nat ON "{_tn("Ship")}"(nation);
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Ship")}_spe ON "{_tn("Ship")}"(species);
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Ship")}_lvl ON "{_tn("Ship")}"(level);
-        ''')
-        parts.append(f'''
-            CREATE TABLE IF NOT EXISTS "{_tn("Gun")}" (
-                id TEXT PRIMARY KEY, name TEXT DEFAULT '', idx TEXT DEFAULT '',
-                nation TEXT DEFAULT '', species TEXT DEFAULT '',
-                barrel_diameter REAL DEFAULT 0, num_barrels INTEGER DEFAULT 0, shot_delay REAL DEFAULT 0,
-                raw_json TEXT NOT NULL, analyzed_json TEXT DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Gun")}_nat ON "{_tn("Gun")}"(nation);
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Gun")}_spe ON "{_tn("Gun")}"(species);
-        ''')
-        parts.append(f'''
-            CREATE TABLE IF NOT EXISTS "{_tn("Projectile")}" (
-                id TEXT PRIMARY KEY, name TEXT DEFAULT '', idx TEXT DEFAULT '',
-                nation TEXT DEFAULT '', ammo_type TEXT DEFAULT '',
-                caliber REAL DEFAULT 0, damage REAL DEFAULT 0,
-                raw_json TEXT NOT NULL, analyzed_json TEXT DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_{_tn("Projectile")}_amm ON "{_tn("Projectile")}"(ammo_type);
-        ''')
+        # ── 向后兼容：补充旧 DB 可能缺失的列 ──
+        for tbl, col, col_def in [
+            ("ship_module_aircraft", "armament_name", "TEXT"),
+            ("ship_module_aircraft", "module_variant", "TEXT DEFAULT ''"),
+            ("ship_rage_mode", "description_ids", "TEXT DEFAULT ''"),
+            ("ship_rage_mode", "modifiers_json", "TEXT DEFAULT '{}'"),
+            ("ship_rage_mode", "triggers_json", "TEXT DEFAULT '[]'"),
+        ]:
+            try:
+                self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
 
-        # ── 其余 19 个分类：通用结构 ─────────────────────
-        for cat in ALL_CATEGORIES:
-            if cat in ("Ship", "Gun", "Projectile"):
-                continue
-            parts.append(f'''
-                CREATE TABLE IF NOT EXISTS "{_tn(cat)}" (
-                    id TEXT PRIMARY KEY, name TEXT DEFAULT '', idx TEXT DEFAULT '',
-                    nation TEXT DEFAULT '', species TEXT DEFAULT '', type TEXT DEFAULT '',
-                    raw_json TEXT NOT NULL, analyzed_json TEXT DEFAULT ''
-                );
-            ''')
-
-        # ── 查找表 ────────────────────────────────────────
-        parts.append('''
-            CREATE TABLE IF NOT EXISTS lookup_name_mappings (
-                game_id TEXT PRIMARY KEY, zh_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_lookup_cat ON lookup_name_mappings(category);
-        ''')
-
-        # ── FTS5 ──────────────────────────────────────────
-        parts.append('''
-            CREATE VIRTUAL TABLE IF NOT EXISTS fts_entities USING fts5(
-                id, name, category, nation, species, tokenize='unicode61'
-            );
-        ''')
-
-        # ── 统一视图 ──────────────────────────────────────
-        view_parts = []
-        for cat in ALL_CATEGORIES:
-            tn = _tn(cat)
-            if cat == "Ship":
-                view_parts.append(f'SELECT id,\'{cat}\' AS category,name,idx,nation,species,\'\' AS type,level FROM "{tn}"')
-            elif cat == "Gun":
-                view_parts.append(f'SELECT id,\'{cat}\',name,idx,nation,species,\'\',0 FROM "{tn}"')
-            elif cat == "Projectile":
-                view_parts.append(f'SELECT id,\'{cat}\',name,idx,nation,ammo_type,\'\',0 FROM "{tn}"')
-            else:
-                view_parts.append(f'SELECT id,\'{cat}\',name,idx,nation,species,type,0 FROM "{tn}"')
-        parts.append("CREATE VIEW IF NOT EXISTS v_all_entities AS " + " UNION ALL ".join(view_parts))
-
-        # ── 元数据表 ──────────────────────────────────────
-        parts.append('''
-            CREATE TABLE IF NOT EXISTS meta_schema_version (
-                version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS meta_game_versions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_version TEXT NOT NULL, wows_type TEXT NOT NULL DEFAULT '',
-                bin_folder TEXT DEFAULT '', entity_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-        ''')
-
-        # 逐条执行（按分号拆分，避免 executescript 长 SQL 问题）
-        for p in parts:
-            for stmt in p.split(";"):
-                s = stmt.strip()
-                if s:
-                    conn.execute(s + ";")
-        conn.commit()
-        if self.get_current_version() == 0:
+        if self.get_current_version() < DB_SCHEMA_VERSION:
             self._record_version(DB_SCHEMA_VERSION)
+
+    def _init_core_tables(self) -> None:
+        """内联核心表定义（SQL 文件不存在时兜底）"""
+        c = self._conn
+        c.execute("""CREATE TABLE IF NOT EXISTS name_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL, key_name TEXT NOT NULL,
+            lang_zh TEXT NOT NULL, UNIQUE(category, key_name))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_mappings_lookup ON name_mappings(category, key_name)")
+        c.execute("""CREATE TABLE IF NOT EXISTS po_translations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            msgid TEXT NOT NULL UNIQUE, msgstr TEXT NOT NULL, context TEXT DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS enum_translations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            enum_type TEXT NOT NULL, enum_key TEXT NOT NULL,
+            lang_zh TEXT NOT NULL, UNIQUE(enum_type, enum_key))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS entity_registry (
+            entity_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL,
+            nation TEXT, shiptype TEXT, tier INTEGER)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_registry_filter ON entity_registry(entity_type, nation, shiptype, tier)")
+        c.execute("""CREATE TABLE IF NOT EXISTS entity_dynamic_attributes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id TEXT NOT NULL REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
+            scope TEXT NOT NULL, attr_key TEXT NOT NULL,
+            attr_value TEXT, attr_value_num REAL,
+            UNIQUE(entity_id, scope, attr_key))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_dynamic_attr_lookup ON entity_dynamic_attributes(entity_id, scope)")
+        c.execute("""CREATE TABLE IF NOT EXISTS ship_sub_depth_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hull_ref_id INTEGER NOT NULL REFERENCES ship_module_hulls(id) ON DELETE CASCADE,
+            state_name TEXT NOT NULL, underwater_max_speed REAL,
+            buoyancy_burn_rate REAL, visibility_factor REAL,
+            UNIQUE(hull_ref_id, state_name))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS rel_ship_weapon_ammo (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            weapon_type TEXT NOT NULL, weapon_ref_id INTEGER NOT NULL,
+            ammo_id TEXT NOT NULL,
+            UNIQUE(weapon_type, weapon_ref_id, ammo_id))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS ship_module_mapping (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ship_id TEXT NOT NULL REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
+            module_letter TEXT NOT NULL,
+            sub_category TEXT NOT NULL,
+            source_key TEXT DEFAULT '',
+            display_order INTEGER DEFAULT 0,
+            UNIQUE(ship_id, module_letter, sub_category))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS gun_drum_details (
+            gun_id TEXT PRIMARY KEY,
+            clip_size INTEGER, clip_reload_time REAL,
+            burst_count INTEGER, burst_reload_time REAL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS meta_schema_version (
+            version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS meta_game_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_version TEXT NOT NULL, wows_type TEXT NOT NULL DEFAULT '',
+            bin_folder TEXT DEFAULT '', entity_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')))""")
+
 
     def get_current_version(self) -> int:
         try:
             cur = self._conn.execute(
-                "SELECT version FROM meta_schema_version ORDER BY version DESC LIMIT 1"
-            )
+                "SELECT version FROM meta_schema_version ORDER BY version DESC LIMIT 1")
             row = cur.fetchone()
             return row["version"] if row else 0
         except sqlite3.OperationalError:
@@ -191,145 +210,103 @@ class DatabaseManager:
 
     def _record_version(self, ver: int) -> None:
         self._conn.execute(
-            "INSERT OR IGNORE INTO meta_schema_version (version) VALUES (?)", (ver,)
-        )
+            "INSERT OR IGNORE INTO meta_schema_version (version) VALUES (?)", (ver,))
         self._conn.commit()
 
     # ══════════════════════════════════════════════════════
-    #  字段提取
+    #  实体注册 (写入 entity_registry)
     # ══════════════════════════════════════════════════════
 
     @staticmethod
-    def _common(data: dict) -> dict:
+    def _entity_type(category: str) -> str:
+        mapping = {
+            "Ship": "ship", "Gun": "gun", "Projectile": "projectile",
+            "Aircraft": "plane", "Ability": "consumable",
+            "Modernization": "modernization", "Crew": "crew",
+        }
+        return mapping.get(category, category.lower())
+
+    @staticmethod
+    def _extract_filters(data: dict) -> dict:
         ti = data.get("typeinfo", {}) or {}
-        return {"name": str(data.get("name", "")), "idx": str(data.get("index", "")),
-                "nation": str(ti.get("nation", "")), "species": str(ti.get("species") or ""),
-                "type": str(ti.get("type", ""))}
-
-    @staticmethod
-    def _ship(data: dict) -> dict:
-        c = DatabaseManager._common(data)
-        return {**c, "level": int(data.get("level", 0) or 0), "group_type": str(data.get("group", ""))}
-
-    @staticmethod
-    def _gun(data: dict) -> dict:
-        c = DatabaseManager._common(data)
-        bd = data.get("barrelDiameter")
-        return {**c, "barrel_diameter": round(bd * 1000, 1) if isinstance(bd, (int, float)) else 0,
-                "num_barrels": int(data.get("numBarrels", 0) or 0),
-                "shot_delay": float(data.get("shotDelay", 0) or 0)}
-
-    @staticmethod
-    def _proj(data: dict) -> dict:
-        c = DatabaseManager._common(data)
-        return {**c, "ammo_type": str(data.get("ammoType", "")),
-                "caliber": float(data.get("caliber", 0) or 0),
-                "damage": float(data.get("damage", 0) or 0)}
-
-    _ROUTE: dict[str, tuple[str, str]] = {
-        "Ship": ("entity_Ship", "_ship"), "Gun": ("entity_Gun", "_gun"),
-        "Projectile": ("entity_Projectile", "_proj"),
-    }
-    _EXTRA = {"Ship": ("level", "group_type"), "Gun": ("barrel_diameter", "num_barrels", "shot_delay"),
-              "Projectile": ("ammo_type", "caliber", "damage")}
-
-    # ══════════════════════════════════════════════════════
-    #  写入
-    # ══════════════════════════════════════════════════════
-
-    def _extract(self, category: str, data: dict) -> dict:
-        route = self._ROUTE.get(category)
-        if route:
-            return getattr(self, route[1])(data)
-        return self._common(data)
-
-    def _table(self, category: str) -> str:
-        route = self._ROUTE.get(category)
-        return route[0] if route else _tn(category)
-
-    def _cols_vals(self, category: str, fields: dict) -> tuple[str, tuple]:
-        if category == "Ship":
-            cols = "id,name,idx,nation,species,level,group_type,raw_json"
-            vals = (fields["id"], fields["name"], fields["idx"], fields["nation"],
-                    fields["species"], fields["level"], fields["group_type"], fields["raw_json"])
-        elif category == "Gun":
-            cols = "id,name,idx,nation,species,barrel_diameter,num_barrels,shot_delay,raw_json"
-            vals = (fields["id"], fields["name"], fields["idx"], fields["nation"],
-                    fields["species"], fields["barrel_diameter"], fields["num_barrels"],
-                    fields["shot_delay"], fields["raw_json"])
-        elif category == "Projectile":
-            cols = "id,name,idx,nation,ammo_type,caliber,damage,raw_json"
-            vals = (fields["id"], fields["name"], fields["idx"], fields["nation"],
-                    fields["ammo_type"], fields["caliber"], fields["damage"], fields["raw_json"])
-        else:
-            cols = "id,name,idx,nation,species,type,raw_json"
-            vals = (fields["id"], fields["name"], fields["idx"], fields["nation"],
-                    fields["species"], fields["type"], fields["raw_json"])
-        return cols, vals
+        raw_level = data.get("level", 0)
+        if isinstance(raw_level, dict):
+            raw_level = 0
+        return {"nation": str(ti.get("nation", "")),
+                "shiptype": str(ti.get("species") or ""),
+                "tier": int(raw_level or 0)}
 
     def insert_entity(self, category: str, key: str, data: dict) -> None:
-        f = self._extract(category, data)
-        f["id"] = key
-        f["raw_json"] = json.dumps(data, ensure_ascii=False, sort_keys=True)
-        cols, vals = self._cols_vals(category, f)
-        placeholders = ",".join("?" * len(vals))
-        self._conn.execute(f'INSERT OR REPLACE INTO "{self._table(category)}" ({cols}) VALUES ({placeholders})', vals)
+        """注册实体到 entity_registry（不再存储 raw_json）"""
+        etype = self._entity_type(category)
+        flt = self._extract_filters(data)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO entity_registry "
+            "(entity_id, entity_type, nation, shiptype, tier) "
+            "VALUES (?,?,?,?,?)",
+            (key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
         self._conn.commit()
 
     def insert_entities_batch(self, items: list[tuple[str, str, dict]]) -> None:
-        buckets: dict[str, list] = {}
+        """批量注册实体到 entity_registry（不再存储 raw_json）"""
+        rows = []
         for category, key, data in items:
-            f = self._extract(category, data)
-            f["id"] = key
-            f["raw_json"] = json.dumps(data, ensure_ascii=False, sort_keys=True)
-            buckets.setdefault(category, []).append(f)
-        conn = self._conn
-        for cat, rows in buckets.items():
-            table = self._table(cat)
-            first, _ = self._cols_vals(cat, rows[0])
-            placeholders = ",".join("?" * (first.count(",") + 1))
-            conn.executemany(
-                f'INSERT OR REPLACE INTO "{table}" ({first}) VALUES ({placeholders})',
-                [self._cols_vals(cat, r)[1] for r in rows]
-            )
-        conn.commit()
-
-    def update_analyzed_json(self, category: str, key: str, analyzed: str) -> None:
-        self._conn.execute(f'UPDATE "{self._table(category)}" SET analyzed_json=? WHERE id=?', (analyzed, key))
+            etype = self._entity_type(category)
+            flt = self._extract_filters(data)
+            rows.append((key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO entity_registry "
+            "(entity_id, entity_type, nation, shiptype, tier) "
+            "VALUES (?,?,?,?,?)", rows)
         self._conn.commit()
 
     # ══════════════════════════════════════════════════════
-    #  查询
+    #  查询 (从 entity_registry + 分析表读取)
     # ══════════════════════════════════════════════════════
 
     def get_entity(self, category: str, key: str) -> Optional[dict]:
+        etype = self._entity_type(category)
         try:
-            cur = self._conn.execute(f'SELECT * FROM "{self._table(category)}" WHERE id=?', (key,))
+            cur = self._conn.execute(
+                "SELECT * FROM entity_registry WHERE entity_id=? AND entity_type=?",
+                (key, etype))
             row = cur.fetchone()
             if not row:
                 return None
             d = dict(row)
             d["category"] = category
-            d["raw_json"] = json.loads(d.get("raw_json", "{}"))
-            ajson = d.get("analyzed_json", "") or ""
-            d["analyzed_result"] = json.loads(ajson) if ajson else None
+            d["raw_json"] = None  # 新架构不存储 raw_json
+            d["analyzed_result"] = self._get_analyzed_result(etype, key)
             return d
+        except sqlite3.OperationalError:
+            return None
+
+    def _get_analyzed_result(self, etype: str, key: str) -> Optional[dict]:
+        """委托 PresenterRegistry 从结构化分析表读取分析结果"""
+        try:
+            from presenters.registry import PresenterRegistry
+            return PresenterRegistry.build(etype, key, self._conn)
         except sqlite3.OperationalError:
             return None
 
     def list_entities(self, category: str, keyword: str = "",
                       limit: int = 0, offset: int = 0) -> list[dict]:
+        etype = self._entity_type(category)
         conn = self._conn
-        view = "v_all_entities"
         if keyword:
             p = f"%{keyword}%"
-            sql = f"SELECT id,category,name,idx,nation,species,type FROM {view} WHERE category=? AND (id LIKE ? OR name LIKE ? OR idx LIKE ?) ORDER BY id"
-            params = [category, p, p, p]
+            sql = ("SELECT entity_id AS id, entity_type AS category, "
+                   "entity_id AS name, '' AS idx, nation, shiptype AS species, '' AS type "
+                   "FROM entity_registry WHERE entity_type=? AND entity_id LIKE ? "
+                   "ORDER BY entity_id")
+            params = [etype, p]
         else:
-            sql = f"SELECT id,category,name,idx,nation,species,type FROM {view} WHERE category=? ORDER BY id"
-            params = [category]
+            sql = ("SELECT entity_id AS id, entity_type AS category, "
+                   "entity_id AS name, '' AS idx, nation, shiptype AS species, '' AS type "
+                   "FROM entity_registry WHERE entity_type=? ORDER BY entity_id")
+            params = [etype]
         if limit > 0:
-            sql += f" LIMIT ? OFFSET ?"
+            sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
         try:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
@@ -337,115 +314,124 @@ class DatabaseManager:
             return []
 
     def count_entities(self, category: str, keyword: str = "") -> int:
+        etype = self._entity_type(category)
         conn = self._conn
         if keyword:
             p = f"%{keyword}%"
-            cur = conn.execute("SELECT COUNT(*) FROM v_all_entities WHERE category=? AND (id LIKE ? OR name LIKE ? OR idx LIKE ?)", (category, p, p, p))
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM entity_registry WHERE entity_type=? AND entity_id LIKE ?",
+                (etype, p))
         else:
-            cur = conn.execute("SELECT COUNT(*) FROM v_all_entities WHERE category=?", (category,))
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?", (etype,))
         return cur.fetchone()[0]
 
     def search_entities(self, category: str, keyword: str, limit: int = 50) -> list[dict]:
-        try:
-            cur = self._conn.execute("""
-                SELECT e.id,e.category,e.name,e.idx,e.nation,e.species,'' AS type
-                FROM fts_entities f JOIN v_all_entities e ON e.id=f.id AND e.category=f.category
-                WHERE f.category=? AND fts_entities MATCH ? ORDER BY rank LIMIT ?
-            """, (category, keyword, limit))
-            return [dict(r) for r in cur.fetchall()]
-        except sqlite3.OperationalError:
-            return self.list_entities(category, keyword, limit)
+        return self.list_entities(category, keyword, limit)
 
     def get_categories(self) -> list[str]:
+        rev = {"ship": "Ship", "gun": "Gun", "projectile": "Projectile",
+               "plane": "Aircraft", "consumable": "Ability",
+               "modernization": "Modernization", "crew": "Crew"}
         try:
-            return [r["category"] for r in self._conn.execute("SELECT DISTINCT category FROM v_all_entities ORDER BY category").fetchall()]
+            types = [r["entity_type"] for r in self._conn.execute(
+                "SELECT DISTINCT entity_type FROM entity_registry ORDER BY entity_type"
+            ).fetchall()]
+            return [rev.get(t, t.capitalize()) for t in types]
         except sqlite3.OperationalError:
             return []
 
     def get_stats(self) -> dict:
         conn = self._conn
-        cats, total, size = {}, 0, 0
-        for cat in ALL_CATEGORIES:
-            try:
-                tn = _tn(cat)
-                c = conn.execute(f'SELECT COUNT(*), SUM(LENGTH(raw_json)) FROM "{tn}"').fetchone()
-                cnt, sz = c[0] or 0, c[1] or 0
-                cats[cat] = cnt; total += cnt; size += sz
-            except sqlite3.OperationalError:
-                pass
+        cats, total = {}, 0
         try:
-            mc = conn.execute("SELECT COUNT(*) FROM lookup_name_mappings").fetchone()[0]
+            for et in ENTITY_TYPES:
+                c = conn.execute(
+                    "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?",
+                    (et,)).fetchone()
+                cnt = c[0] or 0
+                cats[et] = cnt; total += cnt
+        except sqlite3.OperationalError:
+            pass
+        try:
+            mc = conn.execute("SELECT COUNT(*) FROM name_mappings").fetchone()[0]
         except sqlite3.OperationalError:
             mc = 0
-        return {
-            "total_entities": total, "total_size_mb": round(size / (1024 * 1024), 2),
-            "db_file_size_mb": self.db_size_mb, "categories": cats, "name_mappings": mc,
-        }
+        return {"total_entities": total,
+                "db_file_size_mb": self.db_size_mb,
+                "categories": cats, "name_mappings": mc}
 
     # ══════════════════════════════════════════════════════
-    #  FTS
-    # ══════════════════════════════════════════════════════
-
-    def rebuild_fts(self) -> None:
-        conn = self._conn
-        conn.execute("DELETE FROM fts_entities")
-        for cat in ALL_CATEGORIES:
-            try:
-                conn.execute(f'INSERT INTO fts_entities(id,name,category,nation,species) SELECT id,name,\'{cat}\',nation,species FROM "{_tn(cat)}"')
-            except sqlite3.OperationalError:
-                pass
-        conn.commit()
-
-    # ══════════════════════════════════════════════════════
-    #  名称映射
+    #  本地化
     # ══════════════════════════════════════════════════════
 
     def get_all_name_mappings(self, category: str = "") -> dict[str, str]:
-        """获取所有（或指定分类的）名称映射为 {game_id: zh_name} 字典"""
         try:
             if category:
                 cur = self._conn.execute(
-                    "SELECT game_id, zh_name FROM lookup_name_mappings WHERE category=?",
+                    "SELECT key_name, lang_zh FROM name_mappings WHERE category=?",
                     (category,))
             else:
-                cur = self._conn.execute("SELECT game_id, zh_name FROM lookup_name_mappings")
-            return {r["game_id"]: r["zh_name"] for r in cur.fetchall()}
+                cur = self._conn.execute("SELECT key_name, lang_zh FROM name_mappings")
+            return {r["key_name"]: r["lang_zh"] for r in cur.fetchall()}
         except sqlite3.OperationalError:
             return {}
 
     def import_name_mappings(self, data_dir: str | Path) -> dict[str, int]:
         stats = {}
-        for fn, cat in [("ship_names.json", "ship"), ("ammo_names.json", "ammo"),
-                        ("guns_names.json", "gun"), ("consumable_names.json", "consumable"),
-                        ("modernization_names.json", "modernization"),
-                        ("plane_names.json", "plane"), ("rage_mode_names.json", "rage_mode")]:
+        for fn, cat in NAME_MAPPING_FILES.items():
             fp = Path(data_dir) / fn
             if not fp.exists():
                 continue
             try:
-                with open(fp, "r", encoding="utf-8") as f:
-                    items = [(k, v, cat) for k, v in json.load(f).items()]
+                items = [(cat, k, v)
+                         for k, v in json.loads(fp.read_text(encoding="utf-8")).items()]
                 if items:
-                    self._conn.executemany("INSERT OR REPLACE INTO lookup_name_mappings VALUES (?,?,?)", items)
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO name_mappings "
+                        "(category, key_name, lang_zh) VALUES (?,?,?)", items)
                     self._conn.commit()
                     stats[fn] = len(items)
             except Exception:
                 continue
         return stats
 
+    def import_po_translations(self, po_path: str | Path) -> int:
+        fp = Path(po_path)
+        if not fp.exists():
+            return 0
+        text = fp.read_text(encoding="utf-8")
+        items = []
+        blocks = re.split(r'\n(?=msgid)', text)
+        for block in blocks:
+            m = re.search(r'^msgid\s+"(.+)"\s*$', block, re.MULTILINE)
+            s = re.search(r'^msgstr\s+"(.+)"\s*$', block, re.MULTILINE)
+            if m and s and m.group(1) and s.group(1):
+                items.append((m.group(1), s.group(1), ""))
+        if items:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO po_translations "
+                "(msgid, msgstr, context) VALUES (?,?,?)", items)
+            self._conn.commit()
+        return len(items)
+
     # ══════════════════════════════════════════════════════
     #  游戏版本
     # ══════════════════════════════════════════════════════
 
     def record_game_version(self, game_version: str, wows_type: str = "",
-                             bin_folder: str = "", entity_count: int = 0) -> None:
-        self._conn.execute("INSERT INTO meta_game_versions (game_version,wows_type,bin_folder,entity_count) VALUES (?,?,?,?)",
-                           (game_version, wows_type, str(bin_folder), entity_count))
+                            bin_folder: str = "", entity_count: int = 0) -> None:
+        self._conn.execute(
+            "INSERT INTO meta_game_versions "
+            "(game_version,wows_type,bin_folder,entity_count) VALUES (?,?,?,?)",
+            (game_version, wows_type, str(bin_folder), entity_count))
         self._conn.commit()
 
     def get_latest_game_version(self) -> Optional[str]:
         try:
-            r = self._conn.execute("SELECT game_version FROM meta_game_versions ORDER BY id DESC LIMIT 1").fetchone()
+            r = self._conn.execute(
+                "SELECT game_version FROM meta_game_versions ORDER BY id DESC LIMIT 1"
+            ).fetchone()
             return r["game_version"] if r else None
         except sqlite3.OperationalError:
             return None
@@ -453,7 +439,8 @@ class DatabaseManager:
     def get_game_versions(self, limit: int = 10) -> list[dict]:
         try:
             return [dict(r) for r in self._conn.execute(
-                "SELECT * FROM meta_game_versions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+                "SELECT * FROM meta_game_versions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()]
         except sqlite3.OperationalError:
             return []
 
@@ -478,20 +465,15 @@ class DatabaseManager:
 
     def drop_all(self) -> None:
         conn = self._conn
-        for cat in ALL_CATEGORIES:
-            try:
-                conn.execute(f'DELETE FROM "{_tn(cat)}"')
-            except sqlite3.OperationalError:
-                pass
-        for t in ["lookup_name_mappings", "meta_game_versions", "meta_schema_version"]:
+        for t in ["entity_registry", "entity_dynamic_attributes",
+                   "ship_sub_depth_states", "rel_ship_weapon_ammo",
+                   "gun_drum_details",
+                   "name_mappings", "po_translations", "enum_translations",
+                   "meta_game_versions", "meta_schema_version"]:
             try:
                 conn.execute(f"DELETE FROM {t}")
             except sqlite3.OperationalError:
                 pass
-        try:
-            conn.execute("DELETE FROM fts_entities")
-        except sqlite3.OperationalError:
-            pass
         conn.commit()
 
     def rebuild_from_split(self, split_dir: str | Path, progress_callback=None) -> dict:
@@ -519,7 +501,9 @@ class DatabaseManager:
         if batch:
             self.insert_entities_batch(batch)
         ms = self.import_name_mappings(get_data_dir())
-        self.rebuild_fts()
+        po_path = get_data_dir() / "global.po"
+        if po_path.exists():
+            self.import_po_translations(po_path)
         self.vacuum()
         return {"entities": processed, "mappings": sum(ms.values())}
 
@@ -532,8 +516,7 @@ def get_db() -> DatabaseManager:
     global _db
     if _db is None:
         _db = DatabaseManager()
-        if _db.exists:
-            _db.initialize()
+        _db.initialize()
     return _db
 
 

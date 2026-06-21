@@ -62,18 +62,8 @@ def get_config_path() -> Path:
     return get_app_dir() / "config.json"
 
 
-def get_json_mapping_path(filename: str) -> Path:
-    """返回 data/ 下的 JSON 映射文件路径"""
-    return get_data_dir() / filename
-
-
 # ── 打包内置资源（源码 / standalone / onefile 解压目录） ──
 
 def get_tools_dir() -> Path:
     """返回 tools/ 目录（存放 wowsunpack.exe 等）"""
     return get_bundled_dir() / "tools"
-
-
-def get_resource_path(*segments: str) -> Path:
-    """返回 resources/ 下的资源路径"""
-    return get_bundled_dir().joinpath("resources", *segments)

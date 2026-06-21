@@ -1,25 +1,24 @@
 """
 MainWindow —— 应用主窗口。
 
-布局：
-  ┌────────────────────────────────────────────┐
-  │  TopToolbar (操作按钮 + 服务器 + 进度条)    │
-  ├──────┬─────────────────────────────────────┤
-  │      │  ┌──────────┬────────────────────┐  │
-  │ 分类  │  │ 文件列表  │    详情面板        │  │
-  │ 按钮  │  │          │                    │  │
-  │      │  └──────────┴────────────────────┘  │
-  ├──────┴─────────────────────────────────────┤
-  │  状态栏                                     │
-  └────────────────────────────────────────────┘
+布局（基于 main_window.ui）：
+  ┌──────────────────────────────────────────────────────┐
+  │ [load data] [load lang] [set path] [refresh]  [Lesta] [WG] │
+  ├────┬─────────────────────────────────────────────────┤
+  │    │  ┌──────────────┬────────┬─────────────────┐    │
+  │ 80 │  │  文件列表     │ 模块   │   详情面板       │    │
+  │ px │  │  (200px)     │ (80px) │   (Stacked)     │    │
+  │    │  └──────────────┴────────┴─────────────────┘    │
+  ├────┴─────────────────────────────────────────────────┤
+  │  QTextBrowser (日志, 固定高度)                       │
+  └──────────────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QSplitter, QStatusBar, QLabel, QMenuBar, QMenu,
-    QTextEdit,
+    QStatusBar, QLabel, QTextBrowser,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
@@ -29,6 +28,7 @@ from app.application import app
 from ui.toolbar_widget import TopToolbar
 from ui.category_bar import CategoryBar
 from ui.browser_panel import BrowserPanel
+from ui.module_select import ModuleSelect
 from ui.detail_panel import DetailPanel
 
 
@@ -38,7 +38,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mir Korabley / World of Warships — 游戏数据分析工具")
-        self.resize(1400, 850)
+        self.resize(1420, 901)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -46,47 +46,65 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # ── 顶部工具栏 ──────────────────────────────────
+        # ── 顶部工具栏（horizontalFrame）─────────────────
         self.toolbar = TopToolbar()
         main_layout.addWidget(self.toolbar)
 
-        # ── 中间区域：分类栏 + 内容区 ────────────────────
+        # ── 中间区域：分类栏 + 内容区（main_widget）───────
         middle = QWidget()
         middle_layout = QHBoxLayout(middle)
         middle_layout.setContentsMargins(0, 0, 0, 0)
         middle_layout.setSpacing(0)
 
+        # 左侧分类按钮栏（80px 固定）
         self.category_bar = CategoryBar()
         middle_layout.addWidget(self.category_bar)
 
-        # 内容区：文件列表 + 详情面板（可拖拽分割）
-        content_splitter = QSplitter(Qt.Orientation.Horizontal)
-        content_splitter.setHandleWidth(1)
-        content_splitter.setStyleSheet("QSplitter::handle { background-color: #d0d0d0; }")
+        # 右侧内容区（widget_2, 展开）
+        content_area = QWidget()
+        content_layout = QHBoxLayout(content_area)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
+        # 文件列表面板（200px 固定）
         self.browser = BrowserPanel()
-        self.detail = DetailPanel()
-        content_splitter.addWidget(self.browser)
-        content_splitter.addWidget(self.detail)
-        content_splitter.setSizes([300, 800])
+        content_layout.addWidget(self.browser)
 
-        middle_layout.addWidget(content_splitter, stretch=1)
+        # 模块选择区（80px 固定）
+        self.module_select = ModuleSelect()
+        content_layout.addWidget(self.module_select)
+
+        # 详情面板（StackedWidget, 展开）
+        self.detail = DetailPanel()
+        content_layout.addWidget(self.detail, stretch=1)
+
+        middle_layout.addWidget(content_area, stretch=1)
         main_layout.addWidget(middle, stretch=1)
 
-        # ── 日志面板（右下角）────────────────────────────
-        self.log_panel = QTextEdit()
+        # ── 底部区域（日志面板）─────────────────────────
+        bottom_widget = QWidget()
+        bottom_layout = QHBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setSpacing(0)
+
+        self.log_panel = QTextBrowser()
         self.log_panel.setReadOnly(True)
         self.log_panel.setFont(QFont("Microsoft YaHei", 9))
-        self.log_panel.setFixedHeight(80)
+        self.log_panel.setFixedHeight(100)
         self.log_panel.setStyleSheet("""
-            QTextEdit {
-                background-color: #1e1e1e; color: #ccc;
-                border: none; border-top: 1px solid #3c3c3c;
+            QTextBrowser {
+                background-color: #1e1e1e;
+                color: #cccccc;
+                border: none;
+                border-top: 1px solid #3c3c3c;
                 padding: 4px 8px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
             }
         """)
-        self.log_panel.setVisible(False)
-        main_layout.addWidget(self.log_panel)
+        bottom_layout.addWidget(self.log_panel, stretch=1)
+
+        main_layout.addWidget(bottom_widget)
 
         # ── 状态栏 ──────────────────────────────────────
         self.status_bar = QStatusBar()
@@ -100,6 +118,12 @@ class MainWindow(QMainWindow):
         # ── 信号连接 ────────────────────────────────────
         bus.log_message.connect(self._on_log)
         self.browser.file_selected.connect(bus.file_selected.emit)
+        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮
+        self.detail.modules_available.connect(self.module_select.set_modules)
+        # 模块选择 → 详情页切换
+        self.module_select.module_selected.connect(self.detail.switch_page)
+        # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
+        bus.folder_selected.connect(self._on_category_changed)
 
         # ── 窗口居中 ────────────────────────────────────
         QTimer.singleShot(0, self._center_window)
@@ -108,9 +132,18 @@ class MainWindow(QMainWindow):
 
     def _setup_menu(self) -> None:
         menubar = self.menuBar()
-        settings_menu = menubar.addMenu("高级选项")
+        settings_menu = menubar.addMenu("设置")
+
+        adv_action = settings_menu.addAction("高级设置...")
+        adv_action.triggered.connect(self._on_advanced_settings)
+
         reset_action = settings_menu.addAction("重置软件设置")
         reset_action.triggered.connect(self._on_reset)
+
+    def _on_advanced_settings(self) -> None:
+        from ui.advanced_settings import AdvancedSettingsDialog
+        dlg = AdvancedSettingsDialog(self)
+        dlg.exec()
 
     def _on_reset(self) -> None:
         app.reset_all()
@@ -121,8 +154,11 @@ class MainWindow(QMainWindow):
     def _on_log(self, message: str) -> None:
         self.status_label.setText(message)
         self.log_panel.append(message)
-        if not self.log_panel.isVisible():
-            self.log_panel.setVisible(True)
+
+    def _on_category_changed(self, folder: str) -> None:
+        """分类切换时控制模块选择区的显隐"""
+        # 舰长类不显示三级菜单（模块选择区）
+        self.module_select.setVisible(folder != "Crew")
 
     # ── 窗口管理 ──────────────────────────────────────────
 
