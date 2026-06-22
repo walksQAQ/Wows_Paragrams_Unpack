@@ -91,6 +91,21 @@ class BrowserPanel(QWidget):
 
     file_selected = Signal(str, str)
 
+    @staticmethod
+    def _safe_db():
+        """获取数据库连接，处理 reset_db() 关闭连接后的重连"""
+        import sqlite3
+        try:
+            db = get_db()
+            # 测试连接是否有效
+            db._conn.execute("SELECT 1")
+            return db
+        except (sqlite3.ProgrammingError, sqlite3.OperationalError, AttributeError):
+            # 连接已关闭，重置全局状态重新获取
+            from services.database_service import reset_db
+            reset_db()
+            return get_db()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("BrowserPanel")
@@ -208,8 +223,8 @@ class BrowserPanel(QWidget):
         else:
             self.search_box.setPlaceholderText("🔍 搜索文件名...")
 
-        db = get_db()
-        if not db.exists:
+        db = self._safe_db()
+        if not db or not db.exists:
             return
 
         if is_ship:

@@ -48,19 +48,24 @@ def _write_one(key, value, index, out_dir):
         pass
 
 
-def _run_analysis(db) -> None:
-    """对数据库中所有实体运行分析器并写入结构化表"""
+def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None) -> None:
+    """对数据库中所有实体运行分析器并写入结构化表
+
+    参数:
+        data_by_category: 内存数据字典，传此参数时跳过读 split 目录
+    """
     try:
         from utils.path_utils import get_data_dir, get_split_dir
         data_dir = get_data_dir()
         split_dir = get_split_dir()
 
-        # 检查 split 目录是否存在（keep_split_json=False 时会被删除）
-        if not split_dir.exists():
-            bus.log_message.emit("⏳ 跳过预分析：split 目录已被清理，数据已在首次入库时完成分析")
-            return
+        if not data_by_category:
+            # 文件模式：检查 split 目录是否存在
+            if not split_dir.exists():
+                bus.log_message.emit("⏳ 跳过预分析：split 目录已被清理，数据已在首次入库时完成分析")
+                return
 
-        # 检查数据库是否已有名称映射（JSON 文件可能在导入后被清理）
+        # 检查数据库是否已有名称映射
         has_mappings = False
         try:
             row = db._conn.execute(
@@ -77,7 +82,7 @@ def _run_analysis(db) -> None:
         if not svc.is_ready:
             return
         bus.task_progress.emit(80, "预分析数据")
-        svc.precompute_all(db)
+        svc.precompute_all(db, data_by_category=data_by_category)
         bus.task_progress.emit(100, "预分析完成")
     except Exception as e:
         bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
@@ -136,12 +141,34 @@ def run_process() -> None:
             t = v.get('typeinfo', {}).get('type', 'UnknownType')
             db_batch.append((str(t), k, v))
 
+        # 类型 → 中文分类映射（与 split 目录结构一致）
+        TYPE_CATEGORY_MAP = {
+            "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
+            "Aircraft": "Aircraft", "Ability": "Ability",
+            "Modernization": "Modernization", "Crew": "Crew",
+        }
+        # 内存中按分类收集数据，跳过 JSON 中间文件
+        data_by_category: dict[str, dict[str, dict]] = {}
         sd = str(split_dir)
+        do_write_json = app_ctx.config.keep_split_json if hasattr(app_ctx.config, 'keep_split_json') else True
+
         if source_dict:
             ej = json.loads(json.dumps(source_dict, cls=_GPEncode, ensure_ascii=False))
-            with ThreadPoolExecutor(max_workers=8) as tpe:
+            if do_write_json:
+                with ThreadPoolExecutor(max_workers=8) as tpe:
+                    for k, v in ej.items():
+                        tpe.submit(_write_one, k, v, None, sd)
+                        t = v.get('typeinfo', {}).get('type', 'UnknownType')
+                        cat = TYPE_CATEGORY_MAP.get(t, None)
+                        if cat:
+                            data_by_category.setdefault(cat, {})[k] = v
+                        _write_one_db(k, v, None)
+            else:
                 for k, v in ej.items():
-                    tpe.submit(_write_one, k, v, None, sd)
+                    t = v.get('typeinfo', {}).get('type', 'UnknownType')
+                    cat = TYPE_CATEGORY_MAP.get(t, None)
+                    if cat:
+                        data_by_category.setdefault(cat, {})[k] = v
                     _write_one_db(k, v, None)
             if db_batch:
                 db.insert_entities_batch(db_batch, load_seq=load_seq)
@@ -151,20 +178,32 @@ def run_process() -> None:
                 db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
                                         app_ctx.ctx.bin_folder, entity_count=len(db_batch))
                 bus.task_progress.emit(80, "预分析数据")
-                bus.log_message.emit("🧠 正在预分析数据...")
-                _run_analysis(db)
+                bus.log_message.emit("🧠 正在预分析数据（内存模式）...")
+                _run_analysis(db, data_by_category)
                 bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
                 bus.task_progress.emit(100, "完成")
             return True, "Wargaming 拆分完成"
         else:
-            with ThreadPoolExecutor(max_workers=8) as tpe:
-                for idx, elem in enumerate(data):
-                    if not isinstance(elem, dict):
-                        continue
-                    ti = None if idx == 0 else idx
-                    ej = json.loads(json.dumps(elem, cls=_GPEncode, ensure_ascii=False))
+            for idx, elem in enumerate(data):
+                if not isinstance(elem, dict):
+                    continue
+                ti = None if idx == 0 else idx
+                ej = json.loads(json.dumps(elem, cls=_GPEncode, ensure_ascii=False))
+                if do_write_json:
+                    with ThreadPoolExecutor(max_workers=8) as tpe:
+                        for k, v in ej.items():
+                            tpe.submit(_write_one, k, v, ti, sd)
+                            t = v.get('typeinfo', {}).get('type', 'UnknownType')
+                            cat = TYPE_CATEGORY_MAP.get(t, None)
+                            if cat:
+                                data_by_category.setdefault(cat, {})[k] = v
+                            _write_one_db(k, v, ti)
+                else:
                     for k, v in ej.items():
-                        tpe.submit(_write_one, k, v, ti, sd)
+                        t = v.get('typeinfo', {}).get('type', 'UnknownType')
+                        cat = TYPE_CATEGORY_MAP.get(t, None)
+                        if cat:
+                            data_by_category.setdefault(cat, {})[k] = v
                         _write_one_db(k, v, ti)
             if db_batch:
                 db.insert_entities_batch(db_batch, load_seq=load_seq)
@@ -174,8 +213,8 @@ def run_process() -> None:
                 db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
                                         app_ctx.ctx.bin_folder, entity_count=len(db_batch))
                 bus.task_progress.emit(80, "预分析数据")
-                bus.log_message.emit("🧠 正在预分析数据...")
-                _run_analysis(db)
+                bus.log_message.emit("🧠 正在预分析数据（内存模式）...")
+                _run_analysis(db, data_by_category)
                 bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
                 bus.task_progress.emit(100, "完成")
             return True, "Lesta 拆分完成"
