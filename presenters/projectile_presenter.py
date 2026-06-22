@@ -31,7 +31,6 @@ class ProjectilePresenter(BasePresenter):
             self.make_item(f"  弹药名称: {p['ammo_name_zh'] or proj_id}", "", 0),
             self.make_item(f"  编号: {p['projectile_index'] or proj_id}", "", 1),
             self.make_item(f"  类型: {display_type} / {ammo_type}", "", 2),
-            self.make_item(f"  标伤: {p['alpha_damage'] or 0:.0f}", "", 3),
         ]
 
         extra = {}
@@ -39,6 +38,12 @@ class ProjectilePresenter(BasePresenter):
             extra = json.loads(p['extra_json'] or '{}')
         except (json.JSONDecodeError, TypeError):
             pass
+
+        # ── 标伤（各类型计算方式不同）────────────────────
+        if species == "Torpedo":
+            items.append(self.make_item(f"  标伤: {((p['alpha_damage'] or 0) * 0.33):.0f}", "", len(items)))
+        else:
+            items.append(self.make_item(f"  标伤: {p['alpha_damage'] or 0:.0f}", "", len(items)))
 
         # ── 火箭弹 & 炸弹（共通属性多）──────────────────
         if species in ("Rocket", "Bomb"):

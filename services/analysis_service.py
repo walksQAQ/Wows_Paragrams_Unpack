@@ -719,6 +719,20 @@ class AnalysisStore:
                 VALUES (?,?,?,?,?,?)""",
                 (ship_id, letter, name, len(group), barrels or 0, reload_t or 0))
 
+            # 弹药关联 → rel_ship_weapon_ammo
+            ammo_ids = set()
+            for g_item in group:
+                for a in (g_item.get("ammo_list", []) or []):
+                    if isinstance(a, str):
+                        ammo_ids.add(a)
+            if ammo_ids:
+                torp_row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                for aid in ammo_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO rel_ship_weapon_ammo "
+                        "(weapon_type, weapon_ref_id, ammo_id) VALUES (?,?,?)",
+                        ("torpedo", torp_row_id, aid))
+
     def _write_aa(self, conn, ship_id, letter, items):
         if not items:
             return
