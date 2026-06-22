@@ -1,5 +1,5 @@
 """
-ConsumablePresenter —— 从 consumable_basic_info 表组装消耗品显示数据。
+ConsumablePresenter —— 从 consumable_configs 表组装消耗品显示数据。
 
 参照 _archive/analyzers/consumable_analyzer.py 的显示逻辑。
 """
@@ -14,128 +14,212 @@ from presenters.base_presenter import BasePresenter, NM
 class ConsumablePresenter(BasePresenter):
     """消耗品显示 Presenter"""
 
-    def build(self, cid: str) -> dict | None:
+    @staticmethod
+    def _merge_config_row(row) -> dict:
+        """将 consumable_configs 行（列 + extra_json）合并为一个 cfg dict"""
+        import json
+        cfg = dict(row)
+        COL2GAME = {
+            "consumable_type": "consumableType",
+            "num_consumables": "numConsumables",
+            "work_time": "workTime",
+            "preparation_time": "preparationTime",
+            "reload_time": "reloadTime",
+            "is_auto_consumable": "isAutoConsumable",
+            "is_interceptor": "isInterceptor",
+            "regen_hp_speed": "regenerationHPSpeed",
+            "area_dmg_multiplier": "areaDamageMultiplier",
+            "bubble_dmg_multiplier": "bubbleDamageMultiplier",
+            "fighter_name": "fightersName",
+            "fighter_num": "fightersNum",
+            "available_buoyancy_states": "availableBuoyancyStates",
+        }
+        ej = cfg.pop('extra_json', None)
+        extra = {}
+        if ej:
+            try:
+                extra = json.loads(ej)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result = {}
+        for col, game_key in COL2GAME.items():
+            if col in cfg and cfg[col] is not None:
+                result[game_key] = cfg[col]
+        result.update(extra)
+        for _k in ('id', 'consumable_id', 'config_key'):
+            result.pop(_k, None)
+        return result
+
+    def _load_cfg(self, cid: str) -> tuple[dict | None, str]:
+        """从 consumable_configs 加载 Default 子配置，返回 (cfg_dict, type_str)"""
         conn = self.conn
-        c = conn.execute(
+        cinfo = conn.execute(
             "SELECT * FROM consumable_basic_info WHERE consumable_id=?",
             (cid,)).fetchone()
-        if not c:
+        if not cinfo:
+            return None, ''
+        display_name = cinfo['display_name'] or cid
+
+        # 取 Default 子配置
+        row = conn.execute(
+            "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
+            (cid,)).fetchone()
+        if not row:
+            # 回退：取第一个非特殊子配置
+            row = conn.execute(
+                "SELECT * FROM consumable_configs WHERE consumable_id=? "
+                "AND config_key NOT IN ('_top','custom','typeinfo') ORDER BY config_key LIMIT 1",
+                (cid,)).fetchone()
+        if not row:
+            return {'display_name': display_name}, ''
+
+        cfg = self._merge_config_row(row)
+        ct = cfg.get('consumableType', '') or ''
+        cfg['display_name'] = display_name
+        return cfg, ct
+
+    def build(self, cid: str) -> dict | None:
+        cfg, ct = self._load_cfg(cid)
+        if cfg is None:
             return None
 
-        items = [self.make_item(f"  名称: {c['display_name'] or cid}", "", 0)]
-        ct = c['consumable_type'] or ''
+        display_name = cfg.pop('display_name', cid)
+        items = [self.make_item(f"  名称: {display_name}", "", 0)]
         if ct:
             items.append(self.make_item(f"  类型: {ct}", "", len(items)))
 
         # 基础属性
-        num_str = "无限" if c['num_consumables'] == '-1' else str(c['num_consumables'] or '?')
+        num_raw = cfg.get('num_consumables', '0')
+        num_str = "无限" if str(num_raw) == '-1' else str(num_raw)
         items.append(self.make_item(f"  基础可用数量: {num_str}", "", len(items)))
+        is_auto = cfg.get('is_auto_consumable', 0)
+        if is_auto:
+            items.append(self.make_item(f"  自动使用: 是", "", len(items)))
+        prep = cfg.get('preparation_time', 0) or 0
+        reload_t = cfg.get('reload_time', 0) or 0
+        work = cfg.get('work_time', 0) or 0
         items.append(self.make_item(
-            f"  自动使用: {'是' if c['is_auto_consumable'] else '否'}", "", len(items)))
-        items.append(self.make_item(
-            f"  准备时间: {c['preparation_time'] or 0}s"
-            f" / 冷却: {c['reload_time'] or 0}s"
-            f" / 持续: {c['work_time'] or 0}s", "", len(items)))
-
-        # 解析 extra_json
-        extra = {}
-        try:
-            extra = json.loads(c['extra_json'] or '{}')
-        except (json.JSONDecodeError, TypeError):
-            pass
+            f"  准备时间: {prep}s / 冷却: {reload_t}s / 持续: {work}s", "", len(items)))
 
         # 按消耗品类型显示特殊属性
         items.append(self.make_item("  消耗品效果:", "", len(items)))
         if ct == "fighter":
-            fn = self.resolve_name("plane", extra.get('fighterName', '') or c.get('fighter_name', '') or '未知')
+            fn = self.resolve_name("plane", cfg.get('fightersName', '') or '未知')
             items.append(self.make_item(f"    战斗机: {fn}", "", len(items)))
-            items.append(self.make_item(f"    数量: {c['fighter_num'] or 0} | 截击机: {'是' if c['is_interceptor'] else '否'}", "", len(items)))
-            if extra.get('dogFightTime'):
-                items.append(self.make_item(f"    狗斗: {extra['dogFightTime']}s | 离开: {extra.get('flyAwayTime', 0)}s", "", len(items)))
-            rk = extra.get('radiusToKill')
+            fn2 = cfg.get('fighterNum', 0)
+            is_inter = cfg.get('isInterceptor', 0)
+            items.append(self.make_item(f"    数量: {fn2} | 截击机: {'是' if is_inter else '否'}", "", len(items)))
+            dog = cfg.get('dogFightTime', 0)
+            fly = cfg.get('flyAwayTime', 0)
+            if dog or fly:
+                items.append(self.make_item(f"    狗斗: {dog}s | 离开: {fly}s", "", len(items)))
+            rk = cfg.get('distanceToKill', 0)
             if rk:
                 items.append(self.make_item(f"    巡逻半径: {rk/10:.1f}km", "", len(items)))
         elif ct == "scout":
-            dc = (extra.get('gunsDistCoeff') or 1) - 1
+            dc = (float(cfg.get('artilleryDistCoeff', 0) or 1) - 1)
             items.append(self.make_item(f"    主炮射程: {dc*100:+.2f}%", "", len(items)))
         elif ct == "smokeGenerator":
-            r = extra.get('radius', 0)
-            items.append(self.make_item(f"    烟雾半径: {r*3:.0f}m | 高度: {extra.get('height', 0)}m", "", len(items)))
-            items.append(self.make_item(f"    速度限制: {extra.get('speedLimit', 0)}kts | 扩散: {extra.get('lifeTime', 0)}s", "", len(items)))
+            r = float(cfg.get('radius', 0) or 0)
+            h = float(cfg.get('height', 0) or 0)
+            items.append(self.make_item(f"    烟雾半径: {r*3:.0f}m | 高度: {h}m", "", len(items)))
+            sp = cfg.get('speedLimit', 0)
+            lt = cfg.get('lifeTime', 0)
+            if sp or lt:
+                items.append(self.make_item(f"    速度限制: {sp}kts | 扩散: {lt}s", "", len(items)))
         elif ct == "speedBoosters":
-            bc = (extra.get('boostCoeff') or 1) - 1
+            bc = (float(cfg.get('boostCoeff', 0) or 1) - 1)
             items.append(self.make_item(f"    最高航速: {bc*100:+.0f}%", "", len(items)))
-            fe = (extra.get('forwardEngForsag') or 1) - 1
-            be = (extra.get('backwardEngForsag') or 1) - 1
+            fe = (float(cfg.get('forwardEngineForsag', 0) or 1) - 1)
+            be = (float(cfg.get('backwardEngineForsag', 0) or 1) - 1)
             items.append(self.make_item(f"    推力: 前进{fe*100:+.0f}% / 后退{be*100:+.0f}%", "", len(items)))
         elif ct == "sonar":
-            ds = (extra.get('distShip') or 0) * 0.03
-            dt = (extra.get('distTorpedo') or 0) * 0.03
+            ds = float(cfg.get('distShip', 0) or 0) * 0.03
+            dt = float(cfg.get('distTorpedo', 0) or 0) * 0.03
             items.append(self.make_item(f"    舰船探测: {ds:.2f} km", "", len(items)))
             items.append(self.make_item(f"    鱼雷探测: {dt:.2f} km", "", len(items)))
-            dm = (extra.get('distMine') or 0) * 0.03
+            dm = float(cfg.get('distMine', 0) or 0) * 0.03
             if dm:
                 items.append(self.make_item(f"    水雷探测: {dm:.2f} km", "", len(items)))
         elif ct == "torpedoReloader":
-            items.append(self.make_item(f"    鱼雷装填时间: {extra.get('torpedoReloadTime', 0)}s", "", len(items)))
+            trt = cfg.get('torpedoReloadTime', 0)
+            if trt:
+                items.append(self.make_item(f"    鱼雷装填时间: {trt}s", "", len(items)))
         elif ct == "rls":
-            ds = (extra.get('distShip') or 0) * 0.03
+            ds = float(cfg.get('distShip', 0) or 0) * 0.03
             items.append(self.make_item(f"    舰船探测: {ds:.2f} km", "", len(items)))
-            aff = extra.get('affectedClasses', [])
+            aff = cfg.get('affectedClasses', [])
             if aff:
                 cls_str = ', '.join(NM.SHIP_CLASS_MAP.get(c, c) for c in aff)
                 items.append(self.make_item(f"    限制探测舰种: {cls_str}", "", len(items)))
         elif ct == "artilleryBoosters":
-            bc = (extra.get('boostCoeff') or 1) - 1
+            bc = (float(cfg.get('boostCoeff', 0) or 1) - 1)
             items.append(self.make_item(f"    主炮装填时间: {bc*100:+.0f}%", "", len(items)))
         elif ct == "depthCharges":
-            r = extra.get('radius', 0) * 0.003
+            r = float(cfg.get('radius', 0) or 0) * 0.003
             items.append(self.make_item(f"    半径: {r:.2f}km", "", len(items)))
         elif ct == "hydrophone":
-            items.append(self.make_item(f"    虚影存留: {extra.get('zoneLifeTime', 0)}s | 刷新: {extra.get('hpUpdFreq', 0)}s", "", len(items)))
-            wr = (extra.get('hpWaveRadius') or 0) * 0.001
-            items.append(self.make_item(f"    视野距离: {wr:.2f}km", "", len(items)))
+            zt = cfg.get('zoneLifeTime', 0)
+            hu = cfg.get('hydrophoneUpdateFrequency', 0)
+            if zt or hu:
+                items.append(self.make_item(f"    虚影存留: {zt}s | 刷新: {hu}s", "", len(items)))
+            wr = float(cfg.get('hydrophoneWaveRadius', 0) or 0) * 0.001
+            if wr:
+                items.append(self.make_item(f"    视野距离: {wr:.2f}km", "", len(items)))
         elif ct == "fastRudders":
-            brt = (extra.get('buoyancyRudderTimeCoeff') or 1) - 1
-            bsc = (extra.get('maxBuoyancySpeedCoeff') or 1) - 1
+            brt = (float(cfg.get('buoyancyRudderTimeCoeff', 0) or 1) - 1)
+            bsc = (float(cfg.get('maxBuoyancySpeedCoeff', 0) or 1) - 1)
             items.append(self.make_item(f"    水平舵换挡: {brt*100:+.0f}%", "", len(items)))
             items.append(self.make_item(f"    上浮/下潜速度: {bsc*100:+.0f}%", "", len(items)))
         elif ct == "subsEnergyFreeze":
             items.append(self.make_item(f"    启用后下潜能力将停止消耗", "", len(items)))
-            items.append(self.make_item(f"    可在电池耗尽时启用: {'是' if extra.get('canUseOnEmpty') else '否'}", "", len(items)))
+            items.append(self.make_item(f"    可在电池耗尽时启用: {'是' if cfg.get('canUseOnEmpty') else '否'}", "", len(items)))
         elif ct == "submarineLocator":
-            ds = (extra.get('distShip') or 0) * 0.03
+            ds = float(cfg.get('distShip', 0) or 0) * 0.03
             items.append(self.make_item(f"    舰船探测: {ds:.2f} km", "", len(items)))
         elif ct == "planeSmokeGenerator":
-            items.append(self.make_item(f"    生效延迟: {extra.get('activationDelay', 0)}s", "", len(items)))
-            r = extra.get('radius', 0) * 3
+            ad = cfg.get('activationDelay', 0)
+            if ad:
+                items.append(self.make_item(f"    生效延迟: {ad}s", "", len(items)))
+            r = float(cfg.get('radius', 0) or 0) * 3
             items.append(self.make_item(f"    烟雾半径: {r:.0f}m", "", len(items)))
+            h = float(cfg.get('height', 0) or 0)
+            if h:
+                items.append(self.make_item(f"    高度: {h}m", "", len(items)))
+            sp = cfg.get('speedLimit', 0)
+            if sp:
+                items.append(self.make_item(f"    速度限制: {sp}kts", "", len(items)))
+            lt = cfg.get('lifeTime', 0)
+            if lt:
+                items.append(self.make_item(f"    扩散时间: {lt}s", "", len(items)))
         elif ct == "supportBuoy":
-            items.append(self.make_item(f"    区域: {extra.get('battleDropVisualName', '未知')}", "", len(items)))
-            items.append(self.make_item(f"    布置时间: {extra.get('battleDropActTime', 0)}s", "", len(items)))
-            items.append(self.make_item(f"    持续时间: {extra.get('supportBuoyZoneLifetime', 0)}s", "", len(items)))
+            items.append(self.make_item(f"    区域: {cfg.get('battleDropVisualName', '未知')}", "", len(items)))
+            items.append(self.make_item(f"    布置时间: {cfg.get('battleDropActivationTime', 0)}s", "", len(items)))
+            items.append(self.make_item(f"    持续时间: {cfg.get('zoneLifetime', 0)}s", "", len(items)))
+            items.append(self.make_item(f"    区域半径: {float(cfg.get('buffZoneRadius', 0) or 0) / 1000:.2f}km", "", len(items)))
+            items.append(self.make_item(f"    效果持续时间: {cfg.get('buffDuration', 0)}s", "", len(items)))
         elif ct == "vampireDamage":
-            coeff = (extra.get('damageGMHealCoeff') or 0) * 100
+            coeff = float(cfg.get('damageGMHealCoeff', 0) or 0) * 100
             items.append(self.make_item(f"    伤害转化系数: {coeff:.2f}%", "", len(items)))
         elif ct == "massHeal":
-            hp = (extra.get('ownHealPart') or 0) * 100
-            radius = (extra.get('workRadius') or 0) * 3 / 100
+            hp = float(cfg.get('ownHealPart', 0) or 0) * 100
+            radius = float(cfg.get('workRadius', 0) or 0) * 3 / 100
             items.append(self.make_item(f"    自身每秒回复: {hp:.1f}%", "", len(items)))
-            items.append(self.make_item(f"    友军增益: {extra.get('allyBuffName', '')} Lv.{extra.get('allyBuffLevel', 1)}", "", len(items)))
+            items.append(self.make_item(f"    友军增益: {cfg.get('allyBuffName', '')} Lv.{cfg.get('allyBuffLevel', 1)}", "", len(items)))
             items.append(self.make_item(f"    作用半径: {radius:.2f}km", "", len(items)))
+        elif ct == "regenerateHealth":
+            items.append(self.make_item("    恢复飞机中队部分生命值", "", len(items)))
         else:
-            # 未知类型：显示原始 extra_json 便于调试
-            if c['area_dmg_multiplier']:
-                items.append(self.make_item(f"    范围伤害倍率: {c['area_dmg_multiplier']}", "", len(items)))
-            if c['bubble_dmg_multiplier']:
-                items.append(self.make_item(f"    黑云伤害倍率: {c['bubble_dmg_multiplier']}", "", len(items)))
-            if c['regen_hp_speed']:
-                items.append(self.make_item(f"    每秒回复: {c['regen_hp_speed']} HP", "", len(items)))
-            if extra:
-                items.append(self.make_item(f"    其他参数: {json.dumps(extra, ensure_ascii=False)}", "", len(items)))
+            # 未知类型：尝试显示列 + extra_json 中非空值
+            remaining = {k: v for k, v in cfg.items()
+                         if v is not None and v != 0 and v != '' and k not in (
+                             'num_consumables', 'preparation_time', 'work_time', 'reload_time',
+                             'is_auto_consumable', 'display_name')}
+            if remaining:
+                items.append(self.make_item(f"    其他参数: {json.dumps(remaining, ensure_ascii=False)}", "", len(items)))
 
         return {
-            "title": c['display_name'] or cid,
+            "title": display_name,
             "subtitle": f"ID: {cid}",
             "sections": [self.make_section("详情", items)],
         }

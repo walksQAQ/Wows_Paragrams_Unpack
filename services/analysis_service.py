@@ -52,6 +52,16 @@ class AnalysisStore:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.conn = db._conn
+        # 消耗品配置缓存：避免重复 SELECT consumable_configs
+        self._ability_config_cache: dict[str, dict] = {}
+
+    def _optimize_pragma(self) -> None:
+        """写入前调优 pragma 以提升批量写入速度"""
+        c = self.conn
+        c.execute("PRAGMA synchronous=OFF")
+        c.execute("PRAGMA cache_size=-16000")
+        c.execute("PRAGMA temp_store=MEMORY")
+        c.execute("PRAGMA mmap_size=268435456")
 
     def store_ship(self, ship_id: str, raw_data: dict, result) -> None:
         """将舰船完整数据写入所有 ship_* 结构化表"""
@@ -71,15 +81,18 @@ class AnalysisStore:
         self._write_modules(ship_id, raw_data)
 
         # ── 模块字母汇总（含 source_key：原始 JSON key 如 A_Artillery）──
+        mapping_rows = []
         for label, sinfo in sub_sections.items():
             m = re.match(r'^([A-Z])\s*模块$', label)
             if m:
                 for order, sub in enumerate(sinfo.get("sub_labels", [])):
                     sk = sinfo.get("source_keys", {}).get(sub, "")
-                    conn.execute(
-                        "INSERT OR REPLACE INTO ship_module_mapping "
-                        "(ship_id, module_letter, sub_category, source_key, display_order) VALUES (?,?,?,?,?)",
-                        (ship_id, m.group(1), sub, sk, order))
+                    mapping_rows.append((ship_id, m.group(1), sub, sk, order))
+        if mapping_rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO ship_module_mapping "
+                "(ship_id, module_letter, sub_category, source_key, display_order) VALUES (?,?,?,?,?)",
+                mapping_rows)
         conn.commit()
 
     @staticmethod
@@ -182,27 +195,72 @@ class AnalysisStore:
 
     # ── 消耗品（参照 archived ship_analyzer.py 逻辑）────
 
-    def _load_ability_config(self, file_key: str, config_key: str) -> dict:
-        """从 consumable_basic_info.extra_json 中加载指定 config_key 的子配置"""
+    @staticmethod
+    def _merge_config_row(row: sqlite3.Row) -> dict:
+        """将 consumable_configs 行（列 + extra_json）合并为一个 cfg dict"""
         import json
-        row = self.conn.execute(
-            "SELECT extra_json FROM consumable_basic_info WHERE consumable_id=?",
-            (file_key,)).fetchone()
-        if not row:
-            return {}
-        try:
-            extra = json.loads(row['extra_json'] or '{}')
-            slot_configs = extra.get('_slot_configs', {})
-            # 先精确匹配 config_key，再回退 Default
-            return slot_configs.get(config_key) or slot_configs.get("Default", {})
-        except (json.JSONDecodeError, TypeError):
-            return {}
+        cfg = dict(row)
+        # 列名 → 驼峰原始 key 的映射（仅对列字段做转换）
+        COL2GAME = {
+            "consumable_type": "consumableType",
+            "num_consumables": "numConsumables",
+            "work_time": "workTime",
+            "preparation_time": "preparationTime",
+            "reload_time": "reloadTime",
+            "is_auto_consumable": "isAutoConsumable",
+            "is_interceptor": "isInterceptor",
+            "regen_hp_speed": "regenerationHPSpeed",
+            "area_dmg_multiplier": "areaDamageMultiplier",
+            "bubble_dmg_multiplier": "bubbleDamageMultiplier",
+            "fighter_name": "fightersName",
+            "fighter_num": "fightersNum",
+            "available_buoyancy_states": "availableBuoyancyStates",
+        }
+        # 合并 extra_json 到 cfg，使用原始字段名
+        ej = cfg.pop('extra_json', None)
+        extra = {}
+        if ej:
+            try:
+                extra = json.loads(ej)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 列字段用原始 key 名（驼峰）放入 cfg
+        result = {}
+        for col, game_key in COL2GAME.items():
+            if col in cfg and cfg[col] is not None:
+                result[game_key] = cfg[col]
+        # extra_json 的字段已经是原始 key 名，直接合并
+        result.update(extra)
+        # 清理内部字段
+        for _k in ('id', 'consumable_id', 'config_key'):
+            result.pop(_k, None)
+        return result
+
+    def _load_ability_config(self, file_key: str, config_key: str) -> dict:
+        """从 consumable_configs 表加载指定 config_key 的子配置（带缓存）"""
+        cache_key = f"{file_key}::{config_key}"
+        if cache_key not in self._ability_config_cache:
+            row = self.conn.execute(
+                "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
+                (file_key, config_key)).fetchone()
+            if not row:
+                # 回退：尝试查询 Default 配置
+                row = self.conn.execute(
+                    "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
+                    (file_key,)).fetchone()
+            if not row:
+                self._ability_config_cache[cache_key] = None
+            else:
+                self._ability_config_cache[cache_key] = self._merge_config_row(row)
+        result = self._ability_config_cache.get(cache_key)
+        return result if result else {}
 
     def _write_consumables(self, ship_id: str, raw_data: dict) -> None:
         conn = self.conn
         abilities = raw_data.get("ShipAbilities", {})
         # 缓存消耗品显示名
         name_map = self.db.get_all_name_mappings("consumable") if self.db.exists else {}
+        rows = []  # 批量收集 INSERT 数据
         for slot_key in sorted(abilities.keys()):
             slot_data = abilities[slot_key]
             slot_idx = 1
@@ -219,13 +277,10 @@ class AnalysisStore:
                 cfg = self._load_ability_config(file_key, config_key)
                 if not cfg:
                     # 保底：写入一条只有 ID 的记录
-                    conn.execute("""INSERT OR REPLACE INTO ship_consumable_slots
-                        (ship_id, slot_index, item_index, display_name, type,
-                         num_consumables, preparation_time, work_time, reload_time,
-                         is_auto_consumable)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                        (ship_id, slot_idx, i + 1, name_map.get(file_key.upper(), file_key),
-                         None, '0', 0, 0, 0, 0))
+                    rows.append((
+                        ship_id, slot_idx, i + 1,
+                        name_map.get(file_key.upper(), file_key),
+                        None, '0', 0, 0, 0, 0, file_key, config_key))
                     continue
 
                 display_name = name_map.get(file_key.upper(), file_key)
@@ -236,18 +291,21 @@ class AnalysisStore:
                     num_str = str(int(num_raw)) if num_raw == int(num_raw) else str(num_raw)
                 else:
                     num_str = str(num_raw)
-                conn.execute("""INSERT OR REPLACE INTO ship_consumable_slots
-                    (ship_id, slot_index, item_index, display_name, type,
-                     num_consumables, preparation_time, work_time, reload_time,
-                     is_auto_consumable)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (ship_id, slot_idx, i + 1, display_name,
-                     cfg.get("consumableType"),
-                     num_str,
-                     cfg.get("preparationTime", 0),
-                     cfg.get("workTime", 0),
-                     cfg.get("reloadTime", 0),
-                     1 if cfg.get("isAutoConsumable") else 0))
+                rows.append((
+                    ship_id, slot_idx, i + 1, display_name,
+                    cfg.get("consumableType"),
+                    num_str,
+                    cfg.get("preparationTime", 0),
+                    cfg.get("workTime", 0),
+                    cfg.get("reloadTime", 0),
+                    1 if cfg.get("isAutoConsumable") else 0,
+                    file_key, config_key))
+        if rows:
+            conn.executemany("""INSERT OR REPLACE INTO ship_consumable_slots
+                (ship_id, slot_index, item_index, display_name, type,
+                 num_consumables, preparation_time, work_time, reload_time,
+                 is_auto_consumable, consumable_id, config_key)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
 
     # ── 战斗指令 ──────────────────────────────────────────
 
@@ -597,6 +655,7 @@ class AnalysisStore:
             if not hull_id:
                 continue
             buoyancy = mod_data.get("buoyancyStates", {})
+            depth_rows = []
             for state, values in buoyancy.items():
                 if not isinstance(values, (list, tuple)) or len(values) < 2:
                     continue
@@ -604,10 +663,11 @@ class AnalysisStore:
                 speed = values[1] if len(values) >= 2 else 1.0
                 if isinstance(speed, (list, dict)):
                     speed = 1.0
-                conn.execute("""INSERT OR REPLACE INTO ship_sub_depth_states
+                depth_rows.append((hull_id[0], state, float(speed)))
+            if depth_rows:
+                conn.executemany("""INSERT OR REPLACE INTO ship_sub_depth_states
                     (hull_ref_id, state_name, underwater_max_speed)
-                    VALUES (?,?,?)""",
-                    (hull_id[0], state, float(speed)))
+                    VALUES (?,?,?)""", depth_rows)
 
     # ── 武器写入 ──
 
@@ -684,7 +744,7 @@ class AnalysisStore:
                      ref.get("radius_zero", 0), ref.get("radius_delim", 0),
                      ref.get("radius_max", 0), ref.get("delim", 0)))
 
-            # 弹药关联 → rel_ship_weapon_ammo
+            # 弹药关联 → rel_ship_weapon_ammo（批量收集后一次性写入）
             ammo_ids = set()
             for g_item in group:
                 for a in (g_item.get("ammo_list", []) or []):
@@ -694,11 +754,11 @@ class AnalysisStore:
                 gun_row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
                 wt = "artillery" if "artillery" in table else "atba" if "atba" in table else "torpedo"
                 if wt:
-                    for aid in ammo_ids:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO rel_ship_weapon_ammo "
-                            "(weapon_type, weapon_ref_id, ammo_id) VALUES (?,?,?)",
-                            (wt, gun_row_id, aid))
+                    ammo_rows = [(wt, gun_row_id, aid) for aid in ammo_ids]
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO rel_ship_weapon_ammo "
+                        "(weapon_type, weapon_ref_id, ammo_id) VALUES (?,?,?)",
+                        ammo_rows)
 
     @staticmethod
     def _dispersion_formula(ir, mr, id_dist):
@@ -719,7 +779,7 @@ class AnalysisStore:
                 VALUES (?,?,?,?,?,?)""",
                 (ship_id, letter, name, len(group), barrels or 0, reload_t or 0))
 
-            # 弹药关联 → rel_ship_weapon_ammo
+            # 弹药关联 → rel_ship_weapon_ammo（批量）
             ammo_ids = set()
             for g_item in group:
                 for a in (g_item.get("ammo_list", []) or []):
@@ -727,11 +787,11 @@ class AnalysisStore:
                         ammo_ids.add(a)
             if ammo_ids:
                 torp_row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                for aid in ammo_ids:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO rel_ship_weapon_ammo "
-                        "(weapon_type, weapon_ref_id, ammo_id) VALUES (?,?,?)",
-                        ("torpedo", torp_row_id, aid))
+                ammo_rows = [("torpedo", torp_row_id, aid) for aid in ammo_ids]
+                conn.executemany(
+                    "INSERT OR IGNORE INTO rel_ship_weapon_ammo "
+                    "(weapon_type, weapon_ref_id, ammo_id) VALUES (?,?,?)",
+                    ammo_rows)
 
     def _write_aa(self, conn, ship_id, letter, items):
         if not items:
@@ -746,33 +806,35 @@ class AnalysisStore:
                 aura_counter[key] += 1
             elif item.get("aa_gun_name"):
                 gun_counter[item["aa_gun_name"]] += 1
+        aa_rows = []
         for (name, atype, dps, bdmg), cnt in aura_counter.items():
-            conn.execute("""INSERT OR REPLACE INTO ship_module_aa
-                (ship_id, module_letter, aura_name, aura_type, aura_dps,
-                 bubble_damage, aa_gun_name, aa_gun_count)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (ship_id, letter, name, atype, dps, bdmg, None, cnt))
+            aa_rows.append((ship_id, letter, name, atype, dps, bdmg, None, cnt))
         for gun_name, cnt in gun_counter.items():
-            conn.execute("""INSERT OR REPLACE INTO ship_module_aa
+            aa_rows.append((ship_id, letter, None, None, None, None, gun_name, cnt))
+        if aa_rows:
+            conn.executemany("""INSERT OR REPLACE INTO ship_module_aa
                 (ship_id, module_letter, aura_name, aura_type, aura_dps,
                  bubble_damage, aa_gun_name, aa_gun_count)
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (ship_id, letter, None, None, None, None, gun_name, cnt))
+                VALUES (?,?,?,?,?,?,?,?)""", aa_rows)
 
     def _write_simple_guns(self, conn, ship_id, letter, table, items):
         counts = Counter(i.get("gun_name") for i in (items or []) if i.get("gun_name"))
-        for name, cnt in counts.items():
-            conn.execute(f"""INSERT OR REPLACE INTO {table}
+        if counts:
+            rows = [(ship_id, letter, name, cnt) for name, cnt in counts.items()]
+            conn.executemany(f"""INSERT OR REPLACE INTO {table}
                 (ship_id, module_letter, gun_name, count)
-                VALUES (?,?,?,?)""", (ship_id, letter, name, cnt))
+                VALUES (?,?,?,?)""", rows)
 
     def _write_aircraft(self, conn, ship_id, letter, items):
-        for item in (items or []):
-            conn.execute("""INSERT OR REPLACE INTO ship_module_aircraft
+        if items:
+            rows = [(ship_id, letter,
+                     item.get("module_variant", ""),
+                     item.get("plane_name"),
+                     item.get("armament_name"))
+                    for item in items]
+            conn.executemany("""INSERT OR REPLACE INTO ship_module_aircraft
                 (ship_id, module_letter, module_variant, plane_name, armament_name)
-                VALUES (?,?,?,?,?)""",
-                (ship_id, letter, item.get("module_variant", ""),
-                 item.get("plane_name"), item.get("armament_name")))
+                VALUES (?,?,?,?,?)""", rows)
 
     def _write_hangar(self, conn, ship_id, letter, hangar, flight_control):
         if not hangar:
@@ -797,15 +859,17 @@ class AnalysisStore:
              air_sq))
 
     def _write_air_support(self, conn, ship_id, letter, items):
-        for item in (items or []):
-            conn.execute("""INSERT OR REPLACE INTO ship_module_air_support
+        if items:
+            rows = [(ship_id, letter,
+                     item.get("plane_name"), item.get("charges"),
+                     item.get("reload_time"), item.get("work_time"),
+                     item.get("max_range"), item.get("min_range"),
+                     item.get("armament_name"))
+                    for item in items]
+            conn.executemany("""INSERT OR REPLACE INTO ship_module_air_support
                 (ship_id, module_letter, plane_name, charges, reload_time,
                  work_time, max_range, min_range, armament_name)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
-                (ship_id, letter, item.get("plane_name"),
-                 item.get("charges"), item.get("reload_time"),
-                 item.get("work_time"), item.get("max_range"),
-                 item.get("min_range"), item.get("armament_name")))
+                VALUES (?,?,?,?,?,?,?,?,?)""", rows)
 
     def _find_plane_armament(self, plane_id: str) -> str:
         """从数据库 plane_basic_info 获取飞机弹药名"""
@@ -832,10 +896,12 @@ class AnalysisStore:
              raw_data.get("shotDelay"),
              (raw_data.get("rotationSpeed") or [0, 0])[0],
              (raw_data.get("rotationSpeed") or [0, 0])[1] if len(raw_data.get("rotationSpeed") or []) > 1 else None))
-        # 弹药
-        for ammo_id in (raw_data.get("ammoList") or []):
-            conn.execute("INSERT OR IGNORE INTO gun_ammo_list (gun_id, ammo_id) VALUES (?,?)",
-                         (gun_id, ammo_id))
+        # 弹药（批量）
+        ammo_list = raw_data.get("ammoList") or []
+        if ammo_list:
+            ammo_rows = [(gun_id, a) for a in ammo_list]
+            conn.executemany("INSERT OR IGNORE INTO gun_ammo_list (gun_id, ammo_id) VALUES (?,?)",
+                             ammo_rows)
         conn.commit()
 
     def store_projectile(self, proj_id: str, raw_data: dict, result) -> None:
@@ -984,102 +1050,116 @@ class AnalysisStore:
                         (plane_id, slot_num, aid, limit))
         conn.commit()
 
+    # consumable_configs 有专用列的字段名（蛇形→驼峰映射），其余全部自动进 extra_json
+    CONFIG_COLUMN_KEYS = {
+        "consumableType", "numConsumables", "workTime", "preparationTime",
+        "reloadTime", "isAutoConsumable", "isInterceptor",
+        "regenerationHPSpeed", "areaDamageMultiplier", "bubbleDamageMultiplier",
+        "fightersName", "fightersNum", "availableBuoyancyStates",
+    }
+
     def store_consumable(self, cid: str, raw_data: dict, result) -> None:
         conn = self.conn
         title = getattr(result, 'title', '') or cid
 
-        # 收集所有子配置（每个子 key 对应一个 slot 配置，如 "Default"/"Slot2" 等）
-        slot_configs: dict[str, dict] = {}
-        main_cfg = None
+        # ── 1. 写 consumable_basic_info（仅标识信息）──
+        conn.execute("""INSERT OR REPLACE INTO consumable_basic_info
+            (consumable_id, display_name, consumable_index, consumable_id_num)
+            VALUES (?,?,?,?)""",
+            (cid, title,
+             raw_data.get("index", cid),
+             int(raw_data.get("id", 0) or 0)))
+        conn.commit()
+
+        # ── 2. 动态提取各子配置词条：列字段→列，其余→extra_json ──
+        config_rows: list[tuple] = []
         for key, val in raw_data.items():
             if not isinstance(val, dict) or key in ("typeinfo", "custom", "ShipAbilities", "PlaneAbilities"):
                 continue
-            if val.get("consumableType"):
-                slot_configs[key] = val
-                if main_cfg is None:
-                    main_cfg = val  # 第一个找到的作为主配置
+            ct = val.get("consumableType")
+            if not ct:
+                continue
+
+            # 拆分：列字段 vs extra_json（自动捕获一切未知字段）
+            col_vals = {}
+            extra_vals = {}
+            for k, v in val.items():
+                if k == "modifiers" and isinstance(v, dict):
+                    # modifiers 整体存入 extra_json
+                    extra_vals[k] = v
+                elif k in self.CONFIG_COLUMN_KEYS:
+                    col_vals[k] = v
+                elif k in ("typeinfo", "custom", "ShipAbilities", "PlaneAbilities"):
+                    continue
+                else:
+                    extra_vals[k] = v
+
+            extra_json_str = json.dumps(extra_vals, ensure_ascii=False) if extra_vals else '{}'
+
+            buoyancy = col_vals.get("availableBuoyancyStates", [])
+            buoyancy_str = json.dumps(buoyancy, ensure_ascii=False) if buoyancy else None
+
+            num_raw = col_vals.get("numConsumables", 0)
+            if num_raw == -1:
+                num_str = '-1'
+            elif isinstance(num_raw, float):
+                num_str = str(int(num_raw)) if num_raw == int(num_raw) else str(num_raw)
+            else:
+                num_str = str(num_raw)
+
+            config_rows.append((
+                cid, key, ct,
+                num_str,
+                val.get("workTime", 0),
+                val.get("preparationTime", 0),
+                val.get("reloadTime", 0),
+                1 if val.get("isAutoConsumable") else 0,
+                1 if val.get("isInterceptor") else 0,
+                val.get("regenerationHPSpeed"),
+                val.get("areaDamageMultiplier"),
+                val.get("bubbleDamageMultiplier"),
+                val.get("fightersName"),
+                val.get("fightersNum"),
+                buoyancy_str,
+                extra_json_str,
+            ))
 
         # 顶层也可能有 consumableType
-        if raw_data.get("consumableType"):
-            slot_configs["_top"] = raw_data
-            if main_cfg is None:
-                main_cfg = raw_data
+        if raw_data.get("consumableType") and not any(r[1] == "_top" for r in config_rows):
+            val = raw_data
+            ct = val.get("consumableType")
+            num_raw = val.get("numConsumables", 0)
+            if num_raw == -1:
+                num_str = '-1'
+            elif isinstance(num_raw, float):
+                num_str = str(int(num_raw)) if num_raw == int(num_raw) else str(num_raw)
+            else:
+                num_str = str(num_raw)
+            config_rows.append((
+                cid, "_top", ct, num_str,
+                val.get("workTime", 0),
+                val.get("preparationTime", 0),
+                val.get("reloadTime", 0),
+                1 if val.get("isAutoConsumable") else 0,
+                1 if val.get("isInterceptor") else 0,
+                val.get("regenerationHPSpeed"),
+                val.get("areaDamageMultiplier"),
+                val.get("bubbleDamageMultiplier"),
+                val.get("fightersName"),
+                val.get("fightersNum"),
+                None, '{}',
+            ))
 
-        if not main_cfg:
-            # 保底：写一条只有 ID 的记录
-            conn.execute("INSERT OR REPLACE INTO consumable_basic_info "
-                         "(consumable_id, display_name, extra_json) VALUES (?,?,'{}')",
-                         (cid, title))
+        if config_rows:
+            conn.executemany("""INSERT OR REPLACE INTO consumable_configs
+                (consumable_id, config_key, consumable_type,
+                 num_consumables, work_time, preparation_time, reload_time,
+                 is_auto_consumable, is_interceptor,
+                 regen_hp_speed, area_dmg_multiplier, bubble_dmg_multiplier,
+                 fighter_name, fighter_num,
+                 available_buoyancy_states, extra_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", config_rows)
             conn.commit()
-            return
-
-        def _g(key, default=None):
-            return main_cfg.get(key, default)
-
-        # 将子配置和所有额外字段一并存入 extra_json
-        all_extra = {
-            "radiusToKill": _g("distanceToKill"),
-            "dogFightTime": _g("dogFightTime"),
-            "flyAwayTime": _g("flyAwayTime"),
-            "flightClimbAngle": _g("climbAngle"),
-            "radius": _g("radius"),
-            "timeDelayAtk": _g("timeDelayAttack"),
-            "timeWaitDelayAtk": _g("timeWaitDelayAttack"),
-            "gunsDistCoeff": _g("artilleryDistCoeff"),
-            "speedLimit": _g("speedLimit"),
-            "height": _g("height"),
-            "lifeTime": _g("lifeTime"),
-            "forwardEngForsag": _g("forwardEngineForsag"),
-            "forwardEngForsagMaxSpd": _g("forwardEngineForsagMaxSpeed"),
-            "backwardEngForsag": _g("backwardEngineForsag"),
-            "backwardEngForsagMaxSpd": _g("backwardEngineForsagMaxSpeed"),
-            "boostCoeff": _g("boostCoeff"),
-            "distShip": _g("distShip"),
-            "distTorpedo": _g("distTorpedo"),
-            "distMine": _g("distSeaMine"),
-            "torpedoReloadTime": _g("torpedoReloadTime"),
-            "affectedClasses": _g("affectedClasses"),
-            "hpUpdFreq": _g("hydrophoneUpdateFrequency"),
-            "hpWaveRadius": _g("hydrophoneWaveRadius"),
-            "zoneLifeTime": _g("zoneLifeTime"),
-            "canUseOnEmpty": _g("canUseOnEmpty"),
-            "activationDelay": _g("activationDelay"),
-            "buoyancyRudderTimeCoeff": _g("buoyancyRudderTimeCoeff"),
-            "maxBuoyancySpeedCoeff": _g("maxBuoyancySpeedCoeff"),
-            "battleDropActTime": _g("battleDropActivationTime"),
-            "battleDropVisualName": _g("battleDropVisualName"),
-            "supportBuoyZoneLifetime": _g("zoneLifetime"),
-            "buffDuration": _g("buffDuration"),
-            "buffZoneRadius": _g("buffZoneRadius"),
-            "damageGMHealCoeff": (_g("modifiers") or {}).get("damageGMHealCoeff"),
-            "ownHealPart": _g("ownHealPart"),
-            "workRadius": _g("workRadius"),
-            "allyBuffName": _g("allyBuffName"),
-            "allyBuffLevel": _g("allyBuffLevel"),
-            "regenerationRate": _g("regenerationRate"),
-            "_slot_configs": slot_configs,  # 所有子配置，供 ship 分析时按 config_key 查询
-        }
-        extra_json = json.dumps(all_extra, ensure_ascii=False)
-
-        conn.execute("""INSERT OR REPLACE INTO consumable_basic_info
-            (consumable_id, display_name, consumable_type,
-             num_consumables, work_time, preparation_time, reload_time,
-             is_auto_consumable, is_interceptor,
-             regen_hp_speed, area_dmg_multiplier, bubble_dmg_multiplier,
-             fighter_name, fighter_num, extra_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (cid, title, _g("consumableType"),
-             str(_g("numConsumables", 0)),
-             _g("workTime"), _g("preparationTime"),
-             _g("reloadTime"),
-             1 if _g("isAutoConsumable") else 0,
-             1 if _g("isInterceptor") else 0,
-             _g("regenerationHPSpeed"),
-             _g("areaDamageMultiplier"),
-             _g("bubbleDamageMultiplier"),
-             _g("fightersName"), _g("fightersNum"),
-             extra_json))
-        conn.commit()
 
     def store_mod(self, mod_id: str, raw_data: dict, result) -> None:
         conn = self.conn
@@ -1225,21 +1305,64 @@ class AnalysisService:
             return None
 
     def precompute_all(self, db: DatabaseManager,
-                       progress_callback=None) -> dict:
+                       progress_callback=None,
+                       data_by_category: dict[str, dict[str, dict]] | None = None) -> dict:
+        """预分析数据并写入结构化表。
+
+        参数:
+            data_by_category: { 'Ship': { 'PASA001': {...}, ... }, 'Gun': {...}, ... }
+                              传入此参数时跳过读 split 目录，直接从内存分析。
+        """
         results: dict[str, int] = {}
         total_processed = 0
         split_dir = get_split_dir()
+        categories = ["Gun", "Projectile", "Aircraft", "Ability", "Ship",
+                       "Modernization", "Crew"]
 
-        # 检查 split 目录是否存在
+        # ── 写入性能调优 ──
+        raw_conn = db._conn
+        raw_conn.execute("PRAGMA synchronous=OFF")
+        raw_conn.execute("PRAGMA cache_size=-32000")
+        raw_conn.execute("PRAGMA temp_store=MEMORY")
+        raw_conn.execute("PRAGMA mmap_size=268435456")
+        raw_conn.execute("PRAGMA page_size=8192")
+
+        if data_by_category:
+            # ── 内存模式：直接分析传入的字典 ──
+            total_entities = sum(len(v) for v in data_by_category.values())
+            if total_entities == 0:
+                bus.task_progress.emit(100, "无数据可分析")
+                return results
+            bus.task_progress.emit(80, "预分析数据")
+            for cat_name in categories:
+                cat_data = data_by_category.get(cat_name)
+                if not cat_data:
+                    results[cat_name] = 0
+                    continue
+                raw_conn.execute("BEGIN TRANSACTION")
+                success = 0
+                for entity_id, raw_data in sorted(cat_data.items()):
+                    try:
+                        self.analyze_one(cat_name, raw_data, entity_id, db)
+                        success += 1
+                        total_processed += 1
+                    except Exception:
+                        continue
+                    if total_processed % 100 == 0:
+                        bus.task_progress.emit(
+                            80 + min(15, total_processed * 15 // max(total_entities, 1)),
+                            f"预分析 {total_processed}/{total_entities}")
+                raw_conn.commit()
+                results[cat_name] = success
+            bus.task_progress.emit(95, f"分析完成: {total_processed} 实体")
+            return results
+
+        # ── 文件模式：从 split 目录读取（原有逻辑） ──
         if not split_dir.exists():
             bus.log_message.emit("⏳ split 目录不存在，跳过预分析（数据已入库）")
             bus.task_progress.emit(100, "跳过预分析")
             return results
 
-        categories = ["Gun", "Projectile", "Aircraft", "Ability", "Ship",
-                       "Modernization", "Crew"]
-
-        # 统计总数
         total_entities = 0
         for cat_name in categories:
             cat_dir = split_dir / cat_name
@@ -1256,6 +1379,7 @@ class AnalysisService:
             if not cat_dir.exists():
                 results[cat_name] = 0
                 continue
+            raw_conn.execute("BEGIN TRANSACTION")
             success = 0
             for fp in sorted(cat_dir.glob("*.json")):
                 entity_id = fp.stem
@@ -1266,10 +1390,11 @@ class AnalysisService:
                     total_processed += 1
                 except Exception:
                     continue
-                if total_processed % 50 == 0:
+                if total_processed % 100 == 0:
                     bus.task_progress.emit(
                         80 + min(15, total_processed * 15 // max(total_entities, 1)),
                         f"预分析 {total_processed}/{total_entities}")
+            raw_conn.commit()
             results[cat_name] = success
 
         bus.task_progress.emit(95, f"分析完成: {total_processed} 实体")

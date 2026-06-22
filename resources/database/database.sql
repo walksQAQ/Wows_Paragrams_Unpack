@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS ship_consumable_slots (
     work_time REAL,
     reload_time REAL,
     is_auto_consumable INTEGER DEFAULT 0,
+    consumable_id TEXT DEFAULT '',             -- 消耗品 ID（file_key），用于关联 consumable_basic_info
+    config_key TEXT DEFAULT 'Default',         -- 消耗品子配置键（如 'Default'、'Ping'）
     UNIQUE(ship_id, slot_index, item_index)
 );
 
@@ -448,7 +450,14 @@ CREATE TABLE IF NOT EXISTS consumable_basic_info (
     consumable_id TEXT PRIMARY KEY REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
     display_name TEXT,
     consumable_index TEXT,
-    consumable_id_num INTEGER,
+    consumable_id_num INTEGER
+);
+
+-- 消耗品子配置表：每个词条（如 B_Gold / Default_Gold）独立一行，可按 config_key 精确查询
+CREATE TABLE IF NOT EXISTS consumable_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    consumable_id TEXT NOT NULL REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
+    config_key TEXT NOT NULL,              -- 子配置键名，如 'B_Gold', 'Default', 'Ping'
     consumable_type TEXT,
     num_consumables TEXT,
     work_time REAL,
@@ -461,7 +470,9 @@ CREATE TABLE IF NOT EXISTS consumable_basic_info (
     bubble_dmg_multiplier REAL,
     fighter_name TEXT,
     fighter_num INTEGER,
-    extra_json TEXT DEFAULT '{}'
+    available_buoyancy_states TEXT,        -- JSON 列表：可用深度状态
+    extra_json TEXT DEFAULT '{}',
+    UNIQUE(consumable_id, config_key)
 );
 
 
