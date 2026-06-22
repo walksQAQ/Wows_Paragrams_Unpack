@@ -1,0 +1,16 @@
+_archive/
+__pycache__/
+.idea/
+.venv/
+.vscode/
+data/
+release/
+config.json
+batch_inject_physics_new.py
+batch_inject_physics.py
+embed_text_watermark.py
+inject_physics.py
+.vscode/settings.json
+nuitka-crash-report.xml
+Wows Paragrams Unpack.code-workspace
+debug_path.py

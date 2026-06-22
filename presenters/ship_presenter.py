@@ -562,7 +562,9 @@ class ShipPresenter(BasePresenter):
         except (json.JSONDecodeError, TypeError):
             pass
 
-        if damage:
+        if species == "Torpedo":
+            lines.append(f"      标伤: {(damage or 0) * 0.33:.0f}")
+        elif damage:
             lines.append(f"      标伤: {damage:.0f}")
 
         # ── Artillery（火炮炮弹）────────────────────────
