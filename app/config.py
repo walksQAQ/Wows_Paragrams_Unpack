@@ -123,6 +123,8 @@ class ConfigManager:
             merged = asdict(default) | filtered
             return AppConfig(**merged)
         except Exception as e:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 加载配置失败: {e}")
             print(f"加载配置失败: {e}")
             return default
 
@@ -136,6 +138,8 @@ class ConfigManager:
             with open(self._path, "w", encoding="utf-8") as f:
                 json.dump(asdict(config), f, indent=4, ensure_ascii=False)
         except Exception as e:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 保存配置失败: {e}")
             print(f"保存配置失败: {e}")
 
     def reset(self) -> None:
