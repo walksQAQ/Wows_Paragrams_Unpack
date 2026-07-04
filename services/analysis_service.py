@@ -437,6 +437,22 @@ class AnalysisStore:
 
             # 武器模块提取
             if current_cat in ("Artillery", "ATBA", "AirDefense", "Torpedoes", "DepthChargeGuns"):
+                # ── 提取系统级参数（射程、sigma）──
+                # 尝试多种可能的key名称（Lesta版数据可能使用不同命名）
+                system_max_dist = (module_data.get("maxDist") or
+                                   module_data.get("maxdist") or
+                                   module_data.get("maxDistance") or
+                                   module_data.get("maxRange") or 0)
+                system_sigma = (module_data.get("sigmaCount") or
+                                module_data.get("sigma") or None)
+                if current_cat in ("Artillery", "ATBA"):
+                    sys_key = f"{current_cat}_System"
+                    for lt in target_letters:
+                        combined_stats[lt][sys_key] = {
+                            "max_dist": system_max_dist,
+                            "sigma": system_sigma,
+                        }
+
                 for sk, sv in module_data.items():
                     if not isinstance(sv, dict):
                         continue
@@ -470,6 +486,17 @@ class AnalysisStore:
                         barrels = sv.get("numBarrels", 0)
                         reload_t = sv.get("shotDelay", 0)
                         caliber = sv.get("caliber", 0)
+                        # 同时检查单个炮塔级别是否有 maxDist（某些数据结构的 fallback）
+                        gun_max_dist = (sv.get("maxDist") or
+                                        sv.get("maxdist") or
+                                        sv.get("maxDistance") or
+                                        sv.get("maxRange") or 0)
+                        if gun_max_dist and not system_max_dist:
+                            system_max_dist = gun_max_dist  # 用单炮数据补充系统级
+                            for lt2 in target_letters:
+                                sys_key2 = f"{current_cat}_System"
+                                if sys_key2 in combined_stats.get(lt2, {}):
+                                    combined_stats[lt2][sys_key2]["max_dist"] = gun_max_dist
                         for lt in target_letters:
                             cs = combined_stats[lt]
                             if hp_cat == "Artillery":
@@ -481,6 +508,7 @@ class AnalysisStore:
                                     "reload_time": reload_t, "caliber": caliber,
                                     "ideal_radius": ideal_r, "min_radius": min_r,
                                     "ideal_distance": ideal_d,
+                                    "max_dist": gun_max_dist,
                                     "radius_zero": sv.get("radiusOnZero", 0),
                                     "radius_delim": sv.get("radiusOnDelim", 0),
                                     "radius_max": sv.get("radiusOnMax", 0),
@@ -496,6 +524,7 @@ class AnalysisStore:
                                     "reload_time": reload_t, "caliber": caliber,
                                     "ideal_radius": ideal_r, "min_radius": min_r,
                                     "ideal_distance": ideal_d,
+                                    "max_dist": gun_max_dist,
                                     "radius_zero": sv.get("radiusOnZero", 0),
                                     "radius_delim": sv.get("radiusOnDelim", 0),
                                     "radius_max": sv.get("radiusOnMax", 0),
@@ -542,10 +571,13 @@ class AnalysisStore:
         for letter in sorted(combined_stats.keys()):
             cs = combined_stats[letter]
             self._write_hull_for_letter(ship_id, letter, raw_data, raw_species)
+            sys_arty = cs.get("Artillery_System", {})
+            sys_atba = cs.get("ATBA_System", {})
             self._write_guns(conn, ship_id, letter, cs.get("artillery", []),
-                             "ship_module_artillery", drum_configs.get(letter))
+                             "ship_module_artillery", drum_configs.get(letter),
+                             sys_arty)
             self._write_guns(conn, ship_id, letter, cs.get("atba", []),
-                             "ship_module_atba")
+                             "ship_module_atba", None, sys_atba)
             self._write_torpedoes(conn, ship_id, letter, cs.get("torpedoes", []))
             self._write_aa(conn, ship_id, letter, cs.get("aa", []))
             self._write_simple_guns(conn, ship_id, letter, "ship_module_depth_charge",
@@ -612,14 +644,21 @@ class AnalysisStore:
             sub = mod_data.get("SubmarineBattery", {})
             hydro = mod_data.get("Hydrophone", {})
 
+            import json as _json
+            hp_work = hydro.get("workingBuoyancyStates")
+            hp_detect = hydro.get("detectableBuoyancyStates")
+            hp_work_str = _json.dumps(hp_work, ensure_ascii=False) if hp_work else None
+            hp_detect_str = _json.dumps(hp_detect, ensure_ascii=False) if hp_detect else None
+
             conn.execute("""INSERT OR REPLACE INTO ship_module_hulls
                 (ship_id, module_letter, hull_key, health, max_speed,
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  has_citadel, hull_regen_part, citadel_regen_part, engine_power,
                  has_battery, battery_capacity, battery_regen,
                  has_hydrophone, hydrophone_radius, hydrophone_update_freq,
+                 hydrophone_work_states, hydrophone_detect_states,
                  buoyancy_rudder_time, max_buoyancy_speed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  mod_data.get("turningRadius"),
@@ -633,6 +672,7 @@ class AnalysisStore:
                  1 if hydro else 0,
                  (hydro.get("waveRadius") or 0) / 1000,
                  hydro.get("updateFrequency"),
+                 hp_work_str, hp_detect_str,
                  mod_data.get("buoyancyRudderTime", 0) * 0.77,
                  mod_data.get("maxBuoyancySpeed")))
 
@@ -673,8 +713,12 @@ class AnalysisStore:
 
     def _write_guns(self, conn, ship_id: str, letter: str,
                     items: list[dict], table: str,
-                    drum_info: dict | None = None):
+                    drum_info: dict | None = None,
+                    system_info: dict | None = None):
         """写入主炮/副炮表并分组去重"""
+        # 系统级参数（射程、sigma）
+        max_dist = (system_info or {}).get("max_dist", 0)
+        sigma_val = (system_info or {}).get("sigma")
         # 聚合: 相同配置的炮塔合并计数
         groups: dict[tuple, list[dict]] = {}
         for item in items:
@@ -707,20 +751,24 @@ class AnalysisStore:
             count = len(group)
             ref = group[0]
             formula = self._dispersion_formula(ir, mr, id_dist)
-            max_range = None  # 系统射程由原始 JSON 获取
+            # 射程：优先系统级 maxDist，其次尝试单炮 max_dist，最后用 idealDistance 近似
+            gun_max_dist = ref.get("max_dist", 0) or 0
+            effective_max_dist = max_dist or gun_max_dist or id_dist
+            max_range = (effective_max_dist / 1000) if effective_max_dist else None
+            sigma_val_use = sigma_val
             if is_artillery:
                 conn.execute(f"""INSERT OR REPLACE INTO {table}
                     (ship_id, module_letter, gun_name, count, num_barrels,
-                     reload_time, sigma, dispersion_formula,
+                     reload_time, sigma, dispersion_formula, max_range,
                      radius_zero, radius_delim, radius_max, delim,
                      special_mode_name, drum_shots_count, drum_shot_delay,
                      drum_full_reload_time, drum_is_switchable, drum_is_chargeable,
                      drum_charge_time_min, drum_charge_time_max, drum_charge_mode,
                      drum_modifiers_json)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,
                             ?,?,?,?,?,?,?,?,?,?)""",
                     (ship_id, letter, gun_name, count, barrels or 0,
-                     reload_t or 0, None, formula,
+                     reload_t or 0, sigma_val_use, formula, max_range,
                      ref.get("radius_zero", 0), ref.get("radius_delim", 0),
                      ref.get("radius_max", 0), ref.get("delim", 0),
                      drum_params.get("special_mode_name", ""),
@@ -736,11 +784,11 @@ class AnalysisStore:
             else:
                 conn.execute(f"""INSERT OR REPLACE INTO {table}
                     (ship_id, module_letter, gun_name, count, num_barrels,
-                     reload_time, sigma, dispersion_formula,
+                     reload_time, sigma, dispersion_formula, max_range,
                      radius_zero, radius_delim, radius_max, delim)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (ship_id, letter, gun_name, count, barrels or 0,
-                     reload_t or 0, None, formula,
+                     reload_t or 0, sigma_val_use, formula, max_range,
                      ref.get("radius_zero", 0), ref.get("radius_delim", 0),
                      ref.get("radius_max", 0), ref.get("delim", 0)))
 
@@ -1301,7 +1349,7 @@ class AnalysisService:
             store_method(entity_id, raw_data, result)
             return result
         except Exception as e:
-            print(f"[Analysis] {category}/{entity_id} 失败: {e}")
+            bus.log_message.emit(f"⚠️ [分析] {category}/{entity_id} 失败: {e}")
             return None
 
     def precompute_all(self, db: DatabaseManager,

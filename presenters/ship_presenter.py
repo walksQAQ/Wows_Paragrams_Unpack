@@ -21,7 +21,9 @@ class ShipPresenter(BasePresenter):
             return self._do_build(ship_id)
         except Exception as e:
             import traceback
+            from app.signals import bus
             traceback.print_exc()
+            bus.log_message.emit(f"⚠️ [ShipPresenter] {ship_id} 构建失败: {e}")
             print(f"[ShipPresenter] {ship_id} 构建失败: {e}")
             return None
 
@@ -296,6 +298,10 @@ class ShipPresenter(BasePresenter):
     def _build_hull(self, ship_id: str, letter: str, result: dict) -> None:
         conn = self.conn
         lines = []
+        # 判断是否为潜艇
+        is_sub = bool(conn.execute(
+            "SELECT 1 FROM entity_registry WHERE entity_id=? AND entity_type='Ship' AND shiptype='Submarine'",
+            (ship_id,)).fetchone())
         for h in conn.execute(
             "SELECT * FROM ship_module_hulls WHERE ship_id=? AND module_letter=? ORDER BY hull_key",
             (ship_id, letter)).fetchall():
@@ -304,13 +310,15 @@ class ShipPresenter(BasePresenter):
                 ("turning_radius", "转弯半径"), ("rudder_time", "转舵时间"),
                 ("conceal_sea", "水面隐蔽"), ("conceal_air", "空中隐蔽"),
                 ("has_citadel", "是否有核心区"), ("hull_regen_part", "船体回复率"),
-                ("engine_power", "引擎马力"),
+                ("citadel_regen_part", "核心回复率"), ("engine_power", "引擎马力"),
             ]:
                 val = h[col]
                 if val is not None:
                     if col == "rudder_time":
                         lines.append(f"    - {disp}: {val:.2f} s")
                     elif col == "hull_regen_part":
+                        lines.append(f"    - {disp}: {val*100:.0f}%")
+                    elif col == "citadel_regen_part":
                         lines.append(f"    - {disp}: {val*100:.0f}%")
                     elif col == "conceal_sea":
                         lines.append(f"    - {disp}: {val:.2f} km")
@@ -325,6 +333,66 @@ class ShipPresenter(BasePresenter):
                     else:
                         u = "kts" if col == "max_speed" else "m" if col == "turning_radius" else "HP" if col == "engine_power" else ""
                         lines.append(f"    - {disp}: {val}{' '+u if u else ''}")
+
+            # ── 潜艇特有数据显示（仅潜艇显示）──
+            if is_sub:
+                STATE_LABELS = {
+                    "SURFACE": "水面",
+                    "PERISCOPE": "潜望镜深度",
+                    "SEMI_DEEP_WATER": "半深水",
+                    "DEEP_WATER": "工作深度",
+                    "DEEP_WATER_INVUL": "最大深度",
+                }
+                if h['has_battery']:
+                    lines.append(f"  [潜艇电池]")
+                    bat_cap = h['battery_capacity']
+                    bat_reg = h['battery_regen']
+                    if bat_cap is not None:
+                        lines.append(f"    - 电池容量: {bat_cap:.0f}")
+                    if bat_reg is not None:
+                        lines.append(f"    - 电力恢复: {bat_reg:.2f}/s")
+                if h['has_hydrophone']:
+                    lines.append(f"  [潜艇水听器]")
+                    hp_r = h['hydrophone_radius']
+                    hp_f = h['hydrophone_update_freq']
+                    if hp_r is not None:
+                        lines.append(f"    - 探测半径: {hp_r:.2f} km")
+                    if hp_f is not None:
+                        lines.append(f"    - 更新周期: {hp_f:.1f} s")
+                    if h['hydrophone_work_states']:
+                        import json as _json
+                        try:
+                            ws_list = _json.loads(h['hydrophone_work_states'])
+                            ws_labels = [STATE_LABELS.get(s, s) for s in ws_list]
+                            lines.append(f"    - 工作深度: {', '.join(ws_labels)}")
+                        except Exception:
+                            lines.append(f"    - 工作深度: {h['hydrophone_work_states']}")
+                    if h['hydrophone_detect_states']:
+                        import json as _json
+                        try:
+                            ds_list = _json.loads(h['hydrophone_detect_states'])
+                            ds_labels = [STATE_LABELS.get(s, s) for s in ds_list]
+                            lines.append(f"    - 可探测深度: {', '.join(ds_labels)}")
+                        except Exception:
+                            lines.append(f"    - 可探测深度: {h['hydrophone_detect_states']}")
+                # 潜艇机动 + 深度航速关系
+                has_mobility = (h['buoyancy_rudder_time'] is not None and h['buoyancy_rudder_time'] > 0) or \
+                               (h['max_buoyancy_speed'] is not None and h['max_buoyancy_speed'] > 0)
+                depth_rows = conn.execute(
+                    "SELECT state_name, underwater_max_speed FROM ship_sub_depth_states "
+                    "WHERE hull_ref_id=? ORDER BY id",
+                    (h['id'],)).fetchall()
+                if has_mobility or depth_rows:
+                    lines.append(f"  [潜艇机动]")
+                    if h['buoyancy_rudder_time'] is not None and h['buoyancy_rudder_time'] > 0:
+                        lines.append(f"    - 水平舵转舵时间: {h['buoyancy_rudder_time']:.1f} s")
+                    if h['max_buoyancy_speed'] is not None and h['max_buoyancy_speed'] > 0:
+                        lines.append(f"    - 上浮/下潜速度: {h['max_buoyancy_speed']:.2f} m/s")
+                    if depth_rows:
+                        lines.append(f"    ── 深度航速关系 ──")
+                        for dr in depth_rows:
+                            sl = STATE_LABELS.get(dr['state_name'], dr['state_name'])
+                            lines.append(f"      - {sl}: 航速×{dr['underwater_max_speed']:.2f}")
         if lines:
             result[letter] = lines
 
@@ -340,6 +408,8 @@ class ShipPresenter(BasePresenter):
             lines.append(f"    装填时间: {g['reload_time']}s")
             if g['max_range']:
                 lines.append(f"    最大射程: {g['max_range']:.1f} km")
+            if g['sigma']:
+                lines.append(f"    Sigma: {g['sigma']}")
             if g['dispersion_formula']:
                 lines.append(f"    横向散布公式: {g['dispersion_formula']}")
             # 弹鼓/弹夹数据（完全参照旧 ship_analyzer.py 格式）
@@ -396,7 +466,17 @@ class ShipPresenter(BasePresenter):
             lines.append(f"    联装数: {g['num_barrels']:.0f}")
             lines.append(f"    装填时间: {g['reload_time']}s")
             if g['max_range']:
-                lines.append(f"    最大射程: {g['max_range']:.1f} km")
+                lines.append(f"    基础射程: {g['max_range']:.1f} km")
+            if g['sigma']:
+                lines.append(f"    Sigma: {g['sigma']}")
+            if g['dispersion_formula']:
+                lines.append(f"    横向散布公式: {g['dispersion_formula']}")
+            rz = g['radius_zero']
+            rd_val = g['radius_delim']
+            rm = g['radius_max']
+            dl = g['delim']
+            if rz is not None and rd_val is not None and rm is not None and dl is not None:
+                lines.append(f"    纵向散布系数: {rz:.1f} ~ {rd_val:.1f} (R={dl * 100:.0f}%) ~ {rm:.1f}")
             for a in conn.execute(
                 "SELECT ra.ammo_id, pbi.* FROM rel_ship_weapon_ammo ra "
                 "LEFT JOIN projectile_basic_info pbi ON pbi.projectile_id = ra.ammo_id "
