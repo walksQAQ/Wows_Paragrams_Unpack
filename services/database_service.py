@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 7
+DB_SCHEMA_VERSION = 8
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -124,6 +124,30 @@ class DatabaseManager:
 
         if self.get_current_version() < DB_SCHEMA_VERSION:
             self._record_version(DB_SCHEMA_VERSION)
+
+        # ── 迁移：补齐 plane_basic_info 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            expected = [
+                ("outer_salvo_size_x", "REAL"), ("outer_salvo_size_y", "REAL"),
+                ("inner_salvo_size_x", "REAL"), ("inner_salvo_size_y", "REAL"),
+                ("max_spread_x", "REAL"), ("max_spread_y", "REAL"),
+                ("min_spread_x", "REAL"), ("min_spread_y", "REAL"),
+                ("inner_bombs_percentage", "REAL"),
+                ("post_attack_invulnerability_duration", "REAL"),
+                ("ability_slot_0", "TEXT"), ("ability_slot_1", "TEXT"),
+                ("ability_slot_2", "TEXT"), ("ability_slot_3", "TEXT"),
+                ("ability_slot_4", "TEXT"),
+            ]
+            for col_name, col_type in expected:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
 
         # ── 导入静态枚举翻译 ──
         try:

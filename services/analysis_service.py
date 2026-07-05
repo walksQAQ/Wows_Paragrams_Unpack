@@ -55,6 +55,25 @@ def _unwrap_list(lst, idx):
     return None
 
 
+def _ability_str(pabs, slot_idx):
+    """从 PlaneAbilities 中提取指定槽位的消耗品字符串 'ability_id|variant'"""
+    if not isinstance(pabs, dict):
+        return None
+    sk = f"AbilitySlot{slot_idx}"
+    slot = pabs.get(sk)
+    if not isinstance(slot, dict):
+        return None
+    abils = slot.get("abils", [])
+    if not abils:
+        return None
+    ab = abils[0]
+    aid = ab[0] if isinstance(ab, (list, tuple)) and len(ab) > 0 else (ab or "")
+    variant = ab[1] if isinstance(ab, (list, tuple)) and len(ab) > 1 else ""
+    if not aid:
+        return None
+    return f"{aid}|{variant}" if variant else aid
+
+
 def _json_dumps(v):
     """安全 JSON 序列化"""
     if v is None:
@@ -787,36 +806,32 @@ class AnalysisStore:
             "canStop": raw_data.get("canStop"),
             "bombName": raw_data.get("bombName"),
         }
-        SKIP = {"typeinfo", "custom", "ShipAbilities"} | set(core.keys())
+        SKIP = {"typeinfo", "custom", "ShipAbilities", "PlaneAbilities"} | set(core.keys())
         extra = {k: v for k, v in raw_data.items()
                  if k not in SKIP and not k.startswith("_")}
         # 从 extra 中提取结构化字段
         hs = raw_data.get("hangarSettings") or {}
-        conn.execute("""INSERT OR REPLACE INTO plane_basic_info
-            (version_code, plane_id, plane_index, plane_id_num, species, nation,
-             max_speed, cruising_speed, hp, attack_count, attack_cooldown,
-             attack_interval, arrange_size, can_destroy, can_stop, bomb_name,
-             speed_move_with_bomb, speed_max_mult, speed_min_mult,
-             angle_of_climb, angle_of_dive, attack_angle,
-             preparation_time, preparation_accel_increase, preparation_accel_decrease,
-             aiming_time, aiming_accel_increase, aiming_accel_decrease, flight_height,
-             attacker_size, num_planes_in_squadron, fuel_time, max_forsage_amount,
-             hangar_max_value, hangar_start_value, hangar_restore_amount, hangar_time_to_restore,
-             outer_salvo_size_x, outer_salvo_size_y,
-             inner_salvo_size_x, inner_salvo_size_y,
-             max_spread_x, max_spread_y, min_spread_x, min_spread_y,
-             inner_bombs_percentage,
-             post_attack_invulnerability_duration,
-             extra_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                    ?,?,?,
-                    ?,?,?,
-                    ?,?,?,
-                    ?,?,?,?,
-                    ?,?,?,?,
-                    ?,?,?,?,
-                    ?,?,?,?,?,?,?,?,?,
-                    ?,?)""",
+        sql = ("INSERT OR REPLACE INTO plane_basic_info "
+               "(version_code, plane_id, plane_index, plane_id_num, species, nation, "
+               "max_speed, cruising_speed, hp, attack_count, attack_cooldown, "
+               "attack_interval, arrange_size, can_destroy, can_stop, bomb_name, "
+               "speed_move_with_bomb, speed_max_mult, speed_min_mult, "
+               "angle_of_climb, angle_of_dive, attack_angle, "
+               "preparation_time, preparation_accel_increase, preparation_accel_decrease, "
+               "aiming_time, aiming_accel_increase, aiming_accel_decrease, flight_height, "
+               "attacker_size, num_planes_in_squadron, fuel_time, max_forsage_amount, "
+               "hangar_max_value, hangar_start_value, hangar_restore_amount, hangar_time_to_restore, "
+               "outer_salvo_size_x, outer_salvo_size_y, "
+               "inner_salvo_size_x, inner_salvo_size_y, "
+               "max_spread_x, max_spread_y, min_spread_x, min_spread_y, "
+               "inner_bombs_percentage, "
+               "post_attack_invulnerability_duration, "
+               "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "?,?,?,?)")
+        conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
                       ti.get("species", ""), ti.get("nation", ""),
@@ -853,8 +868,12 @@ class AnalysisStore:
                       _unwrap_list(raw_data.get("minSpread"), 0),
                       _unwrap_list(raw_data.get("minSpread"), 1),
                       _v(raw_data.get("innerBombsPercentage")),
-             _v(raw_data.get("postAttackInvulnerabilityDuration")),
-             _json_dumps(extra)))
+                      _v(raw_data.get("postAttackInvulnerabilityDuration")),
+                      _ability_str(raw_data.get("PlaneAbilities"), 0),
+                      _ability_str(raw_data.get("PlaneAbilities"), 1),
+                      _ability_str(raw_data.get("PlaneAbilities"), 2),
+                      _ability_str(raw_data.get("PlaneAbilities"), 3),
+_ability_str(raw_data.get("PlaneAbilities"), 4)))
 
     # ── 5. Ability ───────────────────────────────────────
 

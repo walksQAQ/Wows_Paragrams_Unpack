@@ -590,6 +590,22 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     hangar_start_value INTEGER,
     hangar_restore_amount INTEGER,
     hangar_time_to_restore REAL,
+    -- 散布椭圆
+    outer_salvo_size_x REAL,
+    outer_salvo_size_y REAL,
+    inner_salvo_size_x REAL,
+    inner_salvo_size_y REAL,
+    max_spread_x REAL,
+    max_spread_y REAL,
+    min_spread_x REAL,
+    min_spread_y REAL,
+    inner_bombs_percentage REAL,
+    post_attack_invulnerability_duration REAL,
+    ability_slot_0 TEXT,
+    ability_slot_1 TEXT,
+    ability_slot_2 TEXT,
+    ability_slot_3 TEXT,
+    ability_slot_4 TEXT,
     PRIMARY KEY (version_code, plane_id),
     FOREIGN KEY (version_code, plane_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
 );
