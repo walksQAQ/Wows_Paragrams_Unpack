@@ -61,6 +61,8 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
         if not svc.is_ready:
             return
         bus.task_progress.emit(80, "预分析数据")
+        if not version_code:
+            version_code = db.get_latest_version_code() or ""
         svc.precompute_all(db, data_by_category=data_by_category, version_code=version_code)
         bus.task_progress.emit(100, "预分析完成")
     except Exception as e:

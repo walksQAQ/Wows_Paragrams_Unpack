@@ -286,7 +286,7 @@ class BrowserPanel(QWidget):
         vc = db.get_latest_version_code() or ""
         rows = db._conn.execute("""
             SELECT e.entity_id,
-                   COALESCE(nm.lang_zh, e.entity_id) AS display_name, e.nation,
+                   COALESCE(nm.lang_zh, c.person_name, e.entity_id) AS display_name, e.nation,
                    c.is_unique, c.is_elite, c.is_person, c.is_animated
             FROM entity_registry e
             LEFT JOIN crew_basic_info c ON c.version_code=e.version_code AND c.crew_id = e.entity_id

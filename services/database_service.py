@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -230,7 +230,7 @@ class DatabaseManager:
 
     def insert_entities_batch(self, items: list[tuple[str, str, dict]],
                               version_code: str) -> None:
-        """批量注册实体到 entity_registry（含 version_code）"""
+        """批量注册实体到 entity_registry（含 version_code），并更新版本计数"""
         rows = []
         for category, key, data in items:
             etype = self._entity_type(category)
@@ -240,6 +240,13 @@ class DatabaseManager:
         self._conn.executemany(
             "INSERT OR IGNORE INTO entity_registry "
             "(version_code, entity_id, entity_type, nation) VALUES (?,?,?,?)", rows)
+        # 更新版本记录中的实体计数
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM entity_registry WHERE version_code=?", (version_code,))
+        count = cur.fetchone()[0]
+        self._conn.execute(
+            "UPDATE data_version_registry SET entity_count=? WHERE version_code=?",
+            (count, version_code))
         self._conn.commit()
 
     # ── 查询 ───────────────────────────────────────────────

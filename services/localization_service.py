@@ -203,8 +203,9 @@ def run_localization() -> None:
             db = get_db()
             if db.exists and db.get_stats().get("total_entities", 0) > 0:
                 bus.log_message.emit("🧠 重新预分析以应用新翻译...")
+                vc = db.get_latest_version_code() or ""
                 from services.processor_service import _run_analysis
-                _run_analysis(db)
+                _run_analysis(db, version_code=vc)
         except Exception:
             pass
         bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")

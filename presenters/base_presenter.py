@@ -63,6 +63,22 @@ class BasePresenter:
             pass
         return key
 
+    def resolve_name_by_id(self, mapping_id: int | None,
+                            category: str = "", key: str = "") -> str | None:
+        """按 id 解析名称，失败时按 (category, key) 兜底"""
+        if mapping_id:
+            try:
+                cur = self.conn.execute(
+                    "SELECT lang_zh FROM name_mappings WHERE id=?", (mapping_id,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+            except Exception:
+                pass
+        if category and key:
+            return self.resolve_name(category, key)
+        return None
+
     def get_name_map(self, category: str) -> dict[str, str]:
         """获取某分类的全部名称映射"""
         try:

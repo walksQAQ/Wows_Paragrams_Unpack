@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS ship_module_aircraft (
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
     module_variant TEXT DEFAULT '',
+    plane_type TEXT DEFAULT '',          -- 'Fighter','DiveBomber','TorpedoBomber','SkipBomber'
     plane_name TEXT,
     armament_name TEXT,
     PRIMARY KEY (version_code, ship_id, config_group, module_key, module_variant, plane_name),
