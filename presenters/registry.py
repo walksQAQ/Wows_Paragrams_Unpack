@@ -66,14 +66,14 @@ class PresenterRegistry:
 
     @classmethod
     def build(cls, entity_type_or_category: str,
-              entity_id: str, conn: sqlite3.Connection) -> Optional[dict]:
+              entity_id: str, conn: sqlite3.Connection,
+              version_code: str = "") -> Optional[dict]:
         """统一入口：根据实体类型构建显示数据"""
-        # 兼容 category 名称（如 "Ship" → "ship"）
         etype = CATEGORY_TO_ETYPE.get(entity_type_or_category, entity_type_or_category)
         presenter = cls.get_presenter(etype, conn)
         if not presenter:
             return None
-        return presenter.build(entity_id)
+        return presenter.build(entity_id, version_code=version_code)
 
     @classmethod
     def clear_cache(cls) -> None:

@@ -252,22 +252,21 @@ class BrowserPanel(QWidget):
     def _load_ship_data(self, db):
         """从数据库加载舰船列表（含名称和筛选字段）"""
         from models.name_mapping import Mapping as NM
+        vc = db.get_latest_version_code() or ""
 
-        # 获取所有舰船
         rows = db._conn.execute("""
             SELECT e.entity_id,
-                   CASE WHEN b.ship_name_zh IS NOT NULL AND b.ship_name_zh != ''
-                        THEN b.ship_name_zh ELSE e.entity_id END AS display_name,
-                   e.nation, e.shiptype, e.tier
+                   COALESCE(nm.lang_zh, e.entity_id) AS display_name,
+                   e.nation, b.shiptype, b.tier
             FROM entity_registry e
-            LEFT JOIN ship_basic_info b ON b.ship_id = e.entity_id
-            WHERE e.entity_type='ship'
+            LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
+            LEFT JOIN name_mappings nm ON nm.id = b.name_mapping_id
+            WHERE e.version_code=? AND e.entity_type='ship'
             ORDER BY e.entity_id
-        """).fetchall()
+        """, (vc,)).fetchall()
 
         self._all_entities = [dict(r) for r in rows]
 
-        # 填充多选筛选项
         nations = sorted(set(
             NM.NATION_MAP.get(r["nation"], r["nation"]) for r in self._all_entities if r["nation"]
         ))
@@ -284,14 +283,17 @@ class BrowserPanel(QWidget):
     def _load_crew_data(self, db):
         """从数据库加载舰长列表（含国籍和类型筛选）"""
         from models.name_mapping import Mapping as NM
+        vc = db.get_latest_version_code() or ""
         rows = db._conn.execute("""
-            SELECT e.entity_id, COALESCE(c.crew_name, e.entity_id) AS display_name, e.nation,
+            SELECT e.entity_id,
+                   COALESCE(nm.lang_zh, e.entity_id) AS display_name, e.nation,
                    c.is_unique, c.is_elite, c.is_person, c.is_animated
             FROM entity_registry e
-            LEFT JOIN crew_basic_info c ON c.crew_id = e.entity_id
-            WHERE e.entity_type='crew'
+            LEFT JOIN crew_basic_info c ON c.version_code=e.version_code AND c.crew_id = e.entity_id
+            LEFT JOIN name_mappings nm ON nm.id = c.display_name_id
+            WHERE e.version_code=? AND e.entity_type='crew'
             ORDER BY e.entity_id
-        """).fetchall()
+        """, (vc,)).fetchall()
         self._all_entities = [dict(r) for r in rows]
 
         nations = sorted(set(
@@ -313,29 +315,25 @@ class BrowserPanel(QWidget):
 
     def _load_other_data(self, db, folder):
         """从数据库加载非舰船类别的列表（含本地化名称）"""
-        # folder → (entity_type, table_name, name_column)
+        vc = db.get_latest_version_code() or ""
         NAME_LOOKUP = {
-            "Gun": ("gun", "gun_basic_info", "gun_name_zh"),
-            "Projectile": ("projectile", "projectile_basic_info", "ammo_name_zh"),
-            "Aircraft": ("plane", "plane_basic_info", "plane_name_zh"),
-            "Ability": ("consumable", "consumable_basic_info", "display_name"),
-            "Modernization": ("modernization", "modernization_basic_info", "mod_name_zh"),
+            "Projectile": ("projectile", "projectile_basic_info"),
+            "Ability": ("consumable", "consumable_basic_info"),
         }
         lookup = NAME_LOOKUP.get(folder)
         if lookup:
-            etype, tbl, name_col = lookup
+            etype, tbl = lookup
             rows = db._conn.execute(f"""
-                SELECT e.entity_id,
-                       COALESCE(n.{name_col}, e.entity_id) AS display_name
+                SELECT e.entity_id, COALESCE(e.entity_id, e.entity_id) AS display_name
                 FROM entity_registry e
-                LEFT JOIN {tbl} n ON n.{etype}_id = e.entity_id
-                WHERE e.entity_type=?
+                LEFT JOIN {tbl} n ON n.version_code=e.version_code AND n.{etype}_id = e.entity_id
+                WHERE e.version_code=? AND e.entity_type=?
                 ORDER BY e.entity_id
-            """, (etype,)).fetchall()
+            """, (vc, etype)).fetchall()
             self._all_entities = [dict(r) for r in rows]
         else:
-            rows = db.list_entities(folder) or []
-            self._all_entities = [{"id": r["id"], "display_name": r["id"]} for r in rows]
+            rows = db.list_entities(folder, version_code=vc) or []
+            self._all_entities = [{"entity_id": r["id"], "display_name": r["name"]} for r in rows]
 
     # ── 筛选与显示 ──────────────────────────────────────
 

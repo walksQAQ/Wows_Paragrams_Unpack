@@ -182,7 +182,21 @@ class TopToolbar(QWidget):
         ))
 
     def _on_server(self, btn):
-        app_ctx.set_wows_type(btn.text())
+        server = btn.text()
+        if server == app_ctx.ctx.wows_type:
+            return  # 未变更
+        app_ctx.set_wows_type(server)
+        # 切换服务器时重置数据库单例，刷新界面
+        from services.database_service import reset_db, get_db
+        reset_db()
+        db = get_db(server)
+        if db.exists and db.get_stats().get("total_entities", 0) > 0:
+            bus.log_message.emit(f"🔄 已切换到 {server} 数据库")
+            bus.folder_selected.emit("__REFRESH__")
+            bus.can_process_data.emit(True)
+        else:
+            bus.log_message.emit(f"ℹ️ {server} 数据库为空，请加载数据")
+            bus.folder_selected.emit("__REFRESH__")
 
     def _on_progress(self, pct, msg):
         pct = max(0, min(100, pct))

@@ -15,11 +15,12 @@ from presenters.base_presenter import BasePresenter, NM
 class ProjectilePresenter(BasePresenter):
     """弹药/投射物显示 Presenter"""
 
-    def build(self, proj_id: str) -> dict | None:
+    def build(self, proj_id: str, version_code: str = "") -> dict | None:
         conn = self.conn
+        vc = self._ensure_version(version_code)
         p = conn.execute(
-            "SELECT * FROM projectile_basic_info WHERE projectile_id=?",
-            (proj_id,)).fetchone()
+            "SELECT * FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+            (vc, proj_id)).fetchone()
         if not p:
             return None
 
@@ -28,7 +29,7 @@ class ProjectilePresenter(BasePresenter):
         display_type = NM.PROJECTILE_TYPE_MAP.get(species, species)
 
         items = [
-            self.make_item(f"  弹药名称: {p['ammo_name_zh'] or proj_id}", "", 0),
+            self.make_item(f"  弹药ID: {proj_id}", "", 0),
             self.make_item(f"  编号: {p['projectile_index'] or proj_id}", "", 1),
             self.make_item(f"  类型: {display_type} / {ammo_type}", "", 2),
         ]

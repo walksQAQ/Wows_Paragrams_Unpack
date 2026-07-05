@@ -50,36 +50,33 @@ class ConsumablePresenter(BasePresenter):
             result.pop(_k, None)
         return result
 
-    def _load_cfg(self, cid: str) -> tuple[dict | None, str]:
+    def _load_cfg(self, cid: str, version_code: str = "") -> tuple[dict | None, str]:
         """从 consumable_configs 加载 Default 子配置，返回 (cfg_dict, type_str)"""
         conn = self.conn
+        vc = self._ensure_version(version_code)
         cinfo = conn.execute(
-            "SELECT * FROM consumable_basic_info WHERE consumable_id=?",
-            (cid,)).fetchone()
+            "SELECT * FROM consumable_basic_info WHERE version_code=? AND consumable_id=?",
+            (vc, cid)).fetchone()
         if not cinfo:
             return None, ''
-        display_name = cinfo['display_name'] or cid
 
-        # 取 Default 子配置
         row = conn.execute(
-            "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
-            (cid,)).fetchone()
+            "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
+            (vc, cid)).fetchone()
         if not row:
-            # 回退：取第一个非特殊子配置
             row = conn.execute(
-                "SELECT * FROM consumable_configs WHERE consumable_id=? "
+                "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? "
                 "AND config_key NOT IN ('_top','custom','typeinfo') ORDER BY config_key LIMIT 1",
-                (cid,)).fetchone()
+                (vc, cid)).fetchone()
         if not row:
-            return {'display_name': display_name}, ''
+            return {}, ''
 
         cfg = self._merge_config_row(row)
         ct = cfg.get('consumableType', '') or ''
-        cfg['display_name'] = display_name
         return cfg, ct
 
-    def build(self, cid: str) -> dict | None:
-        cfg, ct = self._load_cfg(cid)
+    def build(self, cid: str, version_code: str = "") -> dict | None:
+        cfg, ct = self._load_cfg(cid, version_code)
         if cfg is None:
             return None
 

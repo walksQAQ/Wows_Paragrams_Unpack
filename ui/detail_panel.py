@@ -20,6 +20,7 @@ from PySide6.QtGui import QFont
 
 from app.signals import bus
 from services.database_service import get_db
+from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
 
 
 class DetailPanel(QWidget):
@@ -217,7 +218,8 @@ class DetailPanel(QWidget):
         db = get_db()
         if db.exists:
             try:
-                entity = db.get_entity(category, filename)
+                vc = db.get_latest_version_code() or ""
+                entity = db.get_entity(category, filename, version_code=vc)
                 if entity:
                     self._current_raw = entity.get("raw_json")
                     analyzed = entity.get("analyzed_result")
@@ -225,6 +227,16 @@ class DetailPanel(QWidget):
                         self._current_analyzed = analyzed
                         self._apply_analyzed()
                         return
+                    # ── 新架构：从结构化表通过 Presenter 构建显示数据 ──
+                    etype = CATEGORY_TO_ETYPE.get(category)
+                    if etype:
+                        presenter = PresenterRegistry.get_presenter(etype, db._conn)
+                        if presenter:
+                            data = presenter.build(filename, version_code=vc)
+                            if data:
+                                self._current_analyzed = data
+                                self._apply_analyzed()
+                                return
             except Exception:
                 pass
         self._build_default_pages()
