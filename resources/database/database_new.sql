@@ -328,12 +328,6 @@ CREATE TABLE IF NOT EXISTS ship_consumable_slots (
     slot_index INTEGER NOT NULL,
     item_index INTEGER NOT NULL,
     display_name_id INTEGER REFERENCES name_mappings(id),
-    consumable_type TEXT,
-    num_consumables TEXT,
-    preparation_time REAL,
-    work_time REAL,
-    reload_time REAL,
-    is_auto_consumable INTEGER DEFAULT 0,
     consumable_id TEXT DEFAULT '',
     config_key TEXT DEFAULT 'Default',
     PRIMARY KEY (version_code, ship_id, slot_index, item_index),
@@ -359,6 +353,7 @@ CREATE TABLE IF NOT EXISTS ship_weapon_projectiles (
     PRIMARY KEY (version_code, ship_id, module_id, slot_type, config_group, ammo_id),
     FOREIGN KEY (version_code, ship_id, module_id, slot_type, config_group)
         REFERENCES ship_module_relations(version_code, ship_id, module_id, slot_type, config_group)
+        ON DELETE CASCADE
 );
 
 -- 弹药基础信息表
@@ -531,7 +526,6 @@ CREATE TABLE IF NOT EXISTS projectile_bomb_ext (
 CREATE TABLE IF NOT EXISTS consumable_basic_info (
     version_code TEXT NOT NULL,
     consumable_id TEXT NOT NULL,
-    display_name_id INTEGER REFERENCES name_mappings(id),
     consumable_index TEXT,
     consumable_id_num INTEGER,
     PRIMARY KEY (version_code, consumable_id),
@@ -543,21 +537,61 @@ CREATE TABLE IF NOT EXISTS consumable_configs (
     consumable_id TEXT NOT NULL,
     config_key TEXT NOT NULL,
     consumable_type TEXT,
-    num_consumables TEXT,
-    work_time REAL,
-    preparation_time REAL,
-    reload_time REAL,
-    is_auto_consumable INTEGER DEFAULT 0,
-    is_interceptor INTEGER DEFAULT 0,
-    regen_hp_speed REAL,
-    area_dmg_multiplier REAL,
-    bubble_dmg_multiplier REAL,
-    fighter_name_id INTEGER REFERENCES name_mappings(id),
-    fighter_num INTEGER,
-    available_buoyancy_states TEXT,
     extra_json TEXT DEFAULT '{}',
     PRIMARY KEY (version_code, consumable_id, config_key),
     FOREIGN KEY (version_code, consumable_id) REFERENCES consumable_basic_info(version_code, consumable_id) ON DELETE CASCADE
+);
+
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 3c. 飞机属性表 (Aircraft)
+-- ═════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS plane_basic_info (
+    version_code TEXT NOT NULL,
+    plane_id TEXT NOT NULL,
+    plane_index TEXT,
+    plane_id_num INTEGER,
+    species TEXT,                      -- 'Fighter','Dive','Bomber','SkipBomber','Scout','TorpedoBomber'
+    nation TEXT,
+    max_speed REAL,
+    cruising_speed REAL,
+    hp REAL,
+    attack_count INTEGER,
+    attack_cooldown REAL,
+    attack_interval REAL,
+    arrange_size INTEGER,
+    can_destroy INTEGER DEFAULT 1,
+    can_stop INTEGER DEFAULT 0,
+    bomb_name TEXT,
+    -- 速度
+    speed_move_with_bomb REAL,
+    speed_max_mult REAL,
+    speed_min_mult REAL,
+    -- 角度
+    angle_of_climb REAL,
+    angle_of_dive REAL,
+    attack_angle REAL,
+    -- 散布/缩圈/时间
+    preparation_time REAL,
+    preparation_accel_increase REAL,
+    preparation_accel_decrease REAL,
+    aiming_time REAL,
+    aiming_accel_increase REAL,
+    aiming_accel_decrease REAL,
+    flight_height REAL,
+    -- 编队/燃料
+    attacker_size INTEGER,
+    num_planes_in_squadron INTEGER,
+    fuel_time REAL,
+    max_forsage_amount REAL,
+    -- 机库
+    hangar_max_value INTEGER,
+    hangar_start_value INTEGER,
+    hangar_restore_amount INTEGER,
+    hangar_time_to_restore REAL,
+    PRIMARY KEY (version_code, plane_id),
+    FOREIGN KEY (version_code, plane_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
 );
 
 
