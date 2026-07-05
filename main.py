@@ -71,13 +71,16 @@ def main() -> None:
     def _auto_refresh():
         try:
             from services.database_service import get_db
-            db = get_db()
+            server = app_ctx.ctx.wows_type
+            db = get_db(server)
             if not db.exists:
                 return
             stats = db.get_stats()
             if stats.get("total_entities", 0) > 0:
                 bus.folder_selected.emit("__REFRESH__")
-                bus.log_message.emit(f"🔄 加载数据库: {db.db_path.name} ({stats['total_entities']} 实体)")
+                bus.log_message.emit(
+                    f"🔄 加载数据库 [{server}]: {db.db_path.name} "
+                    f"({stats['total_entities']} 实体)")
                 bus.can_process_data.emit(True)
             else:
                 bus.log_message.emit("ℹ️ 数据库为空，请加载数据")

@@ -74,9 +74,35 @@ CREATE INDEX IF NOT EXISTS idx_dynamic_attr_lookup ON entity_dynamic_attributes(
 -- ═════════════════════════════════════════════════════════════════════
 -- 4. 分析结构化层 (Structured Analysis Tables)
 -- ═════════════════════════════════════════════════════════════════════
-
+--
+-- 注意：以下是所有「舰船相关」的数据表定义，以 ship_ 为前缀。
+-- 重构时应重点关注此区块，其他区块（gun_ / projectile_ / plane_ /
+-- consumable_ / modernization_ / crew_）与舰船数据松耦合，可作为
+-- 独立实体表保留。
+--
+-- ┌─────────────────────────────────────────────────────────────┐
+-- │  🚢 舰船相关表清单（共 14 张表 + 1 张桥接表）              │
+-- │                                                            │
+-- │  4a-01  ship_basic_info         舰船基础属性                │
+-- │  4a-02  ship_consumable_slots   舰船消耗品槽位              │
+-- │  4a-03  ship_rage_mode          舰船战斗指令                │
+-- │  4a-04  ship_module_hulls       舰船船体模块                │
+-- │  4a-05  ship_sub_depth_states   潜艇深度状态（依赖 hulls）  │
+-- │  4a-06  ship_module_artillery   主炮模块                    │
+-- │  4a-07  ship_module_atba        副炮模块                    │
+-- │  4a-08  ship_module_torpedoes   鱼雷模块                    │
+-- │  4a-09  ship_module_aa          防空模块                    │
+-- │  4a-10  ship_module_depth_charge 深水炸弹模块               │
+-- │  4a-11  ship_module_aircraft    舰载机模块                  │
+-- │  4a-12  ship_module_hangar      机库模块                    │
+-- │  4a-13  ship_module_air_support 空袭模块                    │
+-- │  4a-14  ship_module_mapping     模块字母→子分类映射         │
+-- │                                                            │
+-- │  桥接表 (跨实体):                                           │
+-- │  rel_ship_weapon_ammo          武器←→弹药关联              │
+-- └─────────────────────────────────────────────────────────────┘
 -- --------------------------------------------------------------------
--- 4a. 战舰深度拆分结构 (Ship Data Shards)
+-- 4a. 战舰深度拆分结构 (Ship Data Shards)  【重构目标区块】
 -- --------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS ship_basic_info (

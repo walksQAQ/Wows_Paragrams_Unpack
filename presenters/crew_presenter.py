@@ -31,19 +31,27 @@ SKILL_LABEL_MAP: dict[str, str] = {
 class CrewPresenter(BasePresenter):
     """舰长显示 Presenter"""
 
-    def build(self, crew_id: str) -> dict | None:
+    def build(self, crew_id: str, version_code: str = "") -> dict | None:
         conn = self.conn
+        vc = self._ensure_version(version_code)
         cr = conn.execute(
-            "SELECT * FROM crew_basic_info WHERE crew_id=?", (crew_id,)).fetchone()
+            "SELECT * FROM crew_basic_info WHERE version_code=? AND crew_id=?", (vc, crew_id)).fetchone()
         if not cr:
             return None
 
         sections = []
 
         # ── 基本信息 section ──
-        info_items = [self.make_item(f"  舰长名称: {cr['crew_name'] or crew_id}", "", 0)]
-        if cr['nation_zh']:
-            info_items.append(self.make_item(f"  所属国籍: {cr['nation_zh']}", "", len(info_items)))
+        # 通过 name_mappings 查询舰长名
+        crew_name = crew_id
+        if cr['display_name_id']:
+            nm = conn.execute("SELECT lang_zh FROM name_mappings WHERE id=?",
+                              (cr['display_name_id'],)).fetchone()
+            if nm:
+                crew_name = nm[0]
+        info_items = [self.make_item(f"  舰长名称: {crew_name}", "", 0)]
+        if cr['nation']:
+            info_items.append(self.make_item(f"  所属国籍: {cr['nation']}", "", len(info_items)))
         for col, disp in [
             ("is_unique", "传奇舰长"), ("is_elite", "精英舰长"),
             ("is_person", "独特舰长"), ("is_animated", "动态立绘"),
@@ -55,8 +63,8 @@ class CrewPresenter(BasePresenter):
 
         # ── 特殊天赋 section（每个天赋独立一页）──
         skills = conn.execute(
-            "SELECT * FROM crew_unique_skills WHERE crew_id=? ORDER BY skill_key",
-            (crew_id,)).fetchall()
+            "SELECT * FROM crew_unique_skills WHERE version_code=? AND crew_id=? ORDER BY skill_key",
+            (vc, crew_id)).fetchall()
 
         for sk in skills:
             skill_items = []

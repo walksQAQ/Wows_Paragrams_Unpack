@@ -32,7 +32,23 @@ class BasePresenter:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def build(self, entity_id: str, version_code: str = "") -> dict | None:
+        """子类覆盖此方法"""
+        raise NotImplementedError
+
     # ── 名称解析 ──────────────────────────────────────────
+
+    def _ensure_version(self, version_code: str) -> str:
+        """获取有效的 version_code，为空时自动取最新"""
+        if version_code:
+            return version_code
+        try:
+            cur = self.conn.execute(
+                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC LIMIT 1")
+            row = cur.fetchone()
+            return row[0] if row else ""
+        except Exception:
+            return ""
 
     def resolve_name(self, category: str, key: str) -> str:
         """从 name_mappings 表解析中文名"""
