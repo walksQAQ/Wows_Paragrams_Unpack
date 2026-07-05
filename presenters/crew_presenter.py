@@ -42,13 +42,9 @@ class CrewPresenter(BasePresenter):
         sections = []
 
         # ── 基本信息 section ──
-        # 通过 name_mappings 查询舰长名
-        crew_name = crew_id
-        if cr['display_name_id']:
-            nm = conn.execute("SELECT lang_zh FROM name_mappings WHERE id=?",
-                              (cr['display_name_id'],)).fetchone()
-            if nm:
-                crew_name = nm[0]
+        # 通过 name_mappings 查询舰长名，无映射则用 person_name
+        crew_name = (self.resolve_name_by_id(cr['display_name_id'], 'crew', crew_id)
+                     or cr['person_name'] or crew_id)
         info_items = [self.make_item(f"  舰长名称: {crew_name}", "", 0)]
         if cr['nation']:
             info_items.append(self.make_item(f"  所属国籍: {cr['nation']}", "", len(info_items)))
@@ -132,7 +128,7 @@ class CrewPresenter(BasePresenter):
             sections.append(self.make_section(label, skill_items))
 
         return {
-            "title": cr['crew_name'] or crew_id,
+            "title": crew_name,
             "subtitle": f"ID: {crew_id}",
             "sections": sections,
         }

@@ -121,6 +121,7 @@ class DetailPanel(QWidget):
         sub_sections = (extra or {}).get("sub_sections", {})
         for sec in sections:
             label = sec.get("label", "未知")
+            # 子分类：按 section label 直接查找（新结构 key=模块类型）
             sub_info = sub_sections.get(label)
             if sub_info and sub_info.get("sub_labels"):
                 widget = self._build_sub_widget(sub_info)
@@ -134,10 +135,13 @@ class DetailPanel(QWidget):
                 lines = []
                 for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
                     n = item.get("name", "")
-                    if not n:
-                        lines.append("")
-                    else:
+                    v = item.get("value", "")
+                    if n:
                         lines.append(f"  {n}")
+                    elif v:
+                        lines.append(v)
+                    else:
+                        lines.append("")
                 te.setPlainText("\n".join(lines))
                 idx = self.stack.addWidget(te)
                 self._section_page_indices[label] = idx
@@ -222,21 +226,16 @@ class DetailPanel(QWidget):
                 entity = db.get_entity(category, filename, version_code=vc)
                 if entity:
                     self._current_raw = entity.get("raw_json")
-                    analyzed = entity.get("analyzed_result")
-                    if analyzed:
-                        self._current_analyzed = analyzed
-                        self._apply_analyzed()
-                        return
-                    # ── 新架构：从结构化表通过 Presenter 构建显示数据 ──
-                    etype = CATEGORY_TO_ETYPE.get(category)
-                    if etype:
-                        presenter = PresenterRegistry.get_presenter(etype, db._conn)
-                        if presenter:
-                            data = presenter.build(filename, version_code=vc)
-                            if data:
-                                self._current_analyzed = data
-                                self._apply_analyzed()
-                                return
+                # ── 新架构：从结构化表通过 Presenter 构建显示数据 ──
+                etype = CATEGORY_TO_ETYPE.get(category)
+                if etype:
+                    presenter = PresenterRegistry.get_presenter(etype, db._conn)
+                    if presenter:
+                        data = presenter.build(filename, version_code=vc)
+                        if data:
+                            self._current_analyzed = data
+                            self._apply_analyzed()
+                            return
             except Exception:
                 pass
         self._build_default_pages()
