@@ -79,6 +79,21 @@ class BasePresenter:
             return self.resolve_name(category, key)
         return None
 
+    def resolve_enum(self, enum_type: str, enum_key: str) -> str:
+        """从 enum_translations 表中查找枚举翻译"""
+        if not enum_key:
+            return enum_key
+        try:
+            cur = self.conn.execute(
+                "SELECT lang_zh FROM enum_translations WHERE enum_type=? AND enum_key=?",
+                (enum_type, enum_key))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        except sqlite3.OperationalError:
+            pass
+        return enum_key
+
     def get_name_map(self, category: str) -> dict[str, str]:
         """获取某分类的全部名称映射"""
         try:

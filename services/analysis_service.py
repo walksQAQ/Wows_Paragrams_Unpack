@@ -48,6 +48,13 @@ def _bn(v):
     return 1 if v else 0
 
 
+def _unwrap_list(lst, idx):
+    """从列表中取第 idx 个元素，非列表则返回 None"""
+    if isinstance(lst, (list, tuple)) and len(lst) > idx:
+        return lst[idx]
+    return None
+
+
 def _json_dumps(v):
     """安全 JSON 序列化"""
     if v is None:
@@ -263,8 +270,15 @@ class AnalysisStore:
             m2 = re.match(r'([A-Z]+)(\d*)', m.group(1)) if m else None
             variant = m2.group(2) if m2 and m2.group(2) else ""
 
-            # 飞机
+            # 飞机（仅当存在纯 B 前缀的飞机模块时才拆 AB → A+B）
             if current_cat in ("DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber"):
+                if prefix == "AB":
+                    has_pure_b_air = any(
+                        k.startswith("B") and any(
+                            pat.match(k) for pat in MODULE_PATTERNS.values()
+                        ) for k in raw_data if isinstance(raw_data.get(k), dict)
+                    )
+                    target_letters = ["A", "B"] if has_pure_b_air else ["A"]
                 for pl in (module_data.get("planes", []) or []):
                     if isinstance(pl, dict):
                         pn, arm = pl.get("name", ""), pl.get("armamentName", "")
@@ -272,9 +286,11 @@ class AnalysisStore:
                         pn, arm = pl, module_data.get("armamentName", "")
                     else:
                         continue
+                    config_prefix = m.group(1) if m else lt
                     for lt in target_letters:
                         combined_stats[lt].setdefault("aircraft", []).append(
-                            {"plane_name": pn, "armament_name": arm, "module_variant": variant, "plane_type": current_cat})
+                            {"plane_name": pn, "armament_name": arm, "module_variant": variant, "plane_type": current_cat,
+                             "config_prefix": config_prefix})
                 continue
 
             # 空袭
@@ -619,7 +635,7 @@ class AnalysisStore:
         if not items:
             return
         self.conn.executemany("INSERT OR REPLACE INTO ship_module_aircraft (version_code, ship_id, config_group, module_key, module_variant, plane_type, plane_name, armament_name) VALUES (?,?,?,?,?,?,?,?)",
-                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("module_variant", ""), i.get("plane_type", ""), i.get("plane_name"), i.get("armament_name")) for i in items])
+                              [(version_code, ship_id, i.get("config_prefix", letter), i.get("plane_name") or "", i.get("module_variant", ""), i.get("plane_type", ""), i.get("plane_name"), i.get("armament_name")) for i in items])
         seen = set()
         for i in items:
             pn = i.get("plane_name") or ""
@@ -651,7 +667,8 @@ class AnalysisStore:
             if "planes" in val or PLANE_PREFIX_RE.match(key):
                 lt = "A" if not (key.startswith("A_") or key.startswith("B_")) else key[0]
                 cs.setdefault(lt, {}).setdefault("aircraft", []).append(
-                    {"plane_name": key, "armament_name": "", "module_variant": "", "plane_type": ""})
+                    {"plane_name": key, "armament_name": "", "module_variant": "", "plane_type": "",
+                     "config_prefix": lt})
 
     def _write_consumables(self, ship_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
@@ -667,14 +684,12 @@ class AnalysisStore:
                 if not (isinstance(ap, (list, tuple)) and len(ap) >= 2):
                     continue
                 fk, ck = str(ap[0]).strip(), str(ap[1]).strip()
-                cfg = self._load_cfg(fk, ck) or {}
-                rows.append((version_code, ship_id, si, i + 1,
-                             cfg.get("consumableType"), str(cfg.get("numConsumables", "0")),
-                             _v(cfg.get("preparationTime"), 0), _v(cfg.get("workTime"), 0),
-                             _v(cfg.get("reloadTime"), 0), _bn(cfg.get("isAutoConsumable")), fk, ck))
+                rows.append((version_code, ship_id, si, i + 1, fk, ck))
         if rows:
-            conn.executemany("INSERT OR REPLACE INTO ship_consumable_slots (version_code, ship_id, slot_index, item_index, display_name_id, consumable_type, num_consumables, preparation_time, work_time, reload_time, is_auto_consumable, consumable_id, config_key) VALUES (?,?,?,?,(SELECT id FROM name_mappings WHERE category='consumable' AND key_name=?),?,?,?,?,?,?,?,?)",
-                             [(r[0], r[1], r[2], r[3], r[10].upper(), r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11]) for r in rows])
+            conn.executemany("""INSERT OR REPLACE INTO ship_consumable_slots
+                (version_code, ship_id, slot_index, item_index, display_name_id, consumable_id, config_key)
+                VALUES (?,?,?,?,(SELECT id FROM name_mappings WHERE category='consumable' AND key_name=?),?,?)""",
+                             [(r[0], r[1], r[2], r[3], r[4].upper(), r[4], r[5]) for r in rows])
 
     _cfg_cache: dict[str, dict] = {}
 
@@ -756,7 +771,90 @@ class AnalysisStore:
     # ── 4. Aircraft ──────────────────────────────────────
 
     def store_plane(self, plane_id: str, raw_data: dict, version_code: str = ""):
-        pass
+        conn = self.conn
+        ti = raw_data.get("typeinfo", {}) or {}
+        # 核心字段（CV 飞机用 maxHealth 替代 hp）
+        raw_hp = raw_data.get("hp") or raw_data.get("maxHealth")
+        core = {
+            "maxSpeed": raw_data.get("maxSpeed"),
+            "cruisingSpeed": raw_data.get("cruisingSpeed"),
+            "hp": raw_hp,
+            "attackCount": raw_data.get("attackCount"),
+            "attackCooldown": raw_data.get("attackCooldown"),
+            "attackInterval": raw_data.get("attackInterval"),
+            "arrangeSize": raw_data.get("arrangeSize"),
+            "canDestroy": raw_data.get("canDestroy"),
+            "canStop": raw_data.get("canStop"),
+            "bombName": raw_data.get("bombName"),
+        }
+        SKIP = {"typeinfo", "custom", "ShipAbilities"} | set(core.keys())
+        extra = {k: v for k, v in raw_data.items()
+                 if k not in SKIP and not k.startswith("_")}
+        # 从 extra 中提取结构化字段
+        hs = raw_data.get("hangarSettings") or {}
+        conn.execute("""INSERT OR REPLACE INTO plane_basic_info
+            (version_code, plane_id, plane_index, plane_id_num, species, nation,
+             max_speed, cruising_speed, hp, attack_count, attack_cooldown,
+             attack_interval, arrange_size, can_destroy, can_stop, bomb_name,
+             speed_move_with_bomb, speed_max_mult, speed_min_mult,
+             angle_of_climb, angle_of_dive, attack_angle,
+             preparation_time, preparation_accel_increase, preparation_accel_decrease,
+             aiming_time, aiming_accel_increase, aiming_accel_decrease, flight_height,
+             attacker_size, num_planes_in_squadron, fuel_time, max_forsage_amount,
+             hangar_max_value, hangar_start_value, hangar_restore_amount, hangar_time_to_restore,
+             outer_salvo_size_x, outer_salvo_size_y,
+             inner_salvo_size_x, inner_salvo_size_y,
+             max_spread_x, max_spread_y, min_spread_x, min_spread_y,
+             inner_bombs_percentage,
+             post_attack_invulnerability_duration,
+             extra_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                    ?,?,?,
+                    ?,?,?,
+                    ?,?,?,
+                    ?,?,?,?,
+                    ?,?,?,?,
+                    ?,?,?,?,
+                    ?,?,?,?,?,?,?,?,?,
+                    ?,?)""",
+                     (version_code, plane_id,
+                      raw_data.get("index", plane_id), _i(raw_data.get("id")),
+                      ti.get("species", ""), ti.get("nation", ""),
+                      _v(core["maxSpeed"]), _v(core["cruisingSpeed"]), _v(core["hp"]),
+                      _i(core["attackCount"]), _v(core["attackCooldown"]),
+                      _v(core["attackInterval"]), _i(core["arrangeSize"]),
+                      core["canDestroy"] if core["canDestroy"] is not None else 1,
+                      _bn(core["canStop"]), core["bombName"] or "",
+                      _v(raw_data.get("speedMoveWithBomb")),
+                      _v(raw_data.get("speedMax")),
+                      _v(raw_data.get("speedMin")),
+                      _v(raw_data.get("angleOfClimb")),
+                      _v(raw_data.get("angleOfDive")),
+                      _v(raw_data.get("attackAngle")),
+                      _v(raw_data.get("preparationTime")),
+                      _v(raw_data.get("preparationAccuracyIncreaseRate")),
+                      _v(raw_data.get("preparationAccuracyDecreaseRate")),
+                      _v(raw_data.get("aimingTime")),
+                      _v(raw_data.get("aimingAccuracyIncreaseRate")),
+                      _v(raw_data.get("aimingAccuracyDecreaseRate")),
+                      _v(raw_data.get("flightHeight")),
+                      _i(raw_data.get("attackerSize")),
+                      _i(raw_data.get("numPlanesInSquadron")),
+                      _v(raw_data.get("fuelTime")),
+                      _v(raw_data.get("maxForsageAmount")),
+                      _i(hs.get("maxValue")), _i(hs.get("startValue")),
+                      _i(hs.get("restoreAmount")), _v(hs.get("timeToRestore")),
+                      _unwrap_list(raw_data.get("outerSalvoSize"), 0),
+                      _unwrap_list(raw_data.get("outerSalvoSize"), 1),
+                      _unwrap_list(raw_data.get("innerSalvoSize"), 0),
+                      _unwrap_list(raw_data.get("innerSalvoSize"), 1),
+                      _unwrap_list(raw_data.get("maxSpread"), 0),
+                      _unwrap_list(raw_data.get("maxSpread"), 1),
+                      _unwrap_list(raw_data.get("minSpread"), 0),
+                      _unwrap_list(raw_data.get("minSpread"), 1),
+                      _v(raw_data.get("innerBombsPercentage")),
+             _v(raw_data.get("postAttackInvulnerabilityDuration")),
+             _json_dumps(extra)))
 
     # ── 5. Ability ───────────────────────────────────────
 
@@ -764,34 +862,18 @@ class AnalysisStore:
         conn = self.conn
         conn.execute("INSERT OR REPLACE INTO consumable_basic_info (version_code, consumable_id, consumable_index, consumable_id_num) VALUES (?,?,?,?)",
                      (version_code, cid, raw_data.get("index", cid), _i(raw_data.get("id"))))
-        CK = {"consumableType", "numConsumables", "workTime", "preparationTime", "reloadTime",
-              "isAutoConsumable", "isInterceptor", "regenerationHPSpeed", "areaDamageMultiplier",
-              "bubbleDamageMultiplier", "fightersName", "fightersNum", "availableBuoyancyStates"}
+        SKIP_KEYS = {"typeinfo", "custom", "ShipAbilities", "PlaneAbilities"}
         rows = []
         for key, val in raw_data.items():
-            if not isinstance(val, dict) or key in ("typeinfo", "custom", "ShipAbilities", "PlaneAbilities"):
+            if not isinstance(val, dict) or key in SKIP_KEYS:
                 continue
-            if not val.get("consumableType"):
+            ct = val.get("consumableType")
+            if not ct:
                 continue
-            cv, ev = {}, {}
-            for k, v in val.items():
-                if k == "modifiers" and isinstance(v, dict):
-                    ev[k] = v
-                elif k in CK:
-                    cv[k] = v
-                elif k not in ("typeinfo", "custom", "ShipAbilities", "PlaneAbilities"):
-                    ev[k] = v
-            bu = cv.get("availableBuoyancyStates", [])
-            rows.append((version_code, cid, key, val.get("consumableType"),
-                         str(cv.get("numConsumables", "0")),
-                         _v(val.get("workTime"), 0), _v(val.get("preparationTime"), 0),
-                         _v(val.get("reloadTime"), 0),
-                         _bn(val.get("isAutoConsumable")), _bn(val.get("isInterceptor")),
-                         val.get("regenerationHPSpeed"), val.get("areaDamageMultiplier"),
-                         val.get("bubbleDamageMultiplier"), None, val.get("fightersNum"),
-                         _json_dumps(bu) if bu else None, _json_dumps(ev) if ev else '{}'))
+            extra = {k: v for k, v in val.items() if k not in SKIP_KEYS}
+            rows.append((version_code, cid, key, ct, _json_dumps(extra)))
         if rows:
-            conn.executemany("INSERT OR REPLACE INTO consumable_configs (version_code, consumable_id, config_key, consumable_type, num_consumables, work_time, preparation_time, reload_time, is_auto_consumable, is_interceptor, regen_hp_speed, area_dmg_multiplier, bubble_dmg_multiplier, fighter_name_id, fighter_num, available_buoyancy_states, extra_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.executemany("INSERT OR REPLACE INTO consumable_configs (version_code, consumable_id, config_key, consumable_type, extra_json) VALUES (?,?,?,?,?)", rows)
 
     # ── 6. Modernization ─────────────────────────────────
 
@@ -886,7 +968,6 @@ class AnalysisService:
             except Exception:
                 pass
             raw_conn.execute("BEGIN TRANSACTION")
-            raw_conn.execute("PRAGMA foreign_keys=OFF")
             success = 0
             for entity_id, raw_data in items:
                 self.analyze_one(cat_name, raw_data, entity_id, db, version_code=version_code)
@@ -896,12 +977,6 @@ class AnalysisService:
             return success
 
         use_memory = data_by_category is not None
-
-        # 禁用 FK 检查
-        try:
-            raw_conn.execute("PRAGMA foreign_keys=OFF")
-        except Exception:
-            pass
 
         if use_memory:
             total_entities = sum(len(v) for v in data_by_category.values())
@@ -939,8 +1014,4 @@ class AnalysisService:
                 results[cat_name] = _process_batch(items)
             bus.task_progress.emit(95, f"分析完成: {total_processed} 实体")
 
-        try:
-            raw_conn.execute("PRAGMA foreign_keys=ON")
-        except Exception:
-            pass
         return results
