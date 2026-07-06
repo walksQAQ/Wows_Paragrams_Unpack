@@ -32,7 +32,23 @@ class BasePresenter:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def build(self, entity_id: str, version_code: str = "") -> dict | None:
+        """子类覆盖此方法"""
+        raise NotImplementedError
+
     # ── 名称解析 ──────────────────────────────────────────
+
+    def _ensure_version(self, version_code: str) -> str:
+        """获取有效的 version_code，为空时自动取最新"""
+        if version_code:
+            return version_code
+        try:
+            cur = self.conn.execute(
+                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC LIMIT 1")
+            row = cur.fetchone()
+            return row[0] if row else ""
+        except Exception:
+            return ""
 
     def resolve_name(self, category: str, key: str) -> str:
         """从 name_mappings 表解析中文名"""
@@ -46,6 +62,37 @@ class BasePresenter:
         except sqlite3.OperationalError:
             pass
         return key
+
+    def resolve_name_by_id(self, mapping_id: int | None,
+                            category: str = "", key: str = "") -> str | None:
+        """按 id 解析名称，失败时按 (category, key) 兜底"""
+        if mapping_id:
+            try:
+                cur = self.conn.execute(
+                    "SELECT lang_zh FROM name_mappings WHERE id=?", (mapping_id,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+            except Exception:
+                pass
+        if category and key:
+            return self.resolve_name(category, key)
+        return None
+
+    def resolve_enum(self, enum_type: str, enum_key: str) -> str:
+        """从 enum_translations 表中查找枚举翻译"""
+        if not enum_key:
+            return enum_key
+        try:
+            cur = self.conn.execute(
+                "SELECT lang_zh FROM enum_translations WHERE enum_type=? AND enum_key=?",
+                (enum_type, enum_key))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+        except sqlite3.OperationalError:
+            pass
+        return enum_key
 
     def get_name_map(self, category: str) -> dict[str, str]:
         """获取某分类的全部名称映射"""

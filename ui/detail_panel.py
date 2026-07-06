@@ -20,6 +20,7 @@ from PySide6.QtGui import QFont
 
 from app.signals import bus
 from services.database_service import get_db
+from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
 
 
 class DetailPanel(QWidget):
@@ -120,6 +121,7 @@ class DetailPanel(QWidget):
         sub_sections = (extra or {}).get("sub_sections", {})
         for sec in sections:
             label = sec.get("label", "未知")
+            # 子分类：按 section label 直接查找（新结构 key=模块类型）
             sub_info = sub_sections.get(label)
             if sub_info and sub_info.get("sub_labels"):
                 widget = self._build_sub_widget(sub_info)
@@ -133,11 +135,14 @@ class DetailPanel(QWidget):
                 lines = []
                 for item in sorted(sec.get("items", []), key=lambda x: x.get("order", 0)):
                     n = item.get("name", "")
-                    if not n:
-                        lines.append("")
+                    v = item.get("value", "")
+                    if n:
+                        lines.append(n)
+                    elif v:
+                        lines.append(v)
                     else:
-                        lines.append(f"  {n}")
-                te.setPlainText("\n".join(lines))
+                        lines.append("")
+                te.setPlainText(self._strip_indent("\n".join(lines)))
                 idx = self.stack.addWidget(te)
                 self._section_page_indices[label] = idx
         if self._section_page_indices:
@@ -165,12 +170,18 @@ class DetailPanel(QWidget):
         stack = QStackedWidget()
         btns: list[QPushButton] = []
         for i, sl in enumerate(labels):
-            te = QTextEdit()
-            te.setReadOnly(True)
-            te.setFont(self._make_font("Microsoft YaHei", 11))
-            te.setStyleSheet(self.TEXT_STYLE)
-            te.setPlainText("\n".join(contents.get(sl, [])))
-            stack.addWidget(te)
+            content = contents.get(sl, [])
+            if isinstance(content, dict) and "config_labels" in content:
+                # 带配置选择的二级面板
+                widget = self._build_config_widget(content)
+                stack.addWidget(widget)
+            else:
+                te = QTextEdit()
+                te.setReadOnly(True)
+                te.setFont(self._make_font("Microsoft YaHei", 11))
+                te.setStyleSheet(self.TEXT_STYLE)
+                te.setPlainText(self._strip_indent("\n".join(content) if isinstance(content, list) else ""))
+                stack.addWidget(te)
             btn = QPushButton(sl)
             btn.setCheckable(True)
             btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
@@ -186,6 +197,68 @@ class DetailPanel(QWidget):
         layout.addWidget(scroll)
         layout.addWidget(stack, stretch=1)
         return container
+
+    def _build_config_widget(self, config_data: dict) -> QWidget:
+        """构建带配置选择按钮的二级面板"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        config_labels = config_data.get("config_labels", [])
+        config_contents = config_data.get("config_contents", {})
+
+        from PySide6.QtWidgets import QScrollArea as QScrollArea2
+        scroll = QScrollArea2()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{border:none;background:#e8e8e8;}")
+        bar = QWidget()
+        bar.setStyleSheet("QWidget{background:#e8e8e8;border-bottom:1px solid #c0c0c0;}")
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(8, 2, 8, 2)
+        blay.setSpacing(4)
+        scroll.setWidget(bar)
+
+        cstack = QStackedWidget()
+        cbtns: list[QPushButton] = []
+        for i, cl in enumerate(config_labels):
+            te = QTextEdit()
+            te.setReadOnly(True)
+            te.setFont(self._make_font("Microsoft YaHei", 11))
+            te.setStyleSheet(self.TEXT_STYLE)
+            txt = "\n".join(config_contents.get(cl, []))
+            te.setPlainText(self._strip_indent(txt))
+            cstack.addWidget(te)
+            btn = QPushButton(cl)
+            btn.setCheckable(True)
+            btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
+                              "border-radius:4px;padding:4px 10px;font-size:11px;}"
+                              "QPushButton:hover{background:#d0d0d0;color:#333;}"
+                              "QPushButton:checked{background:#0078d4;color:#fff;}")
+            btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
+            blay.addWidget(btn)
+            cbtns.append(btn)
+        blay.addStretch()
+        if cbtns:
+            cbtns[0].setChecked(True)
+            cstack.setCurrentIndex(0)
+        layout.addWidget(scroll)
+        layout.addWidget(cstack, stretch=1)
+        return container
+
+    @staticmethod
+    def _strip_indent(text: str) -> str:
+        """统一去掉所有行的公共前导缩进"""
+        lines = text.split("\n")
+        indents = [len(l) - len(l.lstrip()) for l in lines if l.strip()]
+        if not indents:
+            return text
+        min_indent = min(indents)
+        if min_indent == 0:
+            return text
+        return "\n".join(l[min_indent:] if l.strip() else l for l in lines)
 
     def _clear_pages(self) -> None:
         """清除所有页面"""
@@ -217,14 +290,20 @@ class DetailPanel(QWidget):
         db = get_db()
         if db.exists:
             try:
-                entity = db.get_entity(category, filename)
+                vc = db.get_latest_version_code() or ""
+                entity = db.get_entity(category, filename, version_code=vc)
                 if entity:
                     self._current_raw = entity.get("raw_json")
-                    analyzed = entity.get("analyzed_result")
-                    if analyzed:
-                        self._current_analyzed = analyzed
-                        self._apply_analyzed()
-                        return
+                # ── 新架构：从结构化表通过 Presenter 构建显示数据 ──
+                etype = CATEGORY_TO_ETYPE.get(category)
+                if etype:
+                    presenter = PresenterRegistry.get_presenter(etype, db._conn)
+                    if presenter:
+                        data = presenter.build(filename, version_code=vc)
+                        if data:
+                            self._current_analyzed = data
+                            self._apply_analyzed()
+                            return
             except Exception:
                 pass
         self._build_default_pages()

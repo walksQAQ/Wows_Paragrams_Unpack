@@ -28,7 +28,7 @@ SHIP_MODULE_MAP: dict[str, tuple[str, str]] = {
     "防空":       ("🎯", "防空"),
     "深水炸弹":   ("💥", "深弹"),
     "舰载机":     ("✈️", "飞机"),
-    "空袭":       ("💫", "空袭"),
+    "支援":       ("💫", "支援"),
     # 舰长天赋
     "成就触发":   ("🏆", "成就"),
     "成就触发Ⅱ":  ("🏆", "成就Ⅱ"),
@@ -149,6 +149,12 @@ class ModuleSelect(QWidget):
                 self._btns[0].setChecked(True)
 
         self.modules_changed.emit(self._module_ids)
+
+    def clear_selection(self) -> None:
+        """取消所有模块按钮的选中状态"""
+        self._active = None
+        for btn in self._btns:
+            btn.setChecked(False)
 
     def _on_module(self, mod_id: str) -> None:
         """模块按钮点击"""

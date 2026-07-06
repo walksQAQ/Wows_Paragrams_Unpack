@@ -28,14 +28,16 @@ def import_text_to_db(db=None) -> dict:
     返回统计: {name_mappings: {filename: count}, po_translations: int}
     """
     from services.database_service import DatabaseManager, get_db
-    # 优先使用传入的 db，否则找最新 DB
+    # 优先使用传入的 db，否则找当前服务器对应的 DB
     target = db if isinstance(db, DatabaseManager) else get_db()
-    # 如果 target 无数据，尝试查找 game_data.db
+    # 如果 target 无数据，尝试查找同服务器的其他 DB 文件
     if not target.exists or target.get_stats().get("total_entities", 0) == 0:
         data_dir = get_data_dir()
-        fallback = data_dir / "game_data.db"
-        if fallback.exists() and fallback != target.db_path:
-            candidate = DatabaseManager(fallback)
+        from app.application import app as app_ctx
+        # 尝试当前服务器对应的 DB
+        svr_path = data_dir / DatabaseManager._db_name(app_ctx.ctx.wows_type)
+        if svr_path.exists() and svr_path != target.db_path:
+            candidate = DatabaseManager(svr_path)
             candidate.initialize()
             if candidate.get_stats().get("total_entities", 0) > 0:
                 target = candidate
@@ -201,8 +203,9 @@ def run_localization() -> None:
             db = get_db()
             if db.exists and db.get_stats().get("total_entities", 0) > 0:
                 bus.log_message.emit("🧠 重新预分析以应用新翻译...")
+                vc = db.get_latest_version_code() or ""
                 from services.processor_service import _run_analysis
-                _run_analysis(db)
+                _run_analysis(db, version_code=vc)
         except Exception:
             pass
         bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")

@@ -118,7 +118,7 @@ class TopToolbar(QWidget):
         self._disable_all()
         self._pending_process = True
         bus.task_progress.emit(0, "开始提取")
-        bus.log_message.emit("📦 步骤 1/2: 正在提取游戏数据...")
+        bus.log_message.emit("📦 步骤 1/3: 正在提取游戏数据...")
         run_extract()
 
     def _on_extract_done(self, version: str) -> None:
@@ -130,8 +130,8 @@ class TopToolbar(QWidget):
             self._enable_all()
             return
         from services.processor_service import run_process
-        bus.task_progress.emit(30, "解析数据")
-        bus.log_message.emit("📦 步骤 2/2: 正在解析数据并写入数据库...")
+        bus.task_progress.emit(30, "步骤 2/3: 解析数据")
+        bus.log_message.emit("📦 步骤 2/3: 正在解析数据并写入数据库...")
         run_process()
 
     def _on_lang(self):
@@ -182,7 +182,21 @@ class TopToolbar(QWidget):
         ))
 
     def _on_server(self, btn):
-        app_ctx.set_wows_type(btn.text())
+        server = btn.text()
+        if server == app_ctx.ctx.wows_type:
+            return  # 未变更
+        app_ctx.set_wows_type(server)
+        # 切换服务器时重置数据库单例，刷新界面
+        from services.database_service import reset_db, get_db
+        reset_db()
+        db = get_db(server)
+        if db.exists and db.get_stats().get("total_entities", 0) > 0:
+            bus.log_message.emit(f"🔄 已切换到 {server} 数据库")
+            bus.folder_selected.emit("__REFRESH__")
+            bus.can_process_data.emit(True)
+        else:
+            bus.log_message.emit(f"ℹ️ {server} 数据库为空，请加载数据")
+            bus.folder_selected.emit("__REFRESH__")
 
     def _on_progress(self, pct, msg):
         pct = max(0, min(100, pct))

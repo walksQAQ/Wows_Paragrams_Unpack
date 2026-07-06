@@ -130,6 +130,10 @@ class MainWindow(QMainWindow):
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
         bus.folder_selected.connect(self._on_category_changed)
 
+        # 重置 UI 状态时取消所有选中项
+        bus.data_loaded.connect(lambda _: self.clear_all_selections())
+        bus.localization_ready.connect(self.clear_all_selections)
+
         # ── 窗口居中 ────────────────────────────────────
         QTimer.singleShot(0, self._center_window)
 
@@ -165,6 +169,10 @@ class MainWindow(QMainWindow):
         if folder != "__REFRESH__":
             self.browser.setVisible(True)
             self.detail.reset_to_default()
+        else:
+            # 刷新完成时取消所有选中
+            self.clear_all_selections()
+            return
         # 切换分类时隐藏模块选择栏，由 _on_modules_available 决定是否显示
         self.module_select.setVisible(False)
 
@@ -172,6 +180,14 @@ class MainWindow(QMainWindow):
         """模块列表可用时更新 ModuleSelect 并控制显隐"""
         self.module_select.set_modules(section_labels)
         self.module_select.setVisible(section_labels is not None)
+
+    def clear_all_selections(self) -> None:
+        """取消界面上所有选中项"""
+        self.category_bar.clear_selection()
+        self.browser.file_list.clearSelection()
+        self.module_select.clear_selection()
+        self.detail.reset_to_default()
+        self.module_select.setVisible(False)
 
     # ── 窗口管理 ──────────────────────────────────────────
 
