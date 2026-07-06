@@ -223,6 +223,15 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 ship_rage_mode 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
+            if "rage_mode_name" not in existing:
+                self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN rage_mode_name TEXT DEFAULT ''")
+                self._conn.commit()
+        except Exception:
+            pass
+
         # ── 导入静态枚举翻译 ──
         try:
             cnt = self._conn.execute("SELECT COUNT(*) FROM enum_translations").fetchone()[0]
@@ -512,6 +521,7 @@ class DatabaseManager:
                         "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)", items)
                     self._conn.commit()
                     stats[fn] = len(items)
+                fp.unlink(missing_ok=True)
             except Exception:
                 continue
         return stats
@@ -521,6 +531,7 @@ class DatabaseManager:
         if not fp.exists():
             return 0
         text = fp.read_text(encoding="utf-8")
+        fp.unlink(missing_ok=True)
         items = []
         blocks = re.split(r'\n(?=msgid)', text)
         for block in blocks:

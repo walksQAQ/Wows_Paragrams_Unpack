@@ -260,7 +260,7 @@ class BrowserPanel(QWidget):
                    e.nation, b.shiptype, b.tier
             FROM entity_registry e
             LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
-            LEFT JOIN name_mappings nm ON nm.id = b.name_mapping_id
+            LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name = b.ship_index
             WHERE e.version_code=? AND e.entity_type='ship'
             ORDER BY e.entity_id
         """, (vc,)).fetchall()
@@ -316,6 +316,10 @@ class BrowserPanel(QWidget):
     def _load_other_data(self, db, folder):
         """从数据库加载非舰船类别的列表（含本地化名称）"""
         vc = db.get_latest_version_code() or ""
+        # etype -> name_mappings category
+        ETYPE_NM_CAT = {
+            "projectile": "ammo",
+        }
         NAME_LOOKUP = {
             "Projectile": ("projectile", "projectile_basic_info"),
             "Ability": ("consumable", "consumable_basic_info"),
@@ -323,13 +327,15 @@ class BrowserPanel(QWidget):
         lookup = NAME_LOOKUP.get(folder)
         if lookup:
             etype, tbl = lookup
+            nm_cat = ETYPE_NM_CAT.get(etype, etype)
             rows = db._conn.execute(f"""
-                SELECT e.entity_id, COALESCE(e.entity_id, e.entity_id) AS display_name
+                SELECT e.entity_id,
+                       COALESCE(nm.lang_zh, e.entity_id) AS display_name
                 FROM entity_registry e
-                LEFT JOIN {tbl} n ON n.version_code=e.version_code AND n.{etype}_id = e.entity_id
+                LEFT JOIN name_mappings nm ON nm.category=? AND nm.key_name = e.entity_id
                 WHERE e.version_code=? AND e.entity_type=?
                 ORDER BY e.entity_id
-            """, (vc, etype)).fetchall()
+            """, (nm_cat, vc, etype)).fetchall()
             self._all_entities = [dict(r) for r in rows]
         else:
             rows = db.list_entities(folder, version_code=vc) or []

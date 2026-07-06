@@ -799,23 +799,15 @@ class AnalysisStore:
         self.conn.execute("""INSERT OR REPLACE INTO ship_rage_mode
             (version_code, ship_id, display_name_id, boost_duration, max_activation_count,
              is_auto_usage, is_modifier_works_always, decrement_delay, decrement_period, decrement_count,
-             description_id, modifiers_json, triggers_json)
+             description_id, rage_mode_name, modifiers_json, triggers_json)
             VALUES (?,?,(SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?,?,?,?,?,?,
-                    (SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?)""",
+                    (SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?,?)""",
                           (version_code, ship_id, base_msgid, _v(rage.get("boostDuration"), 0),
                            str(rage.get("maxActivationCount", 0)),
                            _bn(rage.get("isAutoUsage")), _bn(rage.get("isModifierWorksAlways")),
                            _v(rage.get("decrementDelay"), 0), _v(rage.get("decrementPeriod"), 0),
                            _v(rage.get("decrementCount"), 0), desc_msgid,
-                           _json_dumps(rage.get("modifiers", {})), _json_dumps(triggers)))
-
-    # ── 2. Gun ───────────────────────────────────────────
-
-    def store_gun(self, gun_id: str, raw_data: dict, version_code: str = ""):
-        pass
-
-    # ── 3. Projectile ────────────────────────────────────
-
+                           base_msgid, _json_dumps(rage.get("modifiers", {})), _json_dumps(triggers)))
     def store_projectile(self, proj_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
         species = raw_data.get("typeinfo", {}).get("species", "")
@@ -1043,10 +1035,9 @@ class AnalysisService:
         from services.database_service import get_db as _get_db
         store = AnalysisStore(db or _get_db())
         func_map = {
-            "Ship": store.store_ship, "Gun": store.store_gun,
-            "Projectile": store.store_projectile, "Aircraft": store.store_plane,
-            "Ability": store.store_consumable, "Modernization": store.store_mod,
-            "Crew": store.store_crew,
+            "Ship": store.store_ship, "Projectile": store.store_projectile,
+            "Aircraft": store.store_plane, "Ability": store.store_consumable,
+            "Modernization": store.store_mod, "Crew": store.store_crew,
         }
         m = func_map.get(category)
         if not m:
@@ -1065,7 +1056,7 @@ class AnalysisService:
         results: dict[str, int] = {}
         total_processed = 0
         split_dir = get_split_dir()
-        categories = ["Gun", "Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew"]
+        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew"]
         raw_conn = db._conn
 
         def _process_batch(items):
