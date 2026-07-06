@@ -149,6 +149,39 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 ship_module_aa 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_aa)").fetchall()}
+            for col_name, col_type in [("explosion_count", "REAL"), ("max_distance", "REAL"), ("min_distance", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_aa ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_air_support 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_air_support)").fetchall()}
+            for col_name, col_type in [("support_type", "TEXT")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：清理废弃的 mod_concealment_config 表 ──
+        try:
+            self._conn.execute("DROP TABLE IF EXISTS mod_concealment_config")
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 导入静态枚举翻译 ──
         try:
             cnt = self._conn.execute("SELECT COUNT(*) FROM enum_translations").fetchone()[0]

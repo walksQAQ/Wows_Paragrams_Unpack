@@ -237,6 +237,9 @@ CREATE TABLE IF NOT EXISTS ship_module_aa (
     aura_type TEXT,
     aura_dps REAL,
     bubble_damage REAL,
+    explosion_count REAL,
+    max_distance REAL,
+    min_distance REAL,
     aa_gun_name TEXT,
     aa_gun_count INTEGER,
     PRIMARY KEY (version_code, ship_id, config_group, module_key, aura_name, aa_gun_name),
@@ -282,6 +285,7 @@ CREATE TABLE IF NOT EXISTS ship_module_air_support (
     max_range REAL,
     min_range REAL,
     armament_name TEXT,
+    support_type TEXT,
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -681,6 +685,27 @@ FROM entity_registry er;
 -- ═════════════════════════════════════════════════════════════════════
 -- 6. Schema 版本记录 (Meta)
 -- ═════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS modernization_basic_info (
+    version_code TEXT NOT NULL,
+    mod_id TEXT NOT NULL,
+    mod_index TEXT,
+    mod_id_num INTEGER,
+    name TEXT,
+    cost_cr INTEGER DEFAULT 0,
+    slot INTEGER DEFAULT 0,
+    rarity INTEGER DEFAULT 0,
+    sort_index INTEGER DEFAULT 0,
+    modifiers_json TEXT DEFAULT '{}',
+    excludes_json TEXT DEFAULT '[]',
+    ships_json TEXT DEFAULT '[]',
+    groups_json TEXT DEFAULT '[]',
+    nations_json TEXT DEFAULT '[]',
+    shiptype_json TEXT DEFAULT '[]',
+    shiplevel_json TEXT DEFAULT '[]',
+    tags_json TEXT DEFAULT '[]',
+    PRIMARY KEY (version_code, mod_id)
+);
 
 CREATE TABLE IF NOT EXISTS meta_schema_version (
     version INTEGER PRIMARY KEY,
