@@ -150,6 +150,12 @@ class ModuleSelect(QWidget):
 
         self.modules_changed.emit(self._module_ids)
 
+    def clear_selection(self) -> None:
+        """取消所有模块按钮的选中状态"""
+        self._active = None
+        for btn in self._btns:
+            btn.setChecked(False)
+
     def _on_module(self, mod_id: str) -> None:
         """模块按钮点击"""
         for btn, mid in zip(self._btns, self._module_ids):

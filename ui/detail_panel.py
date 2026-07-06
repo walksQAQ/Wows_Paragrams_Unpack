@@ -170,12 +170,18 @@ class DetailPanel(QWidget):
         stack = QStackedWidget()
         btns: list[QPushButton] = []
         for i, sl in enumerate(labels):
-            te = QTextEdit()
-            te.setReadOnly(True)
-            te.setFont(self._make_font("Microsoft YaHei", 11))
-            te.setStyleSheet(self.TEXT_STYLE)
-            te.setPlainText("\n".join(contents.get(sl, [])))
-            stack.addWidget(te)
+            content = contents.get(sl, [])
+            if isinstance(content, dict) and "config_labels" in content:
+                # 带配置选择的二级面板
+                widget = self._build_config_widget(content)
+                stack.addWidget(widget)
+            else:
+                te = QTextEdit()
+                te.setReadOnly(True)
+                te.setFont(self._make_font("Microsoft YaHei", 11))
+                te.setStyleSheet(self.TEXT_STYLE)
+                te.setPlainText("\n".join(content) if isinstance(content, list) else "")
+                stack.addWidget(te)
             btn = QPushButton(sl)
             btn.setCheckable(True)
             btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
@@ -190,6 +196,55 @@ class DetailPanel(QWidget):
             btns[0].setChecked(True)
         layout.addWidget(scroll)
         layout.addWidget(stack, stretch=1)
+        return container
+
+    def _build_config_widget(self, config_data: dict) -> QWidget:
+        """构建带配置选择按钮的二级面板"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        config_labels = config_data.get("config_labels", [])
+        config_contents = config_data.get("config_contents", {})
+
+        from PySide6.QtWidgets import QScrollArea as QScrollArea2
+        scroll = QScrollArea2()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{border:none;background:#e8e8e8;}")
+        bar = QWidget()
+        bar.setStyleSheet("QWidget{background:#e8e8e8;border-bottom:1px solid #c0c0c0;}")
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(8, 2, 8, 2)
+        blay.setSpacing(4)
+        scroll.setWidget(bar)
+
+        cstack = QStackedWidget()
+        cbtns: list[QPushButton] = []
+        for i, cl in enumerate(config_labels):
+            te = QTextEdit()
+            te.setReadOnly(True)
+            te.setFont(self._make_font("Microsoft YaHei", 11))
+            te.setStyleSheet(self.TEXT_STYLE)
+            te.setPlainText("\n".join(config_contents.get(cl, [])))
+            cstack.addWidget(te)
+            btn = QPushButton(cl)
+            btn.setCheckable(True)
+            btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
+                              "border-radius:4px;padding:4px 10px;font-size:11px;}"
+                              "QPushButton:hover{background:#d0d0d0;color:#333;}"
+                              "QPushButton:checked{background:#0078d4;color:#fff;}")
+            btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
+            blay.addWidget(btn)
+            cbtns.append(btn)
+        blay.addStretch()
+        if cbtns:
+            cbtns[0].setChecked(True)
+            cstack.setCurrentIndex(0)
+        layout.addWidget(scroll)
+        layout.addWidget(cstack, stretch=1)
         return container
 
     def _clear_pages(self) -> None:

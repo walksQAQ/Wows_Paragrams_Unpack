@@ -1,4 +1,4 @@
-"""
+﻿"""
 ShipPresenter —— 从结构化数据库表组装舰船显示数据（新架构）。
 """
 
@@ -745,31 +745,30 @@ class ShipPresenter(BasePresenter):
 
         # 构建次级菜单内容：sub_labels + sub_contents
         sub_labels: list[str] = []
-        sub_contents: dict[str, list[str]] = {}
+        sub_contents: dict = {}
         for ptype in ("Fighter", "DiveBomber", "TorpedoBomber", "SkipBomber", "其他"):
             rows = by_type.get(ptype)
             if not rows:
                 continue
             label = TYPE_LABEL.get(ptype, ptype)
             sub_labels.append(label)
-            lines: list[str] = []
-            # 按 config_prefix 分组（原始模块 key 前缀如 AB1, AB2）
+            # 按 config_prefix 分组
             prefix_map: dict[str, list] = {}
             for r in rows:
                 cg = r.get('config_group') or ""
                 prefix_map.setdefault(cg, []).append(r)
             cg_keys = sorted(prefix_map.keys(), key=lambda x: (x == "", x))
-            for cg_idx, cg in enumerate(cg_keys):
-                if cg_idx > 0:
-                    lines.append("")
-                    lines.append("")
-                    lines.append("")
+            config_labels: list[str] = []
+            config_contents: dict[str, list[str]] = {}
+            for cg in cg_keys:
+                cg_label = f"{cg} 配置"
+                config_labels.append(cg_label)
+                clines: list[str] = []
                 group = prefix_map[cg]
-                lines.append(f"  [{cg} 配置]")
                 for p in group:
                     pn = p.get('plane_name', '')
                     display_name = self.resolve_plane(pn)
-                    lines.append(f"    - {display_name}")
+                    clines.append(f"    飞机型号: {display_name}")
                     # plane_basic_info
                     pi = conn.execute(
                         "SELECT * FROM plane_basic_info WHERE version_code=? AND plane_id=?",
@@ -782,43 +781,43 @@ class ShipPresenter(BasePresenter):
                         if smwb:
                             max_mul = pid.get('speed_max_mult')
                             min_mul = pid.get('speed_min_mult')
-                            lines.append(f"      巡航速度: {smwb} kts")
+                            clines.append(f"      巡航速度: {smwb} kts")
                             if max_mul:
-                                lines.append(f"      最大速度: {smwb * max_mul:.1f} kts")
+                                clines.append(f"      最大速度: {smwb * max_mul:.1f} kts")
                             if min_mul:
-                                lines.append(f"      最小速度: {smwb * min_mul:.1f} kts")
+                                clines.append(f"      最小速度: {smwb * min_mul:.1f} kts")
                         else:
-                            if pid.get('max_speed'): lines.append(f"      航速: {pid['max_speed']} kts")
-                            if pid.get('cruising_speed'): lines.append(f"      巡航速度: {pid['cruising_speed']} kts")
-                        if pid.get('hp'): lines.append(f"      单架飞机血量: {pid['hp']}")
+                            if pid.get('max_speed'): clines.append(f"      航速: {pid['max_speed']} kts")
+                            if pid.get('cruising_speed'): clines.append(f"      巡航速度: {pid['cruising_speed']} kts")
+                        if pid.get('hp'): clines.append(f"      单架飞机血量: {pid['hp']}")
                         ac = pid.get('attack_count') or 0
                         ai = pid.get('attack_interval') or 0
                         if ac:
-                            lines.append(f"      载弹量: {ac}")
-                        if pid.get('attack_cooldown'): lines.append(f"      攻击冷却时间: {pid['attack_cooldown']}s")
+                            clines.append(f"      载弹量: {ac}")
+                        if pid.get('attack_cooldown'): clines.append(f"      攻击冷却时间: {pid['attack_cooldown']}s")
                         if pid.get('arrange_size') and pid['arrange_size'] > 0:
-                            lines.append(f"      中队规模: {pid['arrange_size']}")
+                            clines.append(f"      中队规模: {pid['arrange_size']}")
                         # 角度
-                        if pid.get('angle_of_climb'): lines.append(f"          爬升角度: {pid['angle_of_climb']}°")
-                        if pid.get('angle_of_dive'): lines.append(f"          俯冲角度: {pid['angle_of_dive']}°")
-                        if pid.get('attack_angle') is not None: lines.append(f"          攻击角度: {pid['attack_angle']}°")
+                        if pid.get('angle_of_climb'): clines.append(f"          爬升角度: {pid['angle_of_climb']}°")
+                        if pid.get('angle_of_dive'): clines.append(f"          俯冲角度: {pid['angle_of_dive']}°")
+                        if pid.get('attack_angle') is not None: clines.append(f"          攻击角度: {pid['attack_angle']}°")
                         # 散布/缩圈/时间
-                        if pid.get('preparation_time'): lines.append(f"      准备时间: {pid['preparation_time']}s")
+                        if pid.get('preparation_time'): clines.append(f"      准备时间: {pid['preparation_time']}s")
                         if pid.get('preparation_accel_increase') is not None:
-                            lines.append(f"          准备缩圈速度: {pid['preparation_accel_increase']}")
+                            clines.append(f"          准备缩圈速度: {pid['preparation_accel_increase']}")
                         if pid.get('preparation_accel_decrease') is not None:
-                            lines.append(f"          准备扩圈速度: {abs(pid['preparation_accel_decrease'])}")
-                        if pid.get('aiming_time'): lines.append(f"      瞄准时间: {pid['aiming_time']}s")
+                            clines.append(f"          准备扩圈速度: {abs(pid['preparation_accel_decrease'])}")
+                        if pid.get('aiming_time'): clines.append(f"      瞄准时间: {pid['aiming_time']}s")
                         if pid.get('aiming_accel_increase') is not None:
-                            lines.append(f"          瞄准缩圈速度: {pid['aiming_accel_increase']}")
+                            clines.append(f"          瞄准缩圈速度: {pid['aiming_accel_increase']}")
                         if pid.get('aiming_accel_decrease') is not None:
-                            lines.append(f"          瞄准扩圈速度: {abs(pid['aiming_accel_decrease'])}")
-                        if pid.get('flight_height'): lines.append(f"      飞行高度: {pid['flight_height']}")
+                            clines.append(f"          瞄准扩圈速度: {abs(pid['aiming_accel_decrease'])}")
+                        if pid.get('flight_height'): clines.append(f"      飞行高度: {pid['flight_height']}")
                         # 编队/燃料
-                        if pid.get('attacker_size'): lines.append(f"      攻击编队大小: {pid['attacker_size']}")
-                        if pid.get('num_planes_in_squadron'): lines.append(f"      中队飞机数量: {pid['num_planes_in_squadron']}")
+                        if pid.get('attacker_size'): clines.append(f"      攻击编队大小: {pid['attacker_size']}")
+                        if pid.get('num_planes_in_squadron'): clines.append(f"      中队飞机数量: {pid['num_planes_in_squadron']}")
                         if pid.get('post_attack_invulnerability_duration'):
-                            lines.append(f"      扫射时间: {pid['post_attack_invulnerability_duration']}s")
+                            clines.append(f"      扫射时间: {pid['post_attack_invulnerability_duration']}s")
                         # 散布椭圆
                         fh = pid.get('flight_height')
                         aa = pid.get('attack_angle')
@@ -842,24 +841,23 @@ class ShipPresenter(BasePresenter):
                                 return length, width
                             base_l, base_w = _spread_base(oss_y, oss_x, fh)
                             base_il, base_iw = _spread_base(iss_y, iss_x, fh)
-                            lines.append(f"      最大外圈: {base_l * maxs_x}x{base_w * maxs_x}")
-                            lines.append(f"      最小外圈: {base_l * mins_x}x{base_w * mins_x}")
                             if ibp is not None:
-                                lines.append(f"      核心投弹: {int(ibp)}%")
-                            lines.append(f"      最大内圈: {base_il * maxs_x}x{base_iw * maxs_x}")
-                            lines.append(f"      最小内圈: {base_il * mins_x}x{base_iw * mins_x}")
+                                clines.append(f"      核心投弹: {int(ibp)}%")
+                            clines.append(f"      散布相关:")
+                            clines.append(f"          最大外圈: {base_l * maxs_x}x{base_w * maxs_x}")
+                            clines.append(f"          最小外圈: {base_l * mins_x}x{base_w * mins_x}")
+                            clines.append(f"          最大内圈: {base_il * maxs_x}x{base_iw * maxs_x}")
+                            clines.append(f"          最小内圈: {base_il * mins_x}x{base_iw * mins_x}")
                         # 机库
-                        hs_parts = []
+                        clines.append(f"      机库:")
                         if pid.get('hangar_max_value') is not None:
-                            hs_parts.append(f"最大{pid['hangar_max_value']}")
+                            clines.append(f"        最大可用数量: {pid['hangar_max_value']} 架")
                         if pid.get('hangar_start_value') is not None:
-                            hs_parts.append(f"开局{pid['hangar_start_value']}")
+                            clines.append(f"        开局可用数量: {pid['hangar_start_value']} 架")
                         if pid.get('hangar_restore_amount') is not None:
-                            hs_parts.append(f"每次整备{pid['hangar_restore_amount']}架")
+                            clines.append(f"        每次整备数量: {pid['hangar_restore_amount']}架")
                         if pid.get('hangar_time_to_restore') is not None:
-                            hs_parts.append(f"每次整备{pid['hangar_time_to_restore']}s")
-                        if hs_parts:
-                            lines.append(f"      机库: {' '.join(hs_parts)}")
+                            clines.append(f"        每次整备时间: {pid['hangar_time_to_restore']} s")
                         # 用 bomb_name 作为弹药回退
                         bname = pid.get('bomb_name') or ""
                     else:
@@ -875,40 +873,40 @@ class ShipPresenter(BasePresenter):
                         if pbi:
                             species = pbi['species'] or ""
                             atype = pbi['ammo_type'] or ""
-                            lines.append(f"      ── 弹药: {species} ({atype}) ──")
+                            clines.append(f"      ── 弹药: {species} ({atype}) ──")
                             if species in ("Bullet", "HE"):
                                 be = conn.execute(
                                     "SELECT alpha_damage, bullet_krupp, bullet_speed, explosion_radius, burn_prob "
                                     "FROM projectile_bullet_ext WHERE version_code=? AND projectile_id=?",
                                     (vc, proj_id)).fetchone()
                                 if be:
-                                    if be['alpha_damage']: lines.append(f"        标伤: {be['alpha_damage']:.0f}")
-                                    if be['bullet_krupp']: lines.append(f"        穿深: {be['bullet_krupp']:.0f}")
-                                    if be['bullet_speed']: lines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
-                                    if be['explosion_radius']: lines.append(f"        爆炸半径: {be['explosion_radius']:.1f} m")
-                                    if be['burn_prob'] is not None: lines.append(f"        起火概率: {be['burn_prob']*100:.1f}%")
+                                    if be['alpha_damage']: clines.append(f"        标伤: {be['alpha_damage']:.0f}")
+                                    if be['bullet_krupp']: clines.append(f"        穿深: {be['bullet_krupp']:.0f}")
+                                    if be['bullet_speed']: clines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
+                                    if be['explosion_radius']: clines.append(f"        爆炸半径: {be['explosion_radius']:.1f} m")
+                                    if be['burn_prob'] is not None: clines.append(f"        起火概率: {be['burn_prob']*100:.1f}%")
                             elif species == "Bomb":
                                 be = conn.execute(
                                     "SELECT alpha_damage, damage, bullet_krupp, bullet_speed, explosion_radius, burn_prob "
                                     "FROM projectile_bomb_ext WHERE version_code=? AND projectile_id=?",
                                     (vc, proj_id)).fetchone()
                                 if be:
-                                    if be['alpha_damage']: lines.append(f"        标伤: {be['alpha_damage']:.0f}")
-                                    if be['bullet_krupp']: lines.append(f"        穿深: {be['bullet_krupp']:.0f}")
-                                    if be['bullet_speed']: lines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
-                                    if be['explosion_radius']: lines.append(f"        爆炸半径: {be['explosion_radius']:.1f} m")
-                                    if be['burn_prob'] is not None: lines.append(f"        起火概率: {be['burn_prob']*100:.1f}%")
+                                    if be['alpha_damage']: clines.append(f"        标伤: {be['alpha_damage']:.0f}")
+                                    if be['bullet_krupp']: clines.append(f"        穿深: {be['bullet_krupp']:.0f}")
+                                    if be['bullet_speed']: clines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
+                                    if be['explosion_radius']: clines.append(f"        爆炸半径: {be['explosion_radius']:.1f} m")
+                                    if be['burn_prob'] is not None: clines.append(f"        起火概率: {be['burn_prob']*100:.1f}%")
                             elif species == "Rocket":
                                 re = conn.execute(
                                     "SELECT alpha_damage, damage, bullet_krupp, bullet_speed, explosion_radius, burn_prob "
                                     "FROM projectile_rocket_ext WHERE version_code=? AND projectile_id=?",
                                     (vc, proj_id)).fetchone()
                                 if re:
-                                    if re['alpha_damage']: lines.append(f"        标伤: {re['alpha_damage']:.0f}")
-                                    if re['bullet_krupp']: lines.append(f"        穿深: {re['bullet_krupp']:.0f}")
-                                    if re['bullet_speed']: lines.append(f"        弹速: {re['bullet_speed']:.0f} m/s")
-                                    if re['explosion_radius']: lines.append(f"        爆炸半径: {re['explosion_radius']:.1f} m")
-                                    if re['burn_prob'] is not None: lines.append(f"        起火概率: {re['burn_prob']*100:.1f}%")
+                                    if re['alpha_damage']: clines.append(f"        标伤: {re['alpha_damage']:.0f}")
+                                    if re['bullet_krupp']: clines.append(f"        穿深: {re['bullet_krupp']:.0f}")
+                                    if re['bullet_speed']: clines.append(f"        弹速: {re['bullet_speed']:.0f} m/s")
+                                    if re['explosion_radius']: clines.append(f"        爆炸半径: {re['explosion_radius']:.1f} m")
+                                    if re['burn_prob'] is not None: clines.append(f"        起火概率: {re['burn_prob']*100:.1f}%")
                             elif species in ("Torpedo", "TorpedoBomber"):
                                 te = conn.execute(
                                     "SELECT alpha_damage, damage, torpedo_speed, torpedo_max_dist, torpedo_visibility, "
@@ -930,19 +928,19 @@ class ShipPresenter(BasePresenter):
                                         dtype = "深水鱼雷"
                                     else:
                                         dtype = "鱼雷"
-                                    lines.append(f"        类型: {dtype}")
+                                    clines.append(f"        类型: {dtype}")
                                     ad = te['alpha_damage'] or 0
-                                    if ad: lines.append(f"        标伤: {ad * 0.33:.0f}")
+                                    if ad: clines.append(f"        标伤: {ad * 0.33:.0f}")
                                     if is_deep and te['deep_water_ignore_classes']:
-                                        lines.append(f"        无法攻击目标: {te['deep_water_ignore_classes']}")
-                                    if te['torpedo_speed']: lines.append(f"        航速: {te['torpedo_speed']:.0f} kts")
-                                    if te['torpedo_max_dist'] is not None: lines.append(f"        最大射程: {(te['torpedo_max_dist'] * 30) / 1000:.1f} km")
+                                        clines.append(f"        无法攻击目标: {te['deep_water_ignore_classes']}")
+                                    if te['torpedo_speed']: clines.append(f"        航速: {te['torpedo_speed']:.0f} kts")
+                                    if te['torpedo_max_dist'] is not None: clines.append(f"        最大射程: {(te['torpedo_max_dist'] * 30) / 1000:.1f} km")
                                     fg = te['flood_generation'] or 0
-                                    if fg: lines.append(f"        基础漏水率: {fg * 100:.0f}%")
-                                    if te['torpedo_visibility']: lines.append(f"        被发现距离: {te['torpedo_visibility']:.2f} km")
-                                    if te['torpedo_arming_time']: lines.append(f"        鱼雷触发延迟: {te['torpedo_arming_time']:.1f} s")
+                                    if fg: clines.append(f"        基础漏水率: {fg * 100:.0f}%")
+                                    if te['torpedo_visibility']: clines.append(f"        被发现距离: {te['torpedo_visibility']:.2f} km")
+                                    if te['torpedo_arming_time']: clines.append(f"        鱼雷触发延迟: {te['torpedo_arming_time']:.1f} s")
                                     if is_guided:
-                                        if sge['max_yaw']: lines.append(f"        最大转向角: {sge['max_yaw']}°")
+                                        if sge['max_yaw']: clines.append(f"        最大转向角: {sge['max_yaw']}°")
                                         drop_parts = []
                                         for ship_cls, col in [("航母", "drop_dist_aircarrier"), ("战列舰", "drop_dist_battleship"),
                                                               ("巡洋舰", "drop_dist_cruiser"), ("驱逐舰", "drop_dist_destroyer"),
@@ -951,7 +949,7 @@ class ShipPresenter(BasePresenter):
                                             if val is not None:
                                                 drop_parts.append(f"{ship_cls}: {val} m")
                                         if drop_parts:
-                                            lines.append(f"        放弃追踪距离: {' | '.join(drop_parts)}")
+                                            clines.append(f"        放弃追踪距离: {' | '.join(drop_parts)}")
                     # 飞机携带的消耗品（从 ability_slot_0~4 读取）
                     for si in range(5):
                         slot_val = pid.get(f'ability_slot_{si}')
@@ -961,7 +959,7 @@ class ShipPresenter(BasePresenter):
                         aid = parts[0]
                         variant = parts[1] if len(parts) > 1 else ""
                         aname = self.resolve_name("ability", aid)
-                        lines.append(f"      ── 消耗品: {aname} ──")
+                        clines.append(f"      ── 消耗品: {aname} ──")
                         if variant:
                             cfg = conn.execute(
                                 "SELECT consumable_type, extra_json FROM consumable_configs "
@@ -978,47 +976,48 @@ class ShipPresenter(BasePresenter):
                                 cd_time = cd.get('reloadTime', 0)
                                 wt = cd.get('workTime', 0)
                                 auto = cd.get('isAutoConsumable', False)
-                                lines.append(f"        类型: {ct}")
+                                clines.append(f"        类型: {ct}")
                                 if num is not None:
-                                    lines.append(f"        数量: {'无限' if num == -1 else num}")
+                                    clines.append(f"        数量: {'无限' if num == -1 else num}")
                                 if auto:
-                                    lines.append(f"        自动使用: 是")
+                                    clines.append(f"        自动使用: 是")
                                 if prep:
-                                    lines.append(f"        准备时间: {prep}s")
+                                    clines.append(f"        准备时间: {prep}s")
                                 if cd_time:
-                                    lines.append(f"        冷却时间: {cd_time}s")
+                                    clines.append(f"        冷却时间: {cd_time}s")
                                 if wt:
-                                    lines.append(f"        持续时间: {wt}s")
-                                lines.append(f"        消耗品效果:")
+                                    clines.append(f"        持续时间: {wt}s")
+                                clines.append(f"        消耗品效果:")
                                 if ct == "crashCrew":
-                                    lines.append(f"          扑灭起火、清除进水、并修复受损配件。")
+                                    clines.append(f"          扑灭起火、清除进水、并修复受损配件。")
                                 elif ct == "healForsage":
                                     bc = cd.get('boostCoeff', 0)
                                     if bc:
-                                        lines.append(f"          加速倍率: {bc}倍")
+                                        clines.append(f"          加速倍率: {bc}倍")
                                 elif ct == "callFighters":
                                     fn = cd.get('fightersName', '')
                                     if fn:
                                         fdisp = self.resolve_name('plane', fn) or fn
-                                        lines.append(f"          战斗机名称: {fdisp}")
+                                        clines.append(f"          战斗机名称: {fdisp}")
                                     fn2 = cd.get('fightersNum', 0)
                                     is_inter = cd.get('isInterceptor', False)
-                                    lines.append(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}")
+                                    clines.append(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}")
                                     dog = cd.get('dogFightTime', 0)
                                     fly = cd.get('flyAwayTime', 0)
                                     if dog or fly:
-                                        lines.append(f"          狗斗: {dog}s | 离开: {fly}s")
+                                        clines.append(f"          狗斗: {dog}s | 离开: {fly}s")
                                     rk = cd.get('distanceToKill', 0)
                                     if rk:
-                                        lines.append(f"          巡逻半径: {rk/10:.1f}km")
+                                        clines.append(f"          巡逻半径: {rk/10:.1f}km")
                                 elif ct == "regenerateHealth":
                                     rr = cd.get('regenerationRate', 0)
                                     if rr:
-                                        lines.append(f"          每秒回复血量: {rr*100:.0f}%")
+                                        clines.append(f"          每秒回复血量: {rr*100:.0f}%")
                                     delay = cd.get('regenerationDelay', 0)
                                     if delay:
-                                        lines.append(f"          回复延迟: {delay}s")
-            sub_contents[label] = lines
+                                        clines.append(f"          回复延迟: {delay}s")
+                config_contents[cg_label] = clines
+            sub_contents[label] = {"config_labels": config_labels, "config_contents": config_contents}
 
         self._aircraft_sub_info = {"舰载机": {"sub_labels": sub_labels, "sub_contents": sub_contents}}
         return self.make_section("舰载机", [])
