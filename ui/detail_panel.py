@@ -137,12 +137,12 @@ class DetailPanel(QWidget):
                     n = item.get("name", "")
                     v = item.get("value", "")
                     if n:
-                        lines.append(f"  {n}")
+                        lines.append(n)
                     elif v:
                         lines.append(v)
                     else:
                         lines.append("")
-                te.setPlainText("\n".join(lines))
+                te.setPlainText(self._strip_indent("\n".join(lines)))
                 idx = self.stack.addWidget(te)
                 self._section_page_indices[label] = idx
         if self._section_page_indices:
@@ -180,7 +180,7 @@ class DetailPanel(QWidget):
                 te.setReadOnly(True)
                 te.setFont(self._make_font("Microsoft YaHei", 11))
                 te.setStyleSheet(self.TEXT_STYLE)
-                te.setPlainText("\n".join(content) if isinstance(content, list) else "")
+                te.setPlainText(self._strip_indent("\n".join(content) if isinstance(content, list) else ""))
                 stack.addWidget(te)
             btn = QPushButton(sl)
             btn.setCheckable(True)
@@ -228,7 +228,8 @@ class DetailPanel(QWidget):
             te.setReadOnly(True)
             te.setFont(self._make_font("Microsoft YaHei", 11))
             te.setStyleSheet(self.TEXT_STYLE)
-            te.setPlainText("\n".join(config_contents.get(cl, [])))
+            txt = "\n".join(config_contents.get(cl, []))
+            te.setPlainText(self._strip_indent(txt))
             cstack.addWidget(te)
             btn = QPushButton(cl)
             btn.setCheckable(True)
@@ -246,6 +247,18 @@ class DetailPanel(QWidget):
         layout.addWidget(scroll)
         layout.addWidget(cstack, stretch=1)
         return container
+
+    @staticmethod
+    def _strip_indent(text: str) -> str:
+        """统一去掉所有行的公共前导缩进"""
+        lines = text.split("\n")
+        indents = [len(l) - len(l.lstrip()) for l in lines if l.strip()]
+        if not indents:
+            return text
+        min_indent = min(indents)
+        if min_indent == 0:
+            return text
+        return "\n".join(l[min_indent:] if l.strip() else l for l in lines)
 
     def _clear_pages(self) -> None:
         """清除所有页面"""

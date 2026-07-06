@@ -234,10 +234,12 @@ CREATE TABLE IF NOT EXISTS ship_module_aa (
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
     aura_name TEXT,
+    type TEXT,
     aura_type TEXT,
     aura_dps REAL,
     bubble_damage REAL,
     explosion_count REAL,
+    hit_chance REAL,
     max_distance REAL,
     min_distance REAL,
     aa_gun_name TEXT,
@@ -254,6 +256,17 @@ CREATE TABLE IF NOT EXISTS ship_module_depth_charge (
     module_key TEXT NOT NULL,
     gun_name TEXT,
     count INTEGER,
+    reload_time REAL,
+    shot_delay REAL,
+    max_packs INTEGER,
+    num_shots INTEGER,
+    num_bombs INTEGER,
+    projectile_id TEXT,
+    damage REAL,
+    dc_speed REAL,
+    dc_timer REAL,
+    dc_max_depth REAL,
+    depth_splash_size REAL,
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -411,6 +424,8 @@ CREATE TABLE IF NOT EXISTS projectile_torpedo_ext (
     torpedo_visibility REAL,
     alert_dist REAL,                 -- 强制发现警报距离
     torpedo_arming_time REAL,
+    burn_prob REAL DEFAULT 0,            -- 热能鱼雷点火率
+    uw_critical REAL DEFAULT 0,          -- 基础漏水率（uwCritical, 0~1）
     is_deep_water INTEGER DEFAULT 0,
     deep_water_ignore_classes TEXT,
     PRIMARY KEY (version_code, projectile_id),
@@ -511,6 +526,7 @@ CREATE TABLE IF NOT EXISTS projectile_bomb_ext (
     flight_time_coef REAL,
     -- 跳弹轰炸机 (Skip Bomb) 专属
     skip_effect TEXT,
+    max_skip_angle REAL,              -- 最大弹跳触发角度
     skips_json TEXT,                   -- 跳跃减速矩阵 JSON
     -- AP 航弹动态穿深
     bullet_krupp REAL,
@@ -604,7 +620,12 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     max_spread_y REAL,
     min_spread_x REAL,
     min_spread_y REAL,
+    max_spread REAL,                   -- 单值散布（鱼雷轰炸机等）
+    min_spread REAL,                   -- 单值散布（鱼雷轰炸机等）
     inner_bombs_percentage REAL,
+    visibility_factor REAL,              -- 飞机被侦测距离
+    skip_height REAL,                     -- 跳弹轰炸机：弹跳高度/距离
+    aiming_height REAL,                   -- 跳弹轰炸机：瞄准视角基准高度
     post_attack_invulnerability_duration REAL,
     ability_slot_0 TEXT,
     ability_slot_1 TEXT,

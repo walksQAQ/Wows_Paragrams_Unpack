@@ -144,9 +144,9 @@ PROJECTILE_EXT_MAP = {
         "cols": ("bullet_diameter, alpha_damage, damage, flood_generation, "
                  "affected_by_ptz, apply_ptz_coeff, "
                  "torpedo_max_dist, torpedo_speed, torpedo_visibility, "
-                 "alert_dist, torpedo_arming_time, "
+                 "alert_dist, torpedo_arming_time, burn_prob, uw_critical, "
                  "is_deep_water, deep_water_ignore_classes"),
-        "phs": 13,
+        "phs": 15,
         "fields": (
             "bulletDiametr", "alphaDamage", "damage",
             lambda r: _bn(r.get("floodGeneration")),
@@ -154,6 +154,7 @@ PROJECTILE_EXT_MAP = {
             lambda r: _bn(r.get("applyPTZCoeff")),
             "maxDist", "speed", "visibilityFactor",
             "alertDist", "armingTime",
+            "burnProb", "uwCritical",
             lambda r: _bn(r.get("isDeepWater")),
             lambda r: r.get("deepWaterIgnoreClasses") or ""
         ),
@@ -168,14 +169,14 @@ PROJECTILE_EXT_MAP = {
         "table": "projectile_bomb_ext",
         "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
                  "alpha_piercing_he, burn_prob, explosion_radius, alpha_piercing_cs, "
-                 "flight_time_coef, skip_effect, skips_json, "
+                 "flight_time_coef, skip_effect, max_skip_angle, skips_json, "
                  "bullet_krupp, bullet_always_ricochet_at, bullet_ricochet_at, "
                  "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max, is_bomb"),
-        "phs": 20,
+        "phs": 21,
         "fields": (
             "alphaDamage", "damage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
             "alphaPiercingHE", "burnProb", "explosionRadius", "alphaPiercingCS",
-            "flightTimeCoef", "skipEffect",
+            "flightTimeCoef", "skipEffect", "maxSkipAngle",
             lambda r: _json_dumps(r.get("skips") or r.get("skipParams")),
             "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
             "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
@@ -186,14 +187,14 @@ PROJECTILE_EXT_MAP = {
         "table": "projectile_bomb_ext",
         "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
                  "alpha_piercing_he, burn_prob, explosion_radius, alpha_piercing_cs, "
-                 "flight_time_coef, skip_effect, skips_json, "
+                 "flight_time_coef, skip_effect, max_skip_angle, skips_json, "
                  "bullet_krupp, bullet_always_ricochet_at, bullet_ricochet_at, "
                  "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max, is_bomb"),
-        "phs": 20,
+        "phs": 21,
         "fields": (
             "alphaDamage", "damage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
             "alphaPiercingHE", "burnProb", "explosionRadius", "alphaPiercingCS",
-            "flightTimeCoef", "skipEffect",
+            "flightTimeCoef", "skipEffect", "maxSkipAngle",
             lambda r: _json_dumps(r.get("skips") or r.get("skipParams")),
             "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
             "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
@@ -346,7 +347,7 @@ class AnalysisStore:
                 for sk, sv in module_data.items():
                     if not isinstance(sv, dict):
                         continue
-                    if any(kw in sk for kw in ("Aura", "Far", "Medium", "Near")):
+                    if any(kw in sk for kw in ("Aura", "Far", "Medium", "Med", "Near")):
                         is_bubble = "_Bubbles" in sk
                         area_dmg = _v(sv.get("areaDamage"), 0)
                         ap = _v(sv.get("areaDamagePeriod"), 1)
@@ -356,10 +357,14 @@ class AnalysisStore:
                         bubble_total = (_v(sv.get("innerBubbleCount"), 0) or 0) + (_v(sv.get("outerBubbleCount"), 0) or 0)
                         for lt in target_letters:
                             cs = combined_stats[lt]
+                            atype = sv.get("type", "").capitalize()
                             cs.setdefault("aa", []).append({
-                                "aura_name": sv.get("name", sk), "aura_type": "bubble" if is_bubble else "continuous",
+                                "aura_name": f"{sv.get('name', sk)}_{atype}" if atype else sv.get("name", sk),
+                                "aura_type": "bubble" if is_bubble else "continuous",
+                                "aura_type_raw": sv.get("type", ""),
                                 "aura_dps": round(dps, 1), "bubble_damage": round(bd, 1),
                                 "explosion_count": bubble_total,
+                                "hit_chance": _v(sv.get("hitChance")),
                                 "max_distance": _v(sv.get("maxDistance"), 0),
                                 "min_distance": _v(sv.get("minDistance"), 0),
                                 "aa_gun_name": None, "aa_gun_count": None,
@@ -421,7 +426,17 @@ class AnalysisStore:
                                         "aura_name": None, "aura_type": None, "aura_dps": None, "bubble_damage": None,
                                     })
                             elif hp_cat == "DepthChargeGuns":
-                                cs.setdefault("depth_charge", []).append({"gun_name": gn, "count": 1})
+                                # 模块级数据
+                                ammo_id = (sv.get("ammoList") or [None])[0]
+                                cs.setdefault("depth_charge", []).append({
+                                    "gun_name": gn, "count": 1,
+                                    "reload_time": _v(module_data.get("reloadTime")),
+                                    "shot_delay": _v(module_data.get("shotDelay")),
+                                    "max_packs": _v(module_data.get("maxPacks")),
+                                    "num_shots": _v(module_data.get("numShots")),
+                                    "num_bombs": _v(sv.get("numBombs")),
+                                    "ammo_id": ammo_id,
+                                })
                         break
 
                 if current_cat == "Artillery":
@@ -640,24 +655,60 @@ class AnalysisStore:
         for (n, t, d, bd), c in ac.items():
             # 取第一个匹配项的扩展字段
             src = next((i for i in items if i.get("aura_name") == n), {})
-            rows.append((version_code, ship_id, letter, n, n, t, d, bd,
-                         src.get("explosion_count"), src.get("max_distance"), src.get("min_distance"),
+            rows.append((version_code, ship_id, letter, n, n, src.get("aura_type_raw", ""), t, d, bd,
+                         src.get("explosion_count"), src.get("hit_chance"),
+                         src.get("max_distance"), src.get("min_distance"),
                          None, c))
         for gn, c in gc.items():
-            rows.append((version_code, ship_id, letter, gn, None, None, None, None, None, None, None, gn, c))
+            rows.append((version_code, ship_id, letter, gn, None, None, None, None, None, None, None, None, None, gn, c))
         if rows:
-            conn.executemany("INSERT OR REPLACE INTO ship_module_aa (version_code, ship_id, config_group, module_key, aura_name, aura_type, aura_dps, bubble_damage, explosion_count, max_distance, min_distance, aa_gun_name, aa_gun_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.executemany("INSERT OR REPLACE INTO ship_module_aa (version_code, ship_id, config_group, module_key, aura_name, type, aura_type, aura_dps, bubble_damage, explosion_count, hit_chance, max_distance, min_distance, aa_gun_name, aa_gun_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             for row in rows:
                 self._rel(ship_id, row[3], "airDefense", letter, 1, version_code)
 
     def _write_depth_charge(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
-        c = Counter(i.get("gun_name") for i in cs.get("depth_charge", []) if i.get("gun_name"))
-        if c:
-            conn.executemany("INSERT OR REPLACE INTO ship_module_depth_charge (version_code, ship_id, config_group, module_key, gun_name, count) VALUES (?,?,?,?,?,?)",
-                             [(version_code, ship_id, letter, n, n, cnt) for n, cnt in c.items()])
-            for n, cnt in c.items():
-                self._rel(ship_id, n, "depthCharge", letter, cnt, version_code)
+        items = cs.get("depth_charge", [])
+        if not items:
+            return
+        conn.execute(
+            "DELETE FROM ship_module_depth_charge WHERE version_code=? AND ship_id=? AND config_group=?",
+            (version_code, ship_id, letter))
+        rows = []
+        for item in items:
+            gn = item.get("gun_name")
+            if not gn:
+                continue
+            cnt = item.get("count", 0) or 0
+            aid = item.get("ammo_id")
+            # 查询弹药扩展数据
+            de = None
+            if aid:
+                de = conn.execute(
+                    "SELECT damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size "
+                    "FROM projectile_depth_charge_ext WHERE version_code=? AND projectile_id=?",
+                    (version_code, aid)).fetchone()
+            rows.append((
+                version_code, ship_id, letter, gn, gn, cnt,
+                _v(item.get("reload_time")), _v(item.get("shot_delay")),
+                item.get("max_packs"), item.get("num_shots"),
+                item.get("num_bombs"),
+                aid,
+                de["damage"] if de else None,
+                de["dc_speed"] if de else None,
+                de["dc_timer"] if de else None,
+                de["dc_max_depth"] if de else None,
+                de["depth_splash_size"] if de else None,
+            ))
+        if rows:
+            conn.executemany(
+                "INSERT OR REPLACE INTO ship_module_depth_charge "
+                "(version_code, ship_id, config_group, module_key, gun_name, count, "
+                "reload_time, shot_delay, max_packs, num_shots, num_bombs, "
+                "projectile_id, damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            for row in rows:
+                self._rel(ship_id, row[3], "depthCharge", letter, 1, version_code)
 
     def _write_aircraft(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         items = cs.get("aircraft", [])
@@ -834,13 +885,15 @@ class AnalysisStore:
                "outer_salvo_size_x, outer_salvo_size_y, "
                "inner_salvo_size_x, inner_salvo_size_y, "
                "max_spread_x, max_spread_y, min_spread_x, min_spread_y, "
-               "inner_bombs_percentage, "
+               "max_spread, min_spread, "
+               "inner_bombs_percentage, visibility_factor, "
+               "skip_height, aiming_height, "
                "post_attack_invulnerability_duration, "
                "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4) "
-               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?)")
+               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "?,?,?,?,?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
@@ -878,7 +931,12 @@ class AnalysisStore:
                       _unwrap_list(raw_data.get("maxSpread"), 1),
                       _unwrap_list(raw_data.get("minSpread"), 0),
                       _unwrap_list(raw_data.get("minSpread"), 1),
+                      _v(raw_data.get("maxSpread")) if not isinstance(raw_data.get("maxSpread"), (list, tuple)) else None,
+                      _v(raw_data.get("minSpread")) if not isinstance(raw_data.get("minSpread"), (list, tuple)) else None,
                       _v(raw_data.get("innerBombsPercentage")),
+                      _v(raw_data.get("visibilityFactor")),
+                      _v(raw_data.get("skipHeight")),
+                      _v(raw_data.get("aimingHeight")),
                       _v(raw_data.get("postAttackInvulnerabilityDuration")),
                       _ability_str(raw_data.get("PlaneAbilities"), 0),
                       _ability_str(raw_data.get("PlaneAbilities"), 1),

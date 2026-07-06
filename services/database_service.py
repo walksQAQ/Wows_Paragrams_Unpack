@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 8
+DB_SCHEMA_VERSION = 10
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -139,6 +139,9 @@ class DatabaseManager:
                 ("ability_slot_2", "TEXT"), ("ability_slot_3", "TEXT"),
                 ("ability_slot_4", "TEXT"),
                 ("plane_level", "INTEGER"),
+                ("max_spread", "REAL"), ("min_spread", "REAL"),
+                ("visibility_factor", "REAL"),
+                ("skip_height", "REAL"), ("aiming_height", "REAL"),
             ]
             for col_name, col_type in expected:
                 if col_name not in existing:
@@ -153,7 +156,7 @@ class DatabaseManager:
         # ── 迁移：补齐 ship_module_aa 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_aa)").fetchall()}
-            for col_name, col_type in [("explosion_count", "REAL"), ("max_distance", "REAL"), ("min_distance", "REAL")]:
+            for col_name, col_type in [("explosion_count", "REAL"), ("hit_chance", "REAL"), ("max_distance", "REAL"), ("min_distance", "REAL"), ("type", "TEXT")]:
                 if col_name not in existing:
                     try:
                         self._conn.execute(f"ALTER TABLE ship_module_aa ADD COLUMN {col_name} {col_type}")
@@ -176,10 +179,47 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 ship_module_depth_charge 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_depth_charge)").fetchall()}
+            for col_name, col_type in [("reload_time", "REAL"), ("shot_delay", "REAL"),
+                                       ("max_packs", "INTEGER"), ("num_shots", "INTEGER"),
+                                       ("num_bombs", "INTEGER"), ("projectile_id", "TEXT"),
+                                       ("damage", "REAL"), ("dc_speed", "REAL"),
+                                       ("dc_timer", "REAL"), ("dc_max_depth", "REAL"),
+                                       ("depth_splash_size", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_depth_charge ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：清理废弃的 mod_concealment_config 表 ──
         try:
             self._conn.execute("DROP TABLE IF EXISTS mod_concealment_config")
             self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 projectile_torpedo_ext 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_torpedo_ext)").fetchall()}
+            for col, typ in [("burn_prob", "REAL DEFAULT 0"), ("uw_critical", "REAL DEFAULT 0")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE projectile_torpedo_ext ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 projectile_bomb_ext 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_bomb_ext)").fetchall()}
+            if "max_skip_angle" not in existing:
+                self._conn.execute("ALTER TABLE projectile_bomb_ext ADD COLUMN max_skip_angle REAL")
+                self._conn.commit()
         except Exception:
             pass
 
@@ -472,7 +512,6 @@ class DatabaseManager:
                         "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)", items)
                     self._conn.commit()
                     stats[fn] = len(items)
-                fp.unlink(missing_ok=True)
             except Exception:
                 continue
         return stats
@@ -482,7 +521,6 @@ class DatabaseManager:
         if not fp.exists():
             return 0
         text = fp.read_text(encoding="utf-8")
-        fp.unlink(missing_ok=True)  # 内容已读入内存，提前删除避免残留
         items = []
         blocks = re.split(r'\n(?=msgid)', text)
         for block in blocks:
