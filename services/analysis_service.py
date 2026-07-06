@@ -162,7 +162,7 @@ PROJECTILE_EXT_MAP = {
         "table": "projectile_depth_charge_ext",
         "cols": "damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size, depth_splash_size_to_torpedo",
         "phs": 6,
-        "fields": ("damage", "speed", "timer", "maxDepth", "depthSplashSize", "depthSplashSizeToTorpedo"),
+        "fields": ("alphaDamage", "speed", "timer", "maxDepth", "depthSplashSize", "depthSplashSizeToTorpedo"),
     },
     "Bomb": {
         "table": "projectile_bomb_ext",
@@ -324,9 +324,10 @@ class AnalysisStore:
                                 "charges": v.get("chargesNum", 0),
                                 "reload_time": v.get("reloadTime", 0),
                                 "work_time": v.get("workTime", 0),
-                                "max_range": _v(v.get("maxDist"), 0) / 1000 if v.get("maxDist") else None,
-                                "min_range": _v(v.get("minDist"), 0) / 1000 if v.get("minDist") else None,
+                                "max_range": _v(v.get("maxDist")) if v.get("maxDist") is not None else None,
+                                "min_range": _v(v.get("minDist")) if v.get("minDist") is not None else None,
                                 "armament_name": self._find_armament(v.get("planeName", "")),
+                                "support_type": v.get("uiType", ""),
                             })
                 continue
 
@@ -351,11 +352,16 @@ class AnalysisStore:
                         ap = _v(sv.get("areaDamagePeriod"), 1)
                         dps = area_dmg / ap if ap else 0
                         bd = _v(sv.get("bubbleDamage"), 0) * 2 / ap if is_bubble and ap else 0
+                        # 黑云总数 = innerBubbleCount + outerBubbleCount
+                        bubble_total = (_v(sv.get("innerBubbleCount"), 0) or 0) + (_v(sv.get("outerBubbleCount"), 0) or 0)
                         for lt in target_letters:
                             cs = combined_stats[lt]
                             cs.setdefault("aa", []).append({
                                 "aura_name": sv.get("name", sk), "aura_type": "bubble" if is_bubble else "continuous",
                                 "aura_dps": round(dps, 1), "bubble_damage": round(bd, 1),
+                                "explosion_count": bubble_total,
+                                "max_distance": _v(sv.get("maxDistance"), 0),
+                                "min_distance": _v(sv.get("minDistance"), 0),
                                 "aa_gun_name": None, "aa_gun_count": None,
                             })
                         continue
@@ -632,11 +638,15 @@ class AnalysisStore:
                 gc[item["aa_gun_name"]] += 1
         rows = []
         for (n, t, d, bd), c in ac.items():
-            rows.append((version_code, ship_id, letter, n, n, t, d, bd, None, c))
+            # 取第一个匹配项的扩展字段
+            src = next((i for i in items if i.get("aura_name") == n), {})
+            rows.append((version_code, ship_id, letter, n, n, t, d, bd,
+                         src.get("explosion_count"), src.get("max_distance"), src.get("min_distance"),
+                         None, c))
         for gn, c in gc.items():
-            rows.append((version_code, ship_id, letter, gn, None, None, None, None, gn, c))
+            rows.append((version_code, ship_id, letter, gn, None, None, None, None, None, None, None, gn, c))
         if rows:
-            conn.executemany("INSERT OR REPLACE INTO ship_module_aa (version_code, ship_id, config_group, module_key, aura_name, aura_type, aura_dps, bubble_damage, aa_gun_name, aa_gun_count) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.executemany("INSERT OR REPLACE INTO ship_module_aa (version_code, ship_id, config_group, module_key, aura_name, aura_type, aura_dps, bubble_damage, explosion_count, max_distance, min_distance, aa_gun_name, aa_gun_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             for row in rows:
                 self._rel(ship_id, row[3], "airDefense", letter, 1, version_code)
 
@@ -666,8 +676,8 @@ class AnalysisStore:
         items = cs.get("air_support", [])
         if not items:
             return
-        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, armament_name) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("armament_name")) for i in items])
+        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, armament_name, support_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("armament_name"), i.get("support_type", "")) for i in items])
         seen = set()
         for i in items:
             pn = i.get("plane_name") or ""
@@ -897,7 +907,26 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
     # ── 6. Modernization ─────────────────────────────────
 
     def store_mod(self, mod_id: str, raw_data: dict, result=None, version_code: str = ""):
-        pass
+        conn = self.conn
+        conn.execute("""INSERT OR REPLACE INTO modernization_basic_info
+            (version_code, mod_id, mod_index, mod_id_num, name,
+             cost_cr, slot, rarity, sort_index,
+             modifiers_json, excludes_json, ships_json,
+             groups_json, nations_json, shiptype_json, shiplevel_json, tags_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (version_code, mod_id,
+                      raw_data.get("index", mod_id), _i(raw_data.get("id")),
+                      raw_data.get("name", ""),
+                      raw_data.get("costCR", 0), raw_data.get("slot", 0),
+                      raw_data.get("rarity", 0), raw_data.get("sortIndex", 0),
+                      _json_dumps(raw_data.get("modifiers", {})),
+                      _json_dumps(raw_data.get("excludes", [])),
+                      _json_dumps(raw_data.get("ships", [])),
+                      _json_dumps(raw_data.get("group", [])),
+                      _json_dumps(raw_data.get("nation", [])),
+                      _json_dumps(raw_data.get("shiptype", [])),
+                      _json_dumps(raw_data.get("shiplevel", [])),
+                      _json_dumps(raw_data.get("tags", []))))
 
     # ── 7. Crew ──────────────────────────────────────────
 
@@ -1001,7 +1030,7 @@ class AnalysisService:
             total_entities = sum(len(v) for v in data_by_category.values())
             if total_entities == 0:
                 return results
-            bus.task_progress.emit(80, "预分析数据")
+            bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
             for cat_name in categories:
                 cd = data_by_category.get(cat_name)
                 if not cd:
@@ -1009,7 +1038,7 @@ class AnalysisService:
                     continue
                 items = sorted(cd.items())
                 results[cat_name] = _process_batch(items)
-            bus.task_progress.emit(95, f"分析完成: {total_processed} 实体")
+            bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
         else:
             if not split_dir.exists():
                 bus.log_message.emit("⏳ split 目录不存在，跳过预分析")
@@ -1017,7 +1046,7 @@ class AnalysisService:
             total_entities = sum(len(list((split_dir / c).glob("*.json"))) for c in categories if (split_dir / c).exists())
             if total_entities == 0:
                 return results
-            bus.task_progress.emit(80, "预分析数据")
+            bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
             for cat_name in categories:
                 cat_dir = split_dir / cat_name
                 if not cat_dir.exists():
@@ -1031,6 +1060,6 @@ class AnalysisService:
                     except Exception:
                         continue
                 results[cat_name] = _process_batch(items)
-            bus.task_progress.emit(95, f"分析完成: {total_processed} 实体")
+            bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
 
         return results

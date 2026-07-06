@@ -118,7 +118,7 @@ class TopToolbar(QWidget):
         self._disable_all()
         self._pending_process = True
         bus.task_progress.emit(0, "开始提取")
-        bus.log_message.emit("📦 步骤 1/2: 正在提取游戏数据...")
+        bus.log_message.emit("📦 步骤 1/3: 正在提取游戏数据...")
         run_extract()
 
     def _on_extract_done(self, version: str) -> None:
@@ -130,8 +130,8 @@ class TopToolbar(QWidget):
             self._enable_all()
             return
         from services.processor_service import run_process
-        bus.task_progress.emit(30, "解析数据")
-        bus.log_message.emit("📦 步骤 2/2: 正在解析数据并写入数据库...")
+        bus.task_progress.emit(30, "步骤 2/3: 解析数据")
+        bus.log_message.emit("📦 步骤 2/3: 正在解析数据并写入数据库...")
         run_process()
 
     def _on_lang(self):

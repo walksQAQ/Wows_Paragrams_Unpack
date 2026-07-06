@@ -64,7 +64,7 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
         if not version_code:
             version_code = db.get_latest_version_code() or ""
         svc.precompute_all(db, data_by_category=data_by_category, version_code=version_code)
-        bus.task_progress.emit(100, "预分析完成")
+        bus.task_progress.emit(100, "步骤 3/3: 预分析完成")
     except Exception as e:
         bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
 
@@ -78,14 +78,14 @@ def run_process() -> None:
     def _finalize_import(db: DatabaseManager, db_batch: list, data_by_category: dict,
                           data_dir, version_code: str) -> None:
         db.insert_entities_batch(db_batch, version_code=version_code)
-        bus.task_progress.emit(45, "写入数据库实体")
+        bus.task_progress.emit(45, "步骤 2/3: 写入数据库实体")
         ms = db.import_name_mappings(str(data_dir))
-        bus.task_progress.emit(60, "导入名称映射")
-        bus.task_progress.emit(80, "预分析数据")
-        bus.log_message.emit("🧠 正在预分析数据（内存模式）...")
+        bus.task_progress.emit(60, "步骤 2/3: 导入名称映射")
+        bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
+        bus.log_message.emit("🧠 步骤 3/3: 正在预分析数据（内存模式）...")
         _run_analysis(db, data_by_category, version_code=version_code)
-        bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
-        bus.task_progress.emit(100, "完成")
+        bus.log_message.emit(f"📦 步骤 3/3: 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
+        bus.task_progress.emit(100, "步骤 3/3: 完成")
 
     TYPE_CATEGORY_MAP = {
         "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
