@@ -1,5 +1,5 @@
-"""
-ShipPresenter —— 从结构化数据库表组装舰船显示数据。
+﻿"""
+ShipPresenter —— 从结构化数据库表组装舰船显示数据（新架构）。
 """
 
 from __future__ import annotations
@@ -7,1214 +7,1498 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from typing import Any
 
 from presenters.base_presenter import BasePresenter, NM
+from models.name_mapping import Mapping
 
 
 class ShipPresenter(BasePresenter):
     """将舰船数据库记录组装为显示结构"""
 
-    def build(self, ship_id: str) -> dict | None:
-        """主入口：返回完整的舰船显示结构"""
+    def build(self, ship_id: str, version_code: str = "") -> dict | None:
         try:
-            return self._do_build(ship_id)
+            return self._do_build(ship_id, version_code)
         except Exception as e:
             import traceback
             from app.signals import bus
             traceback.print_exc()
             bus.log_message.emit(f"⚠️ [ShipPresenter] {ship_id} 构建失败: {e}")
-            print(f"[ShipPresenter] {ship_id} 构建失败: {e}")
             return None
 
-    def _do_build(self, ship_id: str) -> dict | None:
+    def _do_build(self, ship_id: str, version_code: str = "") -> dict | None:
         sections: list[dict] = []
-        sub_section_info: dict[str, dict] = {}
         conn = self.conn
+        vc = self._ensure_version(version_code)
 
-        # ══════════════════════════════════════════════════
-        # 1. 基础属性
-        # ══════════════════════════════════════════════════
+        # ── 1. 基础属性 ────────────────────────────────────
         basic = conn.execute(
-            "SELECT * FROM ship_basic_info WHERE ship_id=?", (ship_id,)).fetchone()
+            "SELECT * FROM ship_basic_info WHERE version_code=? AND ship_id=?", (vc, ship_id)).fetchone()
         if not basic:
             return None
 
+        ship_name = self.resolve_name_by_id(basic['name_mapping_id'], 'ship', ship_id) or ship_id
         items = [
-            self.make_item(f"  舰船名称: {basic['ship_name_zh'] or ship_id}", "", 0),
+            self.make_item(f"  舰船名称: {ship_name}", "", 0),
             self.make_item(f"  编号: {basic['ship_index'] or ship_id.split('_')[0]}", "", 1),
-            self.make_item(f"  shipid: {basic['ship_id_num'] or ship_id.split('_')[0]}", "", 2),
         ]
-        for k, v in [("nation_zh", "国家"), ("shiptype_zh", "舰种"),
-                      ("tier_display", "等级"), ("group_status", "状态"),
-                      ("parent_ship_name", "原型舰船"), ("origin_ship_name", "原型舰船")]:
-            val = basic[k]
-            if val:
-                items.append(self.make_item(f"  {v}: {val}", "", len(items)))
+        for k, label, etype in [("shiptype", "舰种", "ship_class"), ("tier", "等级", ""), ("group_status_key", "状态", "ship_group")]:
+            if basic[k]:
+                val = self.resolve_enum(etype, basic[k]) if etype else basic[k]
+                items.append(self.make_item(f"  {label}: {val}", "", len(items)))
+
+        # parent_ship / origin_ship — 提取编号前缀后再映射中文名
+        for k, label in [("parent_ship_id", "原型舰船"), ("origin_ship_id", "原型舰船")]:
+            if basic[k]:
+                raw = basic[k].split("_")[0]  # PASA538_Hornet → PASA538
+                pname = self.resolve_name('ship', raw)
+                items.append(self.make_item(f"  {label}: {pname}", "", len(items)))
         sections.append(self.make_section("基础属性", items))
 
-        # ══════════════════════════════════════════════════
-        # 2. 消耗品数据（完整详细信息）
-        # ══════════════════════════════════════════════════
-        slots = conn.execute(
-            "SELECT * FROM ship_consumable_slots WHERE ship_id=? ORDER BY slot_index, item_index",
-            (ship_id,)).fetchall()
-        if slots:
-            items = []
-            for s in slots:
-                items.append(self.make_item(f"  第 {s['slot_index']} 槽位:", "", len(items)))
-                item_name = s['display_name'] or ''
-                items.append(self.make_item(
-                    f"    ({s['item_index']}) {item_name}", "", len(items)))
+        # ── 2. 消耗品数据 ─────────────────────────────────
+        self._append_consumables(conn, vc, ship_id, sections)
 
-                # ── 从 consumable_configs 加载完整配置 ──
-                try:
-                    # sqlite3.Row 无 .get()，用 in keys() 判断列是否存在
-                    s_keys = s.keys()
-                    cid = s['consumable_id'] if 'consumable_id' in s_keys else ''
-                    if not cid:
-                        cid = item_name  # fallback: display_name 可能是文件 key
-                    ckey = s['config_key'] if 'config_key' in s_keys else 'Default'
-                    cfg = None
-                    ct = s['type'] if 'type' in s_keys else ''
-                    if cid:
-                        # 优先精确匹配 config_key
-                        cfg_row = conn.execute(
-                            "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
-                            (cid, ckey)).fetchone()
-                        if not cfg_row:
-                            # 回退：尝试 name_mappings 反查
-                            mapped = conn.execute(
-                                "SELECT key_name FROM name_mappings WHERE category='consumable' AND lang_zh=?",
-                                (item_name,)).fetchone()
-                            if mapped:
-                                cfg_row = conn.execute(
-                                    "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
-                                    (mapped[0], ckey)).fetchone()
-                        if not cfg_row:
-                            # 再回退：查 Default
-                            cfg_row = conn.execute(
-                                "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
-                                (cid,)).fetchone()
-                        if cfg_row:
-                            ct = cfg_row['consumable_type'] or ct
-                            cfg = self._merge_config_row(cfg_row)
-                except Exception:
-                    cfg = None
-                    ct = s['type'] if 'type' in s.keys() else ''
+        # ── 3. 战斗指令 ───────────────────────────────────
+        self._append_rage_mode(conn, vc, ship_id, sections)
 
-                # ── 基础属性展示 ──
-                num_raw = s['num_consumables']
-                if num_raw is not None and num_raw not in ('', '0', 0, 0.0):
-                    num_display = "无限" if str(num_raw) == '-1' else str(num_raw)
-                    items.append(self.make_item(f"      数量: {num_display}", "", len(items)))
-                if ct:
-                    items.append(self.make_item(f"      类型: {ct}", "", len(items)))
-                is_auto = s['is_auto_consumable'] if 'is_auto_consumable' in s.keys() else 0
-                if is_auto:
-                    items.append(self.make_item(f"      自动使用: 是", "", len(items)))
-                for k, v in [("preparation_time", "准备时间"),
-                              ("work_time", "作用时间"), ("reload_time", "冷却时间")]:
-                    val = s[k]
-                    if val and float(val) > 0:
-                        items.append(self.make_item(
-                            f"      {v}: {val}s", "", len(items)))
-                    elif k == "preparation_time" and float(val or 0) == 0:
-                        items.append(self.make_item(
-                            f"      {v}: 0s（开局可用）", "", len(items)))
+        # ── 4. 各类型模块数据 ────────────────────────────
+        self._aircraft_sub_info = {}
+        self._append_modules(conn, vc, ship_id, sections)
 
-                # ── 类型专属效果展示 ──
-                if cfg and ct:
-                    effect_lines = self._format_consumable_effects(cfg, ct)
-                    if effect_lines:
-                        items.append(self.make_item(
-                            f"      消耗品效果:", "", len(items)))
-                        for line in effect_lines:
-                            items.append(self.make_item(
-                                f"        - {line}", "", len(items)))
-
-                items.append(self.make_item(
-                    f"      {'─' * 20}", "", len(items)))
-            sections.append(self.make_section("消耗品数据", items))
-
-        # ══════════════════════════════════════════════════
-        # 3. 战斗指令
-        # ══════════════════════════════════════════════════
-        rage = conn.execute(
-            "SELECT * FROM ship_rage_mode WHERE ship_id=?", (ship_id,)).fetchone()
-        if rage:
-            items = []
-            o = 0
-            items.append(self.make_item(f"  === {rage['display_name']} ===", "", o)); o += 1
-            items.append(self.make_item(f"  [基础属性]", "", o)); o += 1
-            items.append(self.make_item(f"    持续时间: {rage['boost_duration']}s", "", o)); o += 1
-            max_ac = rage['max_activation_count']
-            items.append(self.make_item(
-                f"    最大激活次数: {'无限' if max_ac=='-1' else f'{max_ac} 次'}", "", o)); o += 1
-            items.append(self.make_item(
-                f"    自动激活: {'是' if rage['is_auto_usage'] else '否'}", "", o)); o += 1
-            items.append(self.make_item(
-                f"    常驻生效: {'是' if rage['is_modifier_works_always'] else '否'}", "", o)); o += 1
-
-            # 衰减逻辑
-            delay = rage['decrement_delay'] or 0
-            if delay > 0:
-                items.append(self.make_item(f"  [衰减逻辑]", "", o)); o += 1
-                items.append(self.make_item(f"    衰减倒计时: {delay}s", "", o)); o += 1
-                items.append(self.make_item(f"    衰减周期: {rage['decrement_period']}s", "", o)); o += 1
-                items.append(self.make_item(f"    衰减数值: {rage['decrement_count']}%", "", o)); o += 1
-
-            # 触发器
-            triggers = json.loads(rage['triggers_json'] or '[]')
-            if triggers:
-                TRIGGER_LABELS = {
-                    "GameLogicTriggerOnActivation": "触发效果",
-                    "GameLogicTriggerProgress": "进度积累",
-                    "GameLogicTrigger": "进度积累",
-                }
-                for trig_obj in triggers:
-                    for tkey, tdata in trig_obj.items():
-                        tlabel = TRIGGER_LABELS.get(tkey, tkey)
-                        items.append(self.make_item(f"  [{tlabel}]", "", o)); o += 1
-                        act = tdata.get("Activator", {})
-                        if act:
-                            atype = act.get("type", "Unknown")
-                            items.append(self.make_item(f"    激活: {atype}", "", o)); o += 1
-                            for k, v in act.items():
-                                if k == "type": continue
-                                if k == "subRibbons" and isinstance(v, list):
-                                    names = [NM.RIBBON_MAP.get(str(rid), f"未知勋带({rid})") for rid in v]
-                                    items.append(self.make_item(
-                                        f"    - 所需勋带: {', '.join(names)}", "", o)); o += 1
-                                elif k == "requiredCount":
-                                    items.append(self.make_item(f"    - 所需次数: {v}", "", o)); o += 1
-                                elif k == "separateTracking":
-                                    items.append(self.make_item(f"    - 独立追踪: {'是' if v else '否'}", "", o)); o += 1
-                                elif k == "stateName":
-                                    items.append(self.make_item(f"    - 状态: {v}", "", o)); o += 1
-                                else:
-                                    label = NM.DETAIL_MAP.get(k, k)
-                                    unit = "m" if k == "radius" else ""
-                                    items.append(self.make_item(
-                                        f"    - {label}: {v}{' '+unit if unit else ''}", "", o)); o += 1
-
-                        # Actions
-                        actions_found = {k: v for k, v in tdata.items()
-                                         if k.startswith("Action") and isinstance(v, dict)}
-                        if actions_found:
-                            for ak, aln in actions_found.items():
-                                atype = aln.get("type", "Unknown")
-                                items.append(self.make_item(f"    动作: {atype}", "", o)); o += 1
-                                for k, v in aln.items():
-                                    if k == "type": continue
-                                    label = NM.DETAIL_MAP.get(k, k)
-                                    unit = "s" if k in ("reduceTime","workTime") else ""
-                                    items.append(self.make_item(
-                                        f"    - {label}: {v}{' '+unit if unit else ''}", "", o)); o += 1
-
-            # 加成效果
-            mods = json.loads(rage['modifiers_json'] or '{}')
-            if mods:
-                items.append(self.make_item(f"  [加成效果]", "", o)); o += 1
-                for mk, mv in mods.items():
-                    label = NM.MODIFIER_MAP.get(mk, mk)
-                    if isinstance(mv, dict):
-                        for sk, sv in mv.items():
-                            scn = NM.SHIP_CLASS_MAP.get(sk, sk)
-                            pct = (float(sv) - 1.0) * 100
-                            items.append(self.make_item(
-                                f"    - [{scn}] {label}: {pct:+.0f}%", "", o)); o += 1
-                    elif mk == "healthRegen":
-                        items.append(self.make_item(
-                            f"    - {label}: 每秒回复 {mv:.0f} HP", "", o)); o += 1
-                    elif isinstance(mv, (int, float)):
-                        if abs(mv) > 10.0:
-                            items.append(self.make_item(f"    - {label}: +{mv:.0f}", "", o)); o += 1
-                        else:
-                            items.append(self.make_item(
-                                f"    - {label}: {round((mv-1.0)*100):+.0f}%", "", o)); o += 1
-                    else:
-                        items.append(self.make_item(f"    - {label}: {mv}", "", o)); o += 1
-
-            sections.append(self.make_section("战斗指令", items))
-
-        # ══════════════════════════════════════════════════
-        # 4. 各类型模块分离
-        # ══════════════════════════════════════════════════
-        ammo_map = self.get_name_map("ammo")
-        module_letters = [r["module_letter"] for r in conn.execute(
-            "SELECT DISTINCT module_letter FROM ship_module_mapping "
-            "WHERE ship_id=? ORDER BY module_letter", (ship_id,)).fetchall()]
-
-        if module_letters:
-            hull_c = {}
-            arty_c = {}
-            atba_c = {}
-            torp_c = {}
-            aa_c = {}
-            dc_c = {}
-            plane_c = {}
-            asup_c = {}
-
-            for letter in module_letters:
-                self._build_hull(ship_id, letter, hull_c)
-                self._build_artillery(ship_id, letter, arty_c, ammo_map)
-                self._build_atba(ship_id, letter, atba_c, ammo_map)
-                self._build_torpedoes(ship_id, letter, torp_c)
-                self._build_aa(ship_id, letter, aa_c)
-                self._build_depth_charge(ship_id, letter, dc_c)
-                self._build_aircraft(ship_id, letter, plane_c)
-                self._build_air_support(ship_id, letter, asup_c)
-
-            type_configs = [
-                ("船体", hull_c), ("主炮", arty_c), ("副炮", atba_c),
-                ("鱼雷", torp_c), ("防空", aa_c), ("深水炸弹", dc_c),
-                ("舰载机", plane_c), ("空袭", asup_c),
-            ]
-            ship_sections = list(sections)
-            for type_label, content_dict in type_configs:
-                if content_dict:
-                    subs = sorted(content_dict.keys())
-                    sub_section_info[type_label] = {
-                        "sub_labels": subs,
-                        "sub_contents": content_dict,
-                    }
-                    ship_sections.append({
-                        "label": type_label, "items": [],
-                        "extra": sub_section_info[type_label],
-                    })
-        else:
-            ship_sections = list(sections)
+        # ── 5. 构建子 section 信息 ───────────────────────
+        sub_info = self._build_sub_section_info(conn, vc, ship_id, sections)
+        if self._aircraft_sub_info:
+            sub_info.update(self._aircraft_sub_info)
 
         return {
-            "title": basic['ship_name_zh'] if basic else ship_id,
+            "title": ship_name,
             "subtitle": f"ID: {ship_id}",
-            "sections": ship_sections,
-            "extra": {"sub_sections": sub_section_info},
+            "sections": sections,
+            "extra": {"sub_sections": sub_info} if sub_info else {},
         }
 
-    # ── 内部构建方法 ──────────────────────────────────────
+    # ── 辅助 ───────────────────────────────────────────────
 
-    def _build_hull(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
+    @staticmethod
+    def _config_group_letter(config_group: str) -> str:
+        """从 config_group (如 'AB1', 'A') 提取首字母"""
+        return config_group[0] if config_group else "?"
+
+    @staticmethod
+    def _append_strafe_time(lines: list, seq_json: str) -> None:
+        """解析 attack_sequence_durations JSON 数组并显示扫射时序"""
+        try:
+            import json
+            seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+            if not isinstance(seq, (list, tuple)) or len(seq) < 2:
+                return
+            total = sum(seq)
+            lines.append(f"        扫射时间: {total:.1f}s")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _append_skip_data(lines: list, row) -> None:
+        """显示跳弹数据：弹跳次数、最大触发角度"""
+        import json
+        try:
+            skips_raw = row['skips_json']
+            if not skips_raw:
+                return
+            skips = json.loads(skips_raw) if isinstance(skips_raw, str) else skips_raw
+            if isinstance(skips, (list, tuple)):
+                skip_count = len(skips)
+                lines.append(f"        弹跳次数: {skip_count} 次")
+                lines.append(f"        总共落点段数: {skip_count + 1} 段")
+            if row['max_skip_angle']:
+                lines.append(f"        最大弹跳触发角度: {row['max_skip_angle']:.0f}°")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _append_ammo_pen(lines: list, row, ammo_type: str) -> None:
+        """根据弹药类型显示穿深或硬度（row 为 sqlite3.Row，仅支持 [] 访问）"""
+        try:
+            if ammo_type == "HE":
+                v = row['alpha_piercing_he']
+                if v: lines.append(f"        穿深: {v:.1f} mm")
+            elif ammo_type == "CS":
+                v = row['alpha_piercing_cs']
+                if v: lines.append(f"        穿深: {v:.1f} mm")
+            elif ammo_type == "AP":
+                v = row['bullet_krupp']
+                if v: lines.append(f"        硬度: {v:.0f}")
+            else:
+                v = row['bullet_krupp']
+                if v: lines.append(f"        穿深: {v:.0f}")
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    @staticmethod
+    def _append_ammo_extra(lines: list, row, ammo_type: str) -> None:
+        """AP/CS 专属属性：阻力系数、口径、跳弹角、引信等"""
+        if ammo_type not in ("AP", "CS"):
+            return
+        try:
+            if row['bullet_air_drag']:
+                lines.append(f"        阻力系数: {row['bullet_air_drag']}")
+            if row['bullet_diameter']:
+                lines.append(f"        口径: {row['bullet_diameter']*1000:.2f} mm")
+            if row['bullet_always_ricochet_at']:
+                lines.append(f"        强制跳弹角: {row['bullet_always_ricochet_at']:.0f}°")
+            if row['bullet_ricochet_at']:
+                lines.append(f"        概率跳弹角: {row['bullet_ricochet_at']:.0f}°")
+            if row['bullet_cap_normalize_max']:
+                lines.append(f"        弹头转正角: {row['bullet_cap_normalize_max']:.0f}°")
+            if ammo_type == "AP":
+                if row['bullet_detonator']:
+                    lines.append(f"        引信长度: {row['bullet_detonator']:.0f} s")
+                if row['bullet_detonator_threshold']:
+                    lines.append(f"        引信触发阈值: {row['bullet_detonator_threshold']:.0f} mm")
+        except (KeyError, IndexError, TypeError):
+            pass
+
+    def _append_consumables(self, conn, vc, ship_id, sections):
+        slots = conn.execute(
+            "SELECT * FROM ship_consumable_slots WHERE version_code=? AND ship_id=? ORDER BY slot_index, item_index",
+            (vc, ship_id)).fetchall()
+        if not slots:
+            return
+        items = []
+        last_slot = None
+        for s in slots:
+            if s['slot_index'] != last_slot:
+                if last_slot is not None:
+                    items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
+                items.append(self.make_item(f"  第 {s['slot_index']} 槽位:", "", len(items)))
+                last_slot = s['slot_index']
+            cname = self.resolve_name_by_id(s['display_name_id'], 'consumable', s['consumable_id']) or s['consumable_id'] or ""
+            items.append(self.make_item(f"    ({s['item_index']}) {cname}", "", len(items)))
+            # 从 consumable_configs 查找详细数据
+            cfg = conn.execute(
+                "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
+                (vc, s['consumable_id'], s['config_key'])).fetchone()
+            if not cfg:
+                cfg = conn.execute(
+                    "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
+                    (vc, s['consumable_id'])).fetchone()
+            if cfg:
+                cfgd = dict(cfg)
+                # 合并 extra_json（新版 schema 所有字段都在这里）
+                ej = cfgd.pop('extra_json', None)
+                if ej:
+                    try:
+                        extra = json.loads(ej)
+                        cfgd.update(extra)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
+                num_raw = cfgd.get('numConsumables') or cfgd.get('num_consumables') or "0"
+                prep = float(cfgd.get('preparationTime', 0) or 0)
+                cd_time = float(cfgd.get('reloadTime', 0) or 0)
+                wt = float(cfgd.get('workTime', 0) or 0)
+                auto = cfgd.get('isAutoConsumable', False)
+                items.append(self.make_item(f"        类型: {ct}", "", len(items)))
+                if num_raw not in ('0', 0):
+                    items.append(self.make_item(f"        数量: {'无限' if str(num_raw)=='-1' else str(num_raw)}", "", len(items)))
+                if auto:
+                    items.append(self.make_item(f"        自动使用: 是", "", len(items)))
+                if prep:
+                    items.append(self.make_item(f"        准备时间: {prep}s", "", len(items)))
+                if cd_time:
+                    items.append(self.make_item(f"        冷却时间: {cd_time}s", "", len(items)))
+                if wt:
+                    items.append(self.make_item(f"        持续时间: {wt}s", "", len(items)))
+                items.append(self.make_item(f"        消耗品效果:", "", len(items)))
+                # 按类型显示特有属性
+                if ct == "crashCrew":
+                    items.append(self.make_item(f"          扑灭起火、清除进水、并修复受损配件。", "", len(items)))
+                elif ct == "fighter":
+                    fn = cfgd.get('fightersName') or ""
+                    if fn:
+                        fname = self.resolve_name('plane', fn) or fn
+                        items.append(self.make_item(f"          战斗机名称: {fname}", "", len(items)))
+                    fn2 = cfgd.get('fightersNum') or 0
+                    is_inter = cfgd.get('isInterceptor') or 0
+                    items.append(self.make_item(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}", "", len(items)))
+                    dog = cfgd.get('dogFightTime', 0)
+                    fly = cfgd.get('flyAwayTime', 0)
+                    if dog or fly:
+                        items.append(self.make_item(f"          狗斗: {dog}s | 离开: {fly}s", "", len(items)))
+                    rk = cfgd.get('distanceToKill', 0)
+                    if rk:
+                        items.append(self.make_item(f"          巡逻半径: {rk/10:.2f}km", "", len(items)))
+                elif ct == "scout":
+                    dc = (float(cfgd.get('artilleryDistCoeff', 0) or 1) - 1)
+                    items.append(self.make_item(f"          主炮射程: {dc*100:+.2f}%", "", len(items)))
+                    modifiers = cfgd.get('modifiers')
+                    if modifiers and isinstance(modifiers, dict):
+                        for mk, mv in sorted(modifiers.items()):
+                            label = Mapping.MODIFIER_MAP.get(mk, mk)
+                            items.append(self.make_item(f"          {label}: {(mv-1)*100:+.0f}%", "", len(items)))
+                elif ct == "smokeGenerator":
+                    r = float(cfgd.get('radius', 0) or 0)
+                    items.append(self.make_item(f"          烟雾半径: {r*3:.2f}m", "", len(items)))
+                    h = cfgd.get('height', 0)
+                    if h: items.append(self.make_item(f"          烟雾高度: {h}m", "", len(items)))
+                    sp = cfgd.get('speedLimit', 0)
+                    lt = cfgd.get('lifeTime', 0)
+                    if sp or lt:
+                        items.append(self.make_item(f"          速度限制: {sp}kts | 扩散: {lt}s", "", len(items)))
+                elif ct == "speedBoosters":
+                    bc = float(cfgd.get('boostCoeff', 0) or 0)
+                    items.append(self.make_item(f"          最高航速: {bc*100:+.2f}%", "", len(items)))
+                    fef = cfgd.get('forwardEngineForsag', 0)
+                    bef = cfgd.get('backwardEngineForsag', 0)
+                    if fef or bef:
+                        items.append(self.make_item(f"          推力: 前进{fef*100:+.0f}% / 后退{bef*100:+.0f}%", "", len(items)))
+                elif ct == "sonar":
+                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
+                    dt = float(cfgd.get('distTorpedo', 0) or 0) * 0.03
+                    dm = float(cfgd.get('distSeaMine', 0) or 0) * 0.03
+                    items.append(self.make_item(f"          舰船探测: {ds:.2f} km", "", len(items)))
+                    if dt: items.append(self.make_item(f"          鱼雷探测: {dt:.2f} km", "", len(items)))
+                    if dm: items.append(self.make_item(f"          水雷探测: {dm:.2f} km", "", len(items)))
+                elif ct == "torpedoReloader":
+                    trt = cfgd.get('torpedoReloadTime', 0)
+                    if trt:
+                        items.append(self.make_item(f"          鱼雷装填时间: {trt}s", "", len(items)))
+                elif ct == "rls":
+                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
+                    items.append(self.make_item(f"          舰船探测: {ds:.2f} km", "", len(items)))
+                    ac_classes = cfgd.get('affectedClasses', [])
+                    if ac_classes:
+                        cls_str = ', '.join(ac_classes)
+                        items.append(self.make_item(f"          限制探测舰种: {cls_str}", "", len(items)))
+                elif ct == "artilleryBoosters":
+                    bc = (float(cfgd.get('boostCoeff', 0) or 1) - 1)
+                    items.append(self.make_item(f"          主炮装填时间: {bc*100:+.2f}%", "", len(items)))
+                elif ct == "depthCharges":
+                    r = float(cfgd.get('radius', 0) or 0) * 0.003
+                    items.append(self.make_item(f"          半径: {r:.2f}km", "", len(items)))
+                elif ct == "regenCrew":
+                    rr = cfgd.get('regenerationHPSpeed', 0) or cfgd.get('regenerationRate', 0)
+                    if rr:
+                        items.append(self.make_item(f"          每秒回复血量: {'+' if rr > 0 else ''}{rr*100:.2f}%", "", len(items)))
+                elif ct == "airDefenseDisp":
+                    adm = cfgd.get('areaDamageMultiplier', 0)
+                    bdm = cfgd.get('bubbleDamageMultiplier', 0)
+                    if adm: items.append(self.make_item(f"          防空区域秒伤: {adm*100:+.2f}%", "", len(items)))
+                    if bdm: items.append(self.make_item(f"          黑云伤害: {bdm*100:+.2f}%", "", len(items)))
+                elif ct == "hydrophone":
+                    zlt = cfgd.get('zoneLifeTime', 0)
+                    huf = cfgd.get('hydrophoneUpdateFrequency', 0)
+                    hwr = cfgd.get('hydrophoneWaveRadius', 0)
+                    if zlt: items.append(self.make_item(f"          虚影存留: {zlt}s", "", len(items)))
+                    if huf: items.append(self.make_item(f"          刷新: {huf}s", "", len(items)))
+                    if hwr: items.append(self.make_item(f"          视野距离: {hwr*0.001:.2f}km", "", len(items)))
+                elif ct == "fastRudders":
+                    brt = (float(cfgd.get('buoyancyRudderTimeCoeff', 0) or 1) - 1)
+                    bsc = (float(cfgd.get('maxBuoyancySpeedCoeff', 0) or 1) - 1)
+                    items.append(self.make_item(f"          水平舵换挡: {brt*100:+.2f}%", "", len(items)))
+                    if bsc: items.append(self.make_item(f"          上浮/下潜速度: {bsc*100:+.2f}%", "", len(items)))
+                elif ct == "subsEnergyFreeze":
+                    items.append(self.make_item(f"          启用后下潜能力将停止消耗", "", len(items)))
+                    cue = cfgd.get('canUseOnEmpty', False)
+                    items.append(self.make_item(f"          可在电池耗尽时启用: {'是' if cue else '否'}", "", len(items)))
+                elif ct == "submarineLocator":
+                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
+                    items.append(self.make_item(f"          舰船探测: {ds:.2f} km", "", len(items)))
+                elif ct == "planeSmokeGenerator":
+                    ad = cfgd.get('activationDelay', 0)
+                    r = float(cfgd.get('radius', 0) or 0)
+                    if ad: items.append(self.make_item(f"          生效延迟: {ad}s", "", len(items)))
+                    if r: items.append(self.make_item(f"          烟雾半径: {r*3:.2f}m", "", len(items)))
+                elif ct == "supportBuoy":
+                    bdv = cfgd.get('battleDropVisualName', 'Unknown')
+                    bda = cfgd.get('battleDropActivationTime', 0)
+                    zlt = cfgd.get('zoneLifetime', 0)
+                    items.append(self.make_item(f"          区域: {bdv}", "", len(items)))
+                    if bda: items.append(self.make_item(f"          布置时间: {bda}s", "", len(items)))
+                    if zlt: items.append(self.make_item(f"          持续时间: {zlt}s", "", len(items)))
+                elif ct == "vampireDamage":
+                    dgm = cfgd.get('damageGMHealCoeff', 0)
+                    if dgm: items.append(self.make_item(f"          伤害转化系数: {dgm*100:.2f}%", "", len(items)))
+                elif ct == "massHeal":
+                    ohp = cfgd.get('ownHealPart', 0)
+                    if ohp: items.append(self.make_item(f"          自身每秒回复: {ohp*100:.2f}%", "", len(items)))
+                    wr = cfgd.get('workRadius', 0)
+                    if wr: items.append(self.make_item(f"          回复作用半径: {wr*3/100:.2f} km", "", len(items)))
+                    abn = cfgd.get('allyBuffName', '')
+                    abl = cfgd.get('allyBuffLevel', 1)
+                    if abn:
+                        items.append(self.make_item(f"          友军增益: {abn} (等级{abl})", "", len(items)))
+        if last_slot is not None:
+            items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
+        sections.append(self.make_section("消耗品数据", items))
+
+    # ── 战斗指令 ───────────────────────────────────────────
+
+    def _append_rage_mode(self, conn, vc, ship_id, sections):
+        rage = conn.execute(
+            "SELECT * FROM ship_rage_mode WHERE version_code=? AND ship_id=?", (vc, ship_id)).fetchone()
+        if not rage:
+            return
+        items = []
+        o = 0
+        dname = self.resolve_name_by_id(rage['display_name_id'], 'rage_mode', '') or "战斗指令"
+        items.append(self.make_item(f"  === {dname} ===", "", o)); o += 1
+        items.append(self.make_item(f"    持续时间: {rage['boost_duration']}s", "", o)); o += 1
+        max_ac = rage['max_activation_count']
+        items.append(self.make_item(f"    最大激活次数: {'无限' if max_ac=='-1' else f'{max_ac} 次'}", "", o)); o += 1
+        items.append(self.make_item(f"    自动激活: {'是' if rage['is_auto_usage'] else '否'}", "", o)); o += 1
+        items.append(self.make_item(f"    常驻生效: {'是' if rage['is_modifier_works_always'] else '否'}", "", o)); o += 1
+
+        if rage['decrement_delay']:
+            items.append(self.make_item(f"    衰减倒计时: {rage['decrement_delay']}s", "", o)); o += 1
+            items.append(self.make_item(f"    衰减周期: {rage['decrement_period']}s", "", o)); o += 1
+            items.append(self.make_item(f"    衰减数值: {rage['decrement_count']}%", "", o)); o += 1
+
+        TRIGGER_LABELS = {
+            "GameLogicTriggerOnActivation": "触发效果",
+            "GameLogicTriggerProgress": "进度积累",
+            "GameLogicTrigger": "进度积累",
+        }
+
+        triggers = json.loads(rage['triggers_json'] or '[]')
+        if triggers:
+            for trig_obj in triggers:
+                for tkey, tdata in trig_obj.items():
+                    trigger_label = TRIGGER_LABELS.get(tkey, tkey)
+                    items.append(self.make_item(f"    [{trigger_label}]", "", o)); o += 1
+                    act = tdata.get("Activator", {})
+                    if act:
+                        atype = act.get("type", "Unknown")
+                        items.append(self.make_item(f"    激活: {atype}", "", o)); o += 1
+                        for ak, av in act.items():
+                            if ak == "type": continue
+                            if ak in ("subRibbons", "triggerRibbonsTypes") and isinstance(av, list):
+                                names = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in av]
+                                items.append(self.make_item(f"      - 所需勋带: {', '.join(names)}", "", o)); o += 1
+                            elif ak == "requiredCount":
+                                items.append(self.make_item(f"      - 所需次数: {av}", "", o)); o += 1
+                            elif ak == "separateTracking":
+                                items.append(self.make_item(f"      - 独立追踪: {'是' if av else '否'}", "", o)); o += 1
+                            elif ak == "stateName":
+                                items.append(self.make_item(f"      - 状态: {av}", "", o)); o += 1
+                            else:
+                                label = NM.DETAIL_MAP.get(ak, ak)
+                                items.append(self.make_item(f"      - {label}: {av}", "", o)); o += 1
+                    # 执行动作
+                    actions_found = {k: v for k, v in tdata.items() if k.startswith("Action") and isinstance(v, dict)}
+                    if actions_found:
+                        for action_key, aln in actions_found.items():
+                            atype = aln.get("type", "Unknown")
+                            items.append(self.make_item(f"    动作: {atype}", "", o)); o += 1
+                            for ak, av in aln.items():
+                                if ak == "type": continue
+                                if ak in ("planeId", "planeName"):
+                                    items.append(self.make_item(f"      - 飞机型号: {av}", "", o)); o += 1
+                                elif ak == "progressName":
+                                    items.append(self.make_item(f"      - 进度标识: {av}", "", o)); o += 1
+                                else:
+                                    label = NM.DETAIL_MAP.get(ak, ak)
+                                    items.append(self.make_item(f"      - {label}: {av}", "", o)); o += 1
+
+        # ── 加成效果 ──
+        mods_raw = rage['modifiers_json']
+        if mods_raw:
+            try:
+                mods = json.loads(mods_raw)
+                if isinstance(mods, dict) and mods:
+                    items.append(self.make_item(f"    加成效果:", "", o)); o += 1
+                    for mk, mv in sorted(mods.items()):
+                        label = Mapping.MODIFIER_MAP.get(mk, mk)
+                        if isinstance(mv, dict):
+                            # 分舰种加成
+                            for species_key, factor in mv.items():
+                                cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
+                                items.append(self.make_item(f"      {cn}: {(factor - 1) * 100:+.0f}%", "", o)); o += 1
+                        elif mk == "healthRegen":
+                            items.append(self.make_item(f"      {label}: 每秒回复 {mv:.0f} HP", "", o)); o += 1
+                        elif isinstance(mv, (float, int)):
+                            if mv > 10.0:
+                                items.append(self.make_item(f"      {label}: +{mv:.0f}", "", o)); o += 1
+                            else:
+                                items.append(self.make_item(f"      {label}: {(mv - 1) * 100:+.0f}%", "", o)); o += 1
+                        else:
+                            items.append(self.make_item(f"      {label}: {mv}", "", o)); o += 1
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        sections.append(self.make_section("战斗指令", items))
+
+    # ── 模块 ───────────────────────────────────────────────
+
+    def _append_modules(self, conn, vc, ship_id, sections):
+        # 获取所有配置组前缀字母
+        letters = set()
+        for tbl in ["ship_module_hulls", "ship_module_artillery", "ship_module_atba",
+                      "ship_module_torpedoes", "ship_module_aa", "ship_module_depth_charge",
+                      "ship_module_aircraft", "ship_module_air_support", "ship_module_engine"]:
+            for r in conn.execute(
+                f"SELECT DISTINCT config_group FROM {tbl} WHERE version_code=? AND ship_id=?",
+                (vc, ship_id)).fetchall():
+                letters.add(self._config_group_letter(r[0]))
+        if not letters:
+            return
+        letters = sorted(letters)
+
+        # 为每个字母收集各模块数据
+        hull_data, arty_data, atba_data, torp_data = {}, {}, {}, {}
+        aa_data, dc_data, plane_data, asup_data = {}, {}, {}, {}
+
+        for letter in letters:
+            self._build_hull(conn, vc, ship_id, letter, hull_data)
+            self._build_artillery(conn, vc, ship_id, letter, arty_data)
+            self._build_atba(conn, vc, ship_id, letter, atba_data)
+            self._build_torpedoes(conn, vc, ship_id, letter, torp_data)
+            self._build_aa(conn, vc, ship_id, letter, aa_data)
+            self._build_depth_charge(conn, vc, ship_id, letter, dc_data)
+            self._build_air_support(conn, vc, ship_id, letter, asup_data)
+
+        for label, data in [("船体", hull_data), ("主炮", arty_data), ("副炮", atba_data),
+                             ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data)]:
+            if data:
+                all_lines = []
+                for letter in letters:
+                    letter_lines = data.get(letter, [])
+                    if letter_lines:
+                        if len(letters) > 1:
+                            all_lines.append(f"──── {letter} 配置 ────")
+                        all_lines.extend(letter_lines)
+                if all_lines:
+                    sections.append(self.make_section(label, [self.make_item("", "\n".join(all_lines), 0)]))
+        # 舰载机独立处理：一个 section + 次级菜单
+        plane_section = self._build_aircraft_panel(conn, vc, ship_id, letters, sections)
+        if plane_section:
+            sections.append(plane_section)
+        # 空袭
+        if asup_data:
+            all_lines = []
+            for letter in letters:
+                letter_lines = asup_data.get(letter, [])
+                if letter_lines:
+                    if len(letters) > 1:
+                        all_lines.append(f"──── {letter} 配置 ────")
+                    all_lines.extend(letter_lines)
+            if all_lines:
+                sections.append(self.make_section("支援", [self.make_item("", "\n".join(all_lines), 0)]))
+
+    # ── 模块构建子方法 ─────────────────────────────────────
+
+    def _build_hull(self, conn, vc, ship_id, letter, result):
         lines = []
-        # 判断是否为潜艇
-        is_sub = bool(conn.execute(
-            "SELECT 1 FROM entity_registry WHERE entity_id=? AND entity_type='Ship' AND shiptype='Submarine'",
-            (ship_id,)).fetchone())
+        # 查询舰种、等级、国家，用于最小隐蔽计算
+        basic = conn.execute(
+            "SELECT shiptype, tier, ship_index FROM ship_basic_info WHERE version_code=? AND ship_id=?",
+            (vc, ship_id)).fetchone()
+        species = basic['shiptype'] if basic else ""
+        tier = basic['tier'] if basic else 0
+        ship_idx = (basic['ship_index'] or ship_id.split("_")[0]) if basic else ship_id.split("_")[0]
+        nat_row = conn.execute(
+            "SELECT nation FROM entity_registry WHERE version_code=? AND entity_id=?",
+            (vc, ship_id)).fetchone()
+        nation = nat_row[0] if nat_row else ""
+
+        # 隐蔽系数（参考 ship_analyzer.py get_conceal_coeff）
+        if species == "Submarine":
+            skill_bonus = 1.0
+        elif species == "AirCarrier":
+            skill_bonus = 0.85
+        else:
+            skill_bonus = 0.9
+        upgrade_bonus = 1.0
+        try:
+            import json
+            cfg = conn.execute(
+                "SELECT ships_json, excludes_json, shiplevel_json, shiptype_json, nations_json, modifiers_json "
+                "FROM modernization_basic_info WHERE version_code=? AND mod_id=?",
+                (vc, "PCM027_ConcealmentMeasures_Mod_I")).fetchone()
+            if cfg:
+                mod_ships = json.loads(cfg['ships_json'] or '[]')
+                mod_excludes = json.loads(cfg['excludes_json'] or '[]')
+                mod_levels = json.loads(cfg['shiplevel_json'] or '[]')
+                mod_types = json.loads(cfg['shiptype_json'] or '[]')
+                mod_nations = json.loads(cfg['nations_json'] or '[]')
+                is_whitelisted = any(s.startswith(ship_idx) for s in mod_ships)
+                is_excluded = any(ex.startswith(ship_idx) for ex in mod_excludes)
+                if is_whitelisted:
+                    upgrade_bonus = 0.9
+                elif not is_excluded and (tier in mod_levels and species in mod_types and nation in mod_nations):
+                    upgrade_bonus = 0.9
+        except Exception:
+            pass
+        conceal_coeff = skill_bonus * upgrade_bonus
+
         for h in conn.execute(
-            "SELECT * FROM ship_module_hulls WHERE ship_id=? AND module_letter=? ORDER BY hull_key",
-            (ship_id, letter)).fetchall():
-            for col, disp in [
+            "SELECT * FROM ship_module_hulls WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            for col, label in [
                 ("health", "基础血量"), ("max_speed", "最大航速"),
                 ("turning_radius", "转弯半径"), ("rudder_time", "转舵时间"),
                 ("conceal_sea", "水面隐蔽"), ("conceal_air", "空中隐蔽"),
-                ("has_citadel", "是否有核心区"), ("hull_regen_part", "船体回复率"),
-                ("citadel_regen_part", "核心回复率"), ("engine_power", "引擎马力"),
+                ("has_citadel", "是否有核心区"), ("engine_power", "引擎马力"),
             ]:
                 val = h[col]
                 if val is not None:
-                    if col == "rudder_time":
-                        lines.append(f"    - {disp}: {val:.2f} s")
-                    elif col == "hull_regen_part":
-                        lines.append(f"    - {disp}: {val*100:.0f}%")
-                    elif col == "citadel_regen_part":
-                        lines.append(f"    - {disp}: {val*100:.0f}%")
-                    elif col == "conceal_sea":
-                        lines.append(f"    - {disp}: {val:.2f} km")
-                        min_s = val * 0.9 * 0.97
-                        lines.append(f"    - 最小水面隐蔽: {min_s:.2f} km")
-                    elif col == "conceal_air":
-                        lines.append(f"    - {disp}: {val:.2f} km")
-                        min_a = val * 0.9 * 0.97
-                        lines.append(f"    - 最小空中隐蔽: {min_a:.2f} km")
-                    elif col == "has_citadel":
-                        lines.append(f"    - {disp}: {'是' if val else '否'}")
-                    else:
-                        u = "kts" if col == "max_speed" else "m" if col == "turning_radius" else "HP" if col == "engine_power" else ""
-                        lines.append(f"    - {disp}: {val}{' '+u if u else ''}")
-
-            # ── 潜艇特有数据显示（仅潜艇显示）──
-            if is_sub:
-                STATE_LABELS = {
-                    "SURFACE": "水面",
-                    "PERISCOPE": "潜望镜深度",
-                    "SEMI_DEEP_WATER": "半深水",
-                    "DEEP_WATER": "工作深度",
-                    "DEEP_WATER_INVUL": "最大深度",
-                }
-                if h['has_battery']:
-                    lines.append(f"  [潜艇电池]")
-                    bat_cap = h['battery_capacity']
-                    bat_reg = h['battery_regen']
-                    if bat_cap is not None:
-                        lines.append(f"    - 电池容量: {bat_cap:.0f}")
-                    if bat_reg is not None:
-                        lines.append(f"    - 电力恢复: {bat_reg:.2f}/s")
-                if h['has_hydrophone']:
-                    lines.append(f"  [潜艇水听器]")
-                    hp_r = h['hydrophone_radius']
-                    hp_f = h['hydrophone_update_freq']
-                    if hp_r is not None:
-                        lines.append(f"    - 探测半径: {hp_r:.2f} km")
-                    if hp_f is not None:
-                        lines.append(f"    - 更新周期: {hp_f:.1f} s")
-                    if h['hydrophone_work_states']:
-                        import json as _json
-                        try:
-                            ws_list = _json.loads(h['hydrophone_work_states'])
-                            ws_labels = [STATE_LABELS.get(s, s) for s in ws_list]
-                            lines.append(f"    - 工作深度: {', '.join(ws_labels)}")
-                        except Exception:
-                            lines.append(f"    - 工作深度: {h['hydrophone_work_states']}")
-                    if h['hydrophone_detect_states']:
-                        import json as _json
-                        try:
-                            ds_list = _json.loads(h['hydrophone_detect_states'])
-                            ds_labels = [STATE_LABELS.get(s, s) for s in ds_list]
-                            lines.append(f"    - 可探测深度: {', '.join(ds_labels)}")
-                        except Exception:
-                            lines.append(f"    - 可探测深度: {h['hydrophone_detect_states']}")
-                # 潜艇机动 + 深度航速关系
-                has_mobility = (h['buoyancy_rudder_time'] is not None and h['buoyancy_rudder_time'] > 0) or \
-                               (h['max_buoyancy_speed'] is not None and h['max_buoyancy_speed'] > 0)
-                depth_rows = conn.execute(
-                    "SELECT state_name, underwater_max_speed FROM ship_sub_depth_states "
-                    "WHERE hull_ref_id=? ORDER BY id",
-                    (h['id'],)).fetchall()
-                if has_mobility or depth_rows:
-                    lines.append(f"  [潜艇机动]")
-                    if h['buoyancy_rudder_time'] is not None and h['buoyancy_rudder_time'] > 0:
-                        lines.append(f"    - 水平舵转舵时间: {h['buoyancy_rudder_time']:.1f} s")
-                    if h['max_buoyancy_speed'] is not None and h['max_buoyancy_speed'] > 0:
-                        lines.append(f"    - 上浮/下潜速度: {h['max_buoyancy_speed']:.2f} m/s")
-                    if depth_rows:
-                        lines.append(f"    ── 深度航速关系 ──")
-                        for dr in depth_rows:
-                            sl = STATE_LABELS.get(dr['state_name'], dr['state_name'])
-                            lines.append(f"      - {sl}: 航速×{dr['underwater_max_speed']:.2f}")
+                    if col == "has_citadel":
+                        val = "是" if val else "否"
+                    elif col == "max_speed":
+                        val = f"{val:.2f} kts"
+                    elif col == "health":
+                        val = f"{val:.0f}"
+                    elif col == "rudder_time":
+                        val = f"{val:.2f} s"
+                    elif col == "turning_radius":
+                        val = f"{val:.2f} m"
+                    elif col in ("conceal_sea", "conceal_air"):
+                        val = f"{val:.2f} km"
+                        lines.append(f"      {label}: {val}")
+                        min_val = h[col] * conceal_coeff
+                        min_label = "最小水面隐蔽" if col == "conceal_sea" else "最小空中隐蔽"
+                        lines.append(f"         {min_label}: {min_val:.2f} km")
+                        continue
+                    elif col == "engine_power":
+                        # 引擎马力前插入回复率
+                        hrp = h['hull_regen_part']
+                        crp = h['citadel_regen_part']
+                        if hrp is not None or crp is not None:
+                            hrp_str = f"{hrp*100:.2f}%" if hrp is not None else "N/A"
+                            crp_str = f"{crp*100:.2f}%" if crp is not None else "N/A"
+                            lines.append(f"      回复率: {hrp_str}/{crp_str}")
+                        val = f"{val:.0f} HP"
+                    elif isinstance(val, float):
+                        val = f"{val:.2f}"
+                    lines.append(f"      {label}: {val}")
+            # 潜艇扩展数据
+            ext = conn.execute(
+                "SELECT * FROM ship_module_hulls_ext WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",
+                (vc, ship_id, h['config_group'], h['module_key'])).fetchone()
+            if ext:
+                if ext['battery_capacity'] is not None:
+                    lines.append(f"      电池容量: {ext['battery_capacity']}")
+                if ext['battery_regen'] is not None:
+                    lines.append(f"      电力恢复: {ext['battery_regen']} /s")
+                if ext['hydrophone_radius'] is not None:
+                    lines.append(f"      水听器工作半径: {ext['hydrophone_radius']} km")
+                if ext['hydrophone_update_freq'] is not None:
+                    lines.append(f"      水听器更新周期: {ext['hydrophone_update_freq']} s")
+                if ext['buoyancy_rudder_time'] is not None:
+                    lines.append(f"      水平舵转舵时间: {ext['buoyancy_rudder_time']:.2f} s")
+                if ext['max_buoyancy_speed'] is not None:
+                    lines.append(f"      最大上浮/下潜速度: {ext['max_buoyancy_speed']:.2f} kts")
+                # 深度状态
+                depth_lines = []
+                for ds in conn.execute(
+                    "SELECT * FROM ship_sub_depth_states WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",
+                    (vc, ship_id, h['config_group'], h['module_key'])).fetchall():
+                    cn_name = NM.DEPTH_MAP.get(ds['state_name'], ds['state_name'])
+                    part = f"        {cn_name}: 航速×{ds['underwater_max_speed']}"
+                    if ds['visibility_factor'] is not None:
+                        part += f", 隐蔽×{ds['visibility_factor']}"
+                    depth_lines.append(part)
+                if depth_lines:
+                    lines.append(f"      深度对航速影响：")
+                    lines.extend(depth_lines)
         if lines:
             result[letter] = lines
 
-    def _build_artillery(self, ship_id: str, letter: str, result: dict,
-                          ammo_map: dict) -> None:
-        conn = self.conn
+    def _build_artillery(self, conn, vc, ship_id, letter, result):
         lines = []
+        ammo_map = self.get_name_map("ammo")
         for g in conn.execute(
-            "SELECT * FROM ship_module_artillery WHERE ship_id=? AND module_letter=? ORDER BY gun_name",
-            (ship_id, letter)).fetchall():
-            lines.append(f"  - {g['gun_name']} x{g['count']}")
-            lines.append(f"    联装数: {g['num_barrels']:.0f}")
-            lines.append(f"    装填时间: {g['reload_time']}s")
-            if g['max_range']:
-                lines.append(f"    最大射程: {g['max_range']:.1f} km")
-            if g['sigma']:
-                lines.append(f"    Sigma: {g['sigma']}")
-            if g['dispersion_formula']:
-                lines.append(f"    横向散布公式: {g['dispersion_formula']}")
-            # 弹鼓/弹夹数据（完全参照旧 ship_analyzer.py 格式）
-            drum_shots = g['drum_shots_count'] if g['drum_shots_count'] is not None else 0
-            if drum_shots > 0:
-                is_chargeable = bool(g['drum_is_chargeable'])
-                n_rounds = float(drum_shots)
-                shot_delay = g['drum_shot_delay'] or 0
-                full_reload = g['drum_full_reload_time'] or 0
+            "SELECT * FROM ship_module_artillery WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            gname = self.resolve_name('gun', g['module_key']) or g['module_key']
+            lines.append(f"火炮名称: {gname} x{g['count']}")
+            if g['num_barrels']: lines.append(f"联装数: {g['num_barrels']:.0f}")
+            if g['reload_time']: lines.append(f"装填时间: {g['reload_time']}s")
+            if g['max_range']: lines.append(f"基础射程: {g['max_range']:.2f} km")
+            # 散步公式
+            ir, mr, id_dist = g['ideal_radius'], g['min_radius'], g['ideal_distance']
+            if ir and mr and id_dist:
+                slope = (ir - mr) / (id_dist / 1000) if id_dist else 0
+                intercept = mr * 30
+                lines.append(f"横向散步公式: {slope:.2f}R + {intercept:.0f}")
+            # 纵向散步
+            if g['radius_zero'] is not None and g['radius_max'] is not None:
+                r0, rdelim, rmax, delim = g['radius_zero'], g['radius_delim'], g['radius_max'], g['delim']
+                pct = f"{delim*100:.0f}%" if delim else "?"
+                lines.append(f"纵向散步系数: {r0} ~ {rdelim}(R={pct}) ~ {rmax}")
+            if g['sigma']: lines.append(f"弹着群系数(Sigma): {g['sigma']}")
+            # 弹药（含详细属性）
+            seen = set()
+            for swp in conn.execute(
+                "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
+                "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='artillery'",
+                (vc, ship_id, g['module_key'])).fetchall():
+                aid = swp["ammo_id"]
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                acn = ammo_map.get(aid.upper(), aid)
+                p = conn.execute(
+                    "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.bullet_speed, be.explosion_radius, be.burn_prob, "
+                    "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
+                    "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
+                    "be.bullet_detonator, be.bullet_detonator_threshold, be.bullet_cap_normalize_max "
+                    "FROM projectile_basic_info pb "
+                    "LEFT JOIN projectile_bullet_ext be ON be.version_code=pb.version_code AND be.projectile_id=pb.projectile_id "
+                    "WHERE pb.version_code=? AND pb.projectile_id=?",
+                    (vc, aid)).fetchone()
+                if p:
+                    at = (p['ammo_type'] or "").upper()
+                    lines.append(f"可用炮弹: {acn}")
+                    if p['alpha_damage']: lines.append(f"      标伤: {p['alpha_damage']:.0f}")
+                    lines.append(f"      弹种: {p['ammo_type'] or '?'}")
+                    lines.append(f"      炮弹详细属性:")
+                    if p['explosion_radius']: lines.append(f"              炮弹爆炸半径: {p['explosion_radius']:.2f} m")
+                    if p['bullet_diameter']: lines.append(f"              炮弹口径: {p['bullet_diameter']*1000:.0f} mm")
+                    if p['bullet_speed']: lines.append(f"              炮弹初速: {p['bullet_speed']:.0f} m/s")
+                    if p['bullet_air_drag']: lines.append(f"              空阻系数: {p['bullet_air_drag']}")
+                    if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
+                    if at == 'HE':
+                        if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
+                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                    elif at == 'SAP':
+                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        rc1 = p['bullet_ricochet_at']
+                        rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                    elif at == 'AP':
+                        if p['bullet_krupp']: lines.append(f"              弹头硬度: {p['bullet_krupp']:.0f}")
+                        if p['bullet_detonator'] is not None: lines.append(f"              引信触发阈值: {p['bullet_detonator']:.0f} mm")
+                        if p['bullet_detonator_threshold']: lines.append(f"              引信长度: {p['bullet_detonator_threshold']:.2f} cal")
+                        if p['bullet_cap_normalize_max']: lines.append(f"              炮弹转正角: {p['bullet_cap_normalize_max']:.2f}°")
+                        rc1 = p['bullet_ricochet_at']
+                        rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                else:
+                    lines.append(f"可用炮弹: {acn}")
+            # 特殊机制（弹夹/弹鼓炮）
+            ext = conn.execute(
+                "SELECT * FROM ship_module_artillery_ext WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",
+                (vc, ship_id, g['config_group'], g['module_key'])).fetchone()
+            if ext and ext['special_mode_name']:
+                sc = ext['drum_shots_count']
+                sd = ext['drum_shot_delay']
+                frt = ext['drum_full_reload_time']
+                is_chargeable = ext['drum_is_chargeable']
+                is_switchable = ext['drum_is_switchable']
                 if is_chargeable:
                     header_name = "弹鼓炮"
-                    details = [f"连发数量: {n_rounds:.0f}", f"连发间隔: {shot_delay}s"]
-                    mode_type = g['drum_charge_mode'] or 0
-                    t_min = g['drum_charge_time_min'] or 0
-                    t_max = g['drum_charge_time_max'] or 0
-                    if mode_type == 1:
-                        details.append(f"第 1 轮装填时间: {t_min}s")
-                        details.append(f"第 2 ~ {n_rounds:.0f} 轮装填时间: {t_max}s")
-                    elif mode_type == 2:
-                        details.append(f"第 1 ~ {n_rounds - 1:.0f} 轮装填时间: {t_min}s")
-                        details.append(f"第 {n_rounds:.0f} 轮(末轮)装填时间: {t_max}s")
+                    details = [f"连发数量: {sc:.0f}", f"连发间隔: {sd}s"]
+                    cmode = ext['drum_charge_mode']
+                    cmin = ext['drum_charge_time_min']
+                    cmax = ext['drum_charge_time_max']
+                    if cmode == 1:
+                        details.append(f"第 1 轮装填时间: {cmin}s")
+                        details.append(f"第 2 ~ {sc:.0f} 轮装填时间: {cmax}s")
+                    elif cmode == 2:
+                        details.append(f"第 1 ~ {sc-1:.0f} 轮装填时间: {cmin}s")
+                        details.append(f"第 {sc:.0f} 轮(末轮)装填时间: {cmax}s")
                 else:
-                    is_switchable = bool(g['drum_is_switchable'])
                     switch_prefix = "可切换" if is_switchable else "强制"
                     header_name = f"{switch_prefix}连发射击-弹夹炮"
                     details = [
-                        f"长装填时间: {full_reload}s",
-                        f"连发间隔: {shot_delay}s",
-                        f"连发轮数: {n_rounds:.0f}"
+                        f"长装填时间: {frt}s",
+                        f"连发间隔: {sd}s",
+                        f"连发轮数: {sc:.0f}"
                     ]
-                lines.append(f"  特殊射击模式: {header_name}")
+                lines.append(f"特殊机制: {header_name}")
                 for d in details:
-                    lines.append(f"    - {d}")
-            for a in conn.execute(
-                "SELECT ra.ammo_id, pbi.* FROM rel_ship_weapon_ammo ra "
-                "LEFT JOIN projectile_basic_info pbi ON pbi.projectile_id = ra.ammo_id "
-                "JOIN ship_module_artillery sma ON sma.id = ra.weapon_ref_id "
-                "WHERE ra.weapon_type='artillery' AND sma.ship_id=? AND sma.module_letter=? AND sma.gun_name=?",
-                (ship_id, letter, g['gun_name'])).fetchall():
-                acn = ammo_map.get(a["ammo_id"].upper(), a["ammo_id"])
-                lines.append(f"    可用弹药: {acn}")
-                lines.extend(self._format_projectile_lines(a, ammo_map))
+                    lines.append(f"  {d}")
+                mods_raw = ext['drum_modifiers_json']
+                if mods_raw and mods_raw != '{}':
+                    try:
+                        mods = json.loads(mods_raw)
+                        if isinstance(mods, dict) and mods:
+                            for mk, mv in sorted(mods.items()):
+                                label = Mapping.MODIFIER_MAP.get(mk, mk)
+                                lines.append(f"  {label}: {(mv-1)*100:+.0f}%")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
         if lines:
             result[letter] = lines
 
-    def _build_atba(self, ship_id: str, letter: str, result: dict,
-                     ammo_map: dict) -> None:
-        conn = self.conn
+    def _build_atba(self, conn, vc, ship_id, letter, result):
         lines = []
+        ammo_map = self.get_name_map("ammo")
         for g in conn.execute(
-            "SELECT * FROM ship_module_atba WHERE ship_id=? AND module_letter=? ORDER BY gun_name",
-            (ship_id, letter)).fetchall():
-            lines.append(f"  - {g['gun_name']} x{g['count']}")
-            lines.append(f"    联装数: {g['num_barrels']:.0f}")
-            lines.append(f"    装填时间: {g['reload_time']}s")
-            if g['max_range']:
-                lines.append(f"    基础射程: {g['max_range']:.1f} km")
-            if g['sigma']:
-                lines.append(f"    Sigma: {g['sigma']}")
-            if g['dispersion_formula']:
-                lines.append(f"    横向散布公式: {g['dispersion_formula']}")
-            rz = g['radius_zero']
-            rd_val = g['radius_delim']
-            rm = g['radius_max']
-            dl = g['delim']
-            if rz is not None and rd_val is not None and rm is not None and dl is not None:
-                lines.append(f"    纵向散布系数: {rz:.1f} ~ {rd_val:.1f} (R={dl * 100:.0f}%) ~ {rm:.1f}")
-            for a in conn.execute(
-                "SELECT ra.ammo_id, pbi.* FROM rel_ship_weapon_ammo ra "
-                "LEFT JOIN projectile_basic_info pbi ON pbi.projectile_id = ra.ammo_id "
-                "JOIN ship_module_atba sma ON sma.id = ra.weapon_ref_id "
-                "WHERE ra.weapon_type='atba' AND sma.ship_id=? AND sma.module_letter=? AND sma.gun_name=?",
-                (ship_id, letter, g['gun_name'])).fetchall():
-                acn = ammo_map.get(a["ammo_id"].upper(), a["ammo_id"])
-                lines.append(f"    可用弹药: {acn}")
-                lines.extend(self._format_projectile_lines(a, ammo_map))
+            "SELECT * FROM ship_module_atba WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            gname = self.resolve_name('gun', g['module_key']) or g['module_key']
+            lines.append(f"火炮名称: {gname} x{g['count']}")
+            if g['num_barrels']: lines.append(f"联装数: {g['num_barrels']:.0f}")
+            if g['reload_time']: lines.append(f"装填时间: {g['reload_time']}s")
+            if g['max_range']: lines.append(f"基础射程: {g['max_range']:.2f} km")
+            if g['sigma']: lines.append(f"弹着群系数(Sigma): {g['sigma']}")
+            # 散步公式
+            ir, mr, id_dist = g['ideal_radius'], g['min_radius'], g['ideal_distance']
+            if ir and mr and id_dist:
+                slope = (ir - mr) / (id_dist / 1000) if id_dist else 0
+                intercept = mr * 30
+                lines.append(f"横向散步公式: {slope:.2f}R + {intercept:.0f}")
+            # 纵向散步
+            if g['radius_zero'] is not None and g['radius_max'] is not None:
+                r0, rdelim, rmax, delim = g['radius_zero'], g['radius_delim'], g['radius_max'], g['delim']
+                pct = f"{delim*100:.0f}%" if delim else "?"
+                lines.append(f"纵向散步系数: {r0} ~ {rdelim}(R={pct}) ~ {rmax}")
+            seen = set()
+            for swp in conn.execute(
+                "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
+                "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='atba'",
+                (vc, ship_id, g['module_key'])).fetchall():
+                aid = swp["ammo_id"]
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                acn = ammo_map.get(aid.upper(), aid)
+                p = conn.execute(
+                    "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.bullet_speed, be.explosion_radius, be.burn_prob, "
+                    "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
+                    "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
+                    "be.bullet_detonator, be.bullet_detonator_threshold, be.bullet_cap_normalize_max "
+                    "FROM projectile_basic_info pb "
+                    "LEFT JOIN projectile_bullet_ext be ON be.version_code=pb.version_code AND be.projectile_id=pb.projectile_id "
+                    "WHERE pb.version_code=? AND pb.projectile_id=?",
+                    (vc, aid)).fetchone()
+                if p:
+                    at = (p['ammo_type'] or "").upper()
+                    lines.append(f"可用炮弹: {acn}")
+                    if p['alpha_damage']: lines.append(f"      标伤: {p['alpha_damage']:.0f}")
+                    lines.append(f"      弹种: {p['ammo_type'] or '?'}")
+                    lines.append(f"      炮弹详细属性:")
+                    if p['explosion_radius']: lines.append(f"              炮弹爆炸半径: {p['explosion_radius']:.2f} m")
+                    if p['bullet_diameter']: lines.append(f"              炮弹口径: {p['bullet_diameter']*1000:.0f} mm")
+                    if p['bullet_speed']: lines.append(f"              炮弹初速: {p['bullet_speed']:.0f} m/s")
+                    if p['bullet_air_drag']: lines.append(f"              空阻系数: {p['bullet_air_drag']}")
+                    if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
+                    if at == 'HE':
+                        if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
+                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                    elif at == 'SAP':
+                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        rc1 = p['bullet_ricochet_at']
+                        rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                    elif at == 'AP':
+                        if p['bullet_krupp']: lines.append(f"              弹头硬度: {p['bullet_krupp']:.0f}")
+                        if p['bullet_detonator'] is not None: lines.append(f"              引信触发阈值: {p['bullet_detonator']:.0f} mm")
+                        if p['bullet_detonator_threshold']: lines.append(f"              引信长度: {p['bullet_detonator_threshold']:.2f} cal")
+                        if p['bullet_cap_normalize_max']: lines.append(f"              炮弹转正角: {p['bullet_cap_normalize_max']:.2f}°")
+                        rc1 = p['bullet_ricochet_at']
+                        rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                else:
+                    lines.append(f"可用炮弹: {acn}")
         if lines:
             result[letter] = lines
 
-    def _build_torpedoes(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
+    def _build_torpedoes(self, conn, vc, ship_id, letter, result):
         lines = []
         ammo_map = self.get_name_map("ammo")
         for t in conn.execute(
-            "SELECT * FROM ship_module_torpedoes WHERE ship_id=? AND module_letter=? ORDER BY launcher_name",
-            (ship_id, letter)).fetchall():
-            lines.append(f"  - {t['launcher_name']} x{t['count']}")
-            lines.append(f"    联装数: {t['num_barrels']:.0f}")
-            lines.append(f"    装填时间: {t['reload_time']}s")
-            for a in conn.execute(
-                "SELECT ra.ammo_id, pbi.* FROM rel_ship_weapon_ammo ra "
-                "LEFT JOIN projectile_basic_info pbi ON pbi.projectile_id = ra.ammo_id "
-                "JOIN ship_module_torpedoes smt ON smt.id = ra.weapon_ref_id "
-                "WHERE ra.weapon_type='torpedo' AND smt.ship_id=? AND smt.module_letter=? AND smt.launcher_name=?",
-                (ship_id, letter, t['launcher_name'])).fetchall():
-                aname = ammo_map.get(a["ammo_id"].upper(), a["ammo_id"])
-                lines.append(f"    鱼雷: {aname}")
-                lines.extend(self._format_projectile_lines(a, ammo_map))
-        if lines:
-            result[letter] = lines
-
-    def _build_aa(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
-        lines = []
-        aa_list = conn.execute(
-            "SELECT * FROM ship_module_aa WHERE ship_id=? AND module_letter=?",
-            (ship_id, letter)).fetchall()
-        aa_auras = [a for a in aa_list if a['aura_name']]
-        aa_guns = [a for a in aa_list if a['aa_gun_name']]
-        if aa_auras:
-            lines.append("  防空光环:")
-            # 去重：按 (aura_name, aura_type, aura_dps, bubble_damage) 分组
-            aura_groups = {}
-            for a in aa_auras:
-                key = (a['aura_name'], a['aura_type'], a['aura_dps'], a['bubble_damage'])
-                aura_groups[key] = aura_groups.get(key, 0) + (a['aa_gun_count'] or 1)
-            for (name, atype, dps, bdmg), cnt in aura_groups.items():
-                label = f"{'黑云' if atype=='bubble' else '持续伤害'}"
-                entry = f"    - {name} ({label})"
-                if cnt > 1:
-                    entry += f" x{cnt}"
-                lines.append(entry)
-                if atype == 'bubble':
-                    lines.append(f"      黑云单颗伤害: {bdmg:.1f}")
-                else:
-                    lines.append(f"      面板秒伤: {dps:.0f}")
-        if aa_guns:
-            lines.append("  防空炮:")
-            # 去重：按 aa_gun_name 分组
-            gun_groups = {}
-            for g in aa_guns:
-                gun_groups[g['aa_gun_name']] = gun_groups.get(g['aa_gun_name'], 0) + (g['aa_gun_count'] or 1)
-            for name, cnt in gun_groups.items():
-                lines.append(f"    - {name} x{cnt}")
-        if lines:
-            result[letter] = lines
-
-    def _build_depth_charge(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
-        lines = []
-        dcs = conn.execute(
-            "SELECT * FROM ship_module_depth_charge WHERE ship_id=? AND module_letter=?",
-            (ship_id, letter)).fetchall()
-        if dcs:
-            c = Counter(d['gun_name'] for d in dcs)
-            lines.append("  深水炸弹:")
-            for n, cnt in c.items():
-                lines.append(f"    - {n} x{cnt}")
-        if lines:
-            result[letter] = lines
-
-    def _build_aircraft(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
-        # 按 module_variant 收集飞机
-        by_variant: dict[str, list[dict]] = {}
-        for p in conn.execute(
-            "SELECT * FROM ship_module_aircraft WHERE ship_id=? AND module_letter=? "
-            "ORDER BY module_variant, plane_name",
-            (ship_id, letter)).fetchall():
-            vk = p['module_variant'] or ''
-            by_variant.setdefault(vk, []).append(p)
-        if not by_variant:
-            return
-
-        # 按 aircraft_class + module_variant 分组，每个变体作为独立 sub_label
-        class_order = ["攻击机", "鱼雷轰炸机", "俯冲轰炸机",
-                       "弹跳轰炸机", "水雷轰炸机", "侦察机", "其他飞机"]
-        variant_labels: dict[str, str] = {}   # sub_label → display name
-        variant_lines: dict[str, list[str]] = {}  # sub_label → lines
-
-        for vk in sorted(by_variant.keys(), key=lambda x: (len(x), x)):
-            for p in by_variant[vk]:
-                pinfo = conn.execute(
-                    "SELECT * FROM plane_basic_info WHERE plane_id=?",
-                    (self.resolve_plane_id(p['plane_name']),)).fetchone()
-                cls_name = (pinfo['aircraft_class'] or "其他飞机") if pinfo else "其他飞机"
-                sub_label = f"{cls_name}【{letter}{vk}】" if vk else f"{cls_name}"
-                if sub_label not in variant_lines:
-                    variant_lines[sub_label] = []
-                pl = variant_lines[sub_label]
-                pname = self.resolve_plane(p['plane_name'])
-                pl.append(f"    - {pname}")
-                pinfo = conn.execute(
-                    "SELECT * FROM plane_basic_info WHERE plane_id=?",
-                    (self.resolve_plane_id(p['plane_name']),)).fetchone()
-                if pinfo:
-                    cruise = pinfo['cruise_speed']
-                    max_s = pinfo['max_speed']
-                    min_s = pinfo['min_speed']
-                    if cruise: pl.append(f"      巡航速度: {cruise} knot")
-                    if max_s is not None:
-                        v = cruise * max_s if cruise else max_s
-                        pl.append(f"      最大速度: {v:.0f} knot")
-                    if min_s is not None:
-                        v = cruise * min_s if cruise else min_s
-                        pl.append(f"      最小速度: {v:.0f} knot")
-                    if pinfo['max_health']: pl.append(f"      生命值: {pinfo['max_health']:.0f}")
-                    if pinfo['squadron_size']: pl.append(f"      中队规模: {pinfo['squadron_size']}架")
-                    if pinfo['attack_size']: pl.append(f"      攻击编组规模: {pinfo['attack_size']}架")
-                    if pinfo['attack_count']: pl.append(f"      飞机载弹数量: {pinfo['attack_count']}")
-                    if pinfo['restore_time']: pl.append(f"      整备时间: {pinfo['restore_time']}s")
-                    if pinfo['preparation_time']: pl.append(f"      准备时间: {pinfo['preparation_time']}s")
-                    if pinfo['aiming_time']: pl.append(f"      瞄准时间: {pinfo['aiming_time']}s")
-                # 弹药信息
-                armament_ids = (p['armament_name'] or (pinfo and pinfo['armament_name']) or "").split(",")
-                armament_names_zh = []
-                if pinfo and pinfo['armament_name_zh']:
-                    armament_names_zh = pinfo['armament_name_zh'].split(",")
-                for i, aid in enumerate(armament_ids):
-                    aid = aid.strip()
-                    if not aid:
-                        continue
-                    proj = conn.execute(
-                        "SELECT * FROM projectile_basic_info WHERE projectile_id=?",
-                        (aid,)).fetchone()
-                    if proj:
-                        aname = self.resolve_name("ammo", aid) or proj['ammo_name_zh'] or aid
-                        pl.append(f"      弹药: {aname}")
-                        ammo_map = self.get_name_map("ammo")
-                        pl.extend(f"        {l}" for l in self._format_projectile_lines(proj, ammo_map))
+            "SELECT * FROM ship_module_torpedoes WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            tname = self.resolve_name('gun', t['module_key']) or t['module_key']
+            lines.append(f"  - {tname} x{t['count']}")
+            if t['reload_time']: lines.append(f"    装填时间: {t['reload_time']}s")
+            seen = set()
+            for swp in conn.execute(
+                "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
+                "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='torpedo'",
+                (vc, ship_id, t['module_key'])).fetchall():
+                aid = swp["ammo_id"]
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                aname = ammo_map.get(aid.upper(), aid)
+                p = conn.execute(
+                    "SELECT pb.species, pb.custom_ui_postfix, te.alpha_damage, te.damage, te.torpedo_speed, "
+                    "te.torpedo_max_dist, te.torpedo_visibility, te.torpedo_arming_time, "
+                    "te.burn_prob, te.uw_critical, te.is_deep_water, te.flood_generation "
+                    "FROM projectile_basic_info pb "
+                    "LEFT JOIN projectile_torpedo_ext te ON te.version_code=pb.version_code AND te.projectile_id=pb.projectile_id "
+                    "WHERE pb.version_code=? AND pb.projectile_id=?",
+                    (vc, aid)).fetchone()
+                if p:
+                    postfix = p['custom_ui_postfix'] or ""
+                    is_burn = postfix == "_subBurn"
+                    is_deep = bool(p['is_deep_water'])
+                    sge = conn.execute(
+                        "SELECT search_radius, search_angle, max_yaw, max_vertical_speed, max_depth_level, target_lost_degradation_time "
+                        "FROM projectile_torpedo_sub_guidance_ext WHERE version_code=? AND projectile_id=?",
+                        (vc, aid)).fetchone()
+                    is_guided = sge is not None
+                    # 确定鱼雷类型标签（参考老代码逻辑）
+                    if is_guided:
+                        dtype = "声呐导向鱼雷"
+                    elif is_deep:
+                        dtype = "深水鱼雷"
+                    elif is_burn:
+                        dtype = "热能鱼雷"
                     else:
-                        aname = (armament_names_zh[i] if i < len(armament_names_zh) else
-                                 self.resolve_name("ammo", aid) or aid)
-                        pl.append(f"      弹药: {aname}")
-                # 机载消耗品
-                for ab in conn.execute(
-                    "SELECT * FROM plane_ability_slots WHERE plane_id=? ORDER BY slot_index",
-                    (self.resolve_plane_id(p['plane_name']),)).fetchall():
-                    ab_name = self.resolve_name("consumable", ab['ability_id'])
-                    pl.append(f"      消耗品: {ab_name}")
-                    config_key = ab['ability_limit'] or 'Default'
-                    cfg_row = conn.execute(
-                        "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
-                        (ab['ability_id'], config_key)).fetchone()
-                    if not cfg_row:
-                        cfg_row = conn.execute(
-                            "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
-                            (ab['ability_id'],)).fetchone()
-                    if cfg_row:
-                        try:
-                            ct = cfg_row['consumable_type'] or ''
-                            cfg = self._merge_config_row(cfg_row)
-                            if ct:
-                                pl.extend(self._format_ability_details(cfg, ct))
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-        # 按 class 顺序写入 result，每个 sub_label 是一个独立标签页
-        seen = set()
-        for sub_label in sorted(variant_lines.keys(),
-                                 key=lambda x: (class_order.index(x.split("【")[0]) if x.split("【")[0] in class_order else 999, x)):
-            if sub_label not in seen:
-                seen.add(sub_label)
-                result[sub_label] = variant_lines[sub_label]
-
-    def _build_air_support(self, ship_id: str, letter: str, result: dict) -> None:
-        conn = self.conn
-        lines = []
-        ammo_map = self.get_name_map("ammo")
-        for a in conn.execute(
-            "SELECT * FROM ship_module_air_support WHERE ship_id=? AND module_letter=?",
-            (ship_id, letter)).fetchall():
-            pname = self.resolve_plane(a['plane_name'])
-            lines.append(f"  {pname}")
-            if a['charges']: lines.append(f"    次数: {a['charges']}")
-            if a['reload_time']: lines.append(f"    装填: {a['reload_time']}s")
-            if a['armament_name']:
-                aname = ammo_map.get(a['armament_name'].upper(), a['armament_name'])
-                lines.append(f"    弹药: {aname}")
-                proj = conn.execute(
-                    "SELECT * FROM projectile_basic_info WHERE projectile_id=?",
-                    (a['armament_name'],)).fetchone()
-                if proj:
-                    lines.extend(self._format_projectile_lines(proj, ammo_map))
+                        dtype = "鱼雷"
+                    lines.append(f"    ── {aname} ({dtype}) ──")
+                    ad = p['alpha_damage'] or 0
+                    if ad: lines.append(f"      标伤: {ad * 0.33:.0f}")
+                    if p['torpedo_speed']: lines.append(f"      航速: {p['torpedo_speed']:.0f} kts")
+                    dist = p['torpedo_max_dist']
+                    if dist: lines.append(f"      射程: {dist * 0.03:.2f} km")
+                    if p['torpedo_visibility']: lines.append(f"      被发现距离: {p['torpedo_visibility']:.2f} km")
+                    if p['torpedo_arming_time']: lines.append(f"      鱼雷上浮时间: {p['torpedo_arming_time']:.2f} s")
+                    if p['flood_generation'] and p['uw_critical']:
+                        lines.append(f"      基础漏水系数: {p['uw_critical']:.2f}")
+                    # 热能鱼雷显示点火率
+                    if is_burn and p['burn_prob']:
+                        lines.append(f"      基础点火率: {p['burn_prob']*100:.0f}%")
+                    # 声呐导向鱼雷专属数据
+                    if sge:
+                        if sge['search_radius']: lines.append(f"      搜索半径: {sge['search_radius']:.2f} km")
+                        if sge['search_angle']: lines.append(f"      搜索角度: {sge['search_angle']:.0f}°")
+                        if sge['max_yaw']: lines.append(f"      最大转向角: {sge['max_yaw']:.0f}°")
+                        if sge['max_vertical_speed']: lines.append(f"      最大垂直速度: {sge['max_vertical_speed']:.2f} kts")
+                        if sge['max_depth_level']: lines.append(f"      最大深度级别: {sge['max_depth_level']:.0f}")
+                        if sge['target_lost_degradation_time']: lines.append(f"      丢失目标降级时间: {sge['target_lost_degradation_time']:.1f}s")
+                else:
+                    lines.append(f"    {aname}")
         if lines:
             result[letter] = lines
 
-    # ── 弹药通用格式化（按 species 分类型显示）────────────
-
-    @staticmethod
-    def _format_projectile_lines(proj, ammo_map: dict) -> list[str]:
-        """根据弹种 species 返回格式化弹药详情行列表"""
-        import json
+    def _build_aa(self, conn, vc, ship_id, letter, result):
         lines = []
-        species = (proj['species'] or '').strip()
-        ammo_type = (proj['ammo_type'] or '').upper()
-        damage = proj['alpha_damage']
-        extra = {}
-        try:
-            extra = json.loads(proj['extra_json'] or '{}')
-        except (json.JSONDecodeError, TypeError):
-            pass
+        auras = {"Far": None, "Medium": None, "Near": None}
+        bubble_data = {}
+        guns = []
+        seen_guns = set()
+        for a in conn.execute(
+            "SELECT * FROM ship_module_aa WHERE version_code=? AND ship_id=? AND config_group LIKE ?",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            if a['aura_type'] in ('bubble', 'continuous'):
+                atype = a['type'] or ""
+                atype_key = atype.capitalize()
+                if atype_key in ("Far", "Medium", "Near"):
+                    if a['aura_type'] == 'bubble':
+                        bubble_data = {
+                            "dmg": a['bubble_damage'] or 0,
+                            "hit": a['hit_chance'],
+                            "max": a['max_distance'],
+                            "min": a['min_distance'],
+                            "count": a['explosion_count'] or 0,
+                        }
+                    else:
+                        cur = auras[atype_key]
+                        nd = a['aura_dps']
+                        if cur is None or (nd is not None and nd > (cur[0] if isinstance(cur, tuple) else cur)):
+                            auras[atype_key] = (nd, a['hit_chance'], a['max_distance'], a['min_distance'])
+            if a['aa_gun_name'] and a['aa_gun_name'] not in seen_guns:
+                seen_guns.add(a['aa_gun_name'])
+                gname = self.resolve_name('gun', a['aa_gun_name']) or a['aa_gun_name']
+                guns.append(f"{gname} * {a['aa_gun_count']}")
+        if any(v is not None for v in auras.values()):
+            lines.append(f"  持续伤害:")
+            labels = {"Far": "远程", "Medium": "中程", "Near": "近程"}
+            for key in ("Far", "Medium", "Near"):
+                info = auras[key]
+                if info is not None:
+                    dps_val, hit_chance, max_d, min_d = info
+                    lines.append(f"    {labels[key]}防空炮:")
+                    lines.append(f"      伤害: {dps_val:.0f}")
+                    if hit_chance is not None:
+                        lines.append(f"      命中率: {hit_chance*100:.0f}%")
+                    if min_d is not None and max_d is not None:
+                        lines.append(f"      射程: {min_d:.0f} ~ {max_d:.0f} km")
+        if bubble_data:
+            lines.append(f"  防空炮弹:")
+            bd = bubble_data["dmg"]
+            if bd:
+                lines.append(f"    爆炸伤害: {bd:.0f}")
+            bc = bubble_data.get("hit")
+            if bc is not None:
+                lines.append(f"    命中率: {bc*100:.0f}%")
+            bmin = bubble_data.get("min")
+            bmax = bubble_data.get("max")
+            if bmin is not None and bmax is not None:
+                lines.append(f"    射程: {bmin:.0f} ~ {bmax:.0f} km")
+            bcnt = bubble_data.get("count")
+            if bcnt:
+                lines.append(f"    一次齐射数量: {bcnt:.0f}")
+        if guns:
+            lines.append(f"  防空炮:")
+            for g in guns:
+                lines.append(f"    防空炮名称: {g}")
+        if lines:
+            result[letter] = lines
 
-        if species == "Torpedo":
-            lines.append(f"      标伤: {(damage or 0) * 0.33:.0f}")
-        elif damage:
-            lines.append(f"      标伤: {damage:.0f}")
+    def _build_depth_charge(self, conn, vc, ship_id, letter, result):
+        lines = []
+        for d in conn.execute(
+            "SELECT * FROM ship_module_depth_charge WHERE version_code=? AND ship_id=? AND config_group LIKE ?",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            gname = self.resolve_name('gun', d['gun_name']) or d['gun_name']
+            lines.append(f"    - {gname} x{d['count']}")
+            if d['reload_time']: lines.append(f"      装填时间: {d['reload_time']}s")
+            if d['shot_delay']: lines.append(f"      发射间隔: {d['shot_delay']}s")
+            if d['max_packs']: lines.append(f"      最大组数: {d['max_packs']}")
+            if d['num_shots']: lines.append(f"      每组数量: {d['num_shots']}")
+            if d['damage']: lines.append(f"      标伤: {d['damage']:.0f}")
+            if d['dc_speed']: lines.append(f"      下沉速度: {d['dc_speed']:.2f} m/s")
+            if d['dc_timer']: lines.append(f"      引信定时: {d['dc_timer']:.2f}s")
+            if d['dc_max_depth']: lines.append(f"      最大深度: {d['dc_max_depth']:.0f} m")
+            if d['depth_splash_size']: lines.append(f"      溅射范围: {d['depth_splash_size']:.2f} m")
+        if lines:
+            result[letter] = lines
 
-        # ── Artillery（火炮炮弹）────────────────────────
-        if species == "Artillery":
-            if proj['bullet_mass']: lines.append(f"      弹重: {proj['bullet_mass']:.0f} kg")
-            if proj['bullet_diameter']: lines.append(f"      口径: {proj['bullet_diameter']*1000:.2f} mm")
-            if proj['bullet_speed']: lines.append(f"      初速: {proj['bullet_speed']:.0f} m/s")
-            if proj['bullet_air_drag']: lines.append(f"      阻力: {proj['bullet_air_drag']}")
-            if ammo_type == "AP" and proj['bullet_krupp']:
-                lines.append(f"      弹头硬度: {proj['bullet_krupp']:.0f}")
-            if ammo_type == "HE":
-                if proj['alpha_piercing_he']: lines.append(f"      HE穿深: {proj['alpha_piercing_he']:.1f} mm")
-                if proj['burn_prob']: lines.append(f"      起火率: {proj['burn_prob']*100:.1f}%")
-                if proj['explosion_radius']: lines.append(f"      爆炸半径: {proj['explosion_radius']/3:.1f} m")
-            elif ammo_type == "CS":
-                if proj['alpha_piercing_cs']: lines.append(f"      穿深: {proj['alpha_piercing_cs']:.1f} mm")
-            if ammo_type in ("AP", "CS"):
-                if proj['bullet_always_ricochet_at']: lines.append(f"      强制跳弹角: {proj['bullet_always_ricochet_at']:.0f}°")
-                if proj['bullet_ricochet_at']: lines.append(f"      概率跳弹角: {proj['bullet_ricochet_at']:.0f}°")
-                if proj['bullet_cap_normalize_max']: lines.append(f"      转正角: {proj['bullet_cap_normalize_max']:.0f}°")
-                if ammo_type == "AP":
-                    if proj['bullet_detonator']: lines.append(f"      引信: {proj['bullet_detonator']:.0f} s")
-                    if proj['bullet_detonator_threshold']: lines.append(f"      引信阈值: {proj['bullet_detonator_threshold']:.0f} mm")
+    def _build_aircraft_panel(self, conn, vc, ship_id, letters, sections):
+        """构建单一「舰载机」section，次级菜单按机种分 tab，tab 内按 config_prefix 分组"""
+        # 收集所有飞机
+        all_rows = []
+        for letter in letters:
+            for p in conn.execute(
+                "SELECT * FROM ship_module_aircraft WHERE version_code=? AND ship_id=? AND config_group LIKE ?",
+                (vc, ship_id, f"{letter}%")).fetchall():
+                all_rows.append(dict(p))
+        if not all_rows:
+            self._aircraft_sub_info = {}
+            return None
 
-        # ── Bomb（炸弹）────────────────────────────────
-        elif species == "Bomb":
-            if proj['bullet_mass']: lines.append(f"      弹重: {proj['bullet_mass']:.0f} kg")
-            if proj['bullet_speed']: lines.append(f"      投弹速: {proj['bullet_speed']:.0f} m/s")
-            if ammo_type == "HE":
-                if proj['alpha_piercing_he']: lines.append(f"      HE穿深: {proj['alpha_piercing_he']:.1f} mm")
-                if proj['burn_prob']: lines.append(f"      起火率: {proj['burn_prob']*100:.1f}%")
-            elif ammo_type == "CS":
-                if proj['alpha_piercing_cs']: lines.append(f"      穿深: {proj['alpha_piercing_cs']:.1f} mm")
-            elif ammo_type == "AP":
-                if proj['bullet_krupp']: lines.append(f"      硬度: {proj['bullet_krupp']:.0f}")
-            if proj['explosion_radius']: lines.append(f"      爆炸半径: {proj['explosion_radius']/3:.1f} m")
-            if ammo_type in ("AP", "CS"):
-                if proj['bullet_always_ricochet_at']: lines.append(f"      强制跳弹角: {proj['bullet_always_ricochet_at']:.0f}°")
-                if proj['bullet_ricochet_at']: lines.append(f"      概率跳弹角: {proj['bullet_ricochet_at']:.0f}°")
-                if ammo_type == "AP":
-                    if proj['bullet_detonator']: lines.append(f"      引信: {proj['bullet_detonator']:.0f} s")
-                    if proj['bullet_detonator_threshold']: lines.append(f"      引信阈值: {proj['bullet_detonator_threshold']:.0f} mm")
-
-        # ── Rocket（火箭弹）────────────────────────────
-        elif species == "Rocket":
-            if proj['bullet_mass']: lines.append(f"      弹重: {proj['bullet_mass']:.0f} kg")
-            if proj['bullet_speed']: lines.append(f"      初速: {proj['bullet_speed']:.0f} m/s")
-            if ammo_type == "HE":
-                if proj['alpha_piercing_he']: lines.append(f"      HE穿深: {proj['alpha_piercing_he']:.1f} mm")
-                if proj['burn_prob']: lines.append(f"      起火率: {proj['burn_prob']*100:.1f}%")
-            elif ammo_type == "CS":
-                if proj['alpha_piercing_cs']: lines.append(f"      穿深: {proj['alpha_piercing_cs']:.1f} mm")
-            elif ammo_type == "AP":
-                if proj['bullet_krupp']: lines.append(f"      硬度: {proj['bullet_krupp']:.0f}")
-            if proj['explosion_radius']: lines.append(f"      爆炸半径: {proj['explosion_radius']/3:.1f} m")
-
-        # ── Torpedo（鱼雷）─────────────────────────────
-        elif species == "Torpedo":
-            t_type = proj['torpedo_type']
-            postfix = (proj['custom_ui_postfix'] or '').strip()
-            if t_type == 1: dtype = "声导"
-            elif proj['is_deep_water']: dtype = "深水"
-            elif postfix == "_subBurn": dtype = "热能"
-            else: dtype = "鱼雷"
-            if proj['torpedo_speed']: lines.append(f"      航速: {proj['torpedo_speed']:.0f} kts")
-            max_dist = proj['torpedo_max_dist']
-            if max_dist: lines.append(f"      射程: {max_dist*30/1000:.1f} km")
-            if proj['torpedo_visibility']: lines.append(f"      发现: {proj['torpedo_visibility']:.1f} km")
-            if proj['torpedo_arming_time']: lines.append(f"      引信: {proj['torpedo_arming_time']:.0f}s")
-            if proj['torpedo_uw_critical']: lines.append(f"      漏水: {proj['torpedo_uw_critical']*100:.0f}%")
-            if t_type == 1:
-                stp = extra.get("submarineTorpedoParams", {})
-                if stp:
-                    my = stp.get("maxYaw", [0])[0] if isinstance(stp.get("maxYaw"), list) else stp.get("maxYaw", 0)
-                    ys = stp.get("yawChangeSpeed", [0])[0] if isinstance(stp.get("yawChangeSpeed"), list) else stp.get("yawChangeSpeed", 0)
-                    lines.append(f"      转向: {my}° / {ys}°/s")
-
-        # ── DepthCharge（深水炸弹）──────────────────────
-        elif species == "DepthCharge":
-            if proj['bullet_speed']: lines.append(f"      下潜: {proj['bullet_speed']:.0f} m/s")
-            if proj['dc_timer']: lines.append(f"      延迟: {proj['dc_timer']:.0f}s")
-            if proj['dc_max_depth']: lines.append(f"      深度: {abs(proj['dc_max_depth']):.0f} m")
-
-        # ── Laser（激光）───────────────────────────────
-        elif species == "Laser":
-            if proj['bullet_speed']: lines.append(f"      速度: {proj['bullet_speed']:.0f} m/s")
-            if proj['laser_heat']: lines.append(f"      热量: {proj['laser_heat']}")
-            if proj['laser_heat_radius']: lines.append(f"      热半径: {proj['laser_heat_radius']} m")
-
-        # ── Wave（波浪）────────────────────────────────
-        elif species == "Wave":
-            if proj['wave_speed']: lines.append(f"      波速: {proj['wave_speed']:.0f} m/s")
-            if proj['wave_sector']: lines.append(f"      扇区: {proj['wave_sector']}°")
-
-        return lines
-
-    @staticmethod
-    def _merge_config_row(row) -> dict:
-        """将 consumable_configs 行（列 + extra_json）合并为一个 cfg dict"""
-        import json
-        cfg = dict(row)
-        COL2GAME = {
-            "consumable_type": "consumableType",
-            "num_consumables": "numConsumables",
-            "work_time": "workTime",
-            "preparation_time": "preparationTime",
-            "reload_time": "reloadTime",
-            "is_auto_consumable": "isAutoConsumable",
-            "is_interceptor": "isInterceptor",
-            "regen_hp_speed": "regenerationHPSpeed",
-            "area_dmg_multiplier": "areaDamageMultiplier",
-            "bubble_dmg_multiplier": "bubbleDamageMultiplier",
-            "fighter_name": "fightersName",
-            "fighter_num": "fightersNum",
-            "available_buoyancy_states": "availableBuoyancyStates",
+        TYPE_LABEL = {
+            "Fighter": "攻击机", "DiveBomber": "俯冲轰炸机",
+            "TorpedoBomber": "鱼雷轰炸机", "SkipBomber": "弹跳轰炸机",
         }
-        ej = cfg.pop('extra_json', None)
-        extra = {}
-        if ej:
-            try:
-                extra = json.loads(ej)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        result = {}
-        for col, game_key in COL2GAME.items():
-            if col in cfg and cfg[col] is not None:
-                result[game_key] = cfg[col]
-        result.update(extra)
-        for _k in ('id', 'consumable_id', 'config_key'):
-            result.pop(_k, None)
-        return result
+        # 按 plane_type 分组
+        by_type: dict[str, list] = {}
+        for r in all_rows:
+            pt = r.get('plane_type') or '其他'
+            by_type.setdefault(pt, []).append(r)
 
-    @staticmethod
-    def _format_ability_details(cfg: dict, ct: str) -> list[str]:
-        """根据消耗品类型返回格式化详情行列表"""
-        from models.name_mapping import Mapping as NM
+        # 构建次级菜单内容：sub_labels + sub_contents
+        sub_labels: list[str] = []
+        sub_contents: dict = {}
+        for ptype in ("Fighter", "DiveBomber", "TorpedoBomber", "SkipBomber", "其他"):
+            rows = by_type.get(ptype)
+            if not rows:
+                continue
+            label = TYPE_LABEL.get(ptype, ptype)
+            sub_labels.append(label)
+            # 按 config_prefix 分组
+            prefix_map: dict[str, list] = {}
+            for r in rows:
+                cg = r.get('config_group') or ""
+                prefix_map.setdefault(cg, []).append(r)
+            cg_keys = sorted(prefix_map.keys(), key=lambda x: (x == "", x))
+            config_labels: list[str] = []
+            config_contents: dict[str, list[str]] = {}
+            for cg in cg_keys:
+                cg_label = f"{cg} 配置"
+                config_labels.append(cg_label)
+                clines: list[str] = []
+                group = prefix_map[cg]
+                for p in group:
+                    pn = p.get('plane_name', '')
+                    display_name = self.resolve_plane(pn)
+                    clines.append(f"      飞机型号: {display_name}")
+                    # plane_basic_info
+                    pi = conn.execute(
+                        "SELECT * FROM plane_basic_info WHERE version_code=? AND plane_id=?",
+                        (vc, self.resolve_plane_id(pn))).fetchone()
+                    pid = {}
+                    if pi:
+                        pid = dict(pi)
+                        if pid.get('plane_level'): clines.append(f"      飞机等级: {pid['plane_level']}")
+                        # 速度（CV 飞机用 speed_move_with_bomb）
+                        smwb = pid.get('speed_move_with_bomb')
+                        if smwb:
+                            max_mul = pid.get('speed_max_mult')
+                            min_mul = pid.get('speed_min_mult')
+                            clines.append(f"      巡航速度: {smwb} kts")
+                            if max_mul:
+                                clines.append(f"          最大速度: {smwb * max_mul:.2f} kts")
+                            if min_mul:
+                                clines.append(f"          最小速度: {smwb * min_mul:.2f} kts")
+                        else:
+                            if pid.get('max_speed'): clines.append(f"      航速: {pid['max_speed']} kts")
+                            if pid.get('cruising_speed'): clines.append(f"      巡航速度: {pid['cruising_speed']} kts")
+                        if pid.get('hp'): clines.append(f"      单架飞机血量: {pid['hp']}")
+                        ac = pid.get('attack_count') or 0
+                        ai = pid.get('attack_interval') or 0
+                        if ac:
+                            clines.append(f"      载弹量: {ac}")
+                        if pid.get('attack_cooldown'): clines.append(f"      攻击冷却时间: {pid['attack_cooldown']}s")
+                        if pid.get('arrange_size') and pid['arrange_size'] > 0:
+                            clines.append(f"      中队规模: {pid['arrange_size']}")
+                        # 角度
+                        if pid.get('angle_of_climb'): clines.append(f"          爬升角度: {pid['angle_of_climb']}°")
+                        if pid.get('angle_of_dive'): clines.append(f"          俯冲角度: {pid['angle_of_dive']}°")
+                        if pid.get('attack_angle') is not None: clines.append(f"          攻击角度: {pid['attack_angle']}°")
+                        # 散布/缩圈/时间
+                        if pid.get('preparation_time'): clines.append(f"      准备时间: {pid['preparation_time']}s")
+                        if pid.get('preparation_accel_increase') is not None:
+                            clines.append(f"          准备缩圈速度: {pid['preparation_accel_increase']}")
+                        if pid.get('preparation_accel_decrease') is not None:
+                            clines.append(f"          准备扩圈速度: {abs(pid['preparation_accel_decrease'])}")
+                        if pid.get('aiming_time'): clines.append(f"      瞄准时间: {pid['aiming_time']}s")
+                        if pid.get('aiming_accel_increase') is not None:
+                            clines.append(f"          瞄准缩圈速度: {pid['aiming_accel_increase']}")
+                        if pid.get('aiming_accel_decrease') is not None:
+                            clines.append(f"          瞄准扩圈速度: {abs(pid['aiming_accel_decrease'])}")
+                        if pid.get('post_attack_invulnerability_duration'):
+                            clines.append(f"      攻击后无敌时间: {pid['post_attack_invulnerability_duration']}s")
+                        if pid.get('flight_height'): clines.append(f"      飞行高度: {pid['flight_height']}")
+                        # 编队/燃料
+                        if pid.get('attacker_size'): clines.append(f"      攻击编队大小: {pid['attacker_size']}")
+                        if pid.get('num_planes_in_squadron'): clines.append(f"      中队飞机数量: {pid['num_planes_in_squadron']}")
+                        if pid.get('visibility_factor') is not None: clines.append(f"      被侦测距离: {pid['visibility_factor']} km")
+                        # 跳弹轰炸机专属
+                        if pid.get('species') == "Skip":
+                            if pid.get('skip_height') is not None: clines.append(f"      弹跳高度: {pid['skip_height']}")
+                            if pid.get('aiming_height') is not None: clines.append(f"      瞄准视角高度: {pid['aiming_height']}")
+                        # 散布计算（K=30.0 矩阵乘法公式）
+                        oss_x = pid.get('outer_salvo_size_x')
+                        oss_y = pid.get('outer_salvo_size_y')
+                        iss_x = pid.get('inner_salvo_size_x')
+                        iss_y = pid.get('inner_salvo_size_y')
+                        maxs_x = pid.get('max_spread_x')
+                        maxs_y = pid.get('max_spread_y')
+                        mins_x = pid.get('min_spread_x')
+                        mins_y = pid.get('min_spread_y')
+                        ibp = pid.get('inner_bombs_percentage')
+                        _K = 30.0
+                        if all(v is not None for v in (oss_x, oss_y, iss_x, iss_y, maxs_x, maxs_y)):
+                            # 分支 A：椭圆矩阵计算
+                            mins_x = mins_x or 1.0
+                            mins_y = mins_y or 1.0
+                            def _rnd(v):
+                                return int(v + 0.5)
+                            min_outer = (_rnd(oss_x * mins_x * _K), _rnd(oss_y * mins_y * _K))
+                            max_outer = (_rnd(oss_x * maxs_x * _K), _rnd(oss_y * maxs_y * _K))
+                            min_inner = (_rnd(iss_x * mins_x * _K), _rnd(iss_y * mins_y * _K))
+                            max_inner = (_rnd(iss_x * maxs_x * _K), _rnd(iss_y * maxs_y * _K))
+                            if ibp is not None:
+                                clines.append(f"      核心投弹: {int(ibp)}%")
+                            clines.append(f"      散布相关:")
+                            clines.append(f"          最大散布: {max_outer[0]}x{max_outer[1]}")
+                            clines.append(f"          最小散布: {min_outer[0]}x{min_outer[1]}")
+                            clines.append(f"              最大散布内圈: {max_inner[0]}x{max_inner[1]}")
+                            clines.append(f"              最小散布内圈: {min_inner[0]}x{min_inner[1]}")
+                        elif pid.get('max_spread') is not None:
+                            # 分支 B：鱼雷轰炸机，显示单值散布
+                            clines.append(f"      最大散布: {pid['max_spread']}")
+                            if pid.get('min_spread') is not None:
+                                clines.append(f"      最小散布: {pid['min_spread']}")
+                        # 机库
+                        clines.append(f"      机库:")
+                        if pid.get('hangar_max_value') is not None:
+                            clines.append(f"        最大可用数量: {pid['hangar_max_value']} 架")
+                        if pid.get('hangar_start_value') is not None:
+                            clines.append(f"        开局可用数量: {pid['hangar_start_value']} 架")
+                        if pid.get('hangar_restore_amount') is not None:
+                            clines.append(f"        每次整备数量: {pid['hangar_restore_amount']}架")
+                        if pid.get('hangar_time_to_restore') is not None:
+                            clines.append(f"        每次整备时间: {pid['hangar_time_to_restore']} s")
+                        # 用 bomb_name 作为弹药回退
+                        bname = pid.get('bomb_name') or ""
+                    else:
+                        ac = ai = 0
+                        bname = ""
+                    arm = p.get('armament_name') or ""
+                    proj_id = arm or bname
+                    if proj_id:
+                        # 先查 projectile_basic_info 确定类型
+                        pbi = conn.execute(
+                            "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+                            (vc, proj_id)).fetchone()
+                        if pbi:
+                            species = pbi['species'] or ""
+                            atype = pbi['ammo_type'] or ""
+                            clines.append(f"      ── 弹药: {species} ({atype}) ──")
+                            _ammo_cols = "alpha_damage, bullet_krupp, alpha_piercing_he, alpha_piercing_cs, bullet_speed, explosion_radius, burn_prob, bullet_diameter, bullet_air_drag, bullet_always_ricochet_at, bullet_ricochet_at, bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max"
+                            _bomb_ext_cols = f"damage, skips_json, max_skip_angle, {_ammo_cols}"
+                            if species in ("Bullet", "HE"):
+                                be = conn.execute(
+                                    f"SELECT {_ammo_cols} "
+                                    "FROM projectile_bullet_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if be:
+                                    if be['alpha_damage']: clines.append(f"        标伤: {be['alpha_damage']:.0f}")
+                                    self._append_ammo_pen(clines, be, atype)
+                                    if be['bullet_speed']: clines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
+                                    if be['explosion_radius']: clines.append(f"        爆炸半径: {be['explosion_radius']:.2f} m")
+                                    if be['burn_prob'] is not None: clines.append(f"        起火概率: {be['burn_prob']*100:.2f}%")
+                                    self._append_ammo_extra(clines, be, atype)
+                            elif species == "Bomb":
+                                be = conn.execute(
+                                    f"SELECT {_bomb_ext_cols} "
+                                    "FROM projectile_bomb_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if be:
+                                    if be['alpha_damage']: clines.append(f"        标伤: {be['alpha_damage']:.0f}")
+                                    self._append_ammo_pen(clines, be, atype)
+                                    if be['bullet_speed']: clines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
+                                    if be['explosion_radius']: clines.append(f"        爆炸半径: {be['explosion_radius']:.2f} m")
+                                    if be['burn_prob'] is not None: clines.append(f"        起火概率: {be['burn_prob']*100:.2f}%")
+                                    self._append_ammo_extra(clines, be, atype)
+                                    self._append_skip_data(clines, be)
+                            elif species == "SkipBomb":
+                                be = conn.execute(
+                                    f"SELECT {_bomb_ext_cols} "
+                                    "FROM projectile_bomb_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if be:
+                                    if be['alpha_damage']: clines.append(f"        标伤: {be['alpha_damage']:.0f}")
+                                    self._append_ammo_pen(clines, be, atype)
+                                    if be['bullet_speed']: clines.append(f"        弹速: {be['bullet_speed']:.0f} m/s")
+                                    if be['explosion_radius']: clines.append(f"        爆炸半径: {be['explosion_radius']:.2f} m")
+                                    if be['burn_prob'] is not None: clines.append(f"        起火概率: {be['burn_prob']*100:.2f}%")
+                                    self._append_ammo_extra(clines, be, atype)
+                                    self._append_skip_data(clines, be)
+                            elif species == "Rocket":
+                                re = conn.execute(
+                                    f"SELECT damage, {_ammo_cols} "
+                                    "FROM projectile_rocket_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if re:
+                                    if re['alpha_damage']: clines.append(f"        标伤: {re['alpha_damage']:.0f}")
+                                    self._append_ammo_pen(clines, re, atype)
+                                    if re['bullet_speed']: clines.append(f"        弹速: {re['bullet_speed']:.0f} m/s")
+                                    if re['explosion_radius']: clines.append(f"        爆炸半径: {re['explosion_radius']:.2f} m")
+                                    if re['burn_prob'] is not None: clines.append(f"        起火概率: {re['burn_prob']*100:.2f}%")
+                                    self._append_ammo_extra(clines, re, atype)
+                                # 火箭弹额外读取扫射序列
+                                asq = conn.execute(
+                                    "SELECT attack_sequence_durations FROM projectile_rocket_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if asq and asq['attack_sequence_durations']:
+                                    self._append_strafe_time(clines, asq['attack_sequence_durations'])
+                            elif species in ("Torpedo", "TorpedoBomber"):
+                                te = conn.execute(
+                                    "SELECT alpha_damage, damage, torpedo_speed, torpedo_max_dist, torpedo_visibility, "
+                                    "torpedo_arming_time, burn_prob, uw_critical, flood_generation, is_deep_water, deep_water_ignore_classes, alert_dist "
+                                    "FROM projectile_torpedo_ext WHERE version_code=? AND projectile_id=?",
+                                    (vc, proj_id)).fetchone()
+                                if te:
+                                    # 检测声导/深水/热能
+                                    sge = conn.execute(
+                                        "SELECT max_yaw, drop_dist_aircarrier, drop_dist_battleship, drop_dist_cruiser, "
+                                        "drop_dist_destroyer, drop_dist_submarine, drop_dist_default "
+                                        "FROM projectile_torpedo_sub_guidance_ext WHERE version_code=? AND projectile_id=?",
+                                        (vc, proj_id)).fetchone()
+                                    is_guided = sge is not None
+                                    is_deep = te['is_deep_water']
+                                    is_burn = bool(te['burn_prob'])
+                                    if is_guided:
+                                        dtype = "声呐导向鱼雷"
+                                    elif is_deep:
+                                        dtype = "深水鱼雷"
+                                    elif is_burn:
+                                        dtype = "热能鱼雷"
+                                    else:
+                                        dtype = "鱼雷"
+                                    clines.append(f"        类型: {dtype}")
+                                    ad = te['alpha_damage'] or 0
+                                    if ad: clines.append(f"        标伤: {ad * 0.33:.0f}")
+                                    if is_deep and te['deep_water_ignore_classes']:
+                                        clines.append(f"        无法攻击目标: {te['deep_water_ignore_classes']}")
+                                    if te['torpedo_speed']: clines.append(f"        航速: {te['torpedo_speed']:.0f} kts")
+                                    if te['torpedo_max_dist'] is not None: clines.append(f"        最大射程: {(te['torpedo_max_dist'] * 30) / 1000:.2f} km")
+                                    if te['flood_generation'] and te['uw_critical']:
+                                        clines.append(f"        基础漏水系数: {te['uw_critical']:.2f}")
+                                    if te['torpedo_visibility']: clines.append(f"        鱼雷被侦测距离: {te['torpedo_visibility']:.2f} km")
+                                    if te['torpedo_arming_time']: clines.append(f"        鱼雷上浮时间: {te['torpedo_arming_time']:.2f} s")
+                                    if is_burn and te['burn_prob']:
+                                        clines.append(f"        基础点火率: {te['burn_prob']*100:.0f}%")
+                                    if is_guided:
+                                        if sge['max_yaw']: clines.append(f"        最大转向角: {sge['max_yaw']}°")
+                                        drop_parts = []
+                                        for ship_cls, col in [("航母", "drop_dist_aircarrier"), ("战列舰", "drop_dist_battleship"),
+                                                              ("巡洋舰", "drop_dist_cruiser"), ("驱逐舰", "drop_dist_destroyer"),
+                                                              ("潜艇", "drop_dist_submarine"), ("默认", "drop_dist_default")]:
+                                            val = sge[col]
+                                            if val is not None:
+                                                drop_parts.append(f"{ship_cls}: {val} m")
+                                        if drop_parts:
+                                            clines.append(f"        放弃追踪距离: {' | '.join(drop_parts)}")
+                    # 飞机携带的消耗品（从 ability_slot_0~4 读取）
+                    for si in range(5):
+                        slot_val = pid.get(f'ability_slot_{si}')
+                        if not slot_val:
+                            continue
+                        parts = slot_val.split('|', 1)
+                        aid = parts[0]
+                        variant = parts[1] if len(parts) > 1 else ""
+                        aname = self.resolve_name("ability", aid)
+                        clines.append(f"      ── 消耗品: {aname} ──")
+                        if variant:
+                            cfg = conn.execute(
+                                "SELECT consumable_type, extra_json FROM consumable_configs "
+                                "WHERE version_code=? AND consumable_id=? AND config_key=?",
+                                (vc, aid, variant)).fetchone()
+                            if cfg:
+                                try:
+                                    cd = json.loads(cfg['extra_json'] or '{}')
+                                except Exception:
+                                    cd = {}
+                                ct = cfg['consumable_type'] or cd.get('consumableType', '')
+                                num = cd.get('numConsumables')
+                                prep = cd.get('preparationTime', 0)
+                                cd_time = cd.get('reloadTime', 0)
+                                wt = cd.get('workTime', 0)
+                                auto = cd.get('isAutoConsumable', False)
+                                clines.append(f"        类型: {ct}")
+                                if num is not None:
+                                    clines.append(f"        数量: {'无限' if num == -1 else num}")
+                                if auto:
+                                    clines.append(f"        自动使用: 是")
+                                if prep:
+                                    clines.append(f"        准备时间: {prep}s")
+                                if cd_time:
+                                    clines.append(f"        冷却时间: {cd_time}s")
+                                if wt:
+                                    clines.append(f"        持续时间: {wt}s")
+                                clines.append(f"        消耗品效果:")
+                                if ct == "crashCrew":
+                                    clines.append(f"          扑灭起火、清除进水、并修复受损配件。")
+                                elif ct == "healForsage":
+                                    bc = cd.get('boostCoeff', 0)
+                                    if bc:
+                                        clines.append(f"          加速倍率: {bc}倍")
+                                elif ct == "callFighters":
+                                    fn = cd.get('fightersName', '')
+                                    if fn:
+                                        fdisp = self.resolve_name('plane', fn) or fn
+                                        clines.append(f"          战斗机名称: {fdisp}")
+                                    fn2 = cd.get('fightersNum', 0)
+                                    is_inter = cd.get('isInterceptor', False)
+                                    clines.append(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}")
+                                    dog = cd.get('dogFightTime', 0)
+                                    fly = cd.get('flyAwayTime', 0)
+                                    if dog or fly:
+                                        clines.append(f"          狗斗: {dog}s | 离开: {fly}s")
+                                    rk = cd.get('distanceToKill', 0)
+                                    if rk:
+                                        clines.append(f"          巡逻半径: {rk/10:.2f}km")
+                                elif ct == "regenerateHealth":
+                                    rr = cd.get('regenerationRate', 0)
+                                    if rr:
+                                        clines.append(f"          每秒回复血量: {rr*100:.0f}%")
+                                    delay = cd.get('regenerationDelay', 0)
+                                    if delay:
+                                        clines.append(f"          回复延迟: {delay}s")
+                config_contents[cg_label] = clines
+            sub_contents[label] = {"config_labels": config_labels, "config_contents": config_contents}
+
+        self._aircraft_sub_info = {"舰载机": {"sub_labels": sub_labels, "sub_contents": sub_contents}}
+        return self.make_section("舰载机", [])
+    def _build_air_support(self, conn, vc, ship_id, letter, result):
         lines = []
-        num = cfg.get('numConsumables', 0)
-        num_str = "无限" if num == -1 else str(num)
-        lines.append(f"        数量: {num_str}")
-        work = cfg.get('workTime', 0)
-        prep = cfg.get('preparationTime', 0)
-        reload_t = cfg.get('reloadTime', 0)
-        if prep: lines.append(f"        准备时间: {prep}s")
-        if work: lines.append(f"        作用时间: {work}s")
-        if reload_t: lines.append(f"        装填时间: {reload_t}s")
+        TYPE_LABEL = {"spy": "情报侦察机", "smoke": "烟幕释放机", "scout": "伴航校射侦察机"}
+        by_type: dict[str, list] = {}
+        for s in conn.execute(
+            "SELECT * FROM ship_module_air_support WHERE version_code=? AND ship_id=? AND config_group LIKE ?",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            st = s['support_type'] or "other"
+            by_type.setdefault(st, []).append(dict(s))
+        for st in ("spy", "smoke", "scout", "damage", "other"):
+            group = by_type.get(st)
+            if not group:
+                continue
+            if st == "damage":
+                arm = group[0].get('armament_name') or ""
+                if not arm:
+                    pi = conn.execute(
+                        "SELECT bomb_name FROM plane_basic_info WHERE version_code=? AND plane_id=?",
+                        (vc, self.resolve_plane_id(group[0]['plane_name']))).fetchone()
+                    if pi and pi[0]:
+                        arm = pi[0]
+                if arm:
+                    pbi = conn.execute(
+                        "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+                        (vc, arm)).fetchone()
+                    if pbi:
+                        sp = pbi['species'] or ""
+                        at = pbi['ammo_type'] or ""
+                        if sp == "DepthCharge":
+                            label = "深水炸弹空袭"
+                        elif sp in ("bomb", "Bomb"):
+                            if at == "AP":
+                                label = "穿甲炸弹空袭"
+                            elif at == "HE":
+                                label = "高爆炸弹空袭"
+                            elif at == "SAP":
+                                label = "半穿甲炸弹空袭"
+                            else:
+                                label = "高爆炸弹空袭"
+                        elif sp in ("rocket", "Rocket"):
+                            if at == "AP":
+                                label = "穿甲火箭空袭"
+                            elif at == "HE":
+                                label = "高爆火箭空袭"
+                            else:
+                                label = "火箭空袭"
+                        else:
+                            label = f"未知空袭({sp})"
+                    else:
+                        label = "未知空袭"
+                else:
+                    label = "未知空袭"
+            else:
+                label = TYPE_LABEL.get(st, st)
+            lines.append(f"  [{label}]")
+            for s in group:
+                arm = s['armament_name'] or ""
+                sname = self.resolve_plane(s['plane_name']) or s['plane_name']
+                lines.append(f"    飞机型号: {sname}")
+                if s['charges'] is not None: lines.append(f"      最大充能次数: {s['charges']}")
+                if s['reload_time']: lines.append(f"      装填时间: {s['reload_time']}s")
+                if s['work_time']: lines.append(f"      持续时间: {s['work_time']}s")
+                mr = s['max_range']
+                mir = s.get('min_range')
+                def _fmt_range(v):
+                    if v is None: return None
+                    if v == float('inf'): return "无限"
+                    return f"{v/1000:.2f} km"
+                rtxt = _fmt_range(mr)
+                if rtxt: lines.append(f"      最大距离: {rtxt}")
+                rtxt2 = _fmt_range(mir)
+                if rtxt2: lines.append(f"      最小距离: {rtxt2}")
+                pi = conn.execute(
+                    "SELECT * FROM plane_basic_info WHERE version_code=? AND plane_id=?",
+                    (vc, self.resolve_plane_id(s['plane_name']))).fetchone()
+                if pi:
+                    pid = dict(pi)
+                    # 支援飞机速度存在 speed_move_with_bomb 中
+                    smwb = pid.get('speed_move_with_bomb')
+                    if smwb:
+                        max_mul = pid.get('speed_max_mult')
+                        min_mul = pid.get('speed_min_mult')
+                        lines.append(f"      巡航速度: {smwb} kts")
+                        if max_mul: lines.append(f"          最大速度: {smwb * max_mul:.2f} kts")
+                        if min_mul: lines.append(f"          最小速度: {smwb * min_mul:.2f} kts")
+                    else:
+                        if pid.get('max_speed'): lines.append(f"      航速: {pid['max_speed']} kts")
+                        if pid.get('cruising_speed'): lines.append(f"      巡航速度: {pid['cruising_speed']} kts")
+                    if pid.get('hp'): lines.append(f"      单架飞机血量: {pid['hp']:.0f}")
+                    if pid.get('flight_height'): lines.append(f"      飞行高度: {pid['flight_height']}")
+                    if pid.get('attacker_size'): lines.append(f"      攻击编组数量: {pid['attacker_size']}")
+                    if pid.get('visibility_factor') is not None: lines.append(f"      被侦测距离: {pid['visibility_factor']} km")
+                    # 如果 armament_name 为空，尝试从 plane_basic_info.bomb_name 获取弹药
+                    if not arm and pid.get('bomb_name'):
+                        arm = pid['bomb_name']
+                    if arm and pid.get('attack_count'): lines.append(f"      载弹量: {pid['attack_count']}")
+                if arm:
+                    pbi = conn.execute(
+                        "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+                        (vc, arm)).fetchone()
+                    if pbi:
+                        species = pbi['species'] or ""
+                        atype = pbi['ammo_type'] or ""
+                        lines.append(f"      ── 弹药: {species} ({atype}) ──")
+                        _ac = "alpha_damage, bullet_krupp, alpha_piercing_he, alpha_piercing_cs, bullet_speed, explosion_radius, burn_prob, bullet_diameter, bullet_air_drag, bullet_always_ricochet_at, bullet_ricochet_at, bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max"
+                        _bc = f"damage, skips_json, max_skip_angle, {_ac}"
+                        for tbl, cols in [("projectile_bullet_ext", _ac),
+                                           ("projectile_bomb_ext", _bc),
+                                           ("projectile_rocket_ext", f"damage, {_ac}"),
+                                           ("projectile_depth_charge_ext", "damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size")]:
+                            ext = conn.execute(f"SELECT {cols} FROM {tbl} WHERE version_code=? AND projectile_id=?", (vc, arm)).fetchone()
+                            if ext:
+                                if tbl == "projectile_depth_charge_ext":
+                                    if ext['damage']: lines.append(f"        标伤: {ext['damage']:.0f}")
+                                    if ext['dc_speed']: lines.append(f"        下沉速度: {ext['dc_speed']:.2f} m/s")
+                                    if ext['dc_timer']: lines.append(f"        引信定时: {ext['dc_timer']:.2f}s")
+                                    if ext['dc_max_depth']: lines.append(f"        最大深度: {ext['dc_max_depth']:.0f} m")
+                                    if ext['depth_splash_size']: lines.append(f"        溅射范围: {ext['depth_splash_size']:.2f} m")
+                                else:
+                                    if ext['alpha_damage']: lines.append(f"        标伤: {ext['alpha_damage']:.0f}")
+                                    self._append_ammo_pen(lines, ext, atype)
+                                    if ext['bullet_speed']: lines.append(f"        弹速: {ext['bullet_speed']:.0f} m/s")
+                                    if ext['explosion_radius']: lines.append(f"        爆炸半径: {ext['explosion_radius']:.2f} m")
+                                    if ext['burn_prob'] is not None: lines.append(f"        起火概率: {ext['burn_prob']*100:.2f}%")
+                                    self._append_ammo_extra(lines, ext, atype)
+                                break
+                        # 跳弹数据（Bomb ext 中）
+                        if ext and tbl == "projectile_bomb_ext":
+                            self._append_skip_data(lines, ext)
+                        # 火箭弹额外读取扫射序列
+                        if species == "Rocket":
+                            asq = conn.execute(
+                                "SELECT attack_sequence_durations FROM projectile_rocket_ext WHERE version_code=? AND projectile_id=?",
+                                (vc, arm)).fetchone()
+                            if asq and asq['attack_sequence_durations']:
+                                self._append_strafe_time(lines, asq['attack_sequence_durations'])
+                        else:
+                            te = conn.execute(
+                                "SELECT alpha_damage, damage, torpedo_speed, torpedo_max_dist, torpedo_visibility, torpedo_arming_time, flood_generation, is_deep_water, deep_water_ignore_classes "
+                                "FROM projectile_torpedo_ext WHERE version_code=? AND projectile_id=?",
+                                (vc, arm)).fetchone()
+                            if te:
+                                sge = conn.execute("SELECT max_yaw FROM projectile_torpedo_sub_guidance_ext WHERE version_code=? AND projectile_id=?", (vc, arm)).fetchone()
+                                is_guided = sge is not None
+                                is_deep = te['is_deep_water']
+                                if is_guided: lines.append(f"        类型: 声呐导向鱼雷")
+                                elif is_deep: lines.append(f"        类型: 深水鱼雷")
+                                ad = te['alpha_damage'] or 0
+                                if ad: lines.append(f"        标伤: {ad * 0.33:.0f}")
+                                if te['torpedo_speed']: lines.append(f"        航速: {te['torpedo_speed']:.0f} kts")
+                                if te['torpedo_max_dist'] is not None: lines.append(f"        最大射程: {(te['torpedo_max_dist'] * 30) / 1000:.2f} km")
+                                fg = te['flood_generation'] or 0
+                                if fg: lines.append(f"        基础漏水率: {fg * 100:.0f}%")
+        if lines:
+            result[letter] = lines
 
-        if ct == "crashCrew":
-            lines.append(f"        扑灭起火、清除进水、并修复受损配件。阻止敌方潜艇发射的鱼雷进行导向。")
+    def _build_sub_section_info(self, conn, vc, ship_id, sections):
+        """构建子分类映射：模块类型(船体/主炮) → {A/B/C 配置 → 内容}"""
+        from collections import defaultdict
+        # 先收集每封信的 module_id 列表
+        letter_modules: dict[str, list[str]] = defaultdict(list)
+        for r in conn.execute(
+            "SELECT DISTINCT config_group, module_id FROM ship_module_relations "
+            "WHERE version_code=? AND ship_id=? AND config_group NOT LIKE '%special%'",
+            (vc, ship_id)).fetchall():
+            cg = r["config_group"]
+            letter = self._config_group_letter(cg)
+            if letter not in letter_modules:
+                letter_modules[letter] = []
+        letters = sorted(letter_modules.keys())
+        if len(letters) <= 1:
+            return {}
 
-        elif ct == "regenCrew":
-            rate = float(cfg.get('regenerationHPSpeed', 0) or 0)
-            lines.append(f"        每秒回复血量: +{rate*100:.0f}%")
-
-        elif ct == "torpedoReloader":
-            trt = cfg.get('torpedoReloadTime', 0)
-            if trt:
-                lines.append(f"        鱼雷装填时间: {trt}s")
-
-        elif ct == "rls":
-            ds = (cfg.get('distShip') or 0) * 0.03
-            lines.append(f"        舰船探测距离: {ds:.2f} km")
-            aff = cfg.get('affectedClasses', [])
-            if aff:
-                from models.name_mapping import Mapping as NM
-                cls_str = ', '.join(NM.SHIP_CLASS_MAP.get(c, c) for c in aff)
-                lines.append(f"        限制探测舰种: {cls_str}")
-
-        elif ct == "artilleryBoosters":
-            bc = (cfg.get('boostCoeff') or 1) - 1
-            lines.append(f"        主炮装填时间: {bc*100:+.0f}%")
-
-        elif ct == "healForsage":
-            bc = (cfg.get('boostCoeff') or 1) - 1
-            lines.append(f"        引擎冷却速度: {bc*100:+.0f}%")
-
-        elif ct == "fastRudders":
-            brt = (cfg.get('buoyancyRudderTimeCoeff') or 1) - 1
-            bsc = (cfg.get('maxBuoyancySpeedCoeff') or 1) - 1
-            lines.append(f"        水平舵换挡时间: {brt*100:+.0f}%")
-            lines.append(f"        上浮/下潜速度: {bsc*100:+.0f}%")
-
-        elif ct == "subsEnergyFreeze":
-            lines.append(f"        启用此消耗品后，下潜能力将停止消耗。")
-            lines.append(f"        可在电池耗尽时启用: {'是' if cfg.get('canUseOnEmpty') else '否'}")
-
-        elif ct == "fighter" or ct == "callFighters":
-            fn = cfg.get('fightersName', '')
-            if fn:
-                lines.append(f"        机型: {fn}")
-            fn2 = cfg.get('fighterNum', 0)
-            if fn2:
-                lines.append(f"        数量: {fn2} 架")
-            dog = cfg.get('dogFightTime', 0)
-            fly = cfg.get('flyAwayTime', 0)
-            if dog or fly:
-                lines.append(f"        狗斗:{dog}s / 离开:{fly}s")
-            rk = cfg.get('distanceToKill', 0)
-            if rk:
-                lines.append(f"        巡逻半径: {rk/10:.1f}km")
-
-        elif ct == "scout":
-            dc = (cfg.get('artilleryDistCoeff') or 1) - 1
-            lines.append(f"        主炮射程: {dc*100:+.0f}%")
-
-        elif ct == "smokeGenerator":
-            r = cfg.get('radius', 0)
-            h = cfg.get('height', 0)
-            lines.append(f"        烟雾半径: {r*3:.0f}m | 高度: {h}m")
-            sp = cfg.get('speedLimit', 0)
-            lt = cfg.get('lifeTime', 0)
-            if sp or lt:
-                lines.append(f"        限速: {sp}kts | 扩散: {lt}s")
-
-        elif ct == "speedBoosters":
-            bc = (cfg.get('boostCoeff') or 1) - 1
-            lines.append(f"        最高航速: {bc*100:+.0f}%")
-            fe = (cfg.get('forwardEngineForsag') or 1) - 1
-            be = (cfg.get('backwardEngineForsag') or 1) - 1
-            lines.append(f"        推力: 前进{fe*100:+.0f}% / 后退{be*100:+.0f}%")
-
-        elif ct == "sonar":
-            ds = (cfg.get('distShip') or 0) * 0.03
-            dt = (cfg.get('distTorpedo') or 0) * 0.03
-            lines.append(f"        舰船探测: {ds:.2f} km")
-            lines.append(f"        鱼雷探测: {dt:.2f} km")
-
-        elif ct == "regenerateHealth":
-            rate = cfg.get('regenerationRate', 0)
-            if rate:
-                lines.append(f"        每秒回复: {rate*100:.1f}%")
-
-        elif ct == "depthCharges":
-            r = cfg.get('radius', 0) * 0.003
-            lines.append(f"        半径: {r:.2f}km")
-
-        elif ct == "hydrophone":
-            zt = cfg.get('zoneLifeTime', 0)
-            hu = cfg.get('hydrophoneUpdateFrequency', 0)
-            wr = (cfg.get('hydrophoneWaveRadius') or 0) * 0.001
-            if zt or hu:
-                lines.append(f"        虚影:{zt}s / 刷新:{hu}s")
-            if wr:
-                lines.append(f"        视野: {wr:.2f}km")
-
-        elif ct == "submarineLocator":
-            ds = (cfg.get('distShip') or 0) * 0.03
-            lines.append(f"        舰船探测: {ds:.2f} km")
-
-        elif ct == "airDefenseDisp":
-            ad = (cfg.get('areaDamageMultiplier') or 1) - 1
-            bd = (cfg.get('bubbleDamageMultiplier') or 1) - 1
-            lines.append(f"        区域秒伤: {ad*100:+.0f}%")
-            lines.append(f"        黑云伤害: {bd*100:+.0f}%")
-
-        elif ct == "planeSmokeGenerator":
-            ad = cfg.get('activationDelay', 0)
-            r = cfg.get('radius', 0) * 3
-            if ad:
-                lines.append(f"        延迟: {ad}s")
-            if r:
-                lines.append(f"        烟雾半径: {r:.0f}m")
-
-        elif ct == "vampireDamage":
-            coeff = (cfg.get('modifiers') or {}).get('damageGMHealCoeff', 0) * 100
-            lines.append(f"        伤害转化: {coeff:.1f}%")
-
-        elif ct == "massHeal":
-            hp = (cfg.get('ownHealPart') or 0) * 100
-            lines.append(f"        回复: {hp:.1f}%/s")
-            radius = (cfg.get('workRadius') or 0) * 3 / 100
-            lines.append(f"        半径: {radius:.2f}km")
-
-        elif ct == "supportBuoy":
-            lines.append(f"        区域: {cfg.get('battleDropVisualName', '未知')}")
-            lines.append(f"        布置时间: {cfg.get('battleDropActivationTime', 0)}s")
-            lines.append(f"        区域持续时间: {cfg.get('zoneLifetime', 0)}s")
-            lines.append(f"        区域半径: {(cfg.get('buffZoneRadius') or 0) / 1000:.2f}km")
-            lines.append(f"        效果持续时间: {cfg.get('buffDuration', 0)}s")
-
-            drop_name = cfg.get('battleDropName', '')
-            if drop_name == "PCOD071_SupportBuoy_RU":
-                gmIdealRadius = (cfg.get('GMIdealRadius') or 1) - 1
-                gmShotDelay = (cfg.get('GMShotDelay') or 1) - 1
-                gsIdealRadius = (cfg.get('GSIdealRadius') or 1) - 1
-                gsShotDelay = (cfg.get('GSShotDelay') or 1) - 1
-                gtShotDelay = (cfg.get('GTShotDelay') or 1) - 1
-                gs_detail = cfg.get('GSMaxDist', {})
-                lines.append(f"        鱼雷管装填时间: {gtShotDelay*100:+.0f}%")
-                lines.append(f"        主炮最大散步面积: {gmIdealRadius*100:+.0f}%")
-                lines.append(f"        主炮装填时间: {gmShotDelay*100:+.0f}%")
-                lines.append(f"        副炮最大散步面积: {gsIdealRadius*100:+.0f}%")
-                lines.append(f"        副炮装填时间: {gsShotDelay*100:+.0f}%")
-                if gs_detail:
-                    lines.append(f"        副炮射程:")
-                    for ship_class, boost_val in gs_detail.items():
-                        from models.name_mapping import Mapping as NM
-                        cn_name = NM.SHIP_CLASS_MAP.get(ship_class, ship_class)
-                        boost_pct = float(boost_val) - 1
-                        if boost_pct != 0:
-                            lines.append(f"          * {cn_name}: +{boost_pct*100:.2f}%")
-
-            elif drop_name == "PCOD070_SupportBuoy_US":
-                sgRudderPower = (cfg.get('SGRudderPower') or 1) - 1
-                sgRudderTime = (cfg.get('SGRudderTime') or 1) - 1
-                speedCoeff = (cfg.get('speedCoef') or 1) - 1
-                vulnerabilityAll = (cfg.get('vulnerabilityAll') or 1) - 1
-                healthRegen = cfg.get('healthRegenPercent', 0)
-                lines.append(f"        方向舵换挡时间: {sgRudderTime*100:+.0f}%")
-                lines.append(f"        方向舵效率: {sgRudderPower*100:+.0f}%")
-                lines.append(f"        战舰航速: {speedCoeff*100:+.0f}%")
-                lines.append(f"        受到的全类型伤害: {vulnerabilityAll*100:+.0f}%")
-                if healthRegen:
-                    lines.append(f"        每秒回复血量: +{healthRegen*100:.2f}%")
-
-        return lines
-
-    @staticmethod
-    def _format_consumable_effects(cfg: dict, ct: str) -> list[str]:
-        """仅返回类型专属效果行（不含基础数量/时间），匹配旧代码完整样式"""
-        from models.name_mapping import Mapping as NM
-        lines = []
-
-        if ct == "crashCrew":
-            lines.append("扑灭起火、清除进水、并修复受损配件。阻止敌方潜艇发射的鱼雷进行导向。")
-
-        elif ct == "regenCrew":
-            rate = float(cfg.get('regenerationHPSpeed', 0) or 0)
-            sign = "+" if rate > 0 else ""
-            lines.append(f"每秒回复血量: {sign}{rate * 100}%")
-
-        elif ct == "airDefenseDisp":
-            ad = float(cfg.get('areaDamageMultiplier', 0) or 0)
-            bd = float(cfg.get('bubbleDamageMultiplier', 0) or 0)
-            lines.append(f"防空区域秒伤: {ad * 100:+.0f}%")
-            lines.append(f"黑云伤害: {bd * 100:+.0f}%")
-
-        elif ct in ("fighter", "callFighters"):
-            fn = cfg.get('fightersName', '') or ''
-            if fn:
-                lines.append(f"战斗机名称: {fn}")
-            fn2 = cfg.get('fighterNum', 0)
-            if fn2:
-                lines.append(f"战斗机数量: {fn2}")
-            is_inter = cfg.get('isInterceptor', False)
-            lines.append(f"截击机: {'是' if is_inter else '否'}")
-            dog = cfg.get('dogFightTime', 0)
-            if dog:
-                lines.append(f"狗斗时间: {dog}s")
-            fly = cfg.get('flyAwayTime', 0)
-            if fly:
-                lines.append(f"离开时间: {fly}s")
-            climb = cfg.get('climbAngle', 0)
-            if climb:
-                lines.append(f"战斗机爬升角度: {climb}°")
-            rk = cfg.get('distanceToKill', 0)
-            if rk:
-                lines.append(f"巡逻半径: {rk / 10}km")
-            tda = cfg.get('timeDelayAttack', 0)
-            twda = cfg.get('timeWaitDelayAttack', 0)
-            if tda or twda:
-                lines.append(f"索敌时间: {tda}s / 瞄准时间: {twda}s")
-
-        elif ct == "scout":
-            dc = float(cfg.get('artilleryDistCoeff', 0) or 1) - 1
-            sign = "+" if dc > 0 else ""
-            lines.append(f"主炮射程 {sign}{dc * 100:.2f}%")
-
-        elif ct == "smokeGenerator":
-            r = float(cfg.get('radius', 0) or 0)
-            h = float(cfg.get('height', 0) or 0)
-            sp = float(cfg.get('speedLimit', 0) or 0)
-            lt = float(cfg.get('lifeTime', 0) or 0)
-            lines.append(f"烟雾生成半径: {r * 3}m")
-            lines.append(f"烟雾生成高度: {h}m")
-            lines.append(f"烟雾生成速度限制: {sp}kts")
-            lines.append(f"烟雾扩散时间: {lt}s")
-
-        elif ct == "speedBoosters":
-            bc = float(cfg.get('boostCoeff', 0) or 1) - 1
-            fe = float(cfg.get('forwardEngineForsag', 0) or 1) - 1
-            be = float(cfg.get('backwardEngineForsag', 0) or 1) - 1
-            fem = cfg.get('forwardEngineForsagMaxSpeed', 0) or 0
-            bem = cfg.get('backwardEngineForsagMaxSpeed', 0) or 0
-            lines.append(f"最高航速: {bc * 100:+.0f}%")
-            lines.append(f"推力加成: 前进{fe * 100:+.0f}% / 后退{be * 100:+.0f}%")
-            if fem: lines.append(f"加速最大速度倍率(前进): {fem}")
-            if bem: lines.append(f"加速最大速度倍率(后退): {bem}")
-
-        elif ct == "sonar":
-            ds = float(cfg.get('distShip', 0) or 0) * 0.03
-            dt = float(cfg.get('distTorpedo', 0) or 0) * 0.03
-            dm = float(cfg.get('distMine', 0) or 0) * 0.03
-            lines.append(f"舰船探测距离: {ds:.2f} km")
-            lines.append(f"鱼雷探测距离: {dt:.2f} km")
-            if dm: lines.append(f"水雷探测距离: {dm:.2f} km")
-
-        elif ct == "torpedoReloader":
-            trt = cfg.get('torpedoReloadTime', 0)
-            if trt:
-                lines.append(f"鱼雷装填时间: {trt}s")
-
-        elif ct == "rls":
-            ds = float(cfg.get('distShip', 0) or 0) * 0.03
-            lines.append(f"舰船探测距离: {ds:.2f} km")
-            aff = cfg.get('affectedClasses', [])
-            if aff:
-                cls_str = ', '.join(NM.SHIP_CLASS_MAP.get(c, c) for c in aff)
-                lines.append(f"限制探测舰种: {cls_str}")
-
-        elif ct == "artilleryBoosters":
-            bc = float(cfg.get('boostCoeff', 0) or 1) - 1
-            lines.append(f"主炮装填时间: {bc * 100:+.0f}%")
-
-        elif ct == "healForsage":
-            bc = float(cfg.get('boostCoeff', 0) or 1) - 1
-            lines.append(f"引擎冷却速度: {bc * 100:+.0f}%")
-
-        elif ct == "regenerateHealth":
-            lines.append("恢复飞机中队部分生命值。在敌方战斗机攻击时使用能免于被击毁。")
-
-        elif ct == "depthCharges":
-            r = float(cfg.get('radius', 0) or 0) * 0.003
-            lines.append(f"半径: {r:.2f}km")
-
-        elif ct == "hydrophone":
-            zt = cfg.get('zoneLifeTime', 0)
-            hu = cfg.get('hydrophoneUpdateFrequency', 0)
-            wr = float(cfg.get('hydrophoneWaveRadius', 0) or 0) * 0.001
-            if zt: lines.append(f"虚影存留时间: {zt}s")
-            if hu: lines.append(f"刷新时间: {hu}s")
-            if wr: lines.append(f"视野距离: {wr:.2f}km")
-
-        elif ct == "fastRudders":
-            brt = float(cfg.get('buoyancyRudderTimeCoeff', 0) or 1) - 1
-            bsc = float(cfg.get('maxBuoyancySpeedCoeff', 0) or 1) - 1
-            lines.append(f"水平舵换挡时间: {brt * 100:+.0f}%")
-            lines.append(f"上浮/下潜速度: {bsc * 100:+.0f}%")
-
-        elif ct == "subsEnergyFreeze":
-            lines.append("启用此消耗品后，下潜能力将停止消耗。")
-            lines.append(f"可在电池耗尽时启用: {'是' if cfg.get('canUseOnEmpty') else '否'}")
-
-        elif ct == "submarineLocator":
-            ds = float(cfg.get('distShip', 0) or 0) * 0.03
-            lines.append(f"舰船探测距离: {ds:.2f} km")
-
-        elif ct == "planeSmokeGenerator":
-            ad = cfg.get('activationDelay', 0)
-            r = float(cfg.get('radius', 0) or 0) * 3
-            h = float(cfg.get('height', 0) or 0)
-            sp = float(cfg.get('speedLimit', 0) or 0)
-            lt = float(cfg.get('lifeTime', 0) or 0)
-            if ad: lines.append(f"烟雾生效延迟: {ad}s")
-            lines.append(f"烟雾生成半径: {r}m")
-            lines.append(f"烟雾生成高度: {h}m")
-            lines.append(f"烟雾生成速度限制: {sp}kts")
-            if lt: lines.append(f"烟雾扩散时间: {lt}s")
-
-        elif ct == "vampireDamage":
-            coeff = float((cfg.get('modifiers') or {}).get('damageGMHealCoeff', 0) or
-                          cfg.get('damageGMHealCoeff', 0)) * 100
-            lines.append(f"用于恢复生命值的伤害转化系数: {coeff:.2f}%")
-
-        elif ct == "massHeal":
-            hp = float(cfg.get('ownHealPart', 0) or 0) * 100
-            radius = float(cfg.get('workRadius', 0) or 0) * 3 / 100
-            lines.append(f"自身每秒回复: {hp:.1f}%")
-            lines.append(f"友军增益: {cfg.get('allyBuffName', '')} Lv.{cfg.get('allyBuffLevel', 1)}")
-            lines.append(f"作用半径: {radius:.2f}km")
-
-        elif ct == "supportBuoy":
-            lines.append(f"加成区域: {cfg.get('battleDropVisualName', '未知')}")
-            lines.append(f"区域布置时间: {cfg.get('battleDropActivationTime', 0)}s")
-            lines.append(f"区域持续时间: {cfg.get('zoneLifetime', 0)}s")
-            lines.append(f"区域半径: {float(cfg.get('buffZoneRadius', 0) or 0) / 1000:.2f}km")
-            lines.append(f"加成效果:")
-            lines.append(f"  效果持续时间: {cfg.get('buffDuration', 0)}s")
-            drop_name = cfg.get('battleDropName', '')
-            if drop_name == "PCOD071_SupportBuoy_RU":
-                gmIdealRadius = float(cfg.get('GMIdealRadius', 0) or 1) - 1
-                gmShotDelay = float(cfg.get('GMShotDelay', 0) or 1) - 1
-                gsIdealRadius = float(cfg.get('GSIdealRadius', 0) or 1) - 1
-                gsShotDelay = float(cfg.get('GSShotDelay', 0) or 1) - 1
-                gtShotDelay = float(cfg.get('GTShotDelay', 0) or 1) - 1
-                gs_detail = cfg.get('GSMaxDist', {})
-                lines.append(f"  鱼雷管装填时间: {gtShotDelay * 100:+.0f}%")
-                lines.append(f"  主炮最大散步面积: {gmIdealRadius * 100:+.0f}%")
-                lines.append(f"  主炮装填时间: {gmShotDelay * 100:+.0f}%")
-                lines.append(f"  副炮最大散步面积: {gsIdealRadius * 100:+.0f}%")
-                lines.append(f"  副炮装填时间: {gsShotDelay * 100:+.0f}%")
-                if gs_detail:
-                    lines.append(f"  副炮射程:")
-                    for ship_class, boost_val in gs_detail.items():
-                        cn_name = NM.SHIP_CLASS_MAP.get(ship_class, ship_class)
-                        boost_pct = float(boost_val) - 1
-                        if boost_pct != 0:
-                            lines.append(f"    * {cn_name}: +{boost_pct * 100:.2f}%")
-            elif drop_name == "PCOD070_SupportBuoy_US":
-                sgRudderPower = float(cfg.get('SGRudderPower', 0) or 1) - 1
-                sgRudderTime = float(cfg.get('SGRudderTime', 0) or 1) - 1
-                speedCoeff = float(cfg.get('speedCoef', 0) or 1) - 1
-                vulnerabilityAll = float(cfg.get('vulnerabilityAll', 0) or 1) - 1
-                healthRegen = float(cfg.get('healthRegenPercent', 0) or 0)
-                lines.append(f"  方向舵换挡时间: {sgRudderTime * 100:+.0f}%")
-                lines.append(f"  方向舵效率: {sgRudderPower * 100:+.0f}%")
-                lines.append(f"  战舰航速: {speedCoeff * 100:+.0f}%")
-                lines.append(f"  受到的全类型伤害: {vulnerabilityAll * 100:+.0f}%")
-                if healthRegen:
-                    lines.append(f"  每秒回复血量: +{healthRegen * 100:.2f}%")
-
-        return lines
+        # 为每个 section label 提取该 section 下按 letter 拆分的内容
+        sub_info: dict[str, dict] = {}
+        for section in sections:
+            label = section.get("label", "")
+            # 检查该 section 是否为模块型（在 _append_modules 中添加的带 letter 分隔的 section）
+            items = section.get("items", [])
+            all_text = []
+            for item in sorted(items, key=lambda x: x.get("order", 0)):
+                n = item.get("name", "")
+                v = item.get("value", "")
+                all_text.append(v or n or "")
+            full_text = "\n".join(all_text)
+            # 按 letter 分割内容（查找 ──── X 配置 ──── 标记）
+            letter_contents: dict[str, list[str]] = {}
+            current_letter = None
+            for line in full_text.split("\n"):
+                m_letter = None
+                for lt in letters:
+                    if f"──── {lt} 配置 ────" in line:
+                        m_letter = lt
+                        break
+                if m_letter is not None:
+                    current_letter = m_letter
+                    letter_contents.setdefault(current_letter, [])
+                elif current_letter is not None:
+                    letter_contents.setdefault(current_letter, []).append(line)
+            if letter_contents and len(letter_contents) > 1:
+                sub_labels = sorted(letter_contents.keys())
+                sub_info[label] = {
+                    "sub_labels": [f"{l} 配置" for l in sub_labels],
+                    "sub_contents": {f"{l} 配置": letter_contents[l] for l in sub_labels},
+                }
+        return sub_info

@@ -1,19 +1,8 @@
 """
-数据库服务 —— 基于合并解析级架构 (Merged Analysis Schema)。
+数据库服务 —— 新架构 (Multi-Version Schema)。
 
-作者: walksQAQ
-许可证: 详见 LICENSE 文件
-
-架构:
-  1. 本地化层 — name_mappings / po_translations / enum_translations
-  2. 存储层   — entity_registry (实体注册索引)
-  3. 分析层   — ship_* / gun_* / projectile_* / plane_* / consumable_* / modernization_* / crew_*
-  4. 元数据   — meta_schema_version / meta_game_versions
-
-与原版差异:
-  - 取消 22 张 entity_* 分表，合并为 1 张 entity_registry
-  - 分析结果不再存 JSON blob，存入结构化分析表
-  - 本地化独立入库，支持 JSON 映射 + PO 翻译 + 枚举字典
+支持多版本数据共存 + 级联版本管理。
+所有数据表均以 version_code 为第一主键列，与 data_version_registry 死锁。
 """
 
 from __future__ import annotations
@@ -23,20 +12,17 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Optional
 
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-# ── 常量 ──────────────────────────────────────────────────
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 10
 
-# 实体分类 (映射到 raw_entities.entity_type)
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
 ]
 
-# JSON 映射文件 → name_mappings.category
 NAME_MAPPING_FILES: dict[str, str] = {
     "ship_names.json": "ship",
     "ammo_names.json": "ammo",
@@ -48,40 +34,21 @@ NAME_MAPPING_FILES: dict[str, str] = {
 }
 
 
-# ══════════════════════════════════════════════════════════
-#  DatabaseManager
-# ══════════════════════════════════════════════════════════
-
 class DatabaseManager:
-    """SQLite 数据库管理器（线程安全，固定 game_data.db）"""
+    """SQLite 数据库管理器（线程安全，多版本架构）"""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None,
+                 wows_type: str = ""):
         if db_path:
             self._db_path = Path(db_path)
         else:
-            self._db_path = get_data_dir() / "game_data.db"
+            self._db_path = get_data_dir() / self._db_name(wows_type)
         self._local = threading.local()
 
     @staticmethod
-    def _versioned_path(data_dir: Path, wows_type: str, version: str,
-                        bin_folder: str = "") -> Path:
-        """统一使用 game_data.db（版本信息由内部表追踪）"""
-        return data_dir / "game_data.db"
+    def _db_name(wows_type: str = "") -> str:
+        return "game_data.db"
 
-    @staticmethod
-    def prune_old_files(data_dir: Path) -> None:
-        """清理残留的 game_data_*.db 分版本文件"""
-        for f in data_dir.glob("game_data_*.db"):
-            if f.name == "game_data.db":
-                continue
-            try:
-                f.unlink()
-            except Exception:
-                pass
-
-    # ── 连接管理 ──────────────────────────────────────────
-
-    # 全部分类跟踪所有已创建的连接，方便跨线程关闭
     _all_connections: set[sqlite3.Connection] = set()
 
     @property
@@ -89,7 +56,6 @@ class DatabaseManager:
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = self._create_connection()
         else:
-            # 检查连接是否已被 close_all_connections() 关闭
             try:
                 self._local.conn.execute("SELECT 1")
             except (sqlite3.ProgrammingError, sqlite3.OperationalError):
@@ -97,12 +63,12 @@ class DatabaseManager:
         return self._local.conn
 
     def _create_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False,
-                               timeout=10)
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA cache_size=-8000")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row
         type(self)._all_connections.add(conn)
         return conn
@@ -115,7 +81,6 @@ class DatabaseManager:
 
     @classmethod
     def close_all_connections(cls) -> None:
-        """关闭所有已创建的数据库连接（跨线程）"""
         for conn in list(cls._all_connections):
             try:
                 conn.close()
@@ -123,117 +88,169 @@ class DatabaseManager:
                 pass
         cls._all_connections.clear()
 
-    # ══════════════════════════════════════════════════════
-    #  Schema (从 resources/database/database.sql 同步)
-    # ══════════════════════════════════════════════════════
+    # ── Schema ─────────────────────────────────────────────
+
+    def _drop_all_tables(self) -> None:
+        conn = self._conn
+        conn.execute("PRAGMA foreign_keys=OFF")
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        for (tname,) in tables:
+            try:
+                conn.execute(f'DROP TABLE IF EXISTS "{tname}"')
+            except sqlite3.OperationalError:
+                pass
+        views = conn.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall()
+        for (vname,) in views:
+            try:
+                conn.execute(f'DROP VIEW IF EXISTS "{vname}"')
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
 
     def initialize(self) -> None:
-        """创建所有表、视图、索引（幂等）"""
-        sql_path = get_bundled_dir() / "resources" / "database" / "database.sql"
+        """创建所有表（使用 database_new.sql）"""
+        current_ver = self.get_current_version()
+        if 0 < current_ver < DB_SCHEMA_VERSION:
+            self._drop_all_tables()
+
+        sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
         if sql_path.exists():
             sql_text = sql_path.read_text(encoding="utf-8")
             self._conn.executescript(sql_text)
         else:
             self._init_core_tables()
-        # 创建加载版本追踪表
-        self._init_load_tracking()
         self._conn.commit()
-
-        # ── 向后兼容：补充旧 DB 可能缺失的列 ──
-        for tbl, col, col_def in [
-            ("ship_module_aircraft", "armament_name", "TEXT"),
-            ("ship_module_aircraft", "module_variant", "TEXT DEFAULT ''"),
-            ("ship_rage_mode", "description_ids", "TEXT DEFAULT ''"),
-            ("ship_rage_mode", "modifiers_json", "TEXT DEFAULT '{}'"),
-            ("ship_rage_mode", "triggers_json", "TEXT DEFAULT '[]'"),
-            ("ship_module_aa", "bubble_damage", "REAL"),
-            ("plane_basic_info", "armament_name_zh", "TEXT DEFAULT ''"),
-            ("plane_basic_info", "max_speed", "REAL"),
-            ("plane_basic_info", "min_speed", "REAL"),
-            ("projectile_basic_info", "extra_json", "TEXT DEFAULT '{}'"),
-            ("projectile_basic_info", "damage", "REAL"),
-            ("projectile_basic_info", "alpha_piercing_cs", "REAL"),
-            ("projectile_basic_info", "depth_splash_size", "REAL"),
-            ("projectile_basic_info", "depth_splash_size_to_torpedo", "REAL"),
-            ("projectile_basic_info", "custom_ui_postfix", "TEXT DEFAULT ''"),
-            ("crew_unique_skills", "effects_json", "TEXT DEFAULT '{}'"),
-            ("ship_consumable_slots", "consumable_id", "TEXT DEFAULT ''"),
-            ("ship_consumable_slots", "config_key", "TEXT DEFAULT 'Default'"),
-            ("ship_module_artillery", "drum_shots_count", "INTEGER DEFAULT 0"),
-            ("ship_module_artillery", "drum_shot_delay", "REAL DEFAULT 0"),
-            ("ship_module_artillery", "drum_full_reload_time", "REAL DEFAULT 0"),
-            ("ship_module_artillery", "drum_is_switchable", "INTEGER DEFAULT 0"),
-            ("ship_module_artillery", "drum_is_chargeable", "INTEGER DEFAULT 0"),
-            ("ship_module_artillery", "drum_charge_time_min", "REAL DEFAULT 0"),
-            ("ship_module_artillery", "drum_charge_time_max", "REAL DEFAULT 0"),
-            ("ship_module_artillery", "drum_charge_mode", "INTEGER DEFAULT 0"),
-            ("ship_module_artillery", "drum_modifiers_json", "TEXT DEFAULT '{}'"),
-        ]:
-            try:
-                self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
-            except sqlite3.OperationalError:
-                pass  # 列已存在
 
         if self.get_current_version() < DB_SCHEMA_VERSION:
             self._record_version(DB_SCHEMA_VERSION)
 
+        # ── 迁移：补齐 plane_basic_info 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            expected = [
+                ("outer_salvo_size_x", "REAL"), ("outer_salvo_size_y", "REAL"),
+                ("inner_salvo_size_x", "REAL"), ("inner_salvo_size_y", "REAL"),
+                ("max_spread_x", "REAL"), ("max_spread_y", "REAL"),
+                ("min_spread_x", "REAL"), ("min_spread_y", "REAL"),
+                ("inner_bombs_percentage", "REAL"),
+                ("post_attack_invulnerability_duration", "REAL"),
+                ("ability_slot_0", "TEXT"), ("ability_slot_1", "TEXT"),
+                ("ability_slot_2", "TEXT"), ("ability_slot_3", "TEXT"),
+                ("ability_slot_4", "TEXT"),
+                ("plane_level", "INTEGER"),
+                ("max_spread", "REAL"), ("min_spread", "REAL"),
+                ("visibility_factor", "REAL"),
+                ("skip_height", "REAL"), ("aiming_height", "REAL"),
+            ]
+            for col_name, col_type in expected:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_aa 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_aa)").fetchall()}
+            for col_name, col_type in [("explosion_count", "REAL"), ("hit_chance", "REAL"), ("max_distance", "REAL"), ("min_distance", "REAL"), ("type", "TEXT")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_aa ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_air_support 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_air_support)").fetchall()}
+            for col_name, col_type in [("support_type", "TEXT")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_depth_charge 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_depth_charge)").fetchall()}
+            for col_name, col_type in [("reload_time", "REAL"), ("shot_delay", "REAL"),
+                                       ("max_packs", "INTEGER"), ("num_shots", "INTEGER"),
+                                       ("num_bombs", "INTEGER"), ("projectile_id", "TEXT"),
+                                       ("damage", "REAL"), ("dc_speed", "REAL"),
+                                       ("dc_timer", "REAL"), ("dc_max_depth", "REAL"),
+                                       ("depth_splash_size", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_depth_charge ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：清理废弃的 mod_concealment_config 表 ──
+        try:
+            self._conn.execute("DROP TABLE IF EXISTS mod_concealment_config")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 projectile_torpedo_ext 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_torpedo_ext)").fetchall()}
+            for col, typ in [("burn_prob", "REAL DEFAULT 0"), ("uw_critical", "REAL DEFAULT 0")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE projectile_torpedo_ext ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 projectile_bomb_ext 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_bomb_ext)").fetchall()}
+            if "max_skip_angle" not in existing:
+                self._conn.execute("ALTER TABLE projectile_bomb_ext ADD COLUMN max_skip_angle REAL")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 导入静态枚举翻译 ──
+        try:
+            cnt = self._conn.execute("SELECT COUNT(*) FROM enum_translations").fetchone()[0]
+            if cnt == 0:
+                self.import_enum_translations()
+        except Exception:
+            self.import_enum_translations()
+
     def _init_core_tables(self) -> None:
-        """内联核心表定义（SQL 文件不存在时兜底）"""
+        """内联兜底（正式环境走 database_new.sql）"""
         c = self._conn
+        c.execute("""CREATE TABLE IF NOT EXISTS data_version_registry (
+            version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_code TEXT NOT NULL UNIQUE,
+            wows_type TEXT DEFAULT '', bin_folder TEXT DEFAULT '',
+            entity_count INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime')))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS entity_registry (
+            version_code TEXT NOT NULL REFERENCES data_version_registry(version_code) ON DELETE CASCADE,
+            entity_id TEXT NOT NULL, entity_type TEXT NOT NULL, nation TEXT,
+            PRIMARY KEY (version_code, entity_id))""")
         c.execute("""CREATE TABLE IF NOT EXISTS name_mappings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT NOT NULL, key_name TEXT NOT NULL,
             lang_zh TEXT NOT NULL, UNIQUE(category, key_name))""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_mappings_lookup ON name_mappings(category, key_name)")
-        c.execute("""CREATE TABLE IF NOT EXISTS po_translations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            msgid TEXT NOT NULL UNIQUE, msgstr TEXT NOT NULL, context TEXT DEFAULT '')""")
-        c.execute("""CREATE TABLE IF NOT EXISTS enum_translations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            enum_type TEXT NOT NULL, enum_key TEXT NOT NULL,
-            lang_zh TEXT NOT NULL, UNIQUE(enum_type, enum_key))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS entity_registry (
-            entity_id TEXT PRIMARY KEY, entity_type TEXT NOT NULL,
-            nation TEXT, shiptype TEXT, tier INTEGER)""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_registry_filter ON entity_registry(entity_type, nation, shiptype, tier)")
-        c.execute("""CREATE TABLE IF NOT EXISTS entity_dynamic_attributes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_id TEXT NOT NULL REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
-            scope TEXT NOT NULL, attr_key TEXT NOT NULL,
-            attr_value TEXT, attr_value_num REAL,
-            UNIQUE(entity_id, scope, attr_key))""")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_dynamic_attr_lookup ON entity_dynamic_attributes(entity_id, scope)")
-        c.execute("""CREATE TABLE IF NOT EXISTS ship_sub_depth_states (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            hull_ref_id INTEGER NOT NULL REFERENCES ship_module_hulls(id) ON DELETE CASCADE,
-            state_name TEXT NOT NULL, underwater_max_speed REAL,
-            buoyancy_burn_rate REAL, visibility_factor REAL,
-            UNIQUE(hull_ref_id, state_name))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS rel_ship_weapon_ammo (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            weapon_type TEXT NOT NULL, weapon_ref_id INTEGER NOT NULL,
-            ammo_id TEXT NOT NULL,
-            UNIQUE(weapon_type, weapon_ref_id, ammo_id))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS ship_module_mapping (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ship_id TEXT NOT NULL REFERENCES entity_registry(entity_id) ON DELETE CASCADE,
-            module_letter TEXT NOT NULL,
-            sub_category TEXT NOT NULL,
-            source_key TEXT DEFAULT '',
-            display_order INTEGER DEFAULT 0,
-            UNIQUE(ship_id, module_letter, sub_category))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS gun_drum_details (
-            gun_id TEXT PRIMARY KEY,
-            clip_size INTEGER, clip_reload_time REAL,
-            burst_count INTEGER, burst_reload_time REAL)""")
         c.execute("""CREATE TABLE IF NOT EXISTS meta_schema_version (
-            version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now','localtime')))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS meta_game_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_version TEXT NOT NULL, wows_type TEXT NOT NULL DEFAULT '',
-            bin_folder TEXT DEFAULT '', entity_count INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT (datetime('now','localtime')))""")
-
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT DEFAULT (datetime('now','localtime')))""")
 
     def get_current_version(self) -> int:
         try:
@@ -249,9 +266,56 @@ class DatabaseManager:
             "INSERT OR IGNORE INTO meta_schema_version (version) VALUES (?)", (ver,))
         self._conn.commit()
 
-    # ══════════════════════════════════════════════════════
-    #  实体注册 (写入 entity_registry)
-    # ══════════════════════════════════════════════════════
+    # ── 多版本管理 ─────────────────────────────────────────
+
+    def begin_version(self, game_version: str, wows_type: str = "",
+                      bin_folder: str = "") -> str:
+        """创建新版本记录，返回 version_code（含小版本号）。
+
+        如果相同 version_code 已存在（如重复加载同版本数据），
+        使用 INSERT OR IGNORE 静默跳过，然后返回已有版本号。
+        """
+        version_code = f"{game_version}_{bin_folder}" if bin_folder else game_version
+        self._conn.execute(
+            "INSERT OR IGNORE INTO data_version_registry "
+            "(version_code, wows_type, bin_folder) VALUES (?,?,?)",
+            (version_code, wows_type, bin_folder))
+        self._conn.commit()
+        return version_code
+
+    def purge_old_versions(self, keep_count: int = 2) -> int:
+        """只保留最近 keep_count 个版本，从最旧的开始级联删除。"""
+        cur = self._conn.execute(
+            "SELECT version_code FROM data_version_registry ORDER BY version_id DESC LIMIT ?",
+            (keep_count,))
+        keep_codes = [r[0] for r in cur.fetchall()]
+        if not keep_codes:
+            return 0
+        placeholders = ','.join('?' for _ in keep_codes)
+        cur = self._conn.execute(
+            f"DELETE FROM data_version_registry WHERE version_code NOT IN ({placeholders})",
+            keep_codes)
+        self._conn.commit()
+        return cur.rowcount
+
+    def get_latest_version_code(self) -> str | None:
+        try:
+            cur = self._conn.execute(
+                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC LIMIT 1")
+            row = cur.fetchone()
+            return row["version_code"] if row else None
+        except sqlite3.OperationalError:
+            return None
+
+    def list_versions(self) -> list[dict]:
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM data_version_registry ORDER BY version_id DESC")
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    # ── 实体注册 ───────────────────────────────────────────
 
     @staticmethod
     def _entity_type(category: str) -> str:
@@ -262,100 +326,69 @@ class DatabaseManager:
         }
         return mapping.get(category, category.lower())
 
-    @staticmethod
-    def _extract_filters(data: dict) -> dict:
-        ti = data.get("typeinfo", {}) or {}
-        raw_level = data.get("level", 0)
-        if isinstance(raw_level, dict):
-            raw_level = 0
-        return {"nation": str(ti.get("nation", "")),
-                "shiptype": str(ti.get("species") or ""),
-                "tier": int(raw_level or 0)}
-
-    def insert_entity(self, category: str, key: str, data: dict) -> None:
-        """注册实体到 entity_registry（不再存储 raw_json）"""
-        etype = self._entity_type(category)
-        flt = self._extract_filters(data)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO entity_registry "
-            "(entity_id, entity_type, nation, shiptype, tier) "
-            "VALUES (?,?,?,?,?)",
-            (key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
-        self._conn.commit()
-
     def insert_entities_batch(self, items: list[tuple[str, str, dict]],
-                              load_seq: int = 0) -> None:
-        """批量注册实体到 entity_registry（不再存储 raw_json）
-
-        如果指定 load_seq，会自动记录实体批次归属。
-        """
+                              version_code: str) -> None:
+        """批量注册实体到 entity_registry（含 version_code），并更新版本计数"""
         rows = []
-        entity_ids = []
         for category, key, data in items:
             etype = self._entity_type(category)
-            flt = self._extract_filters(data)
-            rows.append((key, etype, flt["nation"], flt["shiptype"], flt["tier"]))
-            entity_ids.append(key)
-        # 使用 UPSERT（INSERT … ON CONFLICT DO UPDATE）代替 INSERT OR REPLACE，
-        # 避免 DELETE + INSERT 触发 ON DELETE CASCADE 清空 ship_basic_info 等分析表。
+            ti = data.get("typeinfo", {}) or {}
+            nation = str(ti.get("nation", ""))
+            rows.append((version_code, key, etype, nation))
         self._conn.executemany(
-            "INSERT INTO entity_registry "
-            "(entity_id, entity_type, nation, shiptype, tier) "
-            "VALUES (?,?,?,?,?) "
-            "ON CONFLICT(entity_id) DO UPDATE SET "
-            "  entity_type=excluded.entity_type,"
-            "  nation=excluded.nation,"
-            "  shiptype=excluded.shiptype,"
-            "  tier=excluded.tier", rows)
-        if load_seq > 0 and entity_ids:
-            self.record_entities_load(entity_ids, load_seq)
+            "INSERT OR IGNORE INTO entity_registry "
+            "(version_code, entity_id, entity_type, nation) VALUES (?,?,?,?)", rows)
+        # 更新版本记录中的实体计数
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM entity_registry WHERE version_code=?", (version_code,))
+        count = cur.fetchone()[0]
+        self._conn.execute(
+            "UPDATE data_version_registry SET entity_count=? WHERE version_code=?",
+            (count, version_code))
         self._conn.commit()
 
-    # ══════════════════════════════════════════════════════
-    #  查询 (从 entity_registry + 分析表读取)
-    # ══════════════════════════════════════════════════════
+    # ── 查询 ───────────────────────────────────────────────
 
-    def get_entity(self, category: str, key: str) -> Optional[dict]:
+    def get_entity(self, category: str, key: str,
+                   version_code: str = "") -> Optional[dict]:
         etype = self._entity_type(category)
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return None
+            version_code = vc
         try:
             cur = self._conn.execute(
-                "SELECT * FROM entity_registry WHERE entity_id=? AND entity_type=?",
-                (key, etype))
+                "SELECT * FROM entity_registry WHERE version_code=? AND entity_id=? AND entity_type=?",
+                (version_code, key, etype))
             row = cur.fetchone()
             if not row:
                 return None
-            d = dict(row)
-            d["category"] = category
-            d["raw_json"] = None  # 新架构不存储 raw_json
-            d["analyzed_result"] = self._get_analyzed_result(etype, key)
-            return d
-        except sqlite3.OperationalError:
-            return None
-
-    def _get_analyzed_result(self, etype: str, key: str) -> Optional[dict]:
-        """委托 PresenterRegistry 从结构化分析表读取分析结果"""
-        try:
-            from presenters.registry import PresenterRegistry
-            return PresenterRegistry.build(etype, key, self._conn)
+            return dict(row)
         except sqlite3.OperationalError:
             return None
 
     def list_entities(self, category: str, keyword: str = "",
-                      limit: int = 0, offset: int = 0) -> list[dict]:
+                      limit: int = 0, offset: int = 0,
+                      version_code: str = "") -> list[dict]:
         etype = self._entity_type(category)
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return []
+            version_code = vc
         conn = self._conn
         if keyword:
             p = f"%{keyword}%"
-            sql = ("SELECT entity_id AS id, entity_type AS category, "
-                   "entity_id AS name, '' AS idx, nation, shiptype AS species, '' AS type "
-                   "FROM entity_registry WHERE entity_type=? AND entity_id LIKE ? "
+            sql = ("SELECT entity_id AS id, entity_type AS category, entity_id AS name, "
+                   "nation FROM entity_registry WHERE version_code=? AND entity_type=? AND entity_id LIKE ? "
                    "ORDER BY entity_id")
-            params = [etype, p]
+            params = [version_code, etype, p]
         else:
-            sql = ("SELECT entity_id AS id, entity_type AS category, "
-                   "entity_id AS name, '' AS idx, nation, shiptype AS species, '' AS type "
-                   "FROM entity_registry WHERE entity_type=? ORDER BY entity_id")
-            params = [etype]
+            sql = ("SELECT entity_id AS id, entity_type AS category, entity_id AS name, "
+                   "nation FROM entity_registry WHERE version_code=? AND entity_type=? "
+                   "ORDER BY entity_id")
+            params = [version_code, etype]
         if limit > 0:
             sql += " LIMIT ? OFFSET ?"
             params += [limit, offset]
@@ -364,42 +397,58 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             return []
 
-    def count_entities(self, category: str, keyword: str = "") -> int:
+    def count_entities(self, category: str, keyword: str = "",
+                       version_code: str = "") -> int:
         etype = self._entity_type(category)
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return 0
+            version_code = vc
         conn = self._conn
         if keyword:
             p = f"%{keyword}%"
             cur = conn.execute(
-                "SELECT COUNT(*) FROM entity_registry WHERE entity_type=? AND entity_id LIKE ?",
-                (etype, p))
+                "SELECT COUNT(*) FROM entity_registry WHERE version_code=? AND entity_type=? AND entity_id LIKE ?",
+                (version_code, etype, p))
         else:
             cur = conn.execute(
-                "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?", (etype,))
+                "SELECT COUNT(*) FROM entity_registry WHERE version_code=? AND entity_type=?",
+                (version_code, etype))
         return cur.fetchone()[0]
 
-    def search_entities(self, category: str, keyword: str, limit: int = 50) -> list[dict]:
-        return self.list_entities(category, keyword, limit)
-
-    def get_categories(self) -> list[str]:
+    def get_categories(self, version_code: str = "") -> list[str]:
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return []
+            version_code = vc
         rev = {"ship": "Ship", "gun": "Gun", "projectile": "Projectile",
                "plane": "Aircraft", "consumable": "Ability",
                "modernization": "Modernization", "crew": "Crew"}
         try:
             types = [r["entity_type"] for r in self._conn.execute(
-                "SELECT DISTINCT entity_type FROM entity_registry ORDER BY entity_type"
-            ).fetchall()]
+                "SELECT DISTINCT entity_type FROM entity_registry WHERE version_code=? ORDER BY entity_type",
+                (version_code,)).fetchall()]
             return [rev.get(t, t.capitalize()) for t in types]
         except sqlite3.OperationalError:
             return []
 
-    def get_stats(self) -> dict:
+    def get_stats(self, version_code: str = "") -> dict:
+        if not version_code:
+            vc = self.get_latest_version_code()
+            version_code = vc or ""
         conn = self._conn
         cats, total = {}, 0
         try:
             for et in ENTITY_TYPES:
-                c = conn.execute(
-                    "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?",
-                    (et,)).fetchone()
+                if version_code:
+                    c = conn.execute(
+                        "SELECT COUNT(*) FROM entity_registry WHERE version_code=? AND entity_type=?",
+                        (version_code, et)).fetchone()
+                else:
+                    c = conn.execute(
+                        "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?", (et,)).fetchone()
                 cnt = c[0] or 0
                 cats[et] = cnt; total += cnt
         except sqlite3.OperationalError:
@@ -408,25 +457,46 @@ class DatabaseManager:
             mc = conn.execute("SELECT COUNT(*) FROM name_mappings").fetchone()[0]
         except sqlite3.OperationalError:
             mc = 0
-        return {"total_entities": total,
-                "db_file_size_mb": self.db_size_mb,
+        return {"total_entities": total, "db_file_size_mb": self.db_size_mb,
                 "categories": cats, "name_mappings": mc}
 
-    # ══════════════════════════════════════════════════════
-    #  本地化
-    # ══════════════════════════════════════════════════════
+    # ── 本地化 ─────────────────────────────────────────────
 
     def get_all_name_mappings(self, category: str = "") -> dict[str, str]:
         try:
             if category:
                 cur = self._conn.execute(
-                    "SELECT key_name, lang_zh FROM name_mappings WHERE category=?",
-                    (category,))
+                    "SELECT key_name, lang_zh FROM name_mappings WHERE category=?", (category,))
             else:
                 cur = self._conn.execute("SELECT key_name, lang_zh FROM name_mappings")
             return {r["key_name"]: r["lang_zh"] for r in cur.fetchall()}
         except sqlite3.OperationalError:
             return {}
+
+    def import_enum_translations(self) -> int:
+        """从 models.name_mapping.Mapping 静态字典写入 enum_translations 表"""
+        from models.name_mapping import Mapping as NM
+        enum_sources: list[tuple[str, dict]] = [
+            ("nation", NM.NATION_MAP),
+            ("ship_class", NM.SHIP_CLASS_MAP),
+            ("ship_group", NM.SHIP_GROUP_MAP),
+            ("weapon_species", NM.WEAPON_SPECIES_MAP),
+            ("aircraft_class", NM.AIRCRAFT_CLASS_MAP),
+            ("ammo_type", NM.AMMO_TYPE_MAP),
+            ("projectile_type", NM.PROJECTILE_TYPE_MAP),
+            ("buoyancy_state", NM.BUOYANCY_MAP),
+        ]
+        total = 0
+        for enum_type, mapping in enum_sources:
+            items = [(enum_type, k, v) for k, v in mapping.items()]
+            if items:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO enum_translations (enum_type, enum_key, lang_zh) VALUES (?,?,?)",
+                    items)
+                total += len(items)
+        if total:
+            self._conn.commit()
+        return total
 
     def import_name_mappings(self, data_dir: str | Path) -> dict[str, int]:
         stats = {}
@@ -439,12 +509,9 @@ class DatabaseManager:
                          for k, v in json.loads(fp.read_text(encoding="utf-8")).items()]
                 if items:
                     self._conn.executemany(
-                        "INSERT OR REPLACE INTO name_mappings "
-                        "(category, key_name, lang_zh) VALUES (?,?,?)", items)
+                        "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)", items)
                     self._conn.commit()
                     stats[fn] = len(items)
-                # 入库后删除 JSON 文件
-                fp.unlink(missing_ok=True)
             except Exception:
                 continue
         return stats
@@ -462,46 +529,15 @@ class DatabaseManager:
             if m and s and m.group(1) and s.group(1):
                 items.append((m.group(1), s.group(1), ""))
         if items:
-            self._conn.executemany(
-                "INSERT OR REPLACE INTO po_translations "
-                "(msgid, msgstr, context) VALUES (?,?,?)", items)
-            self._conn.commit()
-        # 入库后删除 PO 文件
-        fp.unlink(missing_ok=True)
+            try:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO po_translations (msgid, msgstr, context) VALUES (?,?,?)", items)
+                self._conn.commit()
+            except Exception:
+                pass  # po_translations 表可能不存在于新 schema，静默忽略
         return len(items)
 
-    # ══════════════════════════════════════════════════════
-    #  游戏版本
-    # ══════════════════════════════════════════════════════
-
-    def record_game_version(self, game_version: str, wows_type: str = "",
-                            bin_folder: str = "", entity_count: int = 0) -> None:
-        self._conn.execute(
-            "INSERT INTO meta_game_versions "
-            "(game_version,wows_type,bin_folder,entity_count) VALUES (?,?,?,?)",
-            (game_version, wows_type, str(bin_folder), entity_count))
-        self._conn.commit()
-
-    def get_latest_game_version(self) -> Optional[str]:
-        try:
-            r = self._conn.execute(
-                "SELECT game_version FROM meta_game_versions ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            return r["game_version"] if r else None
-        except sqlite3.OperationalError:
-            return None
-
-    def get_game_versions(self, limit: int = 10) -> list[dict]:
-        try:
-            return [dict(r) for r in self._conn.execute(
-                "SELECT * FROM meta_game_versions ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()]
-        except sqlite3.OperationalError:
-            return []
-
-    # ══════════════════════════════════════════════════════
-    #  数据库管理
-    # ══════════════════════════════════════════════════════
+    # ── 数据库管理 ─────────────────────────────────────────
 
     @property
     def exists(self) -> bool:
@@ -520,147 +556,41 @@ class DatabaseManager:
 
     def drop_all(self) -> None:
         conn = self._conn
-        for t in ["entity_registry", "entity_dynamic_attributes",
-                   "ship_sub_depth_states", "rel_ship_weapon_ammo",
-                   "gun_drum_details",
-                   "name_mappings", "po_translations", "enum_translations",
-                   "meta_game_versions", "meta_schema_version"]:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        for (tname,) in tables:
             try:
-                conn.execute(f"DELETE FROM {t}")
+                conn.execute(f'DELETE FROM "{tname}"')
             except sqlite3.OperationalError:
                 pass
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.commit()
-
-    # ── 加载版本追踪 ──────────────────────────────────────
-
-    def _init_load_tracking(self) -> None:
-        """创建加载版本追踪表（幂等）"""
-        self._conn.executescript("""
-            CREATE TABLE IF NOT EXISTS meta_load_seq (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_version TEXT DEFAULT '',
-                wows_type TEXT DEFAULT '',
-                bin_folder TEXT DEFAULT '',
-                entity_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now','localtime'))
-            );
-            CREATE TABLE IF NOT EXISTS entity_load_log (
-                entity_id TEXT NOT NULL,
-                load_seq INTEGER NOT NULL,
-                PRIMARY KEY (entity_id, load_seq)
-            );
-            CREATE INDEX IF NOT EXISTS idx_load_log_seq ON entity_load_log(load_seq);
-        """)
-
-    def begin_load(self, game_version: str = '', wows_type: str = '',
-                   bin_folder: str = '', entity_count: int = 0) -> int:
-        """开始一个新的加载批次，返回 load_seq"""
-        cur = self._conn.execute(
-            "INSERT INTO meta_load_seq (game_version, wows_type, bin_folder, entity_count) "
-            "VALUES (?,?,?,?)",
-            (game_version, wows_type, bin_folder, entity_count))
-        self._conn.commit()
-        return cur.lastrowid
-
-    def record_entity_load(self, entity_id: str, load_seq: int) -> None:
-        """记录实体属于哪个加载批次（追加记录，保留历史）"""
-        self._conn.execute(
-            "INSERT OR IGNORE INTO entity_load_log (entity_id, load_seq) VALUES (?,?)",
-            (entity_id, load_seq))
-
-    def record_entities_load(self, entity_ids: list[str], load_seq: int) -> None:
-        """批量记录实体批次归属（追加记录，保留历史）"""
-        self._conn.executemany(
-            "INSERT OR IGNORE INTO entity_load_log (entity_id, load_seq) VALUES (?,?)",
-            [(eid, load_seq) for eid in entity_ids])
-        self._conn.commit()
-
-    def purge_old_loads(self, keep_count: int = 2) -> int:
-        """只保留最近 keep_count 次加载的实体，删除更旧批次的数据。
-
-        利用 entity_load_log 找到「最新出现批次已过期」的 entity_id，
-        从 entity_registry 中删除（ON DELETE CASCADE 自动清理分析表）。
-        """
-        conn = self._conn
-        # 找到最新的 keep_count 个批次号
-        cur = conn.execute(
-            "SELECT seq FROM meta_load_seq ORDER BY seq DESC LIMIT ?", (keep_count,))
-        keep_seqs = [r[0] for r in cur.fetchall()]
-        if not keep_seqs:
-            return 0
-
-        placeholders = ','.join('?' for _ in keep_seqs)
-        # 删除「最新出现批次不在保留列表内」的实体
-        # 例如保留 [5,4]，则实体最近一次出现是 batch 3 → 被删除
-        cur = conn.execute(
-            f"DELETE FROM entity_registry WHERE entity_id IN ("
-            f"  SELECT entity_id FROM entity_load_log"
-            f"  GROUP BY entity_id"
-            f"  HAVING MAX(load_seq) NOT IN ({placeholders})"
-            f")", keep_seqs)
-        deleted = cur.rowcount
-
-        if deleted > 0:
-            # 同步清理过期日志
-            conn.execute(
-                f"DELETE FROM entity_load_log WHERE load_seq NOT IN ({placeholders})",
-                keep_seqs)
-            conn.execute(
-                f"DELETE FROM meta_load_seq WHERE seq NOT IN ({placeholders})",
-                keep_seqs)
-            conn.commit()
-        return deleted
-
-    def rebuild_from_split(self, split_dir: str | Path, progress_callback=None) -> dict:
-        split_path = Path(split_dir)
-        if not split_path.exists():
-            raise FileNotFoundError(f"split 目录不存在: {split_dir}")
-        all_files = list(split_path.rglob("*.json"))
-        total = len(all_files)
-        if total == 0:
-            return {"entities": 0, "mappings": 0}
-        self.initialize()
-        batch, processed = [], 0
-        for fp in all_files:
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-                batch.append((fp.parent.name, fp.stem, data))
-                processed += 1
-                if len(batch) >= 500:
-                    self.insert_entities_batch(batch)
-                    batch = []
-                    if progress_callback:
-                        progress_callback(processed, total, f"导入 {processed}/{total}")
-            except Exception:
-                continue
-        if batch:
-            self.insert_entities_batch(batch)
-        ms = self.import_name_mappings(get_data_dir())
-        po_path = get_data_dir() / "global.po"
-        if po_path.exists():
-            self.import_po_translations(po_path)
-        self.vacuum()
-        return {"entities": processed, "mappings": sum(ms.values())}
 
 
 # ── 全局单例 ──────────────────────────────────────────────
 _db: Optional[DatabaseManager] = None
+_db_wows_type: str = ""
 
 
-def get_db() -> DatabaseManager:
-    global _db
-    if _db is None:
-        _db = DatabaseManager()
+def get_db(wows_type: str = "") -> DatabaseManager:
+    global _db, _db_wows_type
+    if not wows_type:
+        from app.application import app as app_ctx
+        wows_type = app_ctx.ctx.wows_type
+    if _db is None or _db_wows_type != wows_type:
+        if _db is not None:
+            _db.close()
+        _db = DatabaseManager(wows_type=wows_type)
         _db.initialize()
+        _db_wows_type = wows_type
     return _db
 
 
 def reset_db() -> None:
-    global _db
+    global _db, _db_wows_type
     _db = None
-    # 关闭所有数据库连接（跨线程）
+    _db_wows_type = ""
     DatabaseManager.close_all_connections()
-    # 清空 Presenter 缓存，防止旧连接被 GC 后新连接 id() 撞地址
     try:
         from presenters.registry import PresenterRegistry
         PresenterRegistry.clear_cache()

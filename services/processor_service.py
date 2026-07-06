@@ -1,7 +1,5 @@
 """
-数据解析服务 —— 解密并拆分 GameParams.data。
-
-内联了旧的 GameParams_processer.py。
+数据解析服务 —— 解密并拆分 GameParams.data（适配多版本架构）。
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir, get_split_dir
 from services.database_service import DatabaseManager, get_db, reset_db
 
-# 将 services.GameParams 注册为 GameParams 模块，供 pickle.loads 反序列化时查找
 from services import GameParams as _GameParamsModule
 sys.modules['GameParams'] = _GameParamsModule
 
@@ -48,33 +45,15 @@ def _write_one(key, value, index, out_dir):
         pass
 
 
-def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None) -> None:
-    """对数据库中所有实体运行分析器并写入结构化表
-
-    参数:
-        data_by_category: 内存数据字典，传此参数时跳过读 split 目录
-    """
+def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None,
+                  version_code: str = "") -> None:
+    """对数据库中所有实体运行分析器并写入结构化表"""
     try:
-        from utils.path_utils import get_data_dir, get_split_dir
-        data_dir = get_data_dir()
-        split_dir = get_split_dir()
-
         if not data_by_category:
-            # 文件模式：检查 split 目录是否存在
+            split_dir = get_split_dir()
             if not split_dir.exists():
-                bus.log_message.emit("⏳ 跳过预分析：split 目录已被清理，数据已在首次入库时完成分析")
+                bus.log_message.emit("⏳ 跳过预分析：split 目录已被清理")
                 return
-
-        # 检查数据库是否已有名称映射
-        has_mappings = False
-        try:
-            row = db._conn.execute(
-                "SELECT COUNT(*) FROM name_mappings").fetchone()
-            has_mappings = row and row[0] > 0
-        except Exception:
-            pass
-        if not has_mappings:
-            bus.log_message.emit("⏳ 名称映射未入库，将使用原始 ID 作为显示名（稍后加载文本后自动更新）")
 
         from services.analysis_service import AnalysisService
         svc = AnalysisService()
@@ -82,8 +61,10 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
         if not svc.is_ready:
             return
         bus.task_progress.emit(80, "预分析数据")
-        svc.precompute_all(db, data_by_category=data_by_category)
-        bus.task_progress.emit(100, "预分析完成")
+        if not version_code:
+            version_code = db.get_latest_version_code() or ""
+        svc.precompute_all(db, data_by_category=data_by_category, version_code=version_code)
+        bus.task_progress.emit(100, "步骤 3/3: 预分析完成")
     except Exception as e:
         bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
 
@@ -92,11 +73,36 @@ def run_process() -> None:
     data_dir = get_data_dir()
     split_dir = get_split_dir()
 
-    db: DatabaseManager | None = None  # 在 run_process 作用域声明，_ok 能访问
+    db: DatabaseManager | None = None
+
+    def _finalize_import(db: DatabaseManager, db_batch: list, data_by_category: dict,
+                          data_dir, version_code: str) -> None:
+        db.insert_entities_batch(db_batch, version_code=version_code)
+        bus.task_progress.emit(45, "步骤 2/3: 写入数据库实体")
+        ms = db.import_name_mappings(str(data_dir))
+        bus.task_progress.emit(60, "步骤 2/3: 导入名称映射")
+        bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
+        bus.log_message.emit("🧠 步骤 3/3: 正在预分析数据（内存模式）...")
+        _run_analysis(db, data_by_category, version_code=version_code)
+        bus.log_message.emit(f"📦 步骤 3/3: 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
+        bus.task_progress.emit(100, "步骤 3/3: 完成")
+
+    TYPE_CATEGORY_MAP = {
+        "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
+        "Aircraft": "Aircraft", "Ability": "Ability",
+        "Modernization": "Modernization", "Crew": "Crew",
+    }
+
+    def _collect_entity(k: str, v: dict, data_by_category: dict,
+                         db_batch: list, index) -> None:
+        t = v.get('typeinfo', {}).get('type', 'UnknownType')
+        cat = TYPE_CATEGORY_MAP.get(t, None)
+        if cat:
+            data_by_category.setdefault(cat, {})[k] = v
+        db_batch.append((str(t), k, v))
 
     def _process():
         nonlocal db
-        # 始终重建 split 目录用于分析，完成后根据 keep_split_json 决定是否保留
         if split_dir.exists():
             shutil.rmtree(str(split_dir))
         split_dir.mkdir(parents=True)
@@ -124,33 +130,23 @@ def run_process() -> None:
         elif isinstance(data, dict) and '' in data and isinstance(data[''], dict):
             source_dict = data['']
 
-        # 统一使用 game_data.db，通过 load_seq 追踪版本
-        db_path = DatabaseManager._versioned_path(data_dir, "", "")
-        db = DatabaseManager(db_path)
+        # 使用服务器对应的数据库文件
+        from utils.path_utils import get_data_dir
+        db_path = str(get_data_dir() / DatabaseManager._db_name(app_ctx.ctx.wows_type))
+        db = DatabaseManager(db_path=db_path)
         db.initialize()
-        # 清理残留的分版本文件
-        DatabaseManager.prune_old_files(data_dir)
-        # 开始新的加载批次
-        load_seq = db.begin_load(
+
+        # 创建新版本记录
+        version_code = db.begin_version(
             game_version=app_ctx.ctx.game_version,
             wows_type=app_ctx.ctx.wows_type,
             bin_folder=app_ctx.ctx.bin_folder)
+
         db_batch: list[tuple[str, str, dict]] = []
-
-        def _write_one_db(k, v, index):
-            t = v.get('typeinfo', {}).get('type', 'UnknownType')
-            db_batch.append((str(t), k, v))
-
-        # 类型 → 中文分类映射（与 split 目录结构一致）
-        TYPE_CATEGORY_MAP = {
-            "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
-            "Aircraft": "Aircraft", "Ability": "Ability",
-            "Modernization": "Modernization", "Crew": "Crew",
-        }
-        # 内存中按分类收集数据，跳过 JSON 中间文件
         data_by_category: dict[str, dict[str, dict]] = {}
         sd = str(split_dir)
-        do_write_json = app_ctx.config.keep_split_json if hasattr(app_ctx.config, 'keep_split_json') else True
+        do_write_json = app_ctx.config.keep_split_json
+        msg = ""
 
         if source_dict:
             ej = json.loads(json.dumps(source_dict, cls=_GPEncode, ensure_ascii=False))
@@ -158,31 +154,11 @@ def run_process() -> None:
                 with ThreadPoolExecutor(max_workers=8) as tpe:
                     for k, v in ej.items():
                         tpe.submit(_write_one, k, v, None, sd)
-                        t = v.get('typeinfo', {}).get('type', 'UnknownType')
-                        cat = TYPE_CATEGORY_MAP.get(t, None)
-                        if cat:
-                            data_by_category.setdefault(cat, {})[k] = v
-                        _write_one_db(k, v, None)
+                        _collect_entity(k, v, data_by_category, db_batch, None)
             else:
                 for k, v in ej.items():
-                    t = v.get('typeinfo', {}).get('type', 'UnknownType')
-                    cat = TYPE_CATEGORY_MAP.get(t, None)
-                    if cat:
-                        data_by_category.setdefault(cat, {})[k] = v
-                    _write_one_db(k, v, None)
-            if db_batch:
-                db.insert_entities_batch(db_batch, load_seq=load_seq)
-                bus.task_progress.emit(45, "写入数据库实体")
-                ms = db.import_name_mappings(str(data_dir))
-                bus.task_progress.emit(60, "导入名称映射")
-                db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
-                                        app_ctx.ctx.bin_folder, entity_count=len(db_batch))
-                bus.task_progress.emit(80, "预分析数据")
-                bus.log_message.emit("🧠 正在预分析数据（内存模式）...")
-                _run_analysis(db, data_by_category)
-                bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
-                bus.task_progress.emit(100, "完成")
-            return True, "Wargaming 拆分完成"
+                    _collect_entity(k, v, data_by_category, db_batch, None)
+            msg = "Wargaming 拆分完成"
         else:
             for idx, elem in enumerate(data):
                 if not isinstance(elem, dict):
@@ -193,63 +169,43 @@ def run_process() -> None:
                     with ThreadPoolExecutor(max_workers=8) as tpe:
                         for k, v in ej.items():
                             tpe.submit(_write_one, k, v, ti, sd)
-                            t = v.get('typeinfo', {}).get('type', 'UnknownType')
-                            cat = TYPE_CATEGORY_MAP.get(t, None)
-                            if cat:
-                                data_by_category.setdefault(cat, {})[k] = v
-                            _write_one_db(k, v, ti)
+                            _collect_entity(k, v, data_by_category, db_batch, ti)
                 else:
                     for k, v in ej.items():
-                        t = v.get('typeinfo', {}).get('type', 'UnknownType')
-                        cat = TYPE_CATEGORY_MAP.get(t, None)
-                        if cat:
-                            data_by_category.setdefault(cat, {})[k] = v
-                        _write_one_db(k, v, ti)
-            if db_batch:
-                db.insert_entities_batch(db_batch, load_seq=load_seq)
-                bus.task_progress.emit(45, "写入数据库实体")
-                ms = db.import_name_mappings(str(data_dir))
-                bus.task_progress.emit(60, "导入名称映射")
-                db.record_game_version(app_ctx.ctx.game_version, app_ctx.ctx.wows_type,
-                                        app_ctx.ctx.bin_folder, entity_count=len(db_batch))
-                bus.task_progress.emit(80, "预分析数据")
-                bus.log_message.emit("🧠 正在预分析数据（内存模式）...")
-                _run_analysis(db, data_by_category)
-                bus.log_message.emit(f"📦 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
-                bus.task_progress.emit(100, "完成")
-            return True, "Lesta 拆分完成"
+                        _collect_entity(k, v, data_by_category, db_batch, ti)
+            msg = "Lesta 拆分完成"
+
+        if db_batch:
+            _finalize_import(db, db_batch, data_by_category, data_dir, version_code)
+        return True, msg
 
     def _ok(ret):
         ok, msg = ret
         if ok:
             try:
-                # 分析完成后，根据配置清理 split 目录
                 if not app_ctx.config.keep_split_json and split_dir.exists():
                     shutil.rmtree(str(split_dir))
                     bus.log_message.emit("🧹 split 临时文件已清理")
-                # 删除原始解包的 GameParams 数据文件
                 for n in ["GameParams_py2.data", "GameParams.data"]:
                     p = data_dir / n
                     if p.exists():
                         p.unlink()
                         bus.log_message.emit(f"🧹 已删除原始数据文件: {n}")
-                # 只保留最新 2 次加载的数据，删除更旧的批次
-                deleted = db.purge_old_loads(keep_count=2)
+                # 只保留最新 2 个版本，滚动删除更旧的
+                deleted = db.purge_old_versions(keep_count=2)
                 if deleted:
-                    bus.log_message.emit(f"📂 已清理上上次的旧版本数据 ({deleted} 实体)")
+                    bus.log_message.emit(f"📂 已清理旧版本数据 ({deleted} 条版本记录)")
                 bus.log_message.emit(f"✅ 数据解析完成: {msg}")
                 bus.task_progress.emit(100, "全部完成")
                 app_ctx.set_game_data_state(True)
                 bus.data_processed.emit(True)
                 bus.folder_selected.emit("__REFRESH__")
             finally:
-                # 关闭后台线程的数据库连接
                 if db is not None:
                     try:
                         db.close()
                     except Exception:
                         pass
-                from services.database_service import reset_db
                 reset_db()
         else:
             bus.log_message.emit(f"❌ {msg}")
