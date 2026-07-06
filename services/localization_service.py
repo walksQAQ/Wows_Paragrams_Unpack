@@ -195,17 +195,22 @@ def run_localization() -> None:
                 bus.log_message.emit(f"📦 PO 翻译已入库: {res['po_translations']} 条")
         except Exception as e:
             bus.log_message.emit(f"⚠️ 文本入库失败: {e}")
+        finally:
+            # 兜底清理：删除所有临时 JSON/PO 文件
+            import glob
+            for f in glob.glob(os.path.join(str(data_dir), "*_names.json")):
+                try: os.remove(f)
+                except: pass
+            pof = os.path.join(str(data_dir), "global.po")
+            if os.path.exists(pof):
+                try: os.remove(pof)
+                except: pass
         bus.task_progress.emit(100, "本地化完成")
         bus.localization_ready.emit()
-        # 刷新名称映射 → 自动重跑预分析以更新显示名 + 刷新界面
+        # 刷新名称映射 → 清理 Presenter 缓存 + 刷新界面
         try:
-            from services.database_service import get_db
-            db = get_db()
-            if db.exists and db.get_stats().get("total_entities", 0) > 0:
-                bus.log_message.emit("🧠 重新预分析以应用新翻译...")
-                vc = db.get_latest_version_code() or ""
-                from services.processor_service import _run_analysis
-                _run_analysis(db, version_code=vc)
+            from presenters.registry import PresenterRegistry
+            PresenterRegistry.clear_cache()
         except Exception:
             pass
         bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")

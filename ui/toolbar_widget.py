@@ -142,7 +142,7 @@ class TopToolbar(QWidget):
         run_localization()
 
     def _on_refresh(self):
-        """刷新界面：清空缓存 → 重新分析 → 刷新显示"""
+        """刷新界面：清空缓存 → 刷新显示（不触发重新分析）"""
         self._disable_all()
         bus.task_progress.emit(0, "刷新中")
 
@@ -151,24 +151,7 @@ class TopToolbar(QWidget):
             from presenters.registry import PresenterRegistry
             PresenterRegistry.clear_cache()
 
-            # 2. 重新从 split JSON 分析（如果 split 目录存在）
-            from utils.path_utils import get_split_dir
-            split_dir = get_split_dir()
-            if split_dir.exists() and any(split_dir.iterdir()):
-                bus.log_message.emit("🔄 正在重新分析数据文件...")
-                from services.database_service import get_db
-                from services.analysis_service import AnalysisService
-                db = get_db()
-                if db.exists:
-                    svc = AnalysisService()
-                    svc.initialize()
-                    if svc.is_ready:
-                        svc.precompute_all(db)
-                        bus.log_message.emit("✅ 数据分析完成")
-            else:
-                bus.log_message.emit("🔄 split 目录不存在，跳过重新分析")
-
-            # 3. 通知界面刷新
+            # 2. 通知界面刷新
             bus.folder_selected.emit("__REFRESH__")
 
         def _done(_result=None):

@@ -36,7 +36,7 @@ class ShipPresenter(BasePresenter):
         if not basic:
             return None
 
-        ship_name = self.resolve_name_by_id(basic['name_mapping_id'], 'ship', ship_id) or ship_id
+        ship_name = self.resolve_name_by_id(basic['name_mapping_id'], 'ship', basic['ship_index']) or ship_id
         items = [
             self.make_item(f"  舰船名称: {ship_name}", "", 0),
             self.make_item(f"  编号: {basic['ship_index'] or ship_id.split('_')[0]}", "", 1),
@@ -340,7 +340,7 @@ class ShipPresenter(BasePresenter):
             return
         items = []
         o = 0
-        dname = self.resolve_name_by_id(rage['display_name_id'], 'rage_mode', '') or "战斗指令"
+        dname = self.resolve_name_by_id(rage['display_name_id'], 'rage_mode', rage['rage_mode_name']) or "战斗指令"
         items.append(self.make_item(f"  === {dname} ===", "", o)); o += 1
         items.append(self.make_item(f"    持续时间: {rage['boost_duration']}s", "", o)); o += 1
         max_ac = rage['max_activation_count']
@@ -392,7 +392,8 @@ class ShipPresenter(BasePresenter):
                             for ak, av in aln.items():
                                 if ak == "type": continue
                                 if ak in ("planeId", "planeName"):
-                                    items.append(self.make_item(f"      - 飞机型号: {av}", "", o)); o += 1
+                                    pname = self.resolve_plane(av) or av
+                                    items.append(self.make_item(f"      - 飞机型号: {pname}", "", o)); o += 1
                                 elif ak == "progressName":
                                     items.append(self.make_item(f"      - 进度标识: {av}", "", o)); o += 1
                                 else:
@@ -1233,7 +1234,7 @@ class ShipPresenter(BasePresenter):
                         parts = slot_val.split('|', 1)
                         aid = parts[0]
                         variant = parts[1] if len(parts) > 1 else ""
-                        aname = self.resolve_name("ability", aid)
+                        aname = self.resolve_name("consumable", aid)
                         clines.append(f"      ── 消耗品: {aname} ──")
                         if variant:
                             cfg = conn.execute(
