@@ -77,6 +77,12 @@ class CategoryBar(QWidget):
 
         layout.addStretch()
 
+    def clear_selection(self) -> None:
+        """取消所有分类按钮的选中状态"""
+        self._active = None
+        for btn in self._btns:
+            btn.setChecked(False)
+
     def _on_category(self, folder: str) -> None:
         """分类按钮点击"""
         for btn, (_, _, cat_folder) in zip(self._btns, self.CATEGORIES):

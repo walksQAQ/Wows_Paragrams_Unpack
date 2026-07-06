@@ -138,6 +138,7 @@ class DatabaseManager:
                 ("ability_slot_0", "TEXT"), ("ability_slot_1", "TEXT"),
                 ("ability_slot_2", "TEXT"), ("ability_slot_3", "TEXT"),
                 ("ability_slot_4", "TEXT"),
+                ("plane_level", "INTEGER"),
             ]
             for col_name, col_type in expected:
                 if col_name not in existing:

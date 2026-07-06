@@ -558,6 +558,7 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     plane_id_num INTEGER,
     species TEXT,                      -- 'Fighter','Dive','Bomber','SkipBomber','Scout','TorpedoBomber'
     nation TEXT,
+    plane_level INTEGER,
     max_speed REAL,
     cruising_speed REAL,
     hp REAL,

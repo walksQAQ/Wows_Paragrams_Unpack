@@ -822,7 +822,7 @@ class AnalysisStore:
         # 从 extra 中提取结构化字段
         hs = raw_data.get("hangarSettings") or {}
         sql = ("INSERT OR REPLACE INTO plane_basic_info "
-               "(version_code, plane_id, plane_index, plane_id_num, species, nation, "
+               "(version_code, plane_id, plane_index, plane_id_num, species, nation, plane_level, "
                "max_speed, cruising_speed, hp, attack_count, attack_cooldown, "
                "attack_interval, arrange_size, can_destroy, can_stop, bomb_name, "
                "speed_move_with_bomb, speed_max_mult, speed_min_mult, "
@@ -837,14 +837,15 @@ class AnalysisStore:
                "inner_bombs_percentage, "
                "post_attack_invulnerability_duration, "
                "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4) "
-               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+               "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
                       ti.get("species", ""), ti.get("nation", ""),
+                      _i(raw_data.get("level")),
                       _v(core["maxSpeed"]), _v(core["cruisingSpeed"]), _v(core["hp"]),
                       _i(core["attackCount"]), _v(core["attackCooldown"]),
                       _v(core["attackInterval"]), _i(core["arrangeSize"]),
