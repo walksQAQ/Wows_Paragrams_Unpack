@@ -43,7 +43,7 @@ def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
     app.setApplicationName("Wows/Korabli gamedata unpack and analyze")
-    app.setApplicationVersion("3.1.0")
+    app.setApplicationVersion("3.1.1")
     app.setOrganizationName("WowsParagrams")
 
     # 2. 加载样式

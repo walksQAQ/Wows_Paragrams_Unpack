@@ -44,7 +44,7 @@ class AdvancedSettingsDialog(QDialog):
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("请选择游戏安装目录...")
         self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet("padding: 4px 8px;")
+        self._path_edit.setStyleSheet("padding: 4px 8px; color: #1a1a1a; background-color: #ffffff;")
         btn_browse = QPushButton("浏览...")
         btn_browse.clicked.connect(self._on_browse)
         path_row.addWidget(self._path_edit, stretch=1)
