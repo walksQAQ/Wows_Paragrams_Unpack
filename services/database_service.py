@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 10
+DB_SCHEMA_VERSION = 11
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -193,6 +193,35 @@ class DatabaseManager:
                         self._conn.execute(f"ALTER TABLE ship_module_depth_charge ADD COLUMN {col_name} {col_type}")
                     except Exception:
                         pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 ship_module_secondary_artillery 表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_secondary_artillery (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                count INTEGER,
+                num_barrels INTEGER,
+                reload_time REAL,
+                max_range REAL,
+                sigma REAL,
+                rotation_speed_h REAL,
+                rotation_speed_v REAL,
+                ideal_radius REAL,
+                min_radius REAL,
+                ideal_distance REAL,
+                radius_zero REAL,
+                radius_delim REAL,
+                radius_max REAL,
+                delim REAL,
+                caliber REAL,
+                PRIMARY KEY (version_code, ship_id, config_group, module_key),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
             self._conn.commit()
         except Exception:
             pass

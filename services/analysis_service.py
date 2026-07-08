@@ -88,6 +88,7 @@ def _json_dumps(v):
 MODULE_PATTERNS = {
     "Hull": re.compile(r'([A-Z]+\d*)_Hull'),
     "Artillery": re.compile(r'([A-Z]+\d*)_Artillery'),
+    "SecondaryArtillery": re.compile(r'([A-Z]+\d*)_SecondaryArtillery'),
     "ATBA": re.compile(r'([A-Z]+\d*)_ATBA'),
     "Torpedoes": re.compile(r'([A-Z]+\d*)_Torpedoes'),
     "DiveBomber": re.compile(r'([A-Z]+\d*)_DiveBomber'),
@@ -103,14 +104,17 @@ MODULE_PATTERNS = {
 
 HP_PATTERNS = {
     "Artillery": re.compile(r'HP_[A-Z]GM_\d+'),
+    "SecondaryArtillery": re.compile(r'HP_[A-Z]GM_\d+'),
     "ATBA": re.compile(r'HP_([A-Z]GS)_\d+'),
     "AirDefense": re.compile(r'(HP_[A-Z]GA_\d+|HP_[A-Z]GM_\d+_HP_[A-Z]GA_\d+|Aura_\d+|(Far|Medium|Near)\d*(_Bubbles)?)'),
     "Torpedoes": re.compile(r'HP_[A-Z]GT_\d+'),
     "DepthChargeGuns": re.compile(r"HP_[A-Z]GB_\d+"),
 }
 
+# 飞机实体 ID 格式: P + [区域码] + A(Aircraft标记) + [类型] + 数字
+# 类型: B=Bomber/TB, D=DiveBomber, F=Fighter, S=Scout, M=Mine, L=?, C=Cruise, X=Special
 PLANE_PREFIX_RE = re.compile(
-    r'^(PAU|PABA|PASA|PAUB|PAUD|PAUI|PAMA|PAJA|PAFR|PAGE|PAIT|PAPN|PAPL|PAEU|PANE|PASP)\d'
+    r'^P[A-Z]A[ABDFLMSXC]\d'
 )
 
 
@@ -337,10 +341,10 @@ class AnalysisStore:
                     combined_stats.setdefault(lt, {})["hangar" if current_cat == "AirArmament" else "flight_control"] = module_data
                 continue
 
-            if current_cat in ("Artillery", "ATBA", "AirDefense", "Torpedoes", "DepthChargeGuns"):
+            if current_cat in ("Artillery", "SecondaryArtillery", "ATBA", "AirDefense", "Torpedoes", "DepthChargeGuns"):
                 sys_max_dist = module_data.get("maxDist") or module_data.get("maxdist") or module_data.get("maxDistance") or module_data.get("maxRange") or 0
                 sys_sigma = module_data.get("sigmaCount") or module_data.get("sigma") or None
-                if current_cat in ("Artillery", "ATBA"):
+                if current_cat in ("Artillery", "SecondaryArtillery", "ATBA"):
                     skey = f"{current_cat}_System"
                     for lt in target_letters:
                         combined_stats[lt][skey] = {"max_dist": sys_max_dist, "sigma": sys_sigma}
@@ -371,7 +375,7 @@ class AnalysisStore:
                             })
                         continue
                     hp_cats = [current_cat]
-                    if current_cat in ("Artillery", "ATBA"):
+                    if current_cat in ("Artillery", "SecondaryArtillery", "ATBA"):
                         hp_cats.append("AirDefense")
                     for hp_cat in hp_cats:
                         hp_pat = HP_PATTERNS.get(hp_cat)
@@ -401,10 +405,24 @@ class AnalysisStore:
                                     "radius_delim": _v(sv.get("radiusOnDelim"), 0),
                                     "radius_max": _v(sv.get("radiusOnMax"), 0),
                                     "delim": _v(sv.get("delim"), 0),
-                                    "rotation_speed_h": _v(sv.get("rotationSpeedH")),
-                                    "rotation_speed_v": _v(sv.get("rotationSpeedV")),
+                                    "rotation_speed_h": _v((sv.get("rotationSpeed") or [None, None])[0]),
+                                    "rotation_speed_v": _v((sv.get("rotationSpeed") or [None, None])[1]),
                                 })
                                 cs.setdefault("artillery", []).append(entry)
+                            elif hp_cat == "SecondaryArtillery":
+                                entry.update({
+                                    "caliber": _v(sv.get("caliber"), 0),
+                                    "ideal_radius": _v(sv.get("idealRadius"), 0),
+                                    "min_radius": _v(sv.get("minRadius"), 0),
+                                    "ideal_distance": _v(sv.get("idealDistance"), 0),
+                                    "radius_zero": _v(sv.get("radiusOnZero"), 0),
+                                    "radius_delim": _v(sv.get("radiusOnDelim"), 0),
+                                    "radius_max": _v(sv.get("radiusOnMax"), 0),
+                                    "delim": _v(sv.get("delim"), 0),
+                                    "rotation_speed_h": _v((sv.get("rotationSpeed") or [None, None])[0]),
+                                    "rotation_speed_v": _v((sv.get("rotationSpeed") or [None, None])[1]),
+                                })
+                                cs.setdefault("secondary_artillery", []).append(entry)
                             elif hp_cat == "ATBA":
                                 entry.update({
                                     "ideal_radius": _v(sv.get("idealRadius"), 0),
@@ -458,6 +476,7 @@ class AnalysisStore:
             self._write_hull_letter(ship_id, letter, raw_data, version_code=version_code)
             self._write_artillery(ship_id, letter, cs, drum_configs.get(letter), version_code=version_code)
             self._write_atba(ship_id, letter, cs, version_code=version_code)
+            self._write_secondary_artillery(ship_id, letter, cs, version_code=version_code)
             self._write_torpedoes(ship_id, letter, cs, version_code=version_code)
             self._write_aa(ship_id, letter, cs, version_code=version_code)
             self._write_depth_charge(ship_id, letter, cs, version_code=version_code)
@@ -624,6 +643,30 @@ class AnalysisStore:
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0)))
             self._rel(ship_id, gn, "atba", letter, cnt, version_code)
             self._ammo(ship_id, gn, "atba", letter, r.get("ammo_list", []), version_code)
+
+    def _write_secondary_artillery(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
+        """将 SecondaryArtillery（第二主炮）写入独立表 ship_module_secondary_artillery"""
+        conn = self.conn
+        sys = cs.get("SecondaryArtillery_System", {})
+        md = sys.get("max_dist", 0)
+        sv = sys.get("sigma")
+        for key, group in self._weapon_groups(cs.get("secondary_artillery", []), "gun_name").items():
+            gn = key[0]
+            cnt = len(group)
+            r = group[0]
+            br = _v(r.get("num_barrels"), 0)
+            rt = r.get("reload_time")
+            ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
+            em = md or r.get("max_dist", 0) or ide
+            mr2 = em / 1000 if em else None
+            conn.execute("INSERT OR REPLACE INTO ship_module_secondary_artillery (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim, caliber) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+                          r.get("rotation_speed_h"), r.get("rotation_speed_v"),
+                          ir, mr, ide,
+                          r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0),
+                          r.get("caliber", 0)))
+            self._rel(ship_id, gn, "secondary_artillery", letter, cnt, version_code)
+            self._ammo(ship_id, gn, "secondary_artillery", letter, r.get("ammo_list", []), version_code)
 
     def _write_torpedoes(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn

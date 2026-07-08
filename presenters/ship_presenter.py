@@ -433,7 +433,8 @@ class ShipPresenter(BasePresenter):
     def _append_modules(self, conn, vc, ship_id, sections):
         # 获取所有配置组前缀字母
         letters = set()
-        for tbl in ["ship_module_hulls", "ship_module_artillery", "ship_module_atba",
+        for tbl in ["ship_module_hulls", "ship_module_artillery", "ship_module_secondary_artillery",
+                      "ship_module_atba",
                       "ship_module_torpedoes", "ship_module_aa", "ship_module_depth_charge",
                       "ship_module_aircraft", "ship_module_air_support", "ship_module_engine"]:
             for r in conn.execute(
@@ -445,19 +446,21 @@ class ShipPresenter(BasePresenter):
         letters = sorted(letters)
 
         # 为每个字母收集各模块数据
-        hull_data, arty_data, atba_data, torp_data = {}, {}, {}, {}
+        hull_data, arty_data, atba_data, secondary_arty_data, torp_data = {}, {}, {}, {}, {}
         aa_data, dc_data, plane_data, asup_data = {}, {}, {}, {}
 
         for letter in letters:
             self._build_hull(conn, vc, ship_id, letter, hull_data)
             self._build_artillery(conn, vc, ship_id, letter, arty_data)
             self._build_atba(conn, vc, ship_id, letter, atba_data)
+            self._build_secondary_artillery(conn, vc, ship_id, letter, secondary_arty_data)
             self._build_torpedoes(conn, vc, ship_id, letter, torp_data)
             self._build_aa(conn, vc, ship_id, letter, aa_data)
             self._build_depth_charge(conn, vc, ship_id, letter, dc_data)
             self._build_air_support(conn, vc, ship_id, letter, asup_data)
 
         for label, data in [("船体", hull_data), ("主炮", arty_data), ("副炮", atba_data),
+                             ("次级主炮", secondary_arty_data),
                              ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data)]:
             if data:
                 all_lines = []
@@ -795,6 +798,85 @@ class ShipPresenter(BasePresenter):
                         if p['bullet_cap_normalize_max']: lines.append(f"              炮弹转正角: {p['bullet_cap_normalize_max']:.2f}°")
                         rc1 = p['bullet_ricochet_at']
                         rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                else:
+                    lines.append(f"可用炮弹: {acn}")
+        if lines:
+            result[letter] = lines
+
+    def _build_secondary_artillery(self, conn, vc, ship_id, letter, result):
+        """从 ship_module_secondary_artillery 表构建第二主炮显示数据"""
+        lines = []
+        ammo_map = self.get_name_map("ammo")
+        for g in conn.execute(
+            "SELECT * FROM ship_module_secondary_artillery WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+            (vc, ship_id, f"{letter}%")).fetchall():
+            gname = self.resolve_name('gun', g['module_key']) or g['module_key']
+            lines.append(f"火炮名称: {gname} x{g['count']}")
+            if g['num_barrels']: lines.append(f"联装数: {g['num_barrels']:.0f}")
+            if g['caliber']: lines.append(f"口径: {g['caliber']*1000:.0f} mm")
+            if g['reload_time']: lines.append(f"装填时间: {g['reload_time']}s")
+            if g['max_range']: lines.append(f"基础射程: {g['max_range']:.2f} km")
+            if g['sigma']: lines.append(f"弹着群系数(Sigma): {g['sigma']}")
+            if g['rotation_speed_h']: lines.append(f"水平回转速度: {g['rotation_speed_h']:.1f}°/s")
+            if g['rotation_speed_v']: lines.append(f"垂直回转速度: {g['rotation_speed_v']:.1f}°/s")
+            # 散步公式
+            ir, mr, id_dist = g['ideal_radius'], g['min_radius'], g['ideal_distance']
+            if ir and mr and id_dist:
+                slope = (ir - mr) / (id_dist / 1000) if id_dist else 0
+                intercept = mr * 30
+                lines.append(f"横向散步公式: {slope:.2f}R + {intercept:.0f}")
+            # 纵向散步
+            if g['radius_zero'] is not None and g['radius_max'] is not None:
+                r0, rdelim, rmax, delim = g['radius_zero'], g['radius_delim'], g['radius_max'], g['delim']
+                pct = f"{delim*100:.0f}%" if delim else "?"
+                lines.append(f"纵向散步系数: {r0} ~ {rdelim}(R={pct}) ~ {rmax}")
+            seen = set()
+            for swp in conn.execute(
+                "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
+                "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='secondary_artillery'",
+                (vc, ship_id, g['module_key'])).fetchall():
+                aid = swp["ammo_id"]
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                acn = ammo_map.get(aid.upper(), aid)
+                p = conn.execute(
+                    "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.bullet_speed, be.explosion_radius, be.burn_prob, "
+                    "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
+                    "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
+                    "be.bullet_detonator, be.bullet_detonator_threshold, be.bullet_cap_normalize_max "
+                    "FROM projectile_basic_info pb "
+                    "LEFT JOIN projectile_bullet_ext be ON be.version_code=pb.version_code AND be.projectile_id=pb.projectile_id "
+                    "WHERE pb.version_code=? AND pb.projectile_id=?",
+                    (vc, aid)).fetchone()
+                if p:
+                    at = (p['ammo_type'] or "").upper()
+                    lines.append(f"可用炮弹: {acn}")
+                    if p['alpha_damage']: lines.append(f"      标伤: {p['alpha_damage']:.0f}")
+                    lines.append(f"      弹种: {p['ammo_type'] or '?'}")
+                    lines.append(f"      炮弹详细属性:")
+                    if p['explosion_radius']: lines.append(f"              炮弹爆炸半径: {p['explosion_radius']:.2f} m")
+                    if p['bullet_diameter']: lines.append(f"              炮弹口径: {p['bullet_diameter']*1000:.0f} mm")
+                    if p['bullet_speed']: lines.append(f"              炮弹初速: {p['bullet_speed']:.0f} m/s")
+                    if p['bullet_air_drag']: lines.append(f"              空阻系数: {p['bullet_air_drag']}")
+                    if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
+                    if at == 'HE':
+                        if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
+                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                    elif at == 'SAP':
+                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        rc1 = p['bullet_ricochet_at']; rc2 = p['bullet_always_ricochet_at']
+                        if rc1 or rc2:
+                            lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
+                    elif at == 'AP':
+                        if p['bullet_krupp']: lines.append(f"              弹头硬度: {p['bullet_krupp']:.0f}")
+                        if p['bullet_detonator'] is not None: lines.append(f"              引信触发阈值: {p['bullet_detonator']:.0f} mm")
+                        if p['bullet_detonator_threshold']: lines.append(f"              引信长度: {p['bullet_detonator_threshold']:.2f} cal")
+                        if p['bullet_cap_normalize_max']: lines.append(f"              炮弹转正角: {p['bullet_cap_normalize_max']:.2f}°")
+                        rc1 = p['bullet_ricochet_at']; rc2 = p['bullet_always_ricochet_at']
                         if rc1 or rc2:
                             lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
                 else:
