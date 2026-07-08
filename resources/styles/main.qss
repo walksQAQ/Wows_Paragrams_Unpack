@@ -27,10 +27,12 @@ QListWidget {
     border: 1px solid #d0d0d0;
     border-radius: 4px;
     font-size: 12px;
+    color: #1a1a1a;
 }
 
 QListWidget::item {
     padding: 3px 6px;
+    color: #1a1a1a;
 }
 
 QListWidget::item:selected {
@@ -40,4 +42,5 @@ QListWidget::item:selected {
 
 QListWidget::item:hover {
     background-color: #e5f1fb;
+    color: #1a1a1a;
 }

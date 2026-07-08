@@ -34,7 +34,7 @@ class MultiSelectCombo(QPushButton):
             QPushButton {
                 padding: 3px 4px; border: 1px solid #c0c0c0;
                 border-radius: 3px; font-size: 11px;
-                background-color: #ffffff; min-width: 70px;
+                background-color: #ffffff; color: #1a1a1a; min-width: 70px;
                 text-align: left;
             }
             QPushButton:focus { border-color: #0078d4; }
@@ -131,6 +131,7 @@ class BrowserPanel(QWidget):
                 border-radius: 3px;
                 font-size: 11px;
                 background-color: #ffffff;
+                color: #1a1a1a;
             }
             QLineEdit:focus { border-color: #0078d4; }
         """)
@@ -154,9 +155,9 @@ class BrowserPanel(QWidget):
             QPushButton {
                 background: #e0e0e0; border: 1px solid #c0c0c0;
                 border-radius: 3px; font-size: 13px; font-weight: bold;
-                padding: 0;
+                padding: 0; color: #1a1a1a;
             }
-            QPushButton:hover { background: #d0d0d0; border-color: #0078d4; }
+            QPushButton:hover { background: #d0d0d0; border-color: #0078d4; color: #1a1a1a; }
         """)
         filter_row.addWidget(self.btn_reset)
         layout.addLayout(filter_row)
@@ -172,10 +173,12 @@ class BrowserPanel(QWidget):
                 background-color: #ffffff;
                 border: 1px solid #d0d0d0;
                 border-radius: 4px;
+                color: #1a1a1a;
             }
             QListWidget::item {
                 padding: 3px 6px;
                 font-size: 12px;
+                color: #1a1a1a;
             }
             QListWidget::item:selected {
                 background-color: #0078d4;
@@ -183,6 +186,7 @@ class BrowserPanel(QWidget):
             }
             QListWidget::item:hover {
                 background-color: #e5f1fb;
+                color: #1a1a1a;
             }
         """)
         layout.addWidget(self.file_list, stretch=1)
