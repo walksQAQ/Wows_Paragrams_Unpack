@@ -212,6 +212,31 @@ CREATE TABLE IF NOT EXISTS ship_module_atba (
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
+-- 3a. 第二主炮组件属性表（副炮/第二主炮，结构与主炮相同）
+CREATE TABLE IF NOT EXISTS ship_module_secondary_artillery (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    count INTEGER,                       -- 同型号炮塔数量
+    num_barrels INTEGER,                 -- 每座联装数
+    reload_time REAL,                    -- 装填时间 (s)
+    max_range REAL,                      -- 最大射程 (km)
+    sigma REAL,                          -- 精度 Sigma
+    rotation_speed_h REAL,               -- 水平回转速度 (°/s)
+    rotation_speed_v REAL,               -- 垂直回转速度 (°/s)
+    ideal_radius REAL,                   -- 散布理想半径
+    min_radius REAL,                     -- 散布最小半径
+    ideal_distance REAL,                 -- 散布理想距离
+    radius_zero REAL,                    -- 散布 0 距离系数
+    radius_delim REAL,                   -- 散布分界系数
+    radius_max REAL,                     -- 散布最大系数
+    delim REAL,                          -- 散布分界点
+    caliber REAL,                        -- 火炮口径 (m)
+    PRIMARY KEY (version_code, ship_id, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
 -- 4. 鱼雷组件属性表
 CREATE TABLE IF NOT EXISTS ship_module_torpedoes (
     version_code TEXT NOT NULL,
