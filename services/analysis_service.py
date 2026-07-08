@@ -86,20 +86,20 @@ def _json_dumps(v):
 # ── 模块匹配模式 ────────────────────────────────────────
 
 MODULE_PATTERNS = {
-    "Hull": re.compile(r'([A-Z]+\d*)_Hull'),
-    "Artillery": re.compile(r'([A-Z]+\d*)_Artillery'),
-    "SecondaryArtillery": re.compile(r'([A-Z]+\d*)_SecondaryArtillery'),
-    "ATBA": re.compile(r'([A-Z]+\d*)_ATBA'),
-    "Torpedoes": re.compile(r'([A-Z]+\d*)_Torpedoes'),
-    "DiveBomber": re.compile(r'([A-Z]+\d*)_DiveBomber'),
-    "Fighter": re.compile(r'([A-Z]+\d*)_Fighter'),
-    "SkipBomber": re.compile(r'([A-Z]+\d*)_SkipBomber'),
-    "TorpedoBomber": re.compile(r'([A-Z]+\d*)_TorpedoBomber'),
-    "AirSupport": re.compile(r'([A-Z]+\d*)_AirSupport'),
-    "AirDefense": re.compile(r'([A-Z]+\d*)_AirDefense'),
-    "DepthChargeGuns": re.compile(r"([A-Z]+\d*)_DepthChargeGuns"),
-    "AirArmament": re.compile(r'([A-Z]+\d*)_AirArmament'),
-    "FlightControl": re.compile(r'([A-Z]+\d*)_FlightControl'),
+    "Hull": re.compile(r'(?:([A-Z]+\d*)_)?Hull(?:Default)?'),
+    "Artillery": re.compile(r'(?:([A-Z]+\d*)_)?Artillery(?:Default)?'),
+    "SecondaryArtillery": re.compile(r'(?:([A-Z]+\d*)_)?SecondaryArtillery(?:Default)?'),
+    "ATBA": re.compile(r'(?:([A-Z]+\d*)_)?ATBA(?:Default)?'),
+    "Torpedoes": re.compile(r'(?:([A-Z]+\d*)_)?Torpedoes(?:Default)?'),
+    "DiveBomber": re.compile(r'(?:([A-Z]+\d*)_)?DiveBomber(?:Default)?'),
+    "Fighter": re.compile(r'(?:([A-Z]+\d*)_)?Fighter(?:Default)?'),
+    "SkipBomber": re.compile(r'(?:([A-Z]+\d*)_)?SkipBomber(?:Default)?'),
+    "TorpedoBomber": re.compile(r'(?:([A-Z]+\d*)_)?TorpedoBomber(?:Default)?'),
+    "AirSupport": re.compile(r'(?:([A-Z]+\d*)_)?AirSupport(?:Default)?'),
+    "AirDefense": re.compile(r'(?:([A-Z]+\d*)_)?AirDefense(?:Default)?'),
+    "DepthChargeGuns": re.compile(r"(?:([A-Z]+\d*)_)?DepthChargeGuns(?:Default)?"),
+    "AirArmament": re.compile(r'(?:([A-Z]+\d*)_)?AirArmament(?:Default)?'),
+    "FlightControl": re.compile(r'(?:([A-Z]+\d*)_)?FlightControl(?:Default)?'),
 }
 
 HP_PATTERNS = {
@@ -283,15 +283,20 @@ class AnalysisStore:
             for cat, pattern in MODULE_PATTERNS.items():
                 m = pattern.match(mod_key)
                 if m:
-                    prefix = "".join(re.findall(r'[A-Z]+', m.group(1)))
-                    target_letters = list(prefix) if prefix != "AB" else (["A", "B"] if has_pure_b else ["A"])
+                    raw_prefix = m.group(1)
+                    if raw_prefix is None:
+                        # *Default 模式无前缀字母，使用默认 "A"
+                        target_letters = ["A"]
+                    else:
+                        prefix = "".join(re.findall(r'[A-Z]+', raw_prefix))
+                        target_letters = list(prefix) if prefix != "AB" else (["A", "B"] if has_pure_b else ["A"])
                     current_cat = cat
                     break
             if not target_letters or not current_cat:
                 continue
             for lt in target_letters:
                 combined_stats.setdefault(lt, {})
-            m2 = re.match(r'([A-Z]+)(\d*)', m.group(1)) if m else None
+            m2 = re.match(r'([A-Z]+)(\d*)', m.group(1)) if m and m.group(1) else None
             variant = m2.group(2) if m2 and m2.group(2) else ""
 
             # 飞机（仅当存在纯 B 前缀的飞机模块时才拆 AB → A+B）
