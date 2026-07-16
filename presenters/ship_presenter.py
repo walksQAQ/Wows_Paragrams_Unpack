@@ -643,6 +643,7 @@ class ShipPresenter(BasePresenter):
                 acn = ammo_map.get(aid.upper(), aid)
                 p = conn.execute(
                     "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.alpha_piercing_he, be.alpha_piercing_cs, "
                     "be.bullet_speed, be.explosion_radius, be.burn_prob, "
                     "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
                     "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
@@ -664,9 +665,9 @@ class ShipPresenter(BasePresenter):
                     if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
                     if at == 'HE':
                         if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
-                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_he']: lines.append(f"              HE穿深: {p['alpha_piercing_he']:.1f} mm")
                     elif at == 'SAP':
-                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_cs']: lines.append(f"              SAP穿深: {p['alpha_piercing_cs']:.1f} mm")
                         rc1 = p['bullet_ricochet_at']
                         rc2 = p['bullet_always_ricochet_at']
                         if rc1 or rc2:
@@ -763,6 +764,7 @@ class ShipPresenter(BasePresenter):
                 acn = ammo_map.get(aid.upper(), aid)
                 p = conn.execute(
                     "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.alpha_piercing_he, be.alpha_piercing_cs, "
                     "be.bullet_speed, be.explosion_radius, be.burn_prob, "
                     "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
                     "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
@@ -784,9 +786,9 @@ class ShipPresenter(BasePresenter):
                     if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
                     if at == 'HE':
                         if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
-                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_he']: lines.append(f"              HE穿深: {p['alpha_piercing_he']:.1f} mm")
                     elif at == 'SAP':
-                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_cs']: lines.append(f"              SAP穿深: {p['alpha_piercing_cs']:.1f} mm")
                         rc1 = p['bullet_ricochet_at']
                         rc2 = p['bullet_always_ricochet_at']
                         if rc1 or rc2:
@@ -844,6 +846,7 @@ class ShipPresenter(BasePresenter):
                 acn = ammo_map.get(aid.upper(), aid)
                 p = conn.execute(
                     "SELECT pb.species, pb.ammo_type, be.alpha_damage, be.bullet_krupp, "
+                    "be.alpha_piercing_he, be.alpha_piercing_cs, "
                     "be.bullet_speed, be.explosion_radius, be.burn_prob, "
                     "be.bullet_mass, be.bullet_diameter, be.bullet_air_drag, "
                     "be.bullet_always_ricochet_at, be.bullet_ricochet_at, "
@@ -865,9 +868,9 @@ class ShipPresenter(BasePresenter):
                     if p['bullet_mass']: lines.append(f"              炮弹重量: {p['bullet_mass']:.2f} kg")
                     if at == 'HE':
                         if p['burn_prob'] is not None: lines.append(f"              起火率: {p['burn_prob']*100:.2f}%")
-                        if p['bullet_krupp']: lines.append(f"              HE穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_he']: lines.append(f"              HE穿深: {p['alpha_piercing_he']:.1f} mm")
                     elif at == 'SAP':
-                        if p['bullet_krupp']: lines.append(f"              SAP穿深: {p['bullet_krupp']:.0f} mm")
+                        if p['alpha_piercing_cs']: lines.append(f"              SAP穿深: {p['alpha_piercing_cs']:.1f} mm")
                         rc1 = p['bullet_ricochet_at']; rc2 = p['bullet_always_ricochet_at']
                         if rc1 or rc2:
                             lines.append(f"              跳弹角度: {rc1:.0f}°/{rc2:.0f}°")
