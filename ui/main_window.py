@@ -149,6 +149,11 @@ class MainWindow(QMainWindow):
         reset_action = settings_menu.addAction("重置软件设置")
         reset_action.triggered.connect(self._on_reset)
 
+        menubar.addSeparator()
+
+        about_action = menubar.addAction("关于")
+        about_action.triggered.connect(self._on_about)
+
     def _on_advanced_settings(self) -> None:
         from ui.advanced_settings import AdvancedSettingsDialog
         dlg = AdvancedSettingsDialog(self)
@@ -157,6 +162,31 @@ class MainWindow(QMainWindow):
     def _on_reset(self) -> None:
         app.reset_all()
         bus.log_message.emit("配置已重置")
+
+    def _on_about(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+        from PySide6.QtCore import QCoreApplication
+
+        import __about__
+
+        ver = QCoreApplication.applicationVersion()
+
+        QMessageBox.about(
+            self,
+            f"关于 {__about__.__title__}",
+            (
+                f"<h3>{__about__.__description__}</h3>"
+                "<hr>"
+                f"<p><b>版本：</b>{ver}</p>"
+                f"<p><b>作者：</b>{__about__.__author__}</p>"
+                f"<p><b>仓库：</b><a href='{__about__.__url__}'>{__about__.__url__}</a></p>"
+                f"<p><b>许可证：</b>{__about__.__license__}</p>"
+                "<hr>"
+                "<p style='color: #888888; font-size: 11px;'>"
+                "本工具仅供学习与研究使用，数据版权归原游戏厂商所有。"
+                "</p>"
+            ),
+        )
 
     # ── 信号槽 ────────────────────────────────────────────
 

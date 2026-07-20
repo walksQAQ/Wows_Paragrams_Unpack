@@ -115,6 +115,7 @@ class ShipCardWidget(QGroupBox):
         title = f"  {icon} {label}" if icon else f"  {label}"
         self.setTitle(title)
         self.setStyleSheet(CARD_STYLE)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 0)
@@ -195,6 +196,7 @@ class ShipCardWidget(QGroupBox):
         else:
             value_item.setForeground(QColor(VALUE_COLOR))
         value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._table.setItem(row, 1, value_item)
 
         # 如果有二级详情，设置 tooltip

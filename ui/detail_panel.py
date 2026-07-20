@@ -241,11 +241,12 @@ class DetailPanel(QWidget):
         UC_ICONS = {"_Artillery": "🔫", "_Torpedoes": "💣", "_Hull": "🚢",
                     "_Engine": "⚙", "_Suo": "📡",
                     "_Fighter": "✈", "_DiveBomber": "💥", "_TorpedoBomber": "⚓",
-                    "_FlightControl": "🎯"}
+                    "_FlightControl": "🎯", "_SkipBomber": "💥"}
         UC_NAMES = {"_Artillery": "主炮", "_Torpedoes": "鱼雷", "_Hull": "船体",
                     "_Engine": "引擎", "_Suo": "火控",
-                    "_Fighter": "战斗机", "_DiveBomber": "轰炸机",
-                    "_TorpedoBomber": "鱼雷机", "_FlightControl": "飞控"}
+                    "_Fighter": "攻击机", "_DiveBomber": "俯冲轰炸机",
+                    "_TorpedoBomber": "鱼雷轰炸机", "_FlightControl": "飞控",
+                    "_SkipBomber": "弹跳轰炸机"}
         UC_IMAGE_MAP = {
             "_Artillery": "module_Artillery.png",
             "_Torpedoes": "module_Torpedoes.png",
@@ -255,6 +256,7 @@ class DetailPanel(QWidget):
             "_Fighter": "module_Fighter.png",
             "_DiveBomber": "module_DiveBomber.png",
             "_TorpedoBomber": "module_TorpedoBomber.png",
+            "_SkipBomber": "module_SkipBomber.png",
         }
         MODULES_IMAGE_DIR = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modules"
         SLOT2SEC = {
@@ -273,6 +275,7 @@ class DetailPanel(QWidget):
             "_Hull": "hull", "_Engine": "engine", "_Suo": "fireControl",
             "_Fighter": "fighter", "_DiveBomber": "diveBomber",
             "_TorpedoBomber": "torpedoBomber", "_FlightControl": "flightControl",
+            "_SkipBomber": "skipBomber",
         }
         uc_options: dict[str, list[dict]] = {}  # ut → [{"id":component_id, "key":upgrade_key, "name":...}]
         hull_affects: dict[str, list[str]] = {}
@@ -373,12 +376,20 @@ class DetailPanel(QWidget):
 
                 if ut == "_Hull":
                     affected = hull_affects.get(letter, [un])
+                    btn.clicked.connect(
+                        partial(self._on_topbar_module_click, affected, letter)
+                    )
+                elif ut in ("_Fighter", "_DiveBomber", "_TorpedoBomber", "_FlightControl", "_SkipBomber"):
+                    # 舰载机模块：传完整组件 ID 作为切换标识
+                    part_id = mod["id"]  # 如 "A1_Fighter"
+                    btn.clicked.connect(
+                        partial(self._on_aircraft_module_click, ut, part_id)
+                    )
                 else:
                     affected = [un]
-
-                btn.clicked.connect(
-                    partial(self._on_topbar_module_click, affected, letter)
-                )
+                    btn.clicked.connect(
+                        partial(self._on_topbar_module_click, affected, letter)
+                    )
                 bl.addWidget(btn)
                 if i == 0:
                     btn.setChecked(True)
@@ -388,7 +399,7 @@ class DetailPanel(QWidget):
 
         # 所有配件模块整合到一行，居中对齐
         ALL_UC = ["_Artillery", "_Torpedoes", "_Hull", "_Engine", "_Suo",
-                   "_Fighter", "_DiveBomber", "_TorpedoBomber"]
+                   "_Fighter", "_DiveBomber", "_TorpedoBomber", "_SkipBomber"]
 
         row = QWidget()
         rl = QHBoxLayout(row)
@@ -471,6 +482,19 @@ class DetailPanel(QWidget):
 
         return bar
 
+    def _on_aircraft_module_click(self, ut: str, part_id: str) -> None:
+        """舰载机模块按钮点击：按组件 ID 查找对应配置页"""
+        ctrl = self._subwidget_controllers.get(ut)
+        if ctrl is None:
+            return
+        stack, btns = ctrl
+        for i in range(stack.count()):
+            w = stack.widget(i)
+            wname = w.objectName() or ""
+            if part_id in wname:
+                stack.setCurrentIndex(i)
+                return
+
     def _on_topbar_module_click(self, section_labels: list[str], config_letter: str):
         """顶栏模块按钮点击：切换到对应子面板的配置页，支持同时切多个 section"""
         for sl in section_labels:
@@ -481,17 +505,25 @@ class DetailPanel(QWidget):
             target_name = f"{config_letter} 配置"
             if btns is not None:
                 # 有标签按钮的模式：模拟点击
+                found = False
                 for i, btn in enumerate(btns):
                     if target_name in btn.text():
                         self._on_sub_btn(stack, i, btns)
+                        found = True
                         break
+                if not found:
+                    # 后备：按 section label 匹配按钮文本
+                    for i, btn in enumerate(btns):
+                        if sl in btn.text():
+                            self._on_sub_btn(stack, i, btns)
+                            break
             else:
                 # 无标签按钮模式：直接按序号切换 stack
                 for i in range(stack.count()):
                     w = stack.widget(i)
                     # 通过 widget 名称判断配置字母
                     wname = w.objectName() or ""
-                    if config_letter in wname or target_name in wname:
+                    if config_letter in wname or target_name in wname or sl in wname:
                         stack.setCurrentIndex(i)
                         break
 
@@ -511,13 +543,13 @@ class DetailPanel(QWidget):
 
             if USE_4_COL:
                 cols = 4
-                # 四列布局：船体以下武器放入第4列
+                # 四列布局：主炮/副炮等武器位于舰载机列左侧
                 LABEL_TO_COL = {
                     "基础属性": 0, "消耗品数据": 0,
-                    "船体": 1,
-                    "主炮": 3, "副炮": 3, "次级主炮": 3,
-                    "鱼雷": 3, "防空": 3, "深水炸弹": 2,
-                    "舰载机": 2, "支援": 2,
+                    "船体": 1, "支援": 1,
+                    "主炮": 2, "副炮": 2, "次级主炮": 2,
+                    "鱼雷": 2, "防空": 2, "深水炸弹": 3,
+                    "舰载机": 3,
                 }
             else:
                 cols = 3
@@ -557,8 +589,8 @@ class DetailPanel(QWidget):
                 col_idx = LABEL_TO_COL.get(label, 0)  # 未匹配的归入第 0 列
                 col_items[col_idx].append(sec)
 
-            # 重建每列的内容
-            for col_idx, col_layout in enumerate(self._ship_column_layouts):
+            # 重建每列的内容（仅前 cols 列，防止列数变化后越界）
+            for col_idx, col_layout in enumerate(self._ship_column_layouts[:cols]):
                 # 清空该列
                 while col_layout.count() > 0:
                     item = col_layout.takeAt(0)
@@ -574,11 +606,17 @@ class DetailPanel(QWidget):
                         widget = self._build_consumables_widget(sec)
                     elif label == "战斗指令":
                         widget = self._build_rage_mode_widget(sec)
+                    elif sec.get("raw_ammo_types") and label != "支援":
+                        widget = self._build_weapon_widget(sec)
+                    elif label == "防空":
+                        widget = self._build_aa_widget(sec)
                     elif sub_info and sub_info.get("sub_labels"):
                         if label == "舰载机":
                             widget = self._build_aircraft_widget(sub_info)
                         else:
                             widget = self._build_sub_widget(label, sub_info)
+                    elif label == "支援":
+                        widget = self._build_support_widget(sec)
                     else:
                         widget = ShipCardWidget(sec)
 
@@ -598,42 +636,117 @@ class DetailPanel(QWidget):
 
         container = QGroupBox(title_text)
         container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         labels = sub_info.get("sub_labels", [])
         contents = sub_info.get("sub_contents", {})
+        from PySide6.QtWidgets import QStackedWidget
         stack = QStackedWidget()
         for i, sl in enumerate(labels):
-            content = contents.get(sl, [])
-            if isinstance(content, list) and content and isinstance(content[0], dict) and "name" in content[0]:
-                section = {"label": sl, "items": content}
-                card = ShipCardWidget(section)
+            content = contents.get(sl, {})
+            if isinstance(content, dict):
+                items = content.get("items", [])
+                raw_ammo = content.get("raw_ammo_types", [])
                 wrapper = QWidget()
                 wrapper.setObjectName(f"subpage_{sl}")
                 wlayout = QVBoxLayout(wrapper)
-                wlayout.setContentsMargins(4, 4, 4, 4)
+                wlayout.setContentsMargins(0, 0, 0, 0)
                 wlayout.setAlignment(Qt.AlignmentFlag.AlignTop)
-                wlayout.addWidget(card)
+                if items and title == "支援":
+                    # 支援机组：按 header 拆分为多个机组，各自独立 tooltip
+                    KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间",
+                                 "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药"}
+                    groups: list[list[dict]] = []
+                    cur_grp: list[dict] = []
+                    for it in items:
+                        if it.get("row_type") == "header" and cur_grp:
+                            groups.append(cur_grp)
+                            cur_grp = [it]
+                        else:
+                            cur_grp.append(it)
+                    if cur_grp:
+                        groups.append(cur_grp)
+                    ammo_idx = 0
+                    for grp in groups:
+                        disp = []; tip = []
+                        for it in grp:
+                            n = it.get("name",""); v = it.get("value",""); u = it.get("unit",""); rt = it.get("row_type","")
+                            if n and (n in KEEP_ASUP or rt == "header"):
+                                disp.append(it)
+                            elif n:
+                                d = f"{v} {u}" if u else v
+                                tip.append(f"<br><b>── {n} ──</b>" if rt=="header" else (f"&nbsp;&nbsp;<b>{n}</b>: {d}" if d else f"&nbsp;&nbsp;{n}"))
+                        if not disp:
+                            continue
+                        card = ShipCardWidget({"label":"","items":disp})
+                        if tip:
+                            card.setToolTip("<br>".join(tip))
+                        wlayout.addWidget(card)
+                        # 本组弹药
+                        ac = sum(1 for it in grp if it.get("name")=="弹药" and it.get("value"))
+                        if ac > 0 and raw_ammo:
+                            from pathlib import Path
+                            from PySide6.QtGui import QPixmap, QIcon
+                            from PySide6.QtCore import QSize
+                            from PySide6.QtWidgets import QPushButton, QLabel
+                            ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+                            ga = raw_ammo[ammo_idx:ammo_idx+ac]; ammo_idx += ac
+                            br = QWidget(); bl = QHBoxLayout(br); bl.setContentsMargins(4,0,4,0); bl.setSpacing(6); bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                            st = QStackedWidget(); st.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum); st.setVisible(False)
+                            for ai in ga:
+                                an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
+                                btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
+                                btn.setStyleSheet("QPushButton{background:rgba(240,244,250,0.9);border:1px solid rgba(200,216,232,0.5);border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:rgba(228,236,245,0.95);border-color:#1a73e8;}QPushButton:checked{background:#1a73e8;border-color:#1a73e8;}")
+                                btn.setToolTip(an)
+                                cand = []
+                                if sp: cand.append(f"ammo_{sp}_{at}_0.png" if at else f"ammo_{sp}_0.png")
+                                if at and at != sp: cand.append(f"ammo_{at}_0.png")
+                                if sp in ("torpedo","torpedobomber"): cand.extend(["ammo_torpedo_0.png","ammo_bomber_torpedo_0.png"])
+                                if "depthcharge" in sp: cand.extend(["ammo_depthcharge_0.png","ammo_airsupport_depthcharge_0.png"])
+                                ip = next((p for c in cand if (p:=ammo_dir/c).exists()), None)
+                                if ip: pix = QPixmap(str(ip)); btn.setIcon(QIcon(pix.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
+                                else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;","padding:2px;font-size:8px;color:#333;"))
+                                bl.addWidget(btn)
+                                st.addWidget(ShipCardWidget({"label":an,"items":di}) if di else (QLabel("无详细数据",styleSheet="color:#999;font-size:11px;padding:8px;",alignment=Qt.AlignmentFlag.AlignCenter)))
+                                ci = st.count()-1
+                                btn.clicked.connect(lambda checked,i=ci,s=st,b=btn,bl_=bl: self._on_ammo_btn_click(i,s,bl_,b))
+                            bl.addStretch(); wlayout.addWidget(br); wlayout.addWidget(st)
+                elif items:
+                    section = {"label": sl, "items": items}
+                    card = ShipCardWidget(section)
+                    wlayout.addWidget(card)
                 stack.addWidget(wrapper)
-            else:
-                te = QTextEdit()
-                te.setReadOnly(True)
-                te.setFont(self._make_font("Consolas", 10))
-                te.setStyleSheet("""
-                    QTextEdit {
-                        background-color: #fafafa;
-                        color: #1a1a1a;
-                        border: none;
-                        padding: 8px 12px;
-                        font-family: "Consolas", "Courier New", monospace;
-                        font-size: 11px;
-                    }
-                """)
-                te.setPlainText(self._strip_indent("\n".join(content) if isinstance(content, list) else ""))
-                te.setObjectName(f"subpage_{sl}")
-                stack.addWidget(te)
+            elif isinstance(content, list):
+                if content and isinstance(content[0], dict) and "name" in content[0]:
+                    section = {"label": sl, "items": content}
+                    card = ShipCardWidget(section)
+                    wrapper = QWidget()
+                    wrapper.setObjectName(f"subpage_{sl}")
+                    wlayout = QVBoxLayout(wrapper)
+                    wlayout.setContentsMargins(4, 4, 4, 4)
+                    wlayout.setAlignment(Qt.AlignmentFlag.AlignTop)
+                    wlayout.addWidget(card)
+                    stack.addWidget(wrapper)
+                else:
+                    te = QTextEdit()
+                    te.setReadOnly(True)
+                    te.setFont(self._make_font("Consolas", 10))
+                    te.setStyleSheet("""
+                        QTextEdit {
+                            background-color: #fafafa;
+                            color: #1a1a1a;
+                            border: none;
+                            padding: 8px 12px;
+                            font-family: "Consolas", "Courier New", monospace;
+                            font-size: 11px;
+                        }
+                    """)
+                    te.setPlainText(self._strip_indent("\n".join(content) if isinstance(content, list) else ""))
+                    te.setObjectName(f"subpage_{sl}")
+                    stack.addWidget(te)
         if stack.count() > 0:
             stack.setCurrentIndex(0)
         # 仅存 stack 引用供顶栏联动，btns=None 表示无标签按钮
@@ -642,67 +755,369 @@ class DetailPanel(QWidget):
         return container
 
     def _build_aircraft_widget(self, sub_info: dict) -> QWidget:
-        """构建舰载机面板：各类型飞机依次展开显示"""
-        from ui.ship_card_widget import CARD_STYLE
-        from PySide6.QtWidgets import QGroupBox
+        """构建舰载机面板：每个机种为 QGroupBox，各配置用 QStackedWidget 切换"""
+        from ui.ship_card_widget import ShipCardWidget, CARD_STYLE
+        from PySide6.QtWidgets import QGroupBox, QStackedWidget
+        from pathlib import Path
+        from PySide6.QtGui import QPixmap, QIcon
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QLabel
 
         container = QGroupBox("  舰载机")
         container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
 
         labels = sub_info.get("sub_labels", [])
+        sub_keys = sub_info.get("sub_keys", {})
         contents = sub_info.get("sub_contents", {})
+        if not labels:
+            return container
+
+        BTN_STYLE = """
+            QPushButton {
+                background: rgba(240, 244, 250, 0.9);
+                border: 1px solid rgba(200, 216, 232, 0.5);
+                border-radius: 6px; padding: 2px;
+                min-width: 36px; min-height: 36px;
+                max-width: 36px; max-height: 36px;
+            }
+            QPushButton:hover {
+                background: rgba(228, 236, 245, 0.95);
+                border-color: #1a73e8;
+            }
+            QPushButton:checked {
+                background: #1a73e8; border-color: #1a73e8;
+            }
+        """
+        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
 
         for sl in labels:
             content = contents.get(sl, {})
-            if isinstance(content, dict) and "config_labels" in content:
-                # 取第一个配置显示（默认配置）
-                config_labels = content.get("config_labels", [])
-                config_contents = content.get("config_contents", {})
-                first_config = config_contents.get(config_labels[0], []) if config_labels else []
-                lines = [f"── {sl} ──"] + first_config
-                te = QTextEdit()
-                te.setReadOnly(True)
-                te.setFont(self._make_font("Consolas", 10))
-                te.setStyleSheet("""
-                    QTextEdit {
-                        background-color: #fafafa;
-                        color: #1a1a1a;
-                        border: 1px solid #e0e0e0;
-                        border-radius: 4px;
-                        padding: 6px 10px;
-                        font-family: "Consolas", "Courier New", monospace;
-                        font-size: 11px;
-                    }
-                """)
-                te.setPlainText(self._strip_indent("\n".join(lines)))
-                te.setFixedHeight(max(60, min(400, len(lines) * 18 + 20)))
-                layout.addWidget(te)
-            elif isinstance(content, list) and content and isinstance(content[0], dict):
-                section = {"label": sl, "items": content}
-                layout.addWidget(ShipCardWidget(section))
-            else:
-                te = QTextEdit()
-                te.setReadOnly(True)
-                te.setFont(self._make_font("Consolas", 10))
-                te.setStyleSheet("""
-                    QTextEdit {
-                        background-color: #fafafa;
-                        color: #1a1a1a;
-                        border: 1px solid #e0e0e0;
-                        border-radius: 4px;
-                        padding: 6px 10px;
-                        font-family: "Consolas", "Courier New", monospace;
-                        font-size: 11px;
-                    }
-                """)
-                te.setPlainText(self._strip_indent("\n".join(content) if isinstance(content, list) else ""))
-                layout.addWidget(te)
+            if not isinstance(content, dict):
+                continue
 
-        layout.addStretch()
+            grp = QGroupBox(f"  {sl}")
+            grp.setStyleSheet(CARD_STYLE)
+            grp.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            grp_layout = QVBoxLayout(grp)
+            grp_layout.setContentsMargins(2, 2, 2, 2)
+            grp_layout.setSpacing(2)
+
+            config_labels = content.get("config_labels", [])
+            config_contents = content.get("config_contents", {})
+            config_label_map = content.get("config_label_map", {})
+
+            def _lookup_cfg(mk: str) -> dict:
+                """通过显示名查找内部配置数据"""
+                internal_key = config_label_map.get(mk, mk)
+                return config_contents.get(internal_key, {})
+
+            def _build_aircraft_config_page(cfg_data: dict) -> QWidget:
+                """构建单个 aircraft config 的完整页面：飞机卡片 + 弹药按钮 + 消耗品按钮"""
+                w = QWidget()
+                wl = QVBoxLayout(w)
+                wl.setContentsMargins(0, 0, 0, 0)
+                wl.setAlignment(Qt.AlignmentFlag.AlignTop)
+                wl.setSpacing(2)
+
+                items = cfg_data.get("items", [])
+                raw_ammo = cfg_data.get("raw_ammo_types", [])
+                raw_con = cfg_data.get("raw_consumables", [])
+
+                # 飞机属性卡片：仅保留关键字段，其余放入 tooltip
+                KEEP_NAMES = {
+                    "飞机型号", "飞机等级", "巡航速度", "最大速度",
+                    "单架飞机血量", "载弹量", "攻击编队大小",
+                    "中队规模", "中队飞机数量", "被侦测距离",
+                    "最大可用数量", "开局可用数量", "每次整备数量", "每次整备时间",
+                }
+                display_items = [it for it in items if it.get("name", "") in KEEP_NAMES]
+                tip_parts = []
+                for it in items:
+                    n = it.get("name", "")
+                    v = it.get("value", "")
+                    u = it.get("unit", "")
+                    rt = it.get("row_type", "")
+                    if n not in KEEP_NAMES and n and rt != "header":
+                        display = f"{v} {u}" if u else v
+                        if display:
+                            tip_parts.append(f"&nbsp;&nbsp;<b>{n}</b>: {display}")
+                        else:
+                            tip_parts.append(f"&nbsp;&nbsp;{n}")
+                if tip_parts:
+                    card = ShipCardWidget({"label": "", "items": display_items})
+                    card.setToolTip("<br>".join(tip_parts))
+                    wl.addWidget(card)
+                elif display_items:
+                    wl.addWidget(ShipCardWidget({"label": "", "items": display_items}))
+
+                # 弹药按钮行
+                if raw_ammo:
+                    ammo_btn_row = QWidget()
+                    abl = QHBoxLayout(ammo_btn_row)
+                    abl.setContentsMargins(4, 2, 4, 2)
+                    abl.setSpacing(6)
+                    abl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                    ammo_stack = QStackedWidget()
+                    ammo_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                    ammo_stack.setVisible(False)
+                    for ammo_info in raw_ammo:
+                        aname = ammo_info.get("name", "")
+                        detail_items = ammo_info.get("detail_items", [])
+                        at = ammo_info.get("ammo_type", "").lower()
+                        sp = ammo_info.get("species", "").lower()
+                        btn = QPushButton("")
+                        btn.setFixedSize(36, 36)
+                        btn.setCheckable(True)
+                        btn.setStyleSheet(BTN_STYLE)
+                        btn.setToolTip(aname)
+                        candidates = []
+                        if sp: candidates.append(f"ammo_{sp}_{at}_0.png" if at else f"ammo_{sp}_0.png")
+                        if at and at != sp: candidates.append(f"ammo_{at}_0.png")
+                        # 鱼雷回退
+                        if sp in ("torpedo", "torpedobomber"):
+                            candidates.append("ammo_torpedo_0.png")
+                            candidates.append("ammo_bomber_torpedo_0.png")
+                            if 'deep' in at.lower() or 'deep' in sp:
+                                candidates.append("ammo_torpedo_deepwater_0.png")
+                                candidates.append("ammo_bomber_torpedo_deepwater_0.png")
+                        # 深水炸弹回退
+                        if "depthcharge" in sp:
+                            candidates.append("ammo_depthcharge_0.png")
+                            candidates.append("ammo_airsupport_depthcharge_0.png")
+                        img_path = None
+                        for c in candidates:
+                            p = ammo_dir / c
+                            if p.exists(): img_path = p; break
+                        if img_path and img_path.exists():
+                            pixmap = QPixmap(str(img_path))
+                            scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            btn.setIcon(QIcon(scaled))
+                            btn.setIconSize(QSize(28, 28))
+                        else:
+                            btn.setText(aname[:2] if aname else "?")
+                            btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:8px; color:#333;"))
+                        abl.addWidget(btn)
+                        if detail_items:
+                            ammo_stack.addWidget(ShipCardWidget({"label": aname, "items": detail_items}))
+                        else:
+                            lbl = QLabel("无详细数据"); lbl.setStyleSheet("color:#999; font-size:11px; padding:8px;"); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                            ammo_stack.addWidget(lbl)
+                        ci = ammo_stack.count() - 1
+                        btn.clicked.connect(lambda checked, i=ci, s=ammo_stack, b=btn, bl_=abl: self._on_ammo_btn_click(i, s, bl_, b))
+                    abl.addStretch()
+                    wl.addWidget(ammo_btn_row)
+                    wl.addWidget(ammo_stack)
+
+                # 消耗品按钮行 + 详情堆栈（完全照搬舰船消耗品样式）
+                if raw_con:
+                    CON_BTN_STYLE = """
+                        QPushButton {
+                            background: rgba(240, 244, 250, 0.9);
+                            border: 1px solid rgba(200, 216, 232, 0.5);
+                            border-radius: 6px; padding: 2px;
+                            min-width: 40px; min-height: 40px;
+                            max-width: 40px; max-height: 40px;
+                        }
+                        QPushButton:hover {
+                            background: rgba(228, 236, 245, 0.95);
+                            border-color: #1a73e8;
+                        }
+                        QPushButton:checked {
+                            background: #1a73e8; border-color: #1a73e8;
+                        }
+                    """
+                    consumables_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "consumables"
+                    con_btn_row = QWidget()
+                    cbr_layout = QHBoxLayout(con_btn_row)
+                    cbr_layout.setContentsMargins(4, 2, 4, 2)
+                    cbr_layout.setSpacing(6)
+                    cbr_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                    con_stack = QStackedWidget()
+                    con_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                    con_stack.setVisible(False)
+                    con_btns: list[QPushButton] = []
+                    for con_info in raw_con:
+                        dname = con_info.get("display_name", "?")
+                        detail_items = con_info.get("detail_items", [])
+                        cid = con_info.get("consumable_id", "")
+                        btn = QPushButton("")
+                        btn.setFixedSize(40, 40)
+                        btn.setCheckable(True)
+                        btn.setStyleSheet(CON_BTN_STYLE)
+                        btn.setToolTip(dname)
+                        img_file = f"consumable_{cid}_0.png"
+                        img_path = consumables_dir / img_file
+                        if img_path.exists():
+                            pixmap = QPixmap(str(img_path))
+                            scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            btn.setIcon(QIcon(scaled))
+                            btn.setIconSize(QSize(32, 32))
+                        else:
+                            btn.setText(cid[:2] if cid else "?")
+                            btn.setStyleSheet(CON_BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:9px; color:#333;"))
+                        cbr_layout.addWidget(btn)
+                        con_btns.append(btn)
+                        if detail_items:
+                            con_stack.addWidget(ShipCardWidget({"label": dname, "items": detail_items}))
+                        else:
+                            lbl = QLabel("无详细数据"); lbl.setStyleSheet("color:#999; font-size:11px; padding:8px;"); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                            con_stack.addWidget(lbl)
+                        ci = con_stack.count() - 1
+                        btn.clicked.connect(lambda checked, i=ci, s=con_stack, b=btn, btns=con_btns: self._on_aircraft_con_btn_click(i, s, b, btns))
+                    cbr_layout.addStretch()
+                    wl.addWidget(con_btn_row)
+                    wl.addWidget(con_stack)
+
+                return w
+
+            # 所有配置页垂直叠放，同类型多飞机直接展示
+            for mk in config_labels:
+                cfg_data = _lookup_cfg(mk)
+                page = _build_aircraft_config_page(cfg_data)
+                if page:
+                    page.setObjectName(f"aircraft_{mk}")
+                    grp_layout.addWidget(page)
+
+            layout.addWidget(grp)
+        return container
+
+    def _build_support_widget(self, section: dict) -> QWidget:
+        """构建支援机组面板：按机组分开显示，各自 tooltip 独立"""
+        from ui.ship_card_widget import ShipCardWidget, CARD_STYLE
+        from pathlib import Path
+        from PySide6.QtGui import QPixmap, QIcon
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QGroupBox, QStackedWidget, QPushButton, QLabel
+
+        label = section.get("label", "支援")
+        items = section.get("items", [])
+        raw_ammo = section.get("raw_ammo_types", [])
+
+        KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间",
+                     "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药"}
+
+        # 按 header 拆分为多个机组
+        groups: list[list[dict]] = []
+        cur: list[dict] = []
+        for it in items:
+            if it.get("row_type") == "header" and cur:
+                groups.append(cur)
+                cur = [it]
+            else:
+                cur.append(it)
+        if cur:
+            groups.append(cur)
+
+        container = QGroupBox(f"  {label}")
+        container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+        BTN_STYLE = """
+            QPushButton {
+                background: rgba(240, 244, 250, 0.9);
+                border: 1px solid rgba(200, 216, 232, 0.5);
+                border-radius: 6px; padding: 2px;
+                min-width: 36px; min-height: 36px;
+                max-width: 36px; max-height: 36px;
+            }
+            QPushButton:hover { background: rgba(228, 236, 245, 0.95); border-color: #1a73e8; }
+            QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
+        """
+
+        ammo_idx = 0
+        for grp in groups:
+            # 过滤本组：卡片字段 + tooltip 分开
+            display_items = []
+            tip_items = []
+            for it in grp:
+                n = it.get("name", "")
+                v = it.get("value", "")
+                u = it.get("unit", "")
+                rt = it.get("row_type", "")
+                if n and (n in KEEP_ASUP or rt == "header"):
+                    display_items.append(it)
+                elif n:
+                    display = f"{v} {u}" if u else v
+                    if rt == "header":
+                        tip_items.append(f"<br><b>── {n} ──</b>")
+                    elif display:
+                        tip_items.append(f"&nbsp;&nbsp;<b>{n}</b>: {display}")
+                    else:
+                        tip_items.append(f"&nbsp;&nbsp;{n}")
+
+            if not display_items:
+                continue
+
+            card = ShipCardWidget({"label": "", "items": display_items})
+            if tip_items:
+                card.setToolTip("<br>".join(tip_items))
+            layout.addWidget(card)
+
+            # 本组的弹药按钮（取 raw_ammo 中对应数量）
+            ammo_count = sum(1 for it in grp if it.get("name") == "弹药" and it.get("value"))
+            if ammo_count > 0 and ammo_idx < len(raw_ammo):
+                group_ammo = raw_ammo[ammo_idx:ammo_idx + ammo_count]
+                ammo_idx += ammo_count
+                btn_row = QWidget()
+                bl = QHBoxLayout(btn_row)
+                bl.setContentsMargins(4, 0, 4, 0)
+                bl.setSpacing(6)
+                bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                ammo_stack = QStackedWidget()
+                ammo_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                ammo_stack.setVisible(False)
+                for ammo_info in group_ammo:
+                    aname = ammo_info.get("name", "")
+                    detail_items = ammo_info.get("detail_items", [])
+                    at = ammo_info.get("ammo_type", "").lower()
+                    sp = ammo_info.get("species", "").lower()
+                    btn = QPushButton("")
+                    btn.setFixedSize(36, 36)
+                    btn.setCheckable(True)
+                    btn.setStyleSheet(BTN_STYLE)
+                    btn.setToolTip(aname)
+                    candidates = []
+                    if sp: candidates.append(f"ammo_{sp}_{at}_0.png" if at else f"ammo_{sp}_0.png")
+                    if at and at != sp: candidates.append(f"ammo_{at}_0.png")
+                    if sp in ("torpedo", "torpedobomber"):
+                        candidates.append("ammo_torpedo_0.png")
+                        candidates.append("ammo_bomber_torpedo_0.png")
+                    if "depthcharge" in sp:
+                        candidates.append("ammo_depthcharge_0.png")
+                        candidates.append("ammo_airsupport_depthcharge_0.png")
+                    img_path = None
+                    for c in candidates:
+                        p = ammo_dir / c
+                        if p.exists(): img_path = p; break
+                    if img_path and img_path.exists():
+                        pixmap = QPixmap(str(img_path))
+                        scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        btn.setIcon(QIcon(scaled))
+                        btn.setIconSize(QSize(28, 28))
+                    else:
+                        btn.setText(aname[:2] if aname else "?")
+                        btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:8px; color:#333;"))
+                    bl.addWidget(btn)
+                    if detail_items:
+                        ammo_stack.addWidget(ShipCardWidget({"label": aname, "items": detail_items}))
+                    else:
+                        lbl = QLabel("无详细数据"); lbl.setStyleSheet("color:#999; font-size:11px; padding:8px;"); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        ammo_stack.addWidget(lbl)
+                    ci = ammo_stack.count() - 1
+                    btn.clicked.connect(lambda checked, i=ci, s=ammo_stack, b=btn, bl_=bl: self._on_ammo_btn_click(i, s, bl_, b))
+                bl.addStretch()
+                layout.addWidget(btn_row)
+                layout.addWidget(ammo_stack)
+
         return container
 
     def _build_consumables_widget(self, section: dict) -> QWidget:
@@ -712,6 +1127,7 @@ class DetailPanel(QWidget):
 
         container = QGroupBox("  消耗品数据")
         container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -796,17 +1212,17 @@ class DetailPanel(QWidget):
 
     def _build_rage_mode_widget(self, section: dict) -> QWidget:
         """构建战斗指令面板：按钮+图片，详细数据精简显示"""
-        from ui.ship_card_widget import CARD_STYLE, TABLE_STYLE, LABEL_COLOR, VALUE_COLOR
-        from PySide6.QtWidgets import QGroupBox, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView
-        from PySide6.QtGui import QFont
+        from ui.ship_card_widget import CARD_STYLE
+        from PySide6.QtWidgets import QGroupBox
 
         container = QGroupBox("  战斗指令")
         container.setStyleSheet(CARD_STYLE)
         container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # 增加整体内边距，使其与其他模块卡片保持一致的呼吸感
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
 
         raw = section.get("raw_rage_mode", {})
         rname = raw.get("rage_mode_name", "")
@@ -839,7 +1255,6 @@ class DetailPanel(QWidget):
         """
         btn.setStyleSheet(BTN_STYLE)
 
-        # 直接加载 _preview 图片
         if preview_path.exists():
             pixmap = QPixmap(str(preview_path))
             scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -851,93 +1266,316 @@ class DetailPanel(QWidget):
 
         btn_row = QWidget()
         bl = QHBoxLayout(btn_row)
-        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setContentsMargins(0, 0, 0, 6) # 底部留出间距分隔图标与数据
         bl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bl.addWidget(btn)
         layout.addWidget(btn_row)
 
-        # ── 数据表格 ──
         items = section.get("items", [])
-        table = QTableWidget()
-        table.setStyleSheet(TABLE_STYLE)
-        table.setColumnCount(2)
-        table.setShowGrid(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        table.horizontalHeader().setVisible(False)
-        table.verticalHeader().setVisible(False)
-        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setStretchLastSection(True)
-
-        VAL_LABEL_STYLE = """
-            QLabel {
-                font-size: 11px; color: #1a1a1a;
-                padding: 2px 10px 2px 0;
-                background: transparent;
-            }
-        """
+        data_widget = QWidget()
+        data_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+        data_layout = QVBoxLayout(data_widget)
+        # 将内边距和行间距放大，解除紧凑感
+        data_layout.setContentsMargins(4, 4, 4, 4)
+        data_layout.setSpacing(8)
 
         for item in items:
-            row = table.rowCount()
             row_type = item.get("row_type", "kv")
             name = item.get("name", "")
             value = item.get("value", "")
             unit = item.get("unit", "")
 
             if row_type == "header":
-                table.insertRow(row)
-                cell = QTableWidgetItem(name)
-                cell.setForeground(QColor("#555555"))
-                bold = QFont()
-                bold.setBold(True)
-                bold.setPointSize(10)
-                cell.setFont(bold)
-                cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                table.setItem(row, 0, cell)
-                table.setItem(row, 1, QTableWidgetItem(""))
-            elif row_type == "kv" and name.strip():
-                table.insertRow(row)
-                name_item = QTableWidgetItem(name)
-                name_item.setForeground(QColor(LABEL_COLOR))
-                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                table.setItem(row, 0, name_item)
+                hlbl = QLabel(name)
+                hlbl.setStyleSheet("font-size:11px; font-weight:bold; color:#444; background:transparent; padding-top: 4px;")
+                hlbl.setFixedHeight(24)
+                data_layout.addWidget(hlbl)
+                continue
 
-                display_value = f"{value} {unit}" if unit and value else (value or unit or "")
-                val_label = QLabel(display_value)
-                val_label.setWordWrap(True)
-                # 百分比着色
-                fg = "#1a1a1a"
-                if "%" in display_value:
-                    stripped = display_value.strip()
-                    if stripped.startswith("+"):
-                        fg = "#1b8a1b"
-                    elif stripped.startswith("-"):
-                        fg = "#d32f2f"
-                val_label.setStyleSheet(VAL_LABEL_STYLE.replace("#1a1a1a", fg))
-                table.setCellWidget(row, 1, val_label)
+            if not name.strip():
+                continue
 
-        # 自动高度：让 QLabel 换行计算后设定行高
-        rows = table.rowCount()
-        height = table.horizontalHeader().height() + 2
-        for r in range(rows):
-            w = table.cellWidget(r, 1)
-            if isinstance(w, QLabel):
-                w.setFixedWidth(w.width() or 200)
-                w.adjustSize()
-                rh = w.sizeHint().height() + 4
-                table.setRowHeight(r, max(20, rh))
-            height += table.rowHeight(r) + 2
-        table.setFixedHeight(height)
-        for r in range(rows):
-            height += table.rowHeight(r) + 2
-        table.setFixedHeight(height)
+            row_w = QWidget()
+            rl = QHBoxLayout(row_w)
+            # 增加每一行的纵向微调间距
+            rl.setContentsMargins(0, 2, 0, 2)
+            rl.setSpacing(12) # 键值对之间的横向间距拉开
 
-        layout.addWidget(table)
+            name_lbl = QLabel(name)
+            name_lbl.setStyleSheet("font-size:11px; color:#888; background:transparent;")
+            name_lbl.setFixedWidth(80)
+            rl.addWidget(name_lbl)
+
+            display_value = f"{value} {unit}" if unit and value else (value or unit or "")
+            fg = "#1a1a1a"
+            if "%" in display_value:
+                stripped = display_value.strip()
+                if stripped.startswith("+"):
+                    fg = "#1b8a1b"
+                elif stripped.startswith("-"):
+                    fg = "#d32f2f"
+
+            val_lbl = QLabel(display_value)
+            val_lbl.setWordWrap(True)
+            val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            # 通过样式增加 line-height，确保长文本多行折叠时，行与行之间有空隙不重叠
+            val_lbl.setStyleSheet(f"font-size:11px; color:{fg}; background:transparent; line-height: 1.3;")
+            rl.addWidget(val_lbl, stretch=1)
+            data_layout.addWidget(row_w)
+
+            val_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+            row_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
+
+        layout.addWidget(data_widget)
+        return container
+
+    def _build_weapon_widget(self, section: dict) -> QWidget:
+        """构建武器面板（主炮/副炮）：每座炮独立显示 + 下方弹药按钮 + 点击切换详情"""
+        from ui.ship_card_widget import ShipCardWidget, CARD_STYLE
+        from PySide6.QtWidgets import QGroupBox, QStackedWidget
+        from pathlib import Path
+
+        label = section.get("label", "武器")
+        all_items = section.get("items", [])
+        raw_ammo = section.get("raw_ammo_types", [])
+        section_tooltip = section.get("tooltip_items", [])
+
+        # 按火炮名称拆分 items，每座炮一组
+        mount_groups: list[list[dict]] = []
+        cur: list[dict] = []
+        for item in all_items:
+            if item.get("name") == "火炮名称" and cur:
+                mount_groups.append(cur)
+                cur = [item]
+            else:
+                cur.append(item)
+        if cur:
+            mount_groups.append(cur)
+
+        container = QGroupBox(f"  {label}")
+        container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(6, 4, 6, 6)
+        layout.setSpacing(6)
+
+        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+
+        BTN_STYLE = """
+            QPushButton {
+                background: rgba(240, 244, 250, 0.9);
+                border: 1px solid rgba(200, 216, 232, 0.5);
+                border-radius: 6px; padding: 2px;
+                min-width: 36px; min-height: 36px;
+                max-width: 36px; max-height: 36px;
+            }
+            QPushButton:hover {
+                background: rgba(228, 236, 245, 0.95);
+                border-color: #1a73e8;
+            }
+            QPushButton:checked {
+                background: #1a73e8; border-color: #1a73e8;
+            }
+        """
+
+        ammo_idx = 0
+        for grp_idx, grp_items in enumerate(mount_groups):
+            # 由 tooltip 展示的属性名，从卡片显示中去掉
+            TOOLTIP_NAMES = {
+                "横向散步公式", "弹着群系数(Sigma)", "纵向散步系数",
+                "水平回转速度", "垂直回转速度", "口径",
+            }
+
+            # 构建该炮的数据卡片（仅显示剩余属性）
+            display_items = [it for it in grp_items if it.get("name", "") not in TOOLTIP_NAMES]
+            grp_section = {"label": "", "items": display_items}
+            card = ShipCardWidget(grp_section)
+            # 炮塔悬浮 tooltip：提取散步/Sigma 等属性
+            tip_parts = []
+            for it in grp_items:
+                n = it.get("name", "")
+                v = it.get("value", "")
+                u = it.get("unit", "")
+                if n in TOOLTIP_NAMES:
+                    display = f"{v} {u}" if u else v
+                    tip_parts.append(f"<b>{n}</b>: {display}")
+            if tip_parts:
+                card.setToolTip("<br>".join(tip_parts))
+            elif section_tooltip:
+                # 外部传入的 tooltip（支援机组等）
+                card.setToolTip("<br>".join(section_tooltip))
+            layout.addWidget(card)
+
+            # 按顺序分配该炮对应的弹药数据
+            ammo_count = sum(1 for it in grp_items if it.get("name") == "弹药" and it.get("value"))
+            mount_ammo = raw_ammo[ammo_idx:ammo_idx + ammo_count]
+            ammo_idx += ammo_count
+            if not mount_ammo:
+                continue
+
+            # 弹药按钮行
+            btn_row = QWidget()
+            bl = QHBoxLayout(btn_row)
+            bl.setContentsMargins(4, 0, 4, 0)
+            bl.setSpacing(6)
+            bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+            ammo_stack = QStackedWidget()
+            ammo_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            ammo_stack.setVisible(False)  # 未选中时隐藏，不占空间
+
+            for ammo_info in mount_ammo:
+                aname = ammo_info.get("name", "")
+                detail_items = ammo_info.get("detail_items", [])
+
+                atype_lower = ammo_info.get("ammo_type", "").lower()
+                species_lower = ammo_info.get("species", "").lower()
+
+                candidates = []
+                if species_lower:
+                    candidates.append(f"ammo_{species_lower}_{atype_lower}_0.png" if atype_lower else f"ammo_{species_lower}_0.png")
+                if atype_lower and atype_lower != species_lower:
+                    candidates.append(f"ammo_{atype_lower}_0.png")
+                # 鱼雷回退
+                if species_lower in ("torpedo", "torpedobomber"):
+                    candidates.append("ammo_torpedo_0.png")
+                    candidates.append("ammo_bomber_torpedo_0.png")
+                # 深水炸弹回退
+                if "depthcharge" in species_lower:
+                    candidates.append("ammo_depthcharge_0.png")
+                    candidates.append("ammo_airsupport_depthcharge_0.png")
+
+                btn = QPushButton("")
+                btn.setFixedSize(36, 36)
+                btn.setCheckable(True)
+                btn.setStyleSheet(BTN_STYLE)
+                btn.setToolTip(aname)
+
+                img_path = None
+                for c in candidates:
+                    p = ammo_dir / c
+                    if p.exists():
+                        img_path = p
+                        break
+
+                if img_path and img_path.exists():
+                    pixmap = QPixmap(str(img_path))
+                    scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    btn.setIcon(QIcon(scaled))
+                    btn.setIconSize(QSize(28, 28))
+                else:
+                    btn.setText(aname[:2] if aname else "?")
+                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:8px; color:#333;"))
+
+                bl.addWidget(btn)
+
+                if detail_items:
+                    detail_section = {"label": aname, "items": detail_items}
+                    detail_card = ShipCardWidget(detail_section)
+                else:
+                    detail_card = QLabel("无详细数据")
+                    detail_card.setStyleSheet("color:#999; font-size:11px; padding:8px;")
+                    detail_card.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                ammo_stack.addWidget(detail_card)
+
+                ci = ammo_stack.count() - 1
+                btn.clicked.connect(
+                    lambda checked, i=ci, s=ammo_stack, b=btn, bl_=bl:
+                    self._on_ammo_btn_click(i, s, bl_, b)
+                )
+
+            bl.addStretch()
+            layout.addWidget(btn_row)
+            layout.addWidget(ammo_stack)
 
         return container
+
+    def _build_aa_widget(self, section: dict) -> QWidget:
+        """构建防空面板：每个防空区域拆分为独立卡片，命中率/射程移至 tooltip"""
+        from ui.ship_card_widget import ShipCardWidget, CARD_STYLE
+        from PySide6.QtWidgets import QGroupBox
+
+        items = section.get("items", [])
+        label = section.get("label", "防空")
+
+        # 按 header 分组，每段为一个独立卡片
+        groups: list[list[dict]] = []
+        cur: list[dict] = []
+        for it in items:
+            if it.get("row_type") == "header" and cur:
+                groups.append(cur)
+                cur = [it]
+            else:
+                cur.append(it)
+        if cur:
+            groups.append(cur)
+
+        container = QGroupBox(f"  {label}")
+        container.setStyleSheet(CARD_STYLE)
+        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(6, 4, 6, 6)
+        layout.setSpacing(4)
+
+        for grp in groups:
+            # 提取 tooltip 字段并从显示中去掉
+            tooltip_data: list[str] = []
+            display_items: list[dict] = []
+            for it in grp:
+                n = it.get("name", "")
+                if n in ("命中率", "射程"):
+                    v = it.get("value", "")
+                    u = it.get("unit", "")
+                    display = f"{v} {u}" if u else v
+                    tooltip_data.append(f"<b>{n}</b>: {display}")
+                else:
+                    display_items.append(it)
+
+            sec = {"label": "", "items": display_items}
+            card = ShipCardWidget(sec)
+            if tooltip_data:
+                card.setToolTip("<br>".join(tooltip_data))
+            layout.addWidget(card)
+
+        return container
+
+    def _on_ammo_btn_click(self, stack_idx: int, stack: QStackedWidget, btn_layout: QHBoxLayout, clicked_btn: QPushButton) -> None:
+        """弹药按钮点击：切换详情页并更新按钮高亮"""
+        # 若点击已选中按钮则收起
+        if clicked_btn.isChecked() and stack.isVisible():
+            stack.setVisible(False)
+            stack.setMaximumHeight(0)
+            clicked_btn.setChecked(False)
+            return
+        stack.setVisible(True)
+        stack.setCurrentIndex(stack_idx)
+        # 调整堆栈高度匹配当前页面
+        current = stack.currentWidget()
+        if current:
+            stack.setMaximumHeight(current.sizeHint().height())
+            stack.updateGeometry()
+        for i in range(btn_layout.count()):
+            w = btn_layout.itemAt(i).widget()
+            if isinstance(w, QPushButton):
+                w.setChecked(w is clicked_btn)
+
+    def _on_aircraft_con_btn_click(self, stack_idx: int, stack: QStackedWidget, clicked_btn: QPushButton, all_btns: list[QPushButton]) -> None:
+        """飞机消耗品按钮点击：切换详情页并更新按钮高亮"""
+        if clicked_btn.isChecked() and stack.isVisible() and stack.currentIndex() == stack_idx:
+            stack.setVisible(False)
+            stack.setMaximumHeight(0)
+            clicked_btn.setChecked(False)
+            return
+        stack.setVisible(True)
+        stack.setCurrentIndex(stack_idx)
+        # 调整堆栈高度匹配当前页面，防止长短页切换时留白
+        current = stack.currentWidget()
+        if current:
+            stack.setMaximumHeight(current.sizeHint().height())
+            stack.updateGeometry()
+        for btn in all_btns:
+            btn.setChecked(btn is clicked_btn)
 
     def _on_consumable_btn_click(self, cid: str, dname: str, parent_container: QWidget):
         """消耗品按钮点击：查询数据库并展示详情卡片"""
@@ -1079,7 +1717,33 @@ class DetailPanel(QWidget):
                 elif ct == "regenCrew":
                     rr = cfgd.get('regenerationHPSpeed', 0) or cfgd.get('regenerationRate', 0)
                     if rr:
-                        kv("每秒回复血量", f"{'+' if rr > 0 else ''}{rr*100:.2f}%")
+                        # 查询该船血量，计算实际每秒回复量
+                        try:
+                            ship_id = self._current_filename or ""
+                            h_hp = conn.execute(
+                                "SELECT health FROM ship_module_hulls "
+                                "WHERE version_code=? AND ship_id=? AND health IS NOT NULL LIMIT 1",
+                                (vc, ship_id)).fetchone()
+                            if h_hp and h_hp['health']:
+                                actual_hp = rr * h_hp['health']
+                                kv("每秒回复血量", f"+{actual_hp:.0f} HP")
+                            else:
+                                kv("每秒回复血量", f"{'+' if rr > 0 else ''}{rr*100:.2f}%")
+                        except Exception:
+                            kv("每秒回复血量", f"{'+' if rr > 0 else ''}{rr*100:.2f}%")
+                    # 从 ship_module_hulls 查询该船的回复率数据
+                    try:
+                        ship_id = self._current_filename or ""
+                        h = conn.execute(
+                            "SELECT hull_regen_part, citadel_regen_part FROM ship_module_hulls "
+                            "WHERE version_code=? AND ship_id=? LIMIT 1",
+                            (vc, ship_id)).fetchone()
+                        if h and (h['hull_regen_part'] is not None or h['citadel_regen_part'] is not None):
+                            hrp_str = f"{h['hull_regen_part']*100:.0f}%" if h['hull_regen_part'] is not None else "N/A"
+                            crp_str = f"{h['citadel_regen_part']*100:.0f}%" if h['citadel_regen_part'] is not None else "N/A"
+                            kv("回复率 (船体/核心区)", f"{hrp_str}/{crp_str}")
+                    except Exception:
+                        pass
                 elif ct == "airDefenseDisp":
                     adm = cfgd.get('areaDamageMultiplier', 0)
                     bdm = cfgd.get('bubbleDamageMultiplier', 0)
@@ -1165,7 +1829,22 @@ class DetailPanel(QWidget):
                     font-size: 11px;
                 }
             """)
-            txt = "\n".join(config_contents.get(cl, []))
+            raw = config_contents.get(cl, [])
+            if raw and isinstance(raw[0], dict):
+                lines = []
+                for it in raw:
+                    name = it.get("name", "")
+                    val = it.get("value", "")
+                    unit = it.get("unit", "")
+                    if it.get("row_type") == "header":
+                        lines.append(f"── {name} ──")
+                    elif val:
+                        lines.append(f"{name}: {val}{' ' + unit if unit else ''}")
+                    else:
+                        lines.append(name)
+                txt = "\n".join(lines)
+            else:
+                txt = "\n".join(raw) if raw else ""
             te.setPlainText(self._strip_indent(txt))
             cstack.addWidget(te)
             btn = QPushButton(cl)
