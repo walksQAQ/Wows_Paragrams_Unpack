@@ -315,7 +315,7 @@ class AnalysisStore:
                         pn, arm = pl, module_data.get("armamentName", "")
                     else:
                         continue
-                    config_prefix = m.group(1) if m else lt
+                    config_prefix = mod_key  # 完整模块名如 "A1_Fighter"
                     for lt in target_letters:
                         combined_stats[lt].setdefault("aircraft", []).append(
                             {"plane_name": pn, "armament_name": arm, "module_variant": variant, "plane_type": current_cat,

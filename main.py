@@ -42,9 +42,11 @@ def load_stylesheet(app: QApplication) -> None:
 def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
-    app.setApplicationName("Wows/Korabli gamedata unpack and analyze")
-    app.setApplicationVersion("3.1.2")
-    app.setOrganizationName("WowsParagrams")
+    import __about__
+
+    app.setApplicationName(__about__.__title__)
+    app.setApplicationVersion(__about__.__version__)
+    app.setOrganizationName(__about__.__author__)
 
     # 2. 加载样式
     load_stylesheet(app)
