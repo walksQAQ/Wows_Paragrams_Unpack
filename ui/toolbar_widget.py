@@ -88,10 +88,15 @@ class TopToolbar(QWidget):
         sg = QButtonGroup(self)
         self.rb_lesta = QRadioButton("Lesta")
         self.rb_wg = QRadioButton("Wargaming")
-        for rb in (self.rb_lesta, self.rb_wg):
-            rb.setStyleSheet("color: #cccccc; font-size: 12px; spacing: 4px;")
-            sg.addButton(rb)
-            layout.addWidget(rb)
+        self.rb_lesta.setStyleSheet("color: #000000; font-size: 12px; spacing: 4px;")
+        self.rb_lesta.setChecked(True)
+        # Wargaming 暂时禁用
+        self.rb_wg.setEnabled(False)
+        self.rb_wg.setStyleSheet("color: #cccccc; font-size: 12px; spacing: 4px;")
+        sg.addButton(self.rb_lesta)
+        sg.addButton(self.rb_wg)
+        layout.addWidget(self.rb_lesta)
+        layout.addWidget(self.rb_wg)
         sg.buttonClicked.connect(self._on_server)
 
         layout.addSpacing(8)

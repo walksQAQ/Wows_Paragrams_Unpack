@@ -110,6 +110,11 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     data = {k: v for k, v in pat.findall(raw) if v.strip()}
     stats["rage_mode_names"] = {"path": save(data, "rage_mode_names.json"), "count": len(data)}
 
+    # 舰船升级键（ShipUpgradeInfo 中的 upgrade_key，如 PAUH941_MIDWAY_1945）
+    pat = re.compile(r'msgid "IDS_(PAU[A-Z][A-Z0-9_]*)"\s+msgstr "(.*?)"', re.MULTILINE)
+    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    stats["module_upgrade_names"] = {"path": save(data, "module_upgrade_names.json"), "count": len(data)}
+
     return stats
 
 
@@ -120,7 +125,8 @@ def run_localization() -> None:
     data_dir = get_data_dir()
 
     def _run():
-        bus.task_progress.emit(5, "下载/复制语言文件")
+        action = "下载" if wows_type == "Lesta" else "复制"
+        bus.task_progress.emit(5, f"{action}语言文件")
         # ── 下载 / 复制 global.mo ────────────────────
         if wows_type == "Wargaming":
             bin_root = os.path.join(game_path, "bin")

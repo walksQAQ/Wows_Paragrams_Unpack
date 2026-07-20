@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS ship_module_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_ship_rel_lookup ON ship_module_relations(version_code, ship_id, config_group);
 
+-- 舰船升级关系（ShipUpgradeInfo），记录各升级槽位的兼容模块
+CREATE TABLE IF NOT EXISTS ship_upgrade_info (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    upgrade_key TEXT NOT NULL,            -- ShipUpgradeInfo 键名，如 'PAUA506_MONAGHAN'
+    uc_type TEXT NOT NULL,                -- 升级类型，如 '_Artillery','_Hull','_Engine','_Torpedoes','_Suo'
+    components_json TEXT NOT NULL DEFAULT '{}',  -- 组件映射 JSON: {"artillery":["A1_Artillery","B1_Artillery"],...}
+    PRIMARY KEY (version_code, ship_id, upgrade_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 3a. 舰船模块信息层 (Ship Module Info)

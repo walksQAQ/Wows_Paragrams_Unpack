@@ -1,8 +1,5 @@
 /* ==========================================================
-   Wows Paragrams Unpack — 全局样式表
-   ==========================================================
-   放在此处以备 UI 细节微调时直接生效。
-   PyQt6 原生控件通过 setStyleSheet 加载此文件。
+   Wows Paragrams Unpack — 全局样式表（Modern App Style）
    ========================================================== */
 
 /* ── 主窗口 ───────────────────────────────────────────── */
@@ -10,28 +7,39 @@ QMainWindow {
     background-color: #f5f5f5;
 }
 
-/* ── 日志文本框（兼容旧版，新版用 QTextBrowser）────────── */
+/* ── Tooltip 毛玻璃风格 ───────────────────────────────── */
+QToolTip {
+    background: rgba(30, 30, 30, 0.92);
+    color: #e8e8e8;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+/* ── 日志文本框 ───────────────────────────────────────── */
 QTextEdit#LogArea {
     background-color: #1e1e1e;
     color: #d4d4d4;
     font-family: "Consolas", "Courier New", monospace;
     font-size: 11px;
     border: 1px solid #3c3c3c;
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px;
 }
 
-/* ── QTextBrowser (浏览器面板) ────────────────────────── */
+/* ── QListWidget (浏览器面板) ────────────────────────── */
 QListWidget {
     background-color: #ffffff;
     border: 1px solid #d0d0d0;
-    border-radius: 4px;
+    border-radius: 6px;
     font-size: 12px;
     color: #1a1a1a;
 }
 
 QListWidget::item {
-    padding: 3px 6px;
+    padding: 4px 8px;
     color: #1a1a1a;
 }
 
@@ -43,4 +51,47 @@ QListWidget::item:selected {
 QListWidget::item:hover {
     background-color: #e5f1fb;
     color: #1a1a1a;
+}
+
+/* ── QScrollArea ─────────────────────────────────────── */
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+
+/* ── QScrollBar ──────────────────────────────────────── */
+QScrollBar:vertical {
+    background: rgba(0,0,0,0.05);
+    width: 8px;
+    border-radius: 4px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: rgba(0,0,0,0.15);
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(0,0,0,0.25);
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+QScrollBar:horizontal {
+    background: rgba(0,0,0,0.05);
+    height: 8px;
+    border-radius: 4px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(0,0,0,0.15);
+    border-radius: 4px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(0,0,0,0.25);
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
 }

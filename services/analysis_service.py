@@ -491,7 +491,67 @@ class AnalysisStore:
         self._write_consumables(ship_id, raw_data, version_code=version_code)
         self._write_rage_mode(ship_id, raw_data, version_code=version_code)
 
+        # 解析 ShipUpgradeInfo
+        self._write_upgrade_info(ship_id, raw_data, version_code=version_code)
+
     # ── Ship 子写入器 ─────────────────────────────────────
+
+    def _write_upgrade_info(self, ship_id: str, raw_data: dict, version_code: str = ""):
+        """解析 ShipUpgradeInfo 并存入库，同时提取模块名称映射"""
+        sui = raw_data.get("ShipUpgradeInfo")
+        if not isinstance(sui, dict):
+            return
+        uc_type_map = {
+            "PAUA": "_Artillery", "PAUE": "_Engine", "PAUH": "_Hull",
+            "PAUS": "_Suo", "PAUT": "_Torpedoes",
+        }
+        # 收集所有出现的模块 ID，尝试从原始 JSON 中解析名称
+        all_module_ids: set[str] = set()
+
+        for upgrade_key, upgrade_val in sui.items():
+            if not isinstance(upgrade_val, dict):
+                continue
+            prefix = upgrade_key[:4]
+            uc_type = uc_type_map.get(prefix, upgrade_val.get("ucType", ""))
+            components = upgrade_val.get("components", {})
+            filtered = {k: v for k, v in components.items() if isinstance(v, list) and v}
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ship_upgrade_info
+                   (version_code, ship_id, upgrade_key, uc_type, components_json)
+                   VALUES (?,?,?,?,?)""",
+                (version_code, ship_id, upgrade_key, uc_type, json.dumps(filtered, ensure_ascii=False))
+            )
+            # 收集所有模块 ID
+            for mods in filtered.values():
+                for m in mods:
+                    all_module_ids.add(m)
+
+        # 尝试从原始 JSON 中为模块 ID 提取名称
+        name_items = []
+        for mid in all_module_ids:
+            # 跳过系统内部名称
+            if mid.endswith("Default") or mid in ("None", ""):
+                continue
+            # 跳过已有映射的
+            existing = self.conn.execute(
+                "SELECT 1 FROM name_mappings WHERE key_name=?",
+                (mid.upper(),)).fetchone()
+            if existing:
+                continue
+            # 尝试从原始 JSON 的对应 key 中找 name 字段
+            mod_data = raw_data.get(mid)
+            if isinstance(mod_data, dict):
+                display_name = mod_data.get("name") or ""
+                if display_name and display_name != mid:
+                    name_items.append(("module_upgrade", mid.upper(), display_name))
+        if name_items:
+            try:
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
+                    name_items)
+                self.conn.commit()
+            except Exception:
+                pass
 
     def _write_hulls(self, ship_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn

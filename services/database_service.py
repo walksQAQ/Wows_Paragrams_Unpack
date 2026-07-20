@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 12
+DB_SCHEMA_VERSION = 14
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -31,6 +31,7 @@ NAME_MAPPING_FILES: dict[str, str] = {
     "modernization_names.json": "modernization",
     "plane_names.json": "plane",
     "rage_mode_names.json": "rage_mode",
+    "module_upgrade_names.json": "module_upgrade",
 }
 
 
