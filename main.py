@@ -43,7 +43,7 @@ def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
     app.setApplicationName("Wows/Korabli gamedata unpack and analyze")
-    app.setApplicationVersion("3.1.1")
+    app.setApplicationVersion("3.1.2")
     app.setOrganizationName("WowsParagrams")
 
     # 2. 加载样式
@@ -61,7 +61,7 @@ def main() -> None:
     window.show()
 
     # 5. 启动时写入一条日志
-    bus.log_message.emit(f"应用启动 | 版本: {app.applicationVersion()}")
+    bus.log_message.emit(f"应用启动 | 应用版本: {app.applicationVersion()}")
     bus.log_message.emit(f"数据目录: {app_ctx.ctx.data_dir}")
     bus.log_message.emit(f"当前服务器: {app_ctx.ctx.wows_type}")
 

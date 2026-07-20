@@ -147,9 +147,65 @@ class BasePresenter:
         return f"{val * 100:.{digits}f}%"
 
     @staticmethod
-    def make_item(name: str, value: str = "", order: int = 0) -> dict:
-        return {"name": name, "value": value, "order": order}
+    def make_item(name: str, value: str = "", order: int = 0,
+                  row_type: str = "kv",
+                  unit: str = "",
+                  raw_value=None,
+                  details: list[dict] = None,
+                  ) -> dict:
+        """创建一个展示项
+
+        Args:
+            name: 标签名（左列）
+            value: 值文本（右列）
+            order: 排序序号
+            row_type: 行类型
+                "kv"        - 普通键值对
+                "header"    - 分段标题
+                "separator" - 分隔线
+                "button_group" - 按钮组（如 DOT 数量选择）
+            unit: 单位（如 "节", "公里", "%"），渲染时与 value 分开显示
+            raw_value: 原始数值（用于计算/交互）
+            details: 二级详细数据列表，格式 [{name, value, unit}...]
+        """
+        return {
+            "name": name, "value": value, "order": order,
+            "row_type": row_type, "unit": unit,
+            "raw_value": raw_value,
+            "details": details or [],
+        }
 
     @staticmethod
-    def make_section(label: str, items: list[dict]) -> dict:
-        return {"label": label, "items": items}
+    def make_section(label: str, items: list[dict],
+                     icon: str = "") -> dict:
+        """创建一个数据分区
+
+        Args:
+            label: 分区标题
+            items: 展示项列表
+            icon: 分区图标（如 "🚢", "🔫"）
+        """
+        return {"label": label, "items": items, "icon": icon}
+
+    @staticmethod
+    def append_props(items: list[dict], row,
+                     props: list[tuple[str, str, str]],
+                     start_order: int = 0) -> int:
+        """从数据库行中批量添加属性到 items 列表
+
+        Args:
+            items: 目标 items 列表
+            row: sqlite3.Row 对象
+            props: [(列名, 显示标签, 单位), ...]
+            start_order: 起始排序序号
+
+        Returns:
+            下一个可用序号
+        """
+        o = start_order
+        for col, label, unit in props:
+            val = row[col] if col in row.keys() else None
+            if val is not None:
+                items.append(BasePresenter.make_item(label, str(val), o, unit=unit))
+                o += 1
+        return o
