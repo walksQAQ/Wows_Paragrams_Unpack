@@ -201,6 +201,7 @@ class DetailPanel(QWidget):
 
     def _build_top_config_bar(self, config: dict) -> QWidget:
         """构建顶部配置栏：仿浩舰 4 列布局（配件/升级品/舰长/外观）"""
+        _ship_type = config.get("shiptype", "")
         bar = QWidget()
         bar.setStyleSheet("""
             QWidget#ConfigBar {
@@ -430,20 +431,125 @@ class DetailPanel(QWidget):
 
             if section_key == "upgrade":  # 第2列：升级品
                 col, cl = _col("升级品")
-                upgrade_row = QWidget()
-                ul = QHBoxLayout(upgrade_row)
-                ul.setContentsMargins(0,0,0,0); ul.setSpacing(4)
-                ul.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                for i in range(6):
-                    btn = QPushButton(f"  ⬜")
-                    btn.setStyleSheet(ITEM_STYLE)
-                    btn.setFixedSize(36, 36)
-                    btn.setEnabled(False)
-                    btn.setToolTip(f"升级品槽位 {i+1}")
-                    ul.addWidget(btn)
-                ul.addStretch()
-                cl.addWidget(upgrade_row)
-                cl.addStretch()
+                # 根据舰船等级决定可用槽位数
+                ship_tier = config.get("tier", 1)
+                if ship_tier <= 2:
+                    max_slots = 1
+                elif ship_tier <= 4:
+                    max_slots = 2
+                elif ship_tier == 5:
+                    max_slots = 3
+                elif ship_tier <= 7:
+                    max_slots = 4
+                elif ship_tier == 8:
+                    max_slots = 5
+                elif ship_tier <= 10:
+                    max_slots = 6
+                else:
+                    max_slots = 7
+                mods_by_slot: dict[int, list[dict]] = {}
+                for m in config.get("modernizations", []):
+                    if m["slot"] < max_slots:
+                        mods_by_slot.setdefault(m["slot"], []).append(m)
+                modernization_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modernization"
+                if not hasattr(self, '_selected_mods'):
+                    self._selected_mods: dict[int, dict] = {}
+                upgrade_container = QWidget()
+                uc_layout = QHBoxLayout(upgrade_container)
+                uc_layout.setContentsMargins(0,0,0,0)
+                uc_layout.setSpacing(6)
+                uc_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                SLOT_STYLE = """
+                    QPushButton {
+                        background: white; border: 1px solid #c8d8e8; border-radius: 4px;
+                        padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
+                    }
+                    QPushButton:hover { background: #e8f0fe; border-color: #1a73e8; }
+                    QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
+                """
+                for i in range(max_slots):  # 根据等级限制槽位数量
+                    slot_mods = mods_by_slot.get(i, [])
+                    # 每个插槽一列（编号=slot+1），即使无升级品也占位
+                    col_w = QWidget()
+                    col_layout = QVBoxLayout(col_w)
+                    col_layout.setContentsMargins(0,0,0,0)
+                    col_layout.setSpacing(2)
+                    col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+                    # 槽位标题
+                    title = QLabel(f"槽{i+1}")
+                    title.setStyleSheet("font-size:9px;color:#888;font-weight:bold;")
+                    title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    col_layout.addWidget(title)
+                    if slot_mods:
+                        for mod in slot_mods:
+                            mid = mod["mod_id"]
+                            ob = QPushButton()
+                            ob.setFixedSize(36, 36)
+                            ob.setCheckable(True)
+                            ob.setStyleSheet(SLOT_STYLE)
+                            ob.setObjectName(mid)
+                            img = modernization_dir / f"icon_modernization_{mid}.png"
+                            if img.exists():
+                                pix = QPixmap(str(img))
+                                ob.setIcon(QIcon(pix.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                                ob.setIconSize(QSize(28,28))
+                            else:
+                                ob.setText(mid[:2])
+                                ob.setStyleSheet(SLOT_STYLE.replace("padding:2px;","padding:2px;font-size:8px;color:#666;"))
+                            tt_parts = [mod.get("name", mid)]
+                            mod_dict = mod.get("modifiers", {})
+                            if mod_dict:
+                                from models.name_mapping import Mapping as NMM
+                                # 沿用 modernization_analyzer 的显示逻辑
+                                NO_PCT = {"planeExtraHangarSize", "AAAuraDamageBonus", "additionalConsumables",
+                                          "planeAdditionalConsumables", "AAExtraBubbles",
+                                          "smokeGeneratorAdditionalConsumables", "asNumPacksBonus",
+                                          "speedBoostersAdditionalConsumables"}
+                                FACTOR_KEYS = {"AABubbleDamageBonus"}
+                                SECOND_KEYS = {"crashCrewWorkTimeBonus", "torpedoBomberAimingTime", "fighterAimingTime"}
+                                KM_KEYS = {"visionXRayMineDist", "visionXRayTorpedoDist"}
+                                SP_PCT_KEYS = {"engineBackwardForsageMaxSpeed", "engineBackwardForsagePower",
+                                               "engineForwardForsageMaxSpeed", "engineForwardForsagePower",
+                                               "hydrophoneWaveSpeedCoeff", "regeneratedHPPartCoef", "boostCoeffForsage"}
+                                tt_parts.append("─" * 20)
+                                for mk, mv in sorted(mod_dict.items()):
+                                    label = NMM.MODIFIER_MAP.get(mk, mk)
+                                    if isinstance(mv, dict):
+                                        mv = mv.get(_ship_type) or next((v for v in mv.values() if isinstance(v, (int, float))), 0)
+                                    try:
+                                        mv_f = float(mv)
+                                        if mv_f == 0:
+                                            continue
+                                        if mk in NO_PCT:
+                                            pct = f"{'+' if mv_f > 0 else ''}{mv_f:g}"
+                                        elif mk in FACTOR_KEYS:
+                                            pct = f"{'+' if mv_f > 0 else ''}{round(mv_f * 7, 0):.0f}"
+                                        elif mk in SECOND_KEYS:
+                                            pct = f"{'+' if mv_f > 0 else ''}{mv_f:g}s"
+                                        elif mk in KM_KEYS:
+                                            pct = f"{mv_f / 1000:g}km"
+                                        elif mk in SP_PCT_KEYS:
+                                            pct_val = round(mv_f * 100, 1)
+                                            if pct_val == int(pct_val):
+                                                pct_val = int(pct_val)
+                                            pct = f"{'+' if pct_val > 0 else ''}{pct_val}%"
+                                        else:
+                                            pct_val = round((mv_f - 1.0) * 100, 3)
+                                            sign = "+" if pct_val > 0 else ""
+                                            pct = f"{sign}{pct_val:g}%"
+                                        tt_parts.append(f"{label}: {pct}")
+                                    except (ValueError, TypeError):
+                                        tt_parts.append(f"{label}: {mv}")
+                                    except (ValueError, TypeError):
+                                        tt_parts.append(f"{label}: {mv}")
+                            ob.setToolTip("\n".join(tt_parts))
+                            ob.clicked.connect(lambda checked, si=i, m=mod, btn=ob: self._on_mod_opt_click(si, m, btn))
+                            if self._selected_mods.get(i) and self._selected_mods[i]["mod_id"] == mid:
+                                ob.setChecked(True)
+                            col_layout.addWidget(ob, alignment=Qt.AlignmentFlag.AlignCenter)
+                    col_layout.addStretch()
+                    uc_layout.addWidget(col_w)
+                cl.addWidget(upgrade_container)
                 layout.addWidget(col)
 
             elif section_key == "signal":  # 第3列：信号旗
@@ -811,9 +917,8 @@ class DetailPanel(QWidget):
             config_label_map = content.get("config_label_map", {})
 
             def _lookup_cfg(mk: str) -> dict:
-                """通过显示名查找内部配置数据"""
-                internal_key = config_label_map.get(mk, mk)
-                return config_contents.get(internal_key, {})
+                """通过内部 key 查找配置数据"""
+                return config_contents.get(mk, {})
 
             def _build_aircraft_config_page(cfg_data: dict) -> QWidget:
                 """构建单个 aircraft config 的完整页面：飞机卡片 + 弹药按钮 + 消耗品按钮"""
@@ -974,12 +1079,41 @@ class DetailPanel(QWidget):
 
                 return w
 
-            # 所有配置页垂直叠放，同类型多飞机直接展示
-            for mk in config_labels:
-                cfg_data = _lookup_cfg(mk)
+            # 判断是否同一模块内的多飞机（相同 config_group 前缀）
+            def _cfg_group(label: str) -> str:
+                return label.split("|")[0] if "|" in label else label
+            cfg_groups = {_cfg_group(mk) for mk in config_labels}
+            same_module = len(cfg_groups) <= 1
+
+            if same_module:
+                # 同一模块内的多飞机 → 垂直叠放
+                for mk in config_labels:
+                    cfg_data = _lookup_cfg(mk)
+                    page = _build_aircraft_config_page(cfg_data)
+                    if page:
+                        page.setObjectName(f"aircraft_{mk}")
+                        grp_layout.addWidget(page)
+            elif len(config_labels) > 1:
+                # 不同模块间使用 QStackedWidget，顶栏按钮切换
+                sub_stack = QStackedWidget()
+                sub_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                for mk in config_labels:
+                    cfg_data = _lookup_cfg(mk)
+                    page = _build_aircraft_config_page(cfg_data)
+                    if page:
+                        page.setObjectName(f"aircraft_{mk}")
+                        sub_stack.addWidget(page)
+                if sub_stack.count() > 0:
+                    sub_stack.setCurrentIndex(0)
+                    grp_layout.addWidget(sub_stack)
+                    ikey = sub_keys.get(sl, "")
+                    if ikey:
+                        ctrl_key = f"_{ikey}"
+                        self._subwidget_controllers[ctrl_key] = (sub_stack, None)
+            else:
+                cfg_data = _lookup_cfg(config_labels[0]) if config_labels else {}
                 page = _build_aircraft_config_page(cfg_data)
                 if page:
-                    page.setObjectName(f"aircraft_{mk}")
                     grp_layout.addWidget(page)
 
             layout.addWidget(grp)
@@ -1340,11 +1474,11 @@ class DetailPanel(QWidget):
         raw_ammo = section.get("raw_ammo_types", [])
         section_tooltip = section.get("tooltip_items", [])
 
-        # 按火炮名称拆分 items，每座炮一组
+        # 按火炮/深弹名称拆分 items，每座炮/发射器一组
         mount_groups: list[list[dict]] = []
         cur: list[dict] = []
         for item in all_items:
-            if item.get("name") == "火炮名称" and cur:
+            if item.get("name") in ("火炮名称", "深弹名称") and cur:
                 mount_groups.append(cur)
                 cur = [item]
             else:
@@ -1542,8 +1676,8 @@ class DetailPanel(QWidget):
 
     def _on_ammo_btn_click(self, stack_idx: int, stack: QStackedWidget, btn_layout: QHBoxLayout, clicked_btn: QPushButton) -> None:
         """弹药按钮点击：切换详情页并更新按钮高亮"""
-        # 若点击已选中按钮则收起
-        if clicked_btn.isChecked() and stack.isVisible():
+        # 若点击的是当前已选中页面则收起，否则切换过去
+        if stack.isVisible() and stack.currentIndex() == stack_idx:
             stack.setVisible(False)
             stack.setMaximumHeight(0)
             clicked_btn.setChecked(False)
@@ -1576,6 +1710,81 @@ class DetailPanel(QWidget):
             stack.updateGeometry()
         for btn in all_btns:
             btn.setChecked(btn is clicked_btn)
+
+    def _on_mod_opt_click(self, slot_idx: int, mod: dict, btn):
+        """升级品选项点击：同槽位单选 + 再次点击取消 + 触发数据重算"""
+        from PySide6.QtWidgets import QPushButton
+        # 检查是否点击了已选中的升级品
+        was_selected = (self._selected_mods.get(slot_idx) or {}).get("mod_id") == mod.get("mod_id")
+        parent_w = btn.parentWidget()
+        if was_selected:
+            # 取消选择
+            self._selected_mods.pop(slot_idx, None)
+            btn.setChecked(False)
+        else:
+            # 取消同槽位（同父部件）其他按钮的勾选
+            if parent_w:
+                for child in parent_w.findChildren(QPushButton):
+                    if child != btn and child.isCheckable():
+                        child.setChecked(False)
+            self._selected_mods[slot_idx] = mod
+            btn.setChecked(True)
+        # 收集所有选中升级品的 modifiers，同 key 累乘/累加
+        # 先获取当前舰种，用于解析 dict 型修饰符
+        _cur_ship_type = ""
+        if hasattr(self, '_current_analyzed') and self._current_analyzed:
+            _cb = self._current_analyzed.get("config_bar", {})
+            _cur_ship_type = _cb.get("shiptype", "") if isinstance(_cb, dict) else ""
+        all_mods: dict[str, float | dict] = {}
+        for m in self._selected_mods.values():
+            mod_dict = m.get("modifiers", {})
+            for k, v in mod_dict.items():
+                # dict 型修饰符：按当前舰种提取标量值
+                if isinstance(v, dict):
+                    v = v.get(_cur_ship_type) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
+                if k not in all_mods:
+                    all_mods[k] = v
+                else:
+                    existing = all_mods[k]
+                    # existing 也可能是 dict（来自旧版本缓存），同样解析
+                    if isinstance(existing, dict):
+                        existing = existing.get(_cur_ship_type) or next((x for x in existing.values() if isinstance(x, (int, float))), 1.0)
+                    try:
+                        ev_f, nv_f = float(existing), float(v)
+                        if 0.5 <= ev_f <= 1.5 and 0.5 <= nv_f <= 1.5:
+                            all_mods[k] = ev_f * nv_f
+                        else:
+                            all_mods[k] = ev_f + nv_f
+                    except (ValueError, TypeError):
+                        all_mods[k] = v
+        if all_mods:
+            self._refresh_with_modifiers(all_mods)
+        else:
+            self._refresh_with_modifiers(None)
+
+    def _refresh_with_modifiers(self, modifiers: dict | None) -> None:
+        """使用升级品修饰符重新构建舰船数据"""
+        from services.database_service import get_db
+        from presenters.registry import PresenterRegistry
+        db = get_db()
+        if not db or not db._conn or not self._current_category or not self._current_filename:
+            return
+        try:
+            vc = db.get_latest_version_code() or ""
+            etype = CATEGORY_TO_ETYPE.get(self._current_category)
+            if not etype:
+                return
+            presenter = PresenterRegistry.get_presenter(etype, db._conn)
+            if not presenter:
+                return
+            data = presenter.build(self._current_filename, version_code=vc, modifiers=modifiers)
+            if data:
+                self._current_analyzed = data
+                self._apply_analyzed()
+        except Exception as e:
+            import traceback
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 重算失败: {e}\n{traceback.format_exc()}")
 
     def _on_consumable_btn_click(self, cid: str, dname: str, parent_container: QWidget):
         """消耗品按钮点击：查询数据库并展示详情卡片"""
@@ -1632,6 +1841,19 @@ class DetailPanel(QWidget):
                 prep = float(cfgd.get('preparationTime', 0) or 0)
                 cd_time = float(cfgd.get('reloadTime', 0) or 0)
                 wt = float(cfgd.get('workTime', 0) or 0)
+                # 应用已选升级品的修饰符
+                if hasattr(self, '_selected_mods') and self._selected_mods:
+                    from presenters.ship_presenter import ShipPresenter as _SP
+                    _ship_type = ""
+                    for _m in self._selected_mods.values():
+                        for _mk, _mv in _m.get("modifiers", {}).items():
+                            _field = _SP.MODIFIER_MAP.get(_mk)
+                            if _field == "冷却时间" and cd_time:
+                                _mv_f = float(_mv) if not isinstance(_mv, dict) else float(next(v for v in _mv.values()))
+                                cd_time *= (_mv_f if 0.5 <= _mv_f <= 1.5 else 1)
+                            elif _field == "持续时间" and wt:
+                                _mv_f = float(_mv) if not isinstance(_mv, dict) else float(next(v for v in _mv.values()))
+                                wt *= (_mv_f if 0.5 <= _mv_f <= 1.5 else 1)
                 is_auto = cfgd.get('isAutoConsumable', False)
                 if is_auto:
                     kv("自动使用", "是")
@@ -1902,6 +2124,7 @@ class DetailPanel(QWidget):
         self._current_filename = filename
         self._current_raw = None
         self._current_analyzed = None
+        self._selected_mods: dict[int, dict] = {}
 
         db = get_db()
         if db.exists:
