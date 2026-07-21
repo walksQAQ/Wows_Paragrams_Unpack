@@ -34,10 +34,13 @@ class ShipPresenter(BasePresenter):
         "planeTorpedoArmingTimeCoeff": "鱼雷上浮时间",
         # ── 船体/机动 ──
         "maxSpeed": "最大航速",
+        "speedCoef": "最大航速",
         "rudderTime": "转舵时间",
         "healthHullCoeff": "基础血量",
         "visibilityDistCoeff": "水面隐蔽",
         "planeVisibilityFactor": "被侦测距离",
+        "burnProb": "起火的风险",
+        "floodProb": "进水的风险",
         "batteryCapacityCoeff": "电池容量",
         "batteryRegenCoeff": "电力恢复",
         "buoyancyRudderTimeCoeff": "水平舵转舵时间",
@@ -877,16 +880,40 @@ class ShipPresenter(BasePresenter):
             ]:
                 val = h[col]
                 if val is not None:
-                    items.append(self.make_item(label, f"{val:.0f}" if col in ("health","engine_power") else f"{val:.2f}", o, unit=unit))
+                    details = []
+                    if col == "health":
+                        # 基础血量 tooltip: 吃水深度 + 舰船尺寸
+                        if h['draft'] is not None:
+                            details.append({"name": "吃水深度", "value": f"{h['draft']:.1f}", "unit": "m"})
+                        if h['length'] is not None:
+                            details.append({"name": "舰长", "value": f"{h['length']:.1f}", "unit": "m"})
+                        if h['width'] is not None:
+                            details.append({"name": "舰宽", "value": f"{h['width']:.1f}", "unit": "m"})
+                        if h['height'] is not None:
+                            details.append({"name": "舰高", "value": f"{h['height']:.1f}", "unit": "m"})
+                    items.append(self.make_item(label, f"{val:.0f}" if col in ("health","engine_power") else f"{val:.2f}", o, unit=unit, details=details or None))
                     o += 1
 
-            # 吃水深度
-            if h['draft'] is not None:
-                items.append(self.make_item("吃水深度", f"{h['draft']:.1f}", o, unit="m")); o += 1
+            # 鱼雷防护 PTZ = (1 - 进水概率 × 3) × 100%
+            if h['flood_prob'] is not None:
+                ptz = (1.0 - h['flood_prob'] * 3.0) * 100
+                items.append(self.make_item("鱼雷防护。减少伤害", f"{ptz:.0f}", o, unit="%")); o += 1
 
-            # 鱼雷防护 ПТЗ
-            if h['torpedo_protection'] is not None:
-                items.append(self.make_item("鱼雷防护(ПТЗ)", f"{h['torpedo_protection']:.0f}", o, unit="%")); o += 1
+            # 起火/进水持续时间（字段名与 MODIFIER_MAP 匹配以便修饰符生效）
+            if h['fire_duration'] is not None:
+                items.append(self.make_item("灭火时间", f"{h['fire_duration']:.0f}", o, unit="s")); o += 1
+            if h['flood_duration'] is not None:
+                items.append(self.make_item("进水恢复时间", f"{h['flood_duration']:.0f}", o, unit="s")); o += 1
+            # 被点火概率（字段名与 MODIFIER_MAP 匹配以便修饰符生效）
+            if h['fire_prob'] is not None:
+                items.append(self.make_item("起火的风险", f"{h['fire_prob']*100:.2f}", o, unit="%")); o += 1
+            # 每秒灼烧/进水损失血量 (值=百分比,×血量得实际值)
+            if h['fire_dps'] is not None:
+                dps = round(h['fire_dps'] / 100 * h['health'])
+                items.append(self.make_item("每秒灼烧血量", f"{dps}", o, unit="")); o += 1
+            if h['flood_dps'] is not None:
+                dps = round(h['flood_dps'] / 100 * h['health'])
+                items.append(self.make_item("每秒进水量", f"{dps}", o, unit="")); o += 1
 
             # 进水时航速惩罚
             eng = conn.execute(

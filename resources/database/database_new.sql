@@ -118,8 +118,17 @@ CREATE TABLE IF NOT EXISTS ship_module_hulls (
     hull_regen_part REAL,                -- 船体恢复比例
     citadel_regen_part REAL,             -- 核心恢复比例
     engine_power REAL,                   -- 引擎马力 (hp)
+    length REAL,                         -- 舰长 (m)
+    width REAL,                          -- 舰宽 (m)
+    height REAL,                         -- 舰高 (m)
     draft REAL,                          -- 吃水深度 (m)
     torpedo_protection REAL,             -- 鱼雷防护(ПТЗ)减伤百分比
+    fire_duration REAL,                  -- 起火持续时间 (s)
+    flood_duration REAL,                 -- 进水持续时间 (s)
+    fire_prob REAL,                      -- 被点火概率
+    flood_prob REAL,                     -- 进水概率
+    fire_dps REAL,                       -- 每秒灼烧血量 (%)
+    flood_dps REAL,                      -- 每秒进水血量 (%)
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
