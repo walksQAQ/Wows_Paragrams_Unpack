@@ -16,7 +16,7 @@ from functools import partial
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QTextEdit, QPushButton, QLabel, QFrame, QButtonGroup,
-    QScrollArea, QSizePolicy,
+    QScrollArea, QSizePolicy, QGridLayout,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
@@ -217,17 +217,17 @@ class DetailPanel(QWidget):
 
         ITEM_STYLE = """
             QPushButton {
-                background: #f8f8f8; border: 1px solid #ddd;
+                background: #3a3a3a; border: 1px solid #555;
                 border-radius: 4px; padding: 3px 10px;
-                font-size: 11px; color: #444; text-align: left;
+                font-size: 11px; color: #ddd; text-align: left;
             }
-            QPushButton:hover { background: #e8e8e8; border-color: #aaa; }
+            QPushButton:hover { background: #4a4a4a; border-color: #888; }
         """
-        COL_TITLE = "font-size:11px; font-weight:bold; color:#666; padding:0 0 3px 0;"
+        COL_TITLE = "font-size:11px; font-weight:bold; color:#bbb; padding:0 0 3px 0;"
 
         def _col(title: str) -> tuple[QWidget, QVBoxLayout]:
             w = QWidget(); cl = QVBoxLayout(w)
-            cl.setContentsMargins(8,0,8,0); cl.setSpacing(2)
+            cl.setContentsMargins(8,4,8,4); cl.setSpacing(2)
             cl.setAlignment(Qt.AlignmentFlag.AlignTop)
             tl = QLabel(title); tl.setStyleSheet(COL_TITLE)
             cl.addWidget(tl)
@@ -314,15 +314,15 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
-                font-size: 9px; color: #333;
+                font-size: 9px; color: #ddd;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: rgba(228, 236, 245, 0.95);
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -338,7 +338,7 @@ class DetailPanel(QWidget):
             gl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             title = QLabel(f"{icon} {un}")
             title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            title.setStyleSheet("font-size:10px; color:#666;")
+            title.setStyleSheet("font-size:10px; color:#bbb;")
             gl.addWidget(title)
 
             btn_row = QWidget()
@@ -454,6 +454,10 @@ class DetailPanel(QWidget):
                 modernization_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modernization"
                 if not hasattr(self, '_selected_mods'):
                     self._selected_mods: dict[int, dict] = {}
+                if not hasattr(self, '_selected_signal_flags'):
+                    self._selected_signal_flags: dict[int, dict] = {}
+                if not hasattr(self, '_selected_signal_flags'):
+                    self._selected_signal_flags: dict[int, dict] = {}
                 upgrade_container = QWidget()
                 uc_layout = QHBoxLayout(upgrade_container)
                 uc_layout.setContentsMargins(0,0,0,0)
@@ -461,10 +465,10 @@ class DetailPanel(QWidget):
                 uc_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
                 SLOT_STYLE = """
                     QPushButton {
-                        background: white; border: 1px solid #c8d8e8; border-radius: 4px;
+                        background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
                         padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background: #e8f0fe; border-color: #1a73e8; }
+                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
                     QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
                 """
                 for i in range(max_slots):  # 根据等级限制槽位数量
@@ -477,7 +481,7 @@ class DetailPanel(QWidget):
                     col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                     # 槽位标题
                     title = QLabel(f"槽{i+1}")
-                    title.setStyleSheet("font-size:9px;color:#888;font-weight:bold;")
+                    title.setStyleSheet("font-size:9px;color:#ccc;font-weight:bold;")
                     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     col_layout.addWidget(title)
                     if slot_mods:
@@ -495,7 +499,7 @@ class DetailPanel(QWidget):
                                 ob.setIconSize(QSize(28,28))
                             else:
                                 ob.setText(mid[:2])
-                                ob.setStyleSheet(SLOT_STYLE.replace("padding:2px;","padding:2px;font-size:8px;color:#666;"))
+                                ob.setStyleSheet(SLOT_STYLE.replace("padding:2px;","padding:2px;font-size:8px;color:#bbb;"))
                             tt_parts = [mod.get("name", mid)]
                             mod_dict = mod.get("modifiers", {})
                             if mod_dict:
@@ -552,21 +556,233 @@ class DetailPanel(QWidget):
                 cl.addWidget(upgrade_container)
                 layout.addWidget(col)
 
-            elif section_key == "signal":  # 第3列：信号旗
+            elif section_key == "signal":  # 第3列：信号旗（6槽位，图片按钮）
                 col, cl = _col("信号旗")
-                signal_row = QWidget()
-                sl = QHBoxLayout(signal_row)
-                sl.setContentsMargins(0,0,0,0); sl.setSpacing(4)
-                sl.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                for i in range(8):
-                    btn = QPushButton(f"  ⬜")
-                    btn.setStyleSheet(ITEM_STYLE)
-                    btn.setFixedSize(36, 36)
-                    btn.setEnabled(False)
-                    btn.setToolTip(f"信号旗槽位 {i+1}")
-                    sl.addWidget(btn)
-                sl.addStretch()
-                cl.addWidget(signal_row)
+                signal_flags_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "signal_flags"
+                slot_types_dir = signal_flags_dir / "slot_types"
+                signal_slots = config.get("signal_slots", [])
+                SIG_BTN = """
+                    QPushButton { background: #3a3a3a; border: 1px solid #555;
+                    border-radius: 4px; padding: 0; }
+                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
+                    QPushButton:checked { background: #4a4a4a; border: 2px solid #1a73e8; }
+                """
+                RARITY_NAMES = {1: "标准", 2: "特殊", 3: "稀有", 4: "精英"}
+                from models.name_mapping import Mapping as _NM
+
+                def _fmt_mod(mk, mv):
+                    """格式化修饰符显示值：Bonus 类为加法值，其余为乘法因子"""
+                    cn = _NM.MODIFIER_MAP.get(mk, mk)
+                    # 处理分舰种字典
+                    if isinstance(mv, dict):
+                        _st = config.get("shiptype", "")
+                        mv = mv.get(_st) or next((v for v in mv.values() if isinstance(v, (int, float))), 0)
+                    if isinstance(mv, (int, float)):
+                        if 'Bonus' in mk:
+                            return f"{cn}: {mv*100:+.1f}%"
+                        else:
+                            pct = (mv - 1) * 100
+                            return f"{cn}: {pct:+.1f}%"
+                    return f"{cn}: {mv}"
+
+                # 恢复信号旗选择的辅助函数
+                def _restore_flag(btn, flag_data, fd_dir):
+                    img_key = flag_data.get("image_key", flag_data['mod_id'])
+                    flag_img = fd_dir / f"{img_key}.png"
+                    btn.setChecked(True)
+                    if flag_img.exists():
+                        pix = QPixmap(str(flag_img))
+                        btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                        btn.setIconSize(QSize(36,36))
+                    btn.setText("")
+                    mods_str = ""
+                    if flag_data.get("modifiers"):
+                        items = []
+                        for mk, mv in flag_data["modifiers"].items():
+                            items.append(_fmt_mod(mk, mv))
+                        if items:
+                            mods_str = "\n" + "\n".join(items)
+                    btn.setToolTip(f"{flag_data.get('name','')}{mods_str}\n{flag_data.get('label','')}")
+
+                # 顶部：6个槽位按钮
+                slot_grid = QWidget()
+                grid = QGridLayout(slot_grid)
+                grid.setContentsMargins(0,0,0,0); grid.setSpacing(4)
+                slot_btns: list[QPushButton] = []
+                for si, slot in enumerate(signal_slots):
+                    slot_label = slot.get('label', '')
+                    slot_img = slot_types_dir / f"Param{si:03d}_SlotType.png"
+                    btn = QPushButton()
+                    btn.setFixedSize(40, 40)
+                    btn.setCheckable(True)
+                    btn.setStyleSheet(SIG_BTN)
+                    btn.setToolTip(f"槽{si+1}: {slot_label}")
+                    if slot_img.exists():
+                        pix = QPixmap(str(slot_img))
+                        btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                        btn.setIconSize(QSize(36,36))
+                    else:
+                        btn.setText("⬜")
+                    slot_btns.append(btn)
+                    grid.addWidget(btn, 0, si, Qt.AlignmentFlag.AlignCenter)
+                    lbl = QLabel(f"槽{si+1}")
+                    lbl.setStyleSheet("font-size:8px;color:#aaa;")
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    grid.addWidget(lbl, 1, si, Qt.AlignmentFlag.AlignCenter)
+                cl.addWidget(slot_grid)
+
+                # 信号旗选择面板：预先为每个槽位创建一页
+                flag_stack = QStackedWidget()
+                flag_stack.setVisible(False)
+                flag_stack.setStyleSheet("QStackedWidget{background:#2a2a2a;border:1px solid #555;border-radius:4px;}")
+                flag_stack.setMaximumWidth(220)
+                _active_slot = [-1]  # 当前展开的槽位索引，-1=无
+                MENU_BTN = """
+                    QPushButton { background: #3a3a3a; border: none;
+                    border-radius: 3px; padding: 1px 4px; text-align: left;
+                    font-size: 10px; color: #ddd; min-height: 18px; }
+                    QPushButton:hover { background: #4a4a4a; }
+                    QPushButton:checked { background: #1a73e8; }
+                """
+                from models.name_mapping import Mapping as _NM
+
+                # 恢复之前保存的信号旗选择状态
+                self._signal_slot_btns = slot_btns
+                for si, btn in enumerate(slot_btns):
+                    if si in self._selected_signal_flags:
+                        fd = self._selected_signal_flags[si]
+                        _restore_flag(btn, fd, signal_flags_dir)
+
+                # 每个槽位一页（纵排菜单）
+                for si, slot in enumerate(signal_slots):
+                    page = QWidget()
+                    pl = QVBoxLayout(page)
+                    pl.setContentsMargins(2,2,2,2); pl.setSpacing(1)
+                    flags = slot.get("flags", [])
+                    slot_label = slot.get("label", "")
+                    slot_btn = slot_btns[si]
+
+                    # "不使用" 选项
+                    none_btn = QPushButton()
+                    none_btn.setStyleSheet(MENU_BTN)
+                    none_btn.setIcon(QIcon())  # 清除图标
+                    none_btn.setText("  ✕  不使用")
+                    none_btn.setToolTip("清除该槽位的信号旗")
+                    none_btn.clicked.connect(lambda checked=False, b=slot_btn, idx=si, st_dir=slot_types_dir, lb=slot_label: (
+                        _clear_signal_flag(b, idx, st_dir, lb),
+                        flag_stack.setVisible(False),
+                        _active_slot.__setitem__(0, -1)
+                    ))
+                    pl.addWidget(none_btn)
+
+                    for f in flags:
+                        flag_img = signal_flags_dir / f"{f.get('image_key', f['mod_id'])}.png"
+                        disp_name = f.get("name", f['mod_id'])
+                        rarity_label = RARITY_NAMES.get(f.get("rarity", 0), str(f.get("rarity", 0)))
+                        # tooltip：加成效果
+                        mods_str = ""
+                        if f.get("modifiers"):
+                            items = []
+                            for mk, mv in f["modifiers"].items():
+                                items.append(_fmt_mod(mk, mv))
+                            if items:
+                                mods_str = "\n" + "\n".join(items)
+                        mitem = QPushButton()
+                        mitem.setStyleSheet(MENU_BTN)
+                        if flag_img.exists():
+                            pixf = QPixmap(str(flag_img))
+                            mitem.setIcon(QIcon(pixf.scaled(24,24,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                            mitem.setIconSize(QSize(24,24))
+                        # 显示名称 + 稀有度
+                        mitem.setText(f"  {disp_name}")
+                        mitem.setToolTip(f"{disp_name}\n{mods_str}" if mods_str else disp_name)
+                        fd = f
+                        mitem.clicked.connect(lambda checked=False, b=slot_btn, fdata=fd, lb=slot_label, fd_dir=signal_flags_dir: (
+                            _apply_signal_flag(b, fdata, lb, fd_dir),
+                            flag_stack.setVisible(False),
+                            _active_slot.__setitem__(0, -1)
+                        ))
+                        pl.addWidget(mitem)
+                    pl.addStretch()
+                    flag_stack.addWidget(page)
+
+                # 点击槽位切换选择面板（再次点击同一个关闭，点击其他自动切换）
+                def _on_slot_click(idx):
+                    # 取消其他槽位的选中状态
+                    for bi, b in enumerate(slot_btns):
+                        if bi != idx:
+                            b.setChecked(False)
+                    if _active_slot[0] == idx and flag_stack.isVisible():
+                        flag_stack.setVisible(False)
+                        _active_slot[0] = -1
+                        slot_btns[idx].setChecked(False)
+                    else:
+                        flag_stack.setCurrentIndex(idx)
+                        flag_stack.setVisible(True)
+                        _active_slot[0] = idx
+                for si in range(len(signal_slots)):
+                    slot_btns[si].clicked.connect(lambda checked, idx=si: _on_slot_click(idx))
+
+                cl.addWidget(flag_stack)
+
+                def _apply_signal_flag(btn, flag_data, slot_label, fd_dir):
+                    btn.setChecked(True)
+                    img_key = flag_data.get("image_key", flag_data['mod_id'])
+                    flag_img = fd_dir / f"{img_key}.png"
+                    if flag_img.exists():
+                        pix2 = QPixmap(str(flag_img))
+                        btn.setIcon(QIcon(pix2.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                        btn.setIconSize(QSize(36,36))
+                    btn.setText("")
+                    mods_str = ""
+                    if flag_data.get("modifiers"):
+                        items = []
+                        for mk, mv in flag_data["modifiers"].items():
+                            items.append(_fmt_mod(mk, mv))
+                        if items:
+                            mods_str = "\n" + "\n".join(items)
+                    btn.setToolTip(f"{flag_data.get('name','')}{mods_str}\n{slot_label}")
+                    # 存储选择并触发重算
+                    si = next((i for i, b in enumerate(slot_btns) if b is btn), -1)
+                    if si >= 0:
+                        self._selected_signal_flags[si] = flag_data
+                        _trigger_signal_refresh()
+
+                def _clear_signal_flag(btn, slot_idx, st_dir, slot_label):
+                    btn.setChecked(False)
+                    slot_img = st_dir / f"Param{slot_idx:03d}_SlotType.png"
+                    if slot_img.exists():
+                        pix3 = QPixmap(str(slot_img))
+                        btn.setIcon(QIcon(pix3.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
+                        btn.setIconSize(QSize(36,36))
+                    btn.setText("")
+                    btn.setToolTip(f"槽{slot_idx+1}: {slot_label}")
+                    # 清除选择并触发重算
+                    if slot_idx in self._selected_signal_flags:
+                        del self._selected_signal_flags[slot_idx]
+                        _trigger_signal_refresh()
+
+                def _trigger_signal_refresh():
+                    """将信号旗修饰符合并到升级品修饰符中一起重算"""
+                    all_mods = {}
+                    _st = config.get("shiptype", "")
+                    if hasattr(self, '_selected_mods'):
+                        for m in self._selected_mods.values():
+                            mods = m.get("modifiers", {})
+                            if isinstance(mods, dict):
+                                for k, v in mods.items():
+                                    if isinstance(v, dict):
+                                        v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
+                                    all_mods[k] = v
+                    for fd in self._selected_signal_flags.values():
+                        mods = fd.get("modifiers", {})
+                        if isinstance(mods, dict):
+                            for k, v in mods.items():
+                                if isinstance(v, dict):
+                                    v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
+                                all_mods[k] = v
+                    self._refresh_with_modifiers(all_mods if all_mods else None)
+
                 cl.addStretch()
                 layout.addWidget(col)
 
@@ -578,7 +794,7 @@ class DetailPanel(QWidget):
                 cb.setStyleSheet("font-size:11px; padding:2px 4px;")
                 cl.addWidget(cb)
                 pts = QLabel("技能点数: 0 / 21")
-                pts.setStyleSheet("font-size:10px; color:#888; padding:2px 0;")
+                pts.setStyleSheet("font-size:10px; color:#aaa; padding:2px 0;")
                 cl.addWidget(pts)
                 grid_label = QLabel("（技能加点暂未实现）")
                 grid_label.setStyleSheet("font-size:10px; color:#bbb; padding:8px 0;")
@@ -805,7 +1021,7 @@ class DetailPanel(QWidget):
                             for ai in ga:
                                 an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
-                                btn.setStyleSheet("QPushButton{background:rgba(240,244,250,0.9);border:1px solid rgba(200,216,232,0.5);border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:rgba(228,236,245,0.95);border-color:#1a73e8;}QPushButton:checked{background:#1a73e8;border-color:#1a73e8;}")
+                                btn.setStyleSheet("QPushButton{background:#3a3a3a;border:1px solid #555;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:#4a4a4a;border-color:#1a73e8;}QPushButton:checked{background:#1a73e8;border-color:#1a73e8;}")
                                 btn.setToolTip(an)
                                 cand = []
                                 if sp: cand.append(f"ammo_{sp}_{at}_0.png" if at else f"ammo_{sp}_0.png")
@@ -884,14 +1100,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: rgba(228, 236, 245, 0.95);
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -1021,14 +1237,14 @@ class DetailPanel(QWidget):
                 if raw_con:
                     CON_BTN_STYLE = """
                         QPushButton {
-                            background: rgba(240, 244, 250, 0.9);
-                            border: 1px solid rgba(200, 216, 232, 0.5);
+                            background: #3a3a3a;
+                            border: 1px solid #555;
                             border-radius: 6px; padding: 2px;
                             min-width: 40px; min-height: 40px;
                             max-width: 40px; max-height: 40px;
                         }
                         QPushButton:hover {
-                            background: rgba(228, 236, 245, 0.95);
+                            background: #4a4a4a;
                             border-color: #1a73e8;
                         }
                         QPushButton:checked {
@@ -1157,13 +1373,13 @@ class DetailPanel(QWidget):
         ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
-            QPushButton:hover { background: rgba(228, 236, 245, 0.95); border-color: #1a73e8; }
+            QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
             QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
         """
 
@@ -1277,14 +1493,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: rgba(228, 236, 245, 0.95);
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
         """
@@ -1301,7 +1517,7 @@ class DetailPanel(QWidget):
 
             # 槽位编号标签
             slot_label = QLabel(f"槽{slot_idx}")
-            slot_label.setStyleSheet("font-size:10px; color:#888; min-width:24px;")
+            slot_label.setStyleSheet("font-size:10px; color:#aaa; min-width:24px;")
             slot_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sr_layout.addWidget(slot_label)
 
@@ -1373,14 +1589,14 @@ class DetailPanel(QWidget):
         btn.setObjectName(f"rage_{rname}")
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 32px; min-height: 32px;
                 max-width: 32px; max-height: 32px;
             }
             QPushButton:hover {
-                background: rgba(228, 236, 245, 0.95);
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -1436,12 +1652,12 @@ class DetailPanel(QWidget):
             rl.setSpacing(12) # 键值对之间的横向间距拉开
 
             name_lbl = QLabel(name)
-            name_lbl.setStyleSheet("font-size:11px; color:#888; background:transparent;")
+            name_lbl.setStyleSheet("font-size:11px; color:#bbb; background:transparent;")
             name_lbl.setFixedWidth(80)
             rl.addWidget(name_lbl)
 
             display_value = f"{value} {unit}" if unit and value else (value or unit or "")
-            fg = "#1a1a1a"
+            fg = "#000000"
             if "%" in display_value:
                 stripped = display_value.strip()
                 if stripped.startswith("+"):
@@ -1497,14 +1713,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: rgba(240, 244, 250, 0.9);
-                border: 1px solid rgba(200, 216, 232, 0.5);
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: rgba(228, 236, 245, 0.95);
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -2071,9 +2287,9 @@ class DetailPanel(QWidget):
             cstack.addWidget(te)
             btn = QPushButton(cl)
             btn.setCheckable(True)
-            btn.setStyleSheet("QPushButton{background:transparent;color:#555;border:none;"
+            btn.setStyleSheet("QPushButton{background:#3a3a3a;color:#ddd;border:1px solid #555;"
                               "border-radius:4px;padding:4px 10px;font-size:11px;}"
-                              "QPushButton:hover{background:#d0d0d0;color:#333;}"
+                              "QPushButton:hover{background:#4a4a4a;color:#fff;}"
                               "QPushButton:checked{background:#0078d4;color:#fff;}")
             btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
             blay.addWidget(btn)
