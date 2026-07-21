@@ -44,7 +44,38 @@ def import_text_to_db(db=None) -> dict:
     if target.exists:
         nm = target.import_name_mappings(str(get_data_dir()))
         po_path = get_data_dir() / "global.po"
-        po_cnt = target.import_po_translations(str(po_path)) if po_path.exists() else 0
+        po_cnt = 0
+
+        # 先于 import_po_translations 读取 PO（因为该函数会删除文件）
+        if po_path.exists():
+            try:
+                raw_po = po_path.read_text(encoding="utf-8", errors="ignore")
+                bus.log_message.emit(f"📖 读取 PO 文件: {len(raw_po)} bytes")
+                # 从 PO 导入舰长名翻译
+                cur = target._conn.execute(
+                    "SELECT DISTINCT person_name FROM crew_basic_info WHERE person_name != ''")
+                all_names = [r[0] for r in cur.fetchall()]
+                bus.log_message.emit(f"👤 查询到 {len(all_names)} 个舰长")
+                crew_items = []
+                for pname in all_names:
+                    m = re.search(rf'msgid "IDS_{re.escape(pname.upper())}"\s+msgstr "(.*?)"', raw_po)
+                    if m and m.group(1) and not m.group(1).startswith("IDS_"):
+                        crew_items.append(("crew", f"IDS_{pname.upper()}", m.group(1)))
+                bus.log_message.emit(f"🌐 PO 中匹配到 {len(crew_items)} 个舰长翻译")
+                if crew_items:
+                    target._conn.executemany(
+                        "UPDATE name_mappings SET lang_zh=? WHERE category=? AND key_name=?",
+                        [(zh, cat, key) for (cat, key, zh) in crew_items])
+                    affected = target._conn.total_changes
+                    target._conn.commit()
+                    po_cnt += len(crew_items)
+                    bus.log_message.emit(f"✅ 已更新 {len(crew_items)} 条舰长名翻译")
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 舰长名翻译导入失败: {e}")
+                import traceback
+                bus.log_message.emit(traceback.format_exc())
+
+        po_cnt += target.import_po_translations(str(po_path)) if po_path.exists() else 0
         return {"name_mappings": nm, "po_translations": po_cnt}
     return {"name_mappings": {}, "po_translations": 0}
 
@@ -56,6 +87,35 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     raw = open(po_path, 'r', encoding='utf-8', errors='ignore').read()
     raw = raw.replace('˙', '·')
 
+    # 预处理：合并 PO 多行 msgstr（msgstr "" 后跟多个 "续行"）
+    def _join_po_multiline(text: str) -> str:
+        """将 msgstr 的多行续行格式合并为单行"""
+        lines = text.splitlines(keepends=True)
+        result = []
+        in_msgstr = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('msgstr '):
+                in_msgstr = True
+                result.append(line)
+            elif in_msgstr and stripped.startswith('"') and not stripped.startswith('msgid ') and not stripped.startswith('msgstr '):
+                # 续行：去掉首尾引号，内容追加到上一行
+                if result and result[-1].strip().startswith('msgstr ""'):
+                    # msgstr "" 后第一个续行：替换 msgstr "" 为 msgstr "内容"
+                    content = stripped[1:-1]
+                    result[-1] = f'msgstr "{content}"\n'
+                elif result:
+                    # 后续续行：追加内容到上一行的 msgstr 中
+                    content = stripped[1:-1]
+                    last = result[-1]
+                    if last.strip().startswith('msgstr "') and last.strip().endswith('"'):
+                        result[-1] = last.rstrip('\n')[:-1] + content + '"\n'
+            else:
+                in_msgstr = False
+                result.append(line)
+        return ''.join(result)
+    raw = _join_po_multiline(raw)
+
     def save(data, fn):
         p = os.path.join(out_dir, fn)
         with open(p, 'w', encoding='utf-8') as f:
@@ -64,8 +124,10 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
 
     stats = {}
 
+    _Q = r'"((?:[^"\\]|\\.)*)"'  # 匹配带转义引号的引号字符串
+
     # 消耗品
-    pat = re.compile(r'msgid "IDS_DOCK_CONSUME_TITLE_((?:P[XYC]\d{3}|[A-Z0-9]+)_[A-Z0-9_]+)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_DOCK_CONSUME_TITLE_((?:P[XYC]\d{3}|[A-Z0-9]+)_[A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k: v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["consumable_names"] = {"path": save(data, "consumable_names.json"), "count": len(data)}
 
@@ -86,34 +148,44 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     stats["ship_names"] = {"path": save(ship_map, "ship_names.json"), "count": len(ship_map)}
 
     # 火炮
-    pat = re.compile(r'msgid "IDS_(P[A-Z]G[A-Z]+.*?)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(P[A-Z]G[A-Z]+.*?)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k: v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_DOCK")}
     stats["guns_names"] = {"path": save(data, "guns_names.json"), "count": len(data)}
 
     # 弹药
-    pat = re.compile(r'msgid "IDS_(P[A-Z]P[ABDLMRTW]+\d+\S*?)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(P[A-Z]P[ABDLMRTW]+\d+\S*?)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["ammo_names"] = {"path": save(data, "ammo_names.json"), "count": len(data)}
 
     # 升级品
-    pat = re.compile(r'msgid "IDS_(?:TITLE_|MODERNIZATION_)?(P[CU]M\d{3}[A-Z0-9_]*?)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(?:TITLE_|MODERNIZATION_)?(P[CU]M\d{3}[A-Z0-9_]*?)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["modernization_names"] = {"path": save(data, "modernization_names.json"), "count": len(data)}
 
     # 飞机
-    pat = re.compile(r'msgid "IDS_(P[A-Z]A[BDFMLSX][A-Z0-9_]*)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(P[A-Z]A[BDFMLSX][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["plane_names"] = {"path": save(data, "plane_names.json"), "count": len(data)}
 
     # 狂暴模式
-    pat = re.compile(r'msgid\s+"(IDS_DOCK_RAGE_MODE_TITLE_.*?)"\s+msgstr\s+"(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid\s+"(IDS_DOCK_RAGE_MODE_TITLE_.*?)"\s+msgstr\s+' + _Q, re.MULTILINE)
     data = {k: v for k, v in pat.findall(raw) if v.strip()}
     stats["rage_mode_names"] = {"path": save(data, "rage_mode_names.json"), "count": len(data)}
 
     # 舰船升级键（ShipUpgradeInfo 中的 upgrade_key，如 PAUH941_MIDWAY_1945）
-    pat = re.compile(r'msgid "IDS_(PAU[A-Z][A-Z0-9_]*)"\s+msgstr "(.*?)"', re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(PAU[A-Z][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["module_upgrade_names"] = {"path": save(data, "module_upgrade_names.json"), "count": len(data)}
+
+    # 舰长技能标题（IDS_SKILL_XXX，排除 IDS_SKILL_DESC_XXX）
+    pat = re.compile(r'msgid "IDS_SKILL_(?!DESC_)([A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
+    data = {k.lower(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    stats["skill_names"] = {"path": save(data, "skill_names.json"), "count": len(data)}
+
+    # 舰长技能描述（IDS_SKILL_DESC_XXX）
+    pat = re.compile(r'msgid "IDS_SKILL_DESC_([A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
+    data = {k.lower(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    stats["skill_descriptions"] = {"path": save(data, "skill_descriptions.json"), "count": len(data)}
 
     return stats
 
@@ -206,6 +278,10 @@ def run_localization() -> None:
             import glob
             for f in glob.glob(os.path.join(str(data_dir), "*_names.json")):
                 try: os.remove(f)
+                except: pass
+            skill_desc_path = os.path.join(str(data_dir), "skill_descriptions.json")
+            if os.path.exists(skill_desc_path):
+                try: os.remove(skill_desc_path)
                 except: pass
             pof = os.path.join(str(data_dir), "global.po")
             if os.path.exists(pof):

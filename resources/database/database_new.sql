@@ -601,6 +601,25 @@ CREATE TABLE IF NOT EXISTS projectile_bomb_ext (
     FOREIGN KEY (version_code, projectile_id) REFERENCES projectile_basic_info(version_code, projectile_id) ON DELETE CASCADE
 );
 
+-- 2f. 水雷属性扩增表 (species='Mine' / 'PlaneSeaMine')
+CREATE TABLE IF NOT EXISTS projectile_mine_ext (
+    version_code TEXT NOT NULL,
+    projectile_id TEXT NOT NULL,
+    alpha_damage REAL,
+    damage REAL,
+    explosion_radius REAL,
+    burn_prob REAL,
+    flood_generation REAL,
+    uw_critical REAL,
+    health REAL,
+    max_depth REAL,
+    fall_time REAL,
+    affected_by_ptz INTEGER,
+    apply_ptz_coeff INTEGER,
+    PRIMARY KEY (version_code, projectile_id),
+    FOREIGN KEY (version_code, projectile_id) REFERENCES projectile_basic_info(version_code, projectile_id) ON DELETE CASCADE
+);
+
 -- ═════════════════════════════════════════════════════════════════════
 -- 3c. 消耗品组件信息层 (Consumable Module Info)
 -- ═════════════════════════════════════════════════════════════════════
@@ -689,13 +708,30 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     skip_height REAL,                     -- 跳弹轰炸机：弹跳高度/距离
     aiming_height REAL,                   -- 跳弹轰炸机：瞄准视角基准高度
     post_attack_invulnerability_duration REAL,
+    jato_duration REAL,
+    jato_speed_mult REAL,
     ability_slot_0 TEXT,
     ability_slot_1 TEXT,
     ability_slot_2 TEXT,
     ability_slot_3 TEXT,
     ability_slot_4 TEXT,
+    field_minefield TEXT,
     PRIMARY KEY (version_code, plane_id),
     FOREIGN KEY (version_code, plane_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
+);
+
+-- 雷场定义（来自 Aircraft 的 field 引用）
+CREATE TABLE IF NOT EXISTS minefield_info (
+    version_code TEXT NOT NULL,
+    minefield_id TEXT NOT NULL,
+    radius REAL DEFAULT 0,
+    activation_delay REAL DEFAULT 0,
+    life_time REAL DEFAULT 0,
+    mines INTEGER DEFAULT -1,
+    distribution_json TEXT DEFAULT '{}',
+    sea_mine_id TEXT DEFAULT '',
+    depth REAL DEFAULT 0,
+    PRIMARY KEY (version_code, minefield_id)
 );
 
 
@@ -739,8 +775,34 @@ CREATE TABLE IF NOT EXISTS crew_unique_skills (
     trigger_join_ribbons INTEGER DEFAULT 0,
     trigger_allowed_ships TEXT,
     effects_json TEXT DEFAULT '{}',
+    icon_path TEXT DEFAULT '',
     PRIMARY KEY (version_code, crew_id, skill_key),
     FOREIGN KEY (version_code, crew_id) REFERENCES crew_basic_info(version_code, crew_id) ON DELETE CASCADE
+);
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 4b. 指挥官技能系统
+-- ═════════════════════════════════════════════════════════════════════
+
+-- 技能效果定义（来自 PCOK 文件）
+CREATE TABLE IF NOT EXISTS crew_skill_definitions (
+    version_code TEXT NOT NULL,
+    skill_key TEXT NOT NULL,
+    rarity TEXT NOT NULL DEFAULT 'REGULAR',
+    modifiers_json TEXT DEFAULT '{}',
+    trigger_json TEXT DEFAULT '{}',
+    available_ship_types TEXT DEFAULT '[]',
+    PRIMARY KEY (version_code, skill_key, rarity)
+);
+
+-- 技能容器（来自 PCOL 文件）
+CREATE TABLE IF NOT EXISTS crew_skill_containers (
+    version_code TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    skill_key TEXT NOT NULL,
+    skill_type TEXT DEFAULT '',
+    ship_type_subtypes TEXT DEFAULT '{}',
+    PRIMARY KEY (version_code, container_id, skill_key)
 );
 
 

@@ -202,7 +202,7 @@ class ShipPresenter(BasePresenter):
                                 new_val = orig * mv
                             else:
                                 new_val = orig + mv
-                            item["value"] = f"{round(new_val):.2f}".rstrip("0").rstrip(".") + suffix
+                            item["value"] = f"{new_val:.2f}".rstrip("0").rstrip(".") + suffix
                         except (ValueError, TypeError):
                             pass
 
@@ -252,6 +252,29 @@ class ShipPresenter(BasePresenter):
         if modifiers:
             for sec in sections:
                 self._apply_modifiers([sec], modifiers)
+            # 战术机组不享受机库加成：从舰载机段恢复 hangar 原始值
+            if "planeExtraHangarSize" in modifiers and self._aircraft_sub_info:
+                _has_tactical = any(
+                    _cv.get("tactical")
+                    for _sv in self._aircraft_sub_info.values()
+                    for _tv in _sv.get('sub_contents', {}).values()
+                    for _cv in _tv.get('config_contents', {}).values()
+                )
+                if _has_tactical:
+                    for sec in sections:
+                        if sec.get("label") == "舰载机":
+                            _mv = self._get_mod_value(modifiers["planeExtraHangarSize"])
+                            for item in sec.get("items", []):
+                                name = item.get("name", "")
+                                if name in ("最大可用数量", "开局可用数量"):
+                                    vstr = item.get("value", "")
+                                    m = __import__('re').match(r'([\d.]+)\s*架', vstr)
+                                    if m:
+                                        if 0.5 <= _mv <= 1.5:
+                                            restored = float(m.group(1)) / _mv
+                                        else:
+                                            restored = float(m.group(1)) - _mv
+                                        item["value"] = f"{restored:.0f} 架"
             # 应用到弹药详情（带 section label 以便 GS 等前缀过滤）
             for sec in sections:
                 sec_label = sec.get("label", "")
@@ -948,36 +971,44 @@ class ShipPresenter(BasePresenter):
                 "SELECT * FROM ship_module_hulls_ext WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",
                 (vc, ship_id, h['config_group'], h['module_key'])).fetchone()
             if ext:
+                # 主要参数作为单独行显示
                 for col, label, unit in [
                     ("battery_capacity", "电池容量", ""),
                     ("battery_regen", "电力恢复", "/s"),
                     ("hydrophone_radius", "水听器工作半径", "km"),
-                    ("hydrophone_update_freq", "水听器更新周期", "s"),
                     ("buoyancy_rudder_time", "水平舵转舵时间", "s"),
-                    ("max_buoyancy_speed", "最大上浮/下潜速度", "kts"),
                 ]:
                     v = ext[col]
                     if v is not None:
                         items.append(self.make_item(label, f"{v:.2f}" if isinstance(v, float) else str(v), o, unit=unit))
                         o += 1
 
-                # 深度状态
+                # 其余参数收进 tooltip
+                sub_details = []
+                for col, label, unit in [
+                    ("hydrophone_update_freq", "水听器更新周期", "s"),
+                    ("max_buoyancy_speed", "最大上浮/下潜速度", "kts"),
+                ]:
+                    v = ext[col]
+                    if v is not None:
+                        sub_details.append(self.make_item(label, f"{v:.2f}" if isinstance(v, float) else str(v), len(sub_details), unit=unit))
+
+                # 深度状态：计算实际航速 = 基础最大航速 × 系数
+                base_speed = h['max_speed']
                 for ds in conn.execute(
                     "SELECT * FROM ship_sub_depth_states WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",
                     (vc, ship_id, h['config_group'], h['module_key'])).fetchall():
                     cn_name = NM.DEPTH_MAP.get(ds['state_name'], ds['state_name'])
-                    depth_val = f"航速×{ds['underwater_max_speed']}"
+                    speed_val = base_speed * ds['underwater_max_speed']
+                    depth_val = f"{speed_val:.1f}"
                     if ds['visibility_factor'] is not None:
-                        depth_val += f", 隐蔽×{ds['visibility_factor']}"
-                    items.append(self.make_item(f"深度-{cn_name}", depth_val, o)); o += 1
+                        depth_val += f"（隐蔽×{ds['visibility_factor']}）"
+                    sub_details.append(self.make_item(f"{cn_name}航速", depth_val, len(sub_details), unit="kts"))
 
-                    raw_ammo_types.append({
-                        "ammo_id": aid, "name": aname,
-                        "species": p['species'] or "", "ammo_type": dtype,
-                        "detail_items": detail_items,
-                    })
-                else:
-                    items.append(self.make_item(aname, "", o)); o += 1
+                if sub_details:
+                    items.append(self.make_item("潜艇性能", "查看详情", o, details=sub_details))
+                    o += 1
+
         if items:
             result[letter] = items
 
@@ -1357,10 +1388,14 @@ class ShipPresenter(BasePresenter):
                     if dist: detail_items.append(self.make_item("射程", f"{dist * 0.03:.2f}", di, unit="km")); di += 1
                     if p['torpedo_visibility']: detail_items.append(self.make_item("被发现距离", f"{p['torpedo_visibility']:.2f}", di, unit="km")); di += 1
                     if p['torpedo_arming_time']: detail_items.append(self.make_item("鱼雷上浮时间", f"{p['torpedo_arming_time']:.2f}", di, unit="s")); di += 1
+                    # 鱼雷上浮距离 = 上浮时间 × 航速（1kts = 0.514444m/s）
+                    if p['torpedo_arming_time'] and p['torpedo_speed']:
+                        arm_dist = p['torpedo_speed'] * 0.514444 * p['torpedo_arming_time']
+                        detail_items.append(self.make_item("鱼雷上浮距离", f"{arm_dist:.0f}", di, unit="m")); di += 1
                     if p['flood_generation'] and p['uw_critical']:
                         detail_items.append(self.make_item("漏水系数", f"{p['uw_critical']:.2f}", di, details=[{"name":"进水基础概率", "value": str(p['flood_generation'])}])); di += 1
                     if p['affected_by_ptz']:
-                        detail_items.append(self.make_item("受ПТЗ影响", "是", di)); di += 1
+                        detail_items.append(self.make_item("受PTZ影响", "是", di)); di += 1
                     if is_burn and p['burn_prob']:
                         detail_items.append(self.make_item("基础点火率", f"{p['burn_prob']*100:.0f}", di, unit="%")); di += 1
                     if sge:
@@ -1508,6 +1543,7 @@ class ShipPresenter(BasePresenter):
         TYPE_LABEL = {
             "Fighter": "攻击机", "DiveBomber": "轰炸机",
             "TorpedoBomber": "鱼雷机", "SkipBomber": "弹跳轰炸机",
+            "MineBomber": "水雷轰炸机",
         }
         # 按 plane_type 分组
         by_type: dict[str, list] = {}
@@ -1519,7 +1555,7 @@ class ShipPresenter(BasePresenter):
         sub_labels: list[str] = []
         sub_keys: dict[str, str] = {}  # 显示名称 → 内部类型 key
         sub_contents: dict = {}
-        for ptype in ("Fighter", "DiveBomber", "TorpedoBomber", "SkipBomber", "其他"):
+        for ptype in ("Fighter", "DiveBomber", "TorpedoBomber", "SkipBomber", "MineBomber", "其他"):
             rows = by_type.get(ptype)
             if not rows:
                 continue
@@ -1565,7 +1601,8 @@ class ShipPresenter(BasePresenter):
                     pid = {}
                     if pi:
                         pid = dict(pi)
-                        if pid.get('preparation_time', 1) == 0:
+                        # 战术机组：机库初始值为 0（无预备队，整队恢复）
+                        if pid.get('hangar_start_value', 1) == 0:
                             is_tactical = True
                         if pid.get('plane_level'): items.append(self.make_item("飞机等级", str(pid['plane_level']), o)); o += 1
                         smwb = pid.get('speed_move_with_bomb')
@@ -1579,8 +1616,12 @@ class ShipPresenter(BasePresenter):
                             if pid.get('max_speed'): items.append(self.make_item("航速", str(pid['max_speed']), o, unit="kts")); o += 1
                             if pid.get('cruising_speed'): items.append(self.make_item("巡航速度", str(pid['cruising_speed']), o, unit="kts")); o += 1
                         if pid.get('hp'): items.append(self.make_item("单架飞机血量", str(pid['hp']), o)); o += 1
+                        if pid.get('fuel_time'): items.append(self.make_item("加力条时长", f"{pid['fuel_time']:.0f}", o, unit="s")); o += 1
+                        if pid.get('jato_duration'):
+                            items.append(self.make_item("喷气助推时长", f"{pid['jato_duration']:.0f}", o, unit="s")); o += 1
+                            if pid.get('jato_speed_mult'): items.append(self.make_item("喷气助推倍率", f"{pid['jato_speed_mult']:.2f}", o)); o += 1
                         ac = pid.get('attack_count') or 0
-                        if ac: items.append(self.make_item("载弹量", str(ac), o)); o += 1
+                        if ac and ptype != "MineBomber": items.append(self.make_item("载弹量", str(ac), o)); o += 1
                         if pid.get('attack_cooldown'): items.append(self.make_item("攻击冷却时间", str(pid['attack_cooldown']), o, unit="s")); o += 1
                         if pid.get('arrange_size') and pid['arrange_size'] > 0:
                             items.append(self.make_item("中队规模", str(pid['arrange_size']), o)); o += 1
@@ -1642,9 +1683,18 @@ class ShipPresenter(BasePresenter):
                         bname = pid.get('bomb_name') or ""
                     else:
                         ac = 0; bname = ""
-                    # ── 弹药数据（收集到 raw_ammo_types，类似火炮 _collect_ammo_types）──
+                    minefield_override_proj = None; _mf = None
+                    # ── 水雷机：先从雷场数据中读取属性，再取 seaMine 作弹药 ──
+                    if pid.get("field_minefield"):
+                        _mf = conn.execute(
+                            "SELECT radius, activation_delay, life_time, mines, distribution_json, sea_mine_id, depth "
+                            "FROM minefield_info WHERE version_code=? AND minefield_id=?",
+                            (vc, pid["field_minefield"])).fetchone()
+                        if _mf and _mf["sea_mine_id"]:
+                            minefield_override_proj = _mf["sea_mine_id"]
+                    # ── 弹药数据（收集到 raw_ammo_types）──
                     arm = p.get('armament_name') or ""
-                    proj_id = arm or bname
+                    proj_id = minefield_override_proj or arm or bname
                     if proj_id:
                         pbi = conn.execute(
                             "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
@@ -1702,6 +1752,44 @@ class ShipPresenter(BasePresenter):
                                 asq = conn.execute("SELECT attack_sequence_durations FROM projectile_rocket_ext WHERE version_code=? AND projectile_id=?", (vc, proj_id)).fetchone()
                                 if asq and asq['attack_sequence_durations']:
                                     di = self._append_strafe_time(detail_items, asq['attack_sequence_durations'], di)
+                            elif species in ("PlaneSeaMine", "Mine"):
+                                be = conn.execute(
+                                    "SELECT alpha_damage, explosion_radius, burn_prob, "
+                                    "flood_generation, uw_critical, health, max_depth, fall_time, "
+                                    "affected_by_ptz, apply_ptz_coeff "
+                                    "FROM projectile_mine_ext WHERE version_code=? AND projectile_id=?", (vc, proj_id)).fetchone()
+                                if be:
+                                    if be['alpha_damage']: detail_items.append(self.make_item("最大伤害", f"{be['alpha_damage']:.0f}", di)); di += 1
+                                    if be['explosion_radius']: detail_items.append(self.make_item("爆炸半径", f"{be['explosion_radius']:.1f}", di, unit="m")); di += 1
+                                    if be['burn_prob'] is not None: detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.1f}", di, unit="%")); di += 1
+                                    if be['health']: detail_items.append(self.make_item("水雷生命值", f"{be['health']:.0f}", di)); di += 1
+                                    if be['max_depth'] is not None: detail_items.append(self.make_item("最大深度", f"{be['max_depth']:.0f}", di, unit="m")); di += 1
+                                    if be['uw_critical']: detail_items.append(
+                                        self.make_item("漏水系数", f"{be['uw_critical']:.2f}", di,
+                                            details=[{"name":"进水基础概率","value":"是" if be['flood_generation'] else "否"}])
+                                    ); di += 1
+                                    if be['affected_by_ptz']: detail_items.append(self.make_item("受PTZ影响", "是", di)); di += 1
+                                # ── 上级雷场属性 ──
+                                if _mf:
+                                    # 激活时间 = (attackCount-1) × attackInterval + fallTime + activationDelay
+                                    _ac = pid.get('attack_count') or 0
+                                    _ai = pid.get('attack_interval') or 0
+                                    _ft = be['fall_time'] if be and be['fall_time'] else 0
+                                    _ad = _mf['activation_delay'] or 0
+                                    _total = (_ac - 1) * _ai + _ft + _ad
+                                    if _total: detail_items.append(self.make_item("激活时间", f"{_total:.1f}", di, unit="s")); di += 1
+                                    if _mf["life_time"]: detail_items.append(self.make_item("雷区持续时间", f"{_mf['life_time']:.1f}", di, unit="s")); di += 1
+                                    if _mf["radius"]: detail_items.append(self.make_item("雷区半径", f"{_mf['radius']:.0f}", di, unit="m")); di += 1
+                                    _dist = json.loads(_mf["distribution_json"]) if _mf["distribution_json"] else {}
+                                    if _dist:
+                                        _keys = sorted([float(k) for k in _dist.keys()])
+                                        if _keys:
+                                            if _keys[0] > 0: detail_items.append(self.make_item("散布圈最小半径", f"{_keys[0]:.0f}", di, unit="m")); di += 1
+                                            if _keys[-1] > 0: detail_items.append(self.make_item("散布圈最大半径", f"{_keys[-1]:.0f}", di, unit="m")); di += 1
+                                    if _mf["depth"] is not None: detail_items.append(self.make_item("雷区深度", f"{_mf['depth']:.1f}", di, unit="m")); di += 1
+                                    if _mf["mines"] is not None and _mf["mines"] > 0:
+                                        detail_items.append(self.make_item("水雷数量", str(_mf["mines"]), di)); di += 1
+                                detail_items.append(self.make_item("弹种", "水雷", di)); di += 1
                             elif species in ("Torpedo", "TorpedoBomber"):
                                 te = conn.execute(
                                     "SELECT alpha_damage, damage, torpedo_speed, torpedo_max_dist, torpedo_visibility, "
@@ -1726,7 +1814,7 @@ class ShipPresenter(BasePresenter):
                                         detail_items.append(self.make_item("漏水系数", f"{te['uw_critical']:.2f}", di,
                                             details=[{"name":"进水基础概率","value":str(te['flood_generation'])}])); di += 1
                                     if te['affected_by_ptz']:
-                                        detail_items.append(self.make_item("受ПТЗ影响", "是", di)); di += 1
+                                        detail_items.append(self.make_item("受PTZ影响", "是", di)); di += 1
                                     if te['torpedo_visibility']: detail_items.append(self.make_item("鱼雷被侦测距离", f"{te['torpedo_visibility']:.2f}", di, unit="km")); di += 1
                                     if te['torpedo_arming_time']: detail_items.append(self.make_item("鱼雷上浮时间", f"{te['torpedo_arming_time']:.2f}", di, unit="s")); di += 1
                                     if is_burn and te['burn_prob']: detail_items.append(self.make_item("基础点火率", f"{te['burn_prob']*100:.0f}", di, unit="%")); di += 1
@@ -2282,7 +2370,9 @@ class ShipPresenter(BasePresenter):
         return {
             "nation": nation_name,
             "tier": basic['tier'],
+            "ship_id": ship_id,
             "shiptype": self.resolve_enum("ship_class", basic['shiptype']) if basic['shiptype'] else "",
+            "shiptype_en": basic['shiptype'] or "",
             "module_groups": module_groups,
             "engine": engine_name,
             "consumables": consumables,
