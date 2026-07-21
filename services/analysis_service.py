@@ -581,8 +581,10 @@ class AnalysisStore:
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  visibility_factor_by_plane, has_citadel,
                  hull_regen_part, citadel_regen_part, engine_power,
-                 draft, torpedo_protection)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 length, width, height,
+                 draft, torpedo_protection, fire_duration, flood_duration,
+                 fire_prob, flood_prob, fire_dps, flood_dps)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),
@@ -592,8 +594,23 @@ class AnalysisStore:
                  _bn(mod_data.get("Cit")),
                  hull.get("regeneratedHPPart"), cit.get("regeneratedHPPart"),
                  mod_data.get("enginePower"),
+                 _v((mod_data.get("size") or [None])[0]) if mod_data.get("size") and len(mod_data["size"]) > 0 else None,
+                 _v((mod_data.get("size") or [None])[1]) if mod_data.get("size") and len(mod_data["size"]) > 1 else None,
+                 _v((mod_data.get("size") or [None])[2]) if mod_data.get("size") and len(mod_data["size"]) > 2 else None,
                  _v(mod_data.get("draft")),
-                 _v(mod_data.get("underwaterProtection"))))
+                 # 鱼雷防护(ПТЗ) = 1 - 进水概率 × 3（floodNodes[0][0] 即进水概率）
+                 (1.0 - _v((mod_data.get("floodNodes") or [None])[0][0]) * 3.0)
+                 if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 0
+                 and _v((mod_data.get("floodNodes") or [None])[0][0]) is not None
+                 else None,
+                 # 从 burnNodes 取第三个值（起火持续时间），第一个值（起火概率），第二个值（每秒灼烧血量%）
+                 _v((mod_data.get("burnNodes") or [None])[0][2]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 2 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][2]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 2 else None,
+                 _v((mod_data.get("burnNodes") or [None])[0][0]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 0 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][0]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 0 else None,
+                 # 每秒灼烧/进水血量百分比
+                 _v((mod_data.get("burnNodes") or [None])[0][1]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 1 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][1]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 1 else None))
             if sub:
                 conn.execute("""INSERT OR REPLACE INTO ship_module_hulls_ext
                     (version_code, ship_id, config_group, module_key,

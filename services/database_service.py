@@ -253,6 +253,16 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 ship_module_hulls 缺少的 size 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}
+            for col, typ in [("length", "REAL"), ("width", "REAL"), ("height", "REAL")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_hulls ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：补齐 ship_rage_mode 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
