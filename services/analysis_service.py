@@ -451,15 +451,25 @@ class AnalysisStore:
                             elif hp_cat == "DepthChargeGuns":
                                 # 模块级数据
                                 ammo_id = (sv.get("ammoList") or [None])[0]
-                                cs.setdefault("depth_charge", []).append({
-                                    "gun_name": gn, "count": 1,
-                                    "reload_time": _v(module_data.get("reloadTime")),
-                                    "shot_delay": _v(module_data.get("shotDelay")),
-                                    "max_packs": _v(module_data.get("maxPacks")),
-                                    "num_shots": _v(module_data.get("numShots")),
-                                    "num_bombs": _v(sv.get("numBombs")),
-                                    "ammo_id": ammo_id,
-                                })
+                                # 同 gun_name 合并计数
+                                dc_list = cs.setdefault("depth_charge", [])
+                                existing = None
+                                for dc in dc_list:
+                                    if dc["gun_name"] == gn:
+                                        existing = dc
+                                        break
+                                if existing:
+                                    existing["count"] += 1
+                                else:
+                                    dc_list.append({
+                                        "gun_name": gn, "count": 1,
+                                        "reload_time": _v(module_data.get("reloadTime")),
+                                        "shot_delay": _v(module_data.get("shotDelay")),
+                                        "max_packs": _v(module_data.get("maxPacks")),
+                                        "num_shots": _v(module_data.get("numShots")),
+                                        "num_bombs": _v(sv.get("numBombs")),
+                                        "ammo_id": ammo_id,
+                                    })
                         break
 
                 if current_cat == "Artillery":
