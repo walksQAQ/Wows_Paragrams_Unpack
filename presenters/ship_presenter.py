@@ -37,6 +37,7 @@ class ShipPresenter(BasePresenter):
         "speedCoef": "最大航速",
         "rudderTime": "转舵时间",
         "healthHullCoeff": "基础血量",
+        "healthPerLevel": "基础血量",
         "visibilityDistCoeff": "水面隐蔽",
         "planeVisibilityFactor": "被侦测距离",
         "burnProb": "起火的风险",
@@ -197,6 +198,10 @@ class ShipPresenter(BasePresenter):
                             # planeAdditionalConsumables 总是加算
                             if mod_key == "planeAdditionalConsumables":
                                 new_val = orig + mv
+                            # healthPerLevel：每个战舰等级提升的生命值（加算 × 等级）
+                            elif mod_key == "healthPerLevel":
+                                _tier = getattr(self, '_current_tier', 0)
+                                new_val = orig + mv * _tier
                             # 乘算系数 (0.5~1.5) vs 加算值
                             elif 0.5 <= mv <= 1.5:
                                 new_val = orig * mv
@@ -249,6 +254,7 @@ class ShipPresenter(BasePresenter):
 
         # ── 5. 应用升级品修饰符 ─────────────────────────
         self._mod_ship_type = basic['shiptype'] or ''
+        self._current_tier = basic['tier'] or 0
         if modifiers:
             for sec in sections:
                 self._apply_modifiers([sec], modifiers)
@@ -1617,9 +1623,13 @@ class ShipPresenter(BasePresenter):
                             if pid.get('cruising_speed'): items.append(self.make_item("巡航速度", str(pid['cruising_speed']), o, unit="kts")); o += 1
                         if pid.get('hp'): items.append(self.make_item("单架飞机血量", str(pid['hp']), o)); o += 1
                         if pid.get('fuel_time'): items.append(self.make_item("加力条时长", f"{pid['fuel_time']:.0f}", o, unit="s")); o += 1
-                        if pid.get('jato_duration'):
-                            items.append(self.make_item("喷气助推时长", f"{pid['jato_duration']:.0f}", o, unit="s")); o += 1
-                            if pid.get('jato_speed_mult'): items.append(self.make_item("喷气助推倍率", f"{pid['jato_speed_mult']:.2f}", o)); o += 1
+                        _jato_dur = pid.get('jato_duration')
+                        if _jato_dur:
+                            items.append(self.make_item("喷气式助推器作用时间", f"{_jato_dur:.0f}", o, unit="s")); o += 1
+                            _jato_mult = pid.get('jato_speed_mult')
+                            _cspeed = smwb or pid.get('cruising_speed')
+                            if _cspeed and _jato_mult:
+                                items.append(self.make_item("喷气式助推器生效期间巡航速度", f"{_cspeed * _jato_mult:.0f}", o, unit="kts")); o += 1
                         ac = pid.get('attack_count') or 0
                         if ac and ptype != "MineBomber": items.append(self.make_item("载弹量", str(ac), o)); o += 1
                         if pid.get('attack_cooldown'): items.append(self.make_item("攻击冷却时间", str(pid['attack_cooldown']), o, unit="s")); o += 1

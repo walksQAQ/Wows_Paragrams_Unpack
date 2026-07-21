@@ -142,7 +142,7 @@ class Mapping:
         "speedBatteryLastChanceCoeff": "位于水面时的航速",
         "pingerReloadCoeff": "声呐冷却时间",
         "healthHullCoeff": "战舰生命值",
-        "healthPerLevel": "每个战舰等级提升的生命值",
+        "healthPerLevel": "基础血量",
         "healthRegen": "每秒回复血量",
         "vulnerabilityBurn": "受到的火灾伤害",
         "vulnerabilityFlood": "受到的进水伤害",
