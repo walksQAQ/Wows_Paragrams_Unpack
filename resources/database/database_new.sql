@@ -118,6 +118,8 @@ CREATE TABLE IF NOT EXISTS ship_module_hulls (
     hull_regen_part REAL,                -- 船体恢复比例
     citadel_regen_part REAL,             -- 核心恢复比例
     engine_power REAL,                   -- 引擎马力 (hp)
+    draft REAL,                          -- 吃水深度 (m)
+    torpedo_protection REAL,             -- 鱼雷防护(ПТЗ)减伤百分比
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -351,6 +353,8 @@ CREATE TABLE IF NOT EXISTS ship_module_engine (
     backward_max_speed REAL,
     forward_forsage_power REAL,
     backward_forsage_power REAL,
+    forward_speed_on_flood REAL,       -- 进水时前进速度惩罚系数
+    backward_speed_on_flood REAL,      -- 进水时后退速度惩罚系数
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -388,6 +392,18 @@ CREATE TABLE IF NOT EXISTS ship_consumable_slots (
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
+-- 12. 信号旗数据表（从 Exterior/PCEF*.json 提取）
+CREATE TABLE IF NOT EXISTS signal_flags (
+    version_code TEXT NOT NULL,
+    mod_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    rarity INTEGER DEFAULT 1,
+    signal_type INTEGER DEFAULT 0,
+    modifiers_json TEXT DEFAULT '{}',
+    flags_json TEXT DEFAULT '[]',
+    cost_cr INTEGER DEFAULT 0,
+    PRIMARY KEY (version_code, mod_id)
+);
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 3b. 武器模块配套弹药信息层 (Weapon Module Ammo Info)

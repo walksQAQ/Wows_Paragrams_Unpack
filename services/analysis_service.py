@@ -580,8 +580,9 @@ class AnalysisStore:
                 (version_code, ship_id, config_group, module_key, health, max_speed,
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  visibility_factor_by_plane, has_citadel,
-                 hull_regen_part, citadel_regen_part, engine_power)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 hull_regen_part, citadel_regen_part, engine_power,
+                 draft, torpedo_protection)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),
@@ -590,7 +591,9 @@ class AnalysisStore:
                  mod_data.get("visibilityFactorByPlane"),
                  _bn(mod_data.get("Cit")),
                  hull.get("regeneratedHPPart"), cit.get("regeneratedHPPart"),
-                 mod_data.get("enginePower")))
+                 mod_data.get("enginePower"),
+                 _v(mod_data.get("draft")),
+                 _v(mod_data.get("underwaterProtection"))))
             if sub:
                 conn.execute("""INSERT OR REPLACE INTO ship_module_hulls_ext
                     (version_code, ship_id, config_group, module_key,
@@ -641,11 +644,13 @@ class AnalysisStore:
                 hms = md["maxSpeed"]
                 break
         bs = hms * (1 + (_v(eng.get("backwardSpeedOnFlood"), 0))) if hms else None
-        self.conn.execute("INSERT OR REPLACE INTO ship_module_engine (version_code, ship_id, config_group, module_key, engine_type, engine_power, forward_max_speed, backward_max_speed, forward_forsage_power, backward_forsage_power) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        self.conn.execute("INSERT OR REPLACE INTO ship_module_engine (version_code, ship_id, config_group, module_key, engine_type, engine_power, forward_max_speed, backward_max_speed, forward_forsage_power, backward_forsage_power, forward_speed_on_flood, backward_speed_on_flood) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                           (version_code, ship_id, "A", "EngineDefault", eng.get("engineType"),
                            eng.get("histEnginePower") or eng.get("enginePower"),
                            hms, bs, eng.get("forwardEngineForsag") or eng.get("forwardEngineForsagMaxSpeed"),
-                           eng.get("backwardEngineForsag") or eng.get("backwardEngineForsagMaxSpeed")))
+                           eng.get("backwardEngineForsag") or eng.get("backwardEngineForsagMaxSpeed"),
+                           _v(eng.get("forwardSpeedOnFlood")),
+                           _v(eng.get("backwardSpeedOnFlood"))))
 
     def _weapon_groups(self, items, *keys):
         g: dict = {}
@@ -1129,6 +1134,22 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
                           str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
                           _json_dumps(eff)))
 
+    # ── 8. Signal Flags (Exterior/PCEF*) ────────────────
+
+    def store_signal_flag(self, mod_id: str, raw_data: dict, version_code: str = ""):
+        conn = self.conn
+        actual_id = raw_data.get("index", mod_id)
+        conn.execute("""INSERT OR REPLACE INTO signal_flags
+            (version_code, mod_id, name, rarity, signal_type, modifiers_json, flags_json, cost_cr)
+            VALUES (?,?,?,?,?,?,?,?)""",
+                     (version_code, actual_id,
+                      raw_data.get("name", ""),
+                      raw_data.get("rarity", 1),
+                      raw_data.get("signalType", 0),
+                      _json_dumps(raw_data.get("modifiers", {})),
+                      _json_dumps(raw_data.get("flags", [])),
+                      raw_data.get("costCR", 0)))
+
 
 # ═════════════════════════════════════════════════════════════════════
 # AnalysisService —— 分析编排器
@@ -1156,6 +1177,7 @@ class AnalysisService:
             "Ship": store.store_ship, "Projectile": store.store_projectile,
             "Aircraft": store.store_plane, "Ability": store.store_consumable,
             "Modernization": store.store_mod, "Crew": store.store_crew,
+            "Exterior": store.store_signal_flag,
         }
         m = func_map.get(category)
         if not m:
@@ -1174,7 +1196,7 @@ class AnalysisService:
         results: dict[str, int] = {}
         total_processed = 0
         split_dir = get_split_dir()
-        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew"]
+        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew", "Exterior"]
         raw_conn = db._conn
 
         def _process_batch(items):
@@ -1221,6 +1243,9 @@ class AnalysisService:
                     results[cat_name] = 0
                     continue
                 fps = sorted(cat_dir.glob("*.json"))
+                # Exterior 目录只取 PCEF 开头的战斗信号旗
+                if cat_name == "Exterior":
+                    fps = [f for f in fps if f.stem.startswith("PCEF")]
                 items = []
                 for fp in fps:
                     try:

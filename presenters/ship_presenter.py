@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from pathlib import Path
 
 from presenters.base_presenter import BasePresenter, NM
 from models.name_mapping import Mapping
@@ -198,7 +199,7 @@ class ShipPresenter(BasePresenter):
                                 new_val = orig * mv
                             else:
                                 new_val = orig + mv
-                            item["value"] = f"{new_val:.2f}".rstrip("0").rstrip(".") + suffix
+                            item["value"] = f"{round(new_val):.2f}".rstrip("0").rstrip(".") + suffix
                         except (ValueError, TypeError):
                             pass
 
@@ -879,6 +880,26 @@ class ShipPresenter(BasePresenter):
                     items.append(self.make_item(label, f"{val:.0f}" if col in ("health","engine_power") else f"{val:.2f}", o, unit=unit))
                     o += 1
 
+            # 吃水深度
+            if h['draft'] is not None:
+                items.append(self.make_item("吃水深度", f"{h['draft']:.1f}", o, unit="m")); o += 1
+
+            # 鱼雷防护 ПТЗ
+            if h['torpedo_protection'] is not None:
+                items.append(self.make_item("鱼雷防护(ПТЗ)", f"{h['torpedo_protection']:.0f}", o, unit="%")); o += 1
+
+            # 进水时航速惩罚
+            eng = conn.execute(
+                "SELECT forward_speed_on_flood, backward_speed_on_flood FROM ship_module_engine WHERE version_code=? AND ship_id=?",
+                (vc, ship_id)).fetchone()
+            if eng:
+                fwd = eng['forward_speed_on_flood']
+                bwd = eng['backward_speed_on_flood']
+                if fwd is not None:
+                    items.append(self.make_item("进水前进速度", f"{fwd*100:+.0f}", o, unit="%")); o += 1
+                if bwd is not None:
+                    items.append(self.make_item("进水后退速度", f"{bwd*100:+.0f}", o, unit="%")); o += 1
+
             # 隐蔽（带最小隐蔽详情）
             for col, label in [("conceal_sea", "水面隐蔽"), ("conceal_air", "空中隐蔽")]:
                 val = h[col]
@@ -1276,7 +1297,7 @@ class ShipPresenter(BasePresenter):
                 p = conn.execute(
                     "SELECT pb.species, pb.custom_ui_postfix, te.alpha_damage, te.damage, te.torpedo_speed, "
                     "te.torpedo_max_dist, te.torpedo_visibility, te.torpedo_arming_time, "
-                    "te.burn_prob, te.uw_critical, te.is_deep_water, te.flood_generation "
+                    "te.burn_prob, te.uw_critical, te.is_deep_water, te.flood_generation, te.affected_by_ptz "
                     "FROM projectile_basic_info pb "
                     "LEFT JOIN projectile_torpedo_ext te ON te.version_code=pb.version_code AND te.projectile_id=pb.projectile_id "
                     "WHERE pb.version_code=? AND pb.projectile_id=?",
@@ -1310,7 +1331,9 @@ class ShipPresenter(BasePresenter):
                     if p['torpedo_visibility']: detail_items.append(self.make_item("被发现距离", f"{p['torpedo_visibility']:.2f}", di, unit="km")); di += 1
                     if p['torpedo_arming_time']: detail_items.append(self.make_item("鱼雷上浮时间", f"{p['torpedo_arming_time']:.2f}", di, unit="s")); di += 1
                     if p['flood_generation'] and p['uw_critical']:
-                        detail_items.append(self.make_item("基础漏水系数", f"{p['uw_critical']:.2f}", di)); di += 1
+                        detail_items.append(self.make_item("漏水系数", f"{p['uw_critical']:.2f}", di, details=[{"name":"进水基础概率", "value": str(p['flood_generation'])}])); di += 1
+                    if p['affected_by_ptz']:
+                        detail_items.append(self.make_item("受ПТЗ影响", "是", di)); di += 1
                     if is_burn and p['burn_prob']:
                         detail_items.append(self.make_item("基础点火率", f"{p['burn_prob']*100:.0f}", di, unit="%")); di += 1
                     if sge:
@@ -1434,7 +1457,7 @@ class ShipPresenter(BasePresenter):
             if rd['depth_splash_size']: detail_items.append(self.make_item("溅射范围", f"{rd['depth_splash_size']:.2f}", di, unit="m")); di += 1
             raw_ammo_types.append({
                 "ammo_id": rd['projectile_id'],
-                "name": name_str,
+                "name": self.resolve_name('ammo', rd['projectile_id']) or rd['projectile_id'],
                 "species": "DepthCharge",
                 "ammo_type": "深弹",
                 "detail_items": detail_items,
@@ -1655,7 +1678,8 @@ class ShipPresenter(BasePresenter):
                             elif species in ("Torpedo", "TorpedoBomber"):
                                 te = conn.execute(
                                     "SELECT alpha_damage, damage, torpedo_speed, torpedo_max_dist, torpedo_visibility, "
-                                    "torpedo_arming_time, burn_prob, uw_critical, flood_generation, is_deep_water, deep_water_ignore_classes, alert_dist "
+                                    "torpedo_arming_time, burn_prob, uw_critical, flood_generation, is_deep_water, "
+                                    "deep_water_ignore_classes, alert_dist, affected_by_ptz "
                                     "FROM projectile_torpedo_ext WHERE version_code=? AND projectile_id=?", (vc, proj_id)).fetchone()
                                 if te:
                                     sge = conn.execute(
@@ -1671,7 +1695,11 @@ class ShipPresenter(BasePresenter):
                                     if is_deep and te['deep_water_ignore_classes']: detail_items.append(self.make_item("无法攻击目标", te['deep_water_ignore_classes'], di)); di += 1
                                     if te['torpedo_speed']: detail_items.append(self.make_item("航速", f"{te['torpedo_speed']:.0f}", di, unit="kts")); di += 1
                                     if te['torpedo_max_dist'] is not None: detail_items.append(self.make_item("最大射程", f"{(te['torpedo_max_dist'] * 30) / 1000:.2f}", di, unit="km")); di += 1
-                                    if te['flood_generation'] and te['uw_critical']: detail_items.append(self.make_item("基础漏水系数", f"{te['uw_critical']:.2f}", di)); di += 1
+                                    if te['flood_generation'] and te['uw_critical']:
+                                        detail_items.append(self.make_item("漏水系数", f"{te['uw_critical']:.2f}", di,
+                                            details=[{"name":"进水基础概率","value":str(te['flood_generation'])}])); di += 1
+                                    if te['affected_by_ptz']:
+                                        detail_items.append(self.make_item("受ПТЗ影响", "是", di)); di += 1
                                     if te['torpedo_visibility']: detail_items.append(self.make_item("鱼雷被侦测距离", f"{te['torpedo_visibility']:.2f}", di, unit="km")); di += 1
                                     if te['torpedo_arming_time']: detail_items.append(self.make_item("鱼雷上浮时间", f"{te['torpedo_arming_time']:.2f}", di, unit="s")); di += 1
                                     if is_burn and te['burn_prob']: detail_items.append(self.make_item("基础点火率", f"{te['burn_prob']*100:.0f}", di, unit="%")); di += 1
@@ -2068,6 +2096,72 @@ class ShipPresenter(BasePresenter):
         ship_tier = basic['tier'] or 0
         ship_group = basic['group_status_key'] or ""
         # 查国家
+
+        # ── 5. 信号旗数据 ────────────────────────────────
+        SIGNAL_SLOTS = [
+            {"key": "HPBoost", "label": "November"},
+            {"key": "GM", "label": "Yankee"},
+            {"key": "ATBA", "label": "Foxtrot"},
+            {"key": "Speed", "label": "Sierra"},
+            {"key": "Consumable", "label": "India"},
+            {"key": "Shift", "label": "Charlie"},
+        ]
+        SIGNAL_RARITY_NAMES = {1: "标准", 2: "特殊", 3: "稀有", 4: "精英"}
+        signal_slots: list[dict] = []
+        num_slots = 6
+        # 从数据库读取信号旗数据
+        all_flags: list[dict] = []
+        try:
+            for row in conn.execute(
+                "SELECT mod_id, name, rarity, signal_type, modifiers_json FROM signal_flags WHERE version_code=? ORDER BY rarity",
+                (vc,)).fetchall():
+                st = row['signal_type']
+                if not (0 <= st < 6):
+                    continue
+                mods = json.loads(row['modifiers_json'] or '{}')
+                raw_name = row['name'] or ""
+                type_label = SIGNAL_SLOTS[st]["label"]
+                disp_name = f"{type_label}信号旗·{SIGNAL_RARITY_NAMES.get(row['rarity'], str(row['rarity']))}"
+                all_flags.append({
+                    "mod_id": row['mod_id'],
+                    "name": disp_name,
+                    "raw_name": raw_name,
+                    "rarity": row['rarity'],
+                    "signalType": st,
+                    "modifiers": mods,
+                    "image_key": raw_name,
+                })
+        except Exception:
+            pass
+        # 如果数据库为空，直接从 JSON 文件读取（兼容旧数据库）
+        if not all_flags:
+            import glob as _glob
+            exterior_dir = Path(__file__).resolve().parent.parent / "data" / "split" / "Exterior"
+            for fp in sorted(exterior_dir.glob("PCEF*.json")) if exterior_dir.exists() else []:
+                try:
+                    with open(fp, "r", encoding="utf-8") as fh:
+                        obj = json.load(fh)
+                    st = obj.get("signalType", -1)
+                    if 0 <= st < 6:
+                        raw_name = obj.get("name", "")
+                        type_label = SIGNAL_SLOTS[st]["label"]
+                        disp_name = f"{type_label}信号旗·{SIGNAL_RARITY_NAMES.get(obj.get('rarity',1), str(obj.get('rarity',1)))}"
+                        all_flags.append({
+                            "mod_id": obj.get("index", ""),
+                            "name": disp_name,
+                            "raw_name": raw_name,
+                            "rarity": obj.get("rarity", 1),
+                            "signalType": st,
+                            "modifiers": obj.get("modifiers", {}),
+                            "image_key": raw_name,
+                        })
+                except Exception:
+                    pass
+        for i in range(num_slots):
+            slot_info = dict(SIGNAL_SLOTS[i])
+            slot_info["slot_idx"] = i
+            slot_info["flags"] = [f for f in all_flags if f["signalType"] == i]
+            signal_slots.append(slot_info)
         nat_row = conn.execute(
             "SELECT nation FROM entity_registry WHERE version_code=? AND entity_id=?",
             (vc, ship_id)).fetchone()
@@ -2167,4 +2261,5 @@ class ShipPresenter(BasePresenter):
             "consumables": consumables,
             "upgrades": upgrades,
             "modernizations": modernizations,
+            "signal_slots": signal_slots,
         }
