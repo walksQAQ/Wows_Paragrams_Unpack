@@ -37,14 +37,14 @@ CARD_STYLE = """
         padding: 8px 0px 2px 0px;
         font-size: 12px;
         font-weight: bold;
-        color: #222222;
+        color: #000000;
     }
     ShipCardWidget QGroupBox::title {
         subcontrol-origin: margin;
         subcontrol-position: top left;
         left: 10px;
         padding: 0 4px;
-        color: #444444;
+        color: #222222;
     }
 """
 
@@ -67,9 +67,9 @@ TABLE_STYLE = """
 """
 
 # 左列（标签）字体颜色
-LABEL_COLOR = "#888888"
+LABEL_COLOR = "#444444"
 # 右列（数值）字体颜色
-VALUE_COLOR = "#1a1a1a"
+VALUE_COLOR = "#000000"
 
 # ── 图标映射 ──────────────────────────────────────────────
 

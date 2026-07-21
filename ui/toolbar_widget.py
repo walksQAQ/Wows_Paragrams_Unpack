@@ -82,7 +82,7 @@ class TopToolbar(QWidget):
 
         # ── 服务器选择 ─
         lbl_server = QLabel("服务器选项：")
-        lbl_server.setStyleSheet("color: #cccccc; font-size: 12px;")
+        lbl_server.setStyleSheet("color: #444444; font-size: 12px;")
         layout.addWidget(lbl_server)
 
         sg = QButtonGroup(self)
