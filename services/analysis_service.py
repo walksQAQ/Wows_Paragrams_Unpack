@@ -13,7 +13,8 @@ from collections import Counter, defaultdict
 from typing import Callable, Optional
 
 from services.database_service import DatabaseManager
-from utils.path_utils import get_split_dir
+from pathlib import Path
+from utils.path_utils import get_split_dir, get_bundled_dir
 from app.signals import bus
 
 
@@ -94,6 +95,7 @@ MODULE_PATTERNS = {
     "DiveBomber": re.compile(r'(?:([A-Z]+\d*)_)?DiveBomber(?:Default)?'),
     "Fighter": re.compile(r'(?:([A-Z]+\d*)_)?Fighter(?:Default)?'),
     "SkipBomber": re.compile(r'(?:([A-Z]+\d*)_)?SkipBomber(?:Default)?'),
+    "MineBomber": re.compile(r'(?:([A-Z]+\d*)_)?MineBomber(?:Default)?'),
     "TorpedoBomber": re.compile(r'(?:([A-Z]+\d*)_)?TorpedoBomber(?:Default)?'),
     "AirSupport": re.compile(r'(?:([A-Z]+\d*)_)?AirSupport(?:Default)?'),
     "AirDefense": re.compile(r'(?:([A-Z]+\d*)_)?AirDefense(?:Default)?'),
@@ -205,6 +207,34 @@ PROJECTILE_EXT_MAP = {
             lambda r: 0,
         ),
     },
+    "Mine": {
+        "table": "projectile_mine_ext",
+        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
+                 "flood_generation, uw_critical, health, max_depth, fall_time, "
+                 "affected_by_ptz, apply_ptz_coeff"),
+        "phs": 11,
+        "fields": (
+            "alphaDamage", "damage", "explosionRadius", "burnProb",
+            lambda r: _bn(r.get("floodGeneration")),
+            "uwCritical", "health", "maxDepth", "fallTime",
+            lambda r: _bn(r.get("affectedByPTZ")),
+            lambda r: _bn(r.get("applyPTZCoeff")),
+        ),
+    },
+    "PlaneSeaMine": {
+        "table": "projectile_mine_ext",
+        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
+                 "flood_generation, uw_critical, health, max_depth, fall_time, "
+                 "affected_by_ptz, apply_ptz_coeff"),
+        "phs": 11,
+        "fields": (
+            "alphaDamage", "damage", "explosionRadius", "burnProb",
+            lambda r: _bn(r.get("floodGeneration")),
+            "uwCritical", "health", "maxDepth", "fallTime",
+            lambda r: _bn(r.get("affectedByPTZ")),
+            lambda r: _bn(r.get("applyPTZCoeff")),
+        ),
+    },
     "Rocket": {
         "table": "projectile_rocket_ext",
         "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
@@ -229,6 +259,24 @@ PROJECTILE_EXT_MAP = {
             "waveSpeed", "waveMaxDamagePct", "waveMinDamagePct",
             "waveSector", "attackSequenceDurations",
             "laserHeat", "laserHeatRadius", "laserDamageTypes"
+        ),
+    },
+    "PlaneSeaMine": {
+        "table": "projectile_bomb_ext",
+        "cols": ("damage, skips_json, max_skip_angle, "
+                 "alpha_damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
+                 "bullet_krupp, alpha_piercing_he, explosion_radius, burn_prob, "
+                 "alpha_piercing_cs, "
+                 "bullet_always_ricochet_at, bullet_ricochet_at, "
+                 "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max"),
+        "phs": 18,
+        "fields": (
+            "damage", lambda r: _json_dumps(r.get("skips") or r.get("skipParams")), "skipAngle",
+            "alphaDamage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
+            "bulletKrupp", "alphaPiercingHE", "explosionRadius", "burnProb",
+            "alphaPiercingCS",
+            "bulletAlwaysRicochetAt", "bulletRicochetAt",
+            "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle"
         ),
     },
 }
@@ -300,7 +348,7 @@ class AnalysisStore:
             variant = m2.group(2) if m2 and m2.group(2) else ""
 
             # 飞机（仅当存在纯 B 前缀的飞机模块时才拆 AB → A+B）
-            if current_cat in ("DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber"):
+            if current_cat in ("DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber", "MineBomber"):
                 if prefix == "AB":
                     has_pure_b_air = any(
                         k.startswith("B") and any(
@@ -1021,11 +1069,12 @@ class AnalysisStore:
                "inner_bombs_percentage, visibility_factor, "
                "skip_height, aiming_height, "
                "post_attack_invulnerability_duration, "
-               "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4) "
+               "jato_duration, jato_speed_mult, "
+               "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4, field_minefield) "
                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?)")
+               "?,?,?,?,?,?,?,?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
@@ -1070,11 +1119,30 @@ class AnalysisStore:
                       _v(raw_data.get("skipHeight")),
                       _v(raw_data.get("aimingHeight")),
                       _v(raw_data.get("postAttackInvulnerabilityDuration")),
+                      _v(raw_data.get("jatoDuration")),
+                      _v(raw_data.get("jatoSpeedMultiplier")),
                       _ability_str(raw_data.get("PlaneAbilities"), 0),
                       _ability_str(raw_data.get("PlaneAbilities"), 1),
                       _ability_str(raw_data.get("PlaneAbilities"), 2),
                       _ability_str(raw_data.get("PlaneAbilities"), 3),
-_ability_str(raw_data.get("PlaneAbilities"), 4)))
+_ability_str(raw_data.get("PlaneAbilities"), 4),
+                      raw_data.get("field") or ""))
+
+    def store_minefield(self, mfid: str, raw_data: dict, version_code: str = ""):
+        """存入雷场定义（Minefield Other 类型）"""
+        conn = self.conn
+        layer1 = raw_data.get("layer_1") or {}
+        conn.execute("""INSERT OR REPLACE INTO minefield_info
+            (version_code, minefield_id, radius, activation_delay, life_time, mines, distribution_json, sea_mine_id, depth)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (version_code, mfid,
+                      _v(raw_data.get("radius")),
+                      _v(raw_data.get("activationDelay")),
+                      _v(raw_data.get("lifeTime")),
+                      _i(raw_data.get("mines")),
+                      _json_dumps(raw_data.get("distribution", {})),
+                      raw_data.get("seaMine") or "",
+                      _v(layer1.get("depth"))))
 
     # ── 5. Ability ───────────────────────────────────────
 
@@ -1124,24 +1192,52 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
     def store_crew(self, crew_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
         pers = raw_data.get("CrewPersonality", {}) or {}
+        person_name = pers.get("personName", "")
+        # 写入 name_mappings：key = IDS_{personName 全大写}
+        name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
+                ("crew", name_key, person_name or crew_id))
+            conn.commit()
+        except Exception:
+            pass
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
             (version_code, crew_id, display_name_id, crew_index, crew_id_num, person_name, nation,
              is_unique, is_animated, is_elite, is_person, is_retrainable, skills_container, base_training_level)
             VALUES (?,?,(SELECT id FROM name_mappings WHERE category='crew' AND key_name=?),?,?,?,?,?,?,?,?,?,?,?)""",
-                     (version_code, crew_id, crew_id.upper(),
+                     (version_code, crew_id, name_key,
                       raw_data.get("index", crew_id), _i(raw_data.get("id")),
-                      pers.get("personName", ""), raw_data.get("typeinfo", {}).get("nation", ""),
+                      person_name, raw_data.get("typeinfo", {}).get("nation", ""),
                       _bn(pers.get("isUnique")), _bn(pers.get("isAnimated")),
                       _bn(pers.get("isElite")), _bn(pers.get("isPerson")),
                       _bn(pers.get("isRetrainable")), raw_data.get("skillsContainer"),
                       _v(raw_data.get("baseTrainingLevel"), 1)))
         unique = raw_data.get("UniqueSkills", {}) or {}
         MK = {"triggerIsSubRibbons", "triggerJoinRibbons", "triggerRibbonsTypes"}
+        talents_dir = get_bundled_dir() / "resources" / "pictures" / "talents"
+        # 图片文件名用的是短 index（如 PAW102），而不是带人名的全 ID（如 PAW102_Halsey）
+        crew_index = raw_data.get("index", crew_id).split("_")[0] if "_" in raw_data.get("index", crew_id) else raw_data.get("index", crew_id)
         for sk, sv in unique.items():
             if not isinstance(sv, dict):
                 continue
             eff = {ek: ev for ek, ev in sv.items() if ek not in MK and isinstance(ev, dict)}
-            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            # 查找天赋图标：文件名 = {crew_index}_{triggerType.upper()}_{uniqueTypes排序}.png
+            icon_path = ""
+            try:
+                unique_types = sorted(set(
+                    int(ev.get("uniqueType")) for ev in eff.values()
+                    if isinstance(ev, dict) and "uniqueType" in ev
+                ))
+                if unique_types:
+                    trigger_type_str = (sv.get("triggerType") or "achievement").upper()
+                    fname = f"{crew_index}_{trigger_type_str}_" + "_".join(str(t) for t in unique_types) + ".png"
+                    img_file = talents_dir / fname
+                    if img_file.exists():
+                        icon_path = str(img_file.resolve())
+            except Exception:
+                pass
+            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (version_code, crew_id, sk, _v(sv.get("sortIndex"), 0),
                           sv.get("triggerType"), sv.get("maxTriggerNum"),
                           sv.get("triggerAchievement"), sv.get("triggerDamageNum"),
@@ -1149,7 +1245,7 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
                           sv.get("triggerRibbonsNum"),
                           str(sv.get("triggerRibbonsTypes", [])),
                           str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
-                          _json_dumps(eff)))
+                          _json_dumps(eff), icon_path))
 
     # ── 8. Signal Flags (Exterior/PCEF*) ────────────────
 
@@ -1166,6 +1262,66 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
                       _json_dumps(raw_data.get("modifiers", {})),
                       _json_dumps(raw_data.get("flags", [])),
                       raw_data.get("costCR", 0)))
+
+    # ── 9. Skill Definitions (PCOK) ────────────────────
+
+    def store_skill_definition(self, skill_key: str, raw_data: dict, version_code: str = ""):
+        """存入 PCOK 技能效果定义"""
+        conn = self.conn
+        rarity_keys = [k for k in raw_data if k in ("COMMON","REGULAR","RARE","EPIC","LEGENDARY")]
+        for rarity in rarity_keys:
+            rd = raw_data[rarity]
+            mods = dict(rd.get("modifiers", {}))
+            trigger_data = {}
+            trigger_mods = {}
+            trigger = rd.get("LogicTrigger", {})
+            if isinstance(trigger, dict):
+                tmods = trigger.get("modifiers", {})
+                if tmods:
+                    trigger_mods = dict(tmods)
+                    # 记录触发条件（不合并到主 modifiers，UI 中分开显示）
+                    trigger_data = {
+                        "triggerType": trigger.get("triggerType", ""),
+                        "dividerValue": trigger.get("dividerValue", 1.0),
+                        "dividerType": trigger.get("dividerType", ""),
+                        "duration": trigger.get("duration", 0.0),
+                        "triggerRibbonsTypes": trigger.get("triggerRibbonsTypes", []),
+                        "triggerRibbonsNum": trigger.get("triggerRibbonsNum", 0),
+                        "triggerIsSubRibbons": trigger.get("triggerIsSubRibbons", False),
+                        "buffParamsName": trigger.get("buffParamsName", ""),
+                        "buoyancyStates": trigger.get("buoyancyStates", []),
+                        "burnCount": trigger.get("burnCount", 0),
+                        "floodCount": trigger.get("floodCount", 0),
+                        "coolingDelay": trigger.get("coolingDelay", 0.0),
+                        "changePriorityTargetPenalty": trigger.get("changePriorityTargetPenalty", 1.0),
+                        "heatInterpolator": trigger.get("heatInterpolator", []),
+                        "coolingInterpolator": trigger.get("coolingInterpolator", []),
+                        "modifiers": trigger_mods,
+                    }
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_definitions
+                (version_code, skill_key, rarity, modifiers_json, trigger_json, available_ship_types)
+                VALUES (?,?,?,?,?,?)""",
+                         (version_code, skill_key, rarity,
+                          _json_dumps(mods),
+                          _json_dumps(trigger_data),
+                          _json_dumps(rd.get("availableShipTypes", []))))
+
+    # ── 10. Skill Containers (PCOL) ────────────────────
+
+    def store_skill_container(self, container_id: str, raw_data: dict, version_code: str = ""):
+        """存入 PCOL 技能容器"""
+        conn = self.conn
+        for sk, sv in raw_data.items():
+            if sk in ("id", "index", "name", "typeinfo"):
+                continue
+            if not isinstance(sv, dict):
+                continue
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_containers
+                (version_code, container_id, skill_key, skill_type, ship_type_subtypes)
+                VALUES (?,?,?,?,?)""",
+                         (version_code, container_id, sk,
+                          sv.get("skillType", ""),
+                          _json_dumps(sv.get("skillSubTypeByShipType", {}))))
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1245,6 +1401,39 @@ class AnalysisService:
                     continue
                 items = sorted(cd.items())
                 results[cat_name] = _process_batch(items)
+
+            # ── 额外处理 PCOK/PCOL 技能数据 ──
+            try:
+                other_dir = get_split_dir() / "Other"
+                if other_dir.exists():
+                    store = AnalysisStore(db)
+                    for fp in sorted(other_dir.glob("PCOK*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
+                            store.store_skill_definition(skill_key, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    for fp in sorted(other_dir.glob("PCOL*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            store.store_skill_container(fp.stem, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    raw_conn.commit()
+                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
+                # ── 额外处理雷场数据 ──
+                for fp in sorted(other_dir.glob("*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        if raw.get("typeinfo", {}).get("species") == "Minefield":
+                            store.store_minefield(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+
             bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
         else:
             if not split_dir.exists():
@@ -1270,6 +1459,39 @@ class AnalysisService:
                     except Exception:
                         continue
                 results[cat_name] = _process_batch(items)
+
+            # ── 额外处理 PCOK/PCOL 技能数据 ──
+            try:
+                other_dir = split_dir / "Other"
+                if other_dir.exists():
+                    store = AnalysisStore(db)
+                    for fp in sorted(other_dir.glob("PCOK*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
+                            store.store_skill_definition(skill_key, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    for fp in sorted(other_dir.glob("PCOL*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            store.store_skill_container(fp.stem, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    raw_conn.commit()
+                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
+                # ── 额外处理雷场数据 ──
+                for fp in sorted(other_dir.glob("*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        if raw.get("typeinfo", {}).get("species") == "Minefield":
+                            store.store_minefield(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+
             bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
 
         return results

@@ -22,7 +22,6 @@ class CategoryBar(QWidget):
     # 分类定义：(图标, 显示名, 文件夹名)
     CATEGORIES = [
         ("🚢", "舰船", "Ship"),
-        ("👤", "舰长", "Crew"),
     ]
 
     BTN_STYLE = """

@@ -296,11 +296,10 @@ class ShipCardWidget(QGroupBox):
     def _adjust_height(self) -> None:
         """根据行数自动调整卡片高度"""
         rows = self._table.rowCount()
-        height = self._table.horizontalHeader().height() + 2
+        height = 4
         for r in range(rows):
             height += self._table.rowHeight(r) + 2
         self._table.setFixedHeight(height)
-        # 让卡片整体高度与表格一致（表格 + 标题留白）
         card_height = height + 22
         self.setFixedHeight(card_height)
 

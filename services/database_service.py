@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 18
+DB_SCHEMA_VERSION = 28
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -32,6 +32,8 @@ NAME_MAPPING_FILES: dict[str, str] = {
     "plane_names.json": "plane",
     "rage_mode_names.json": "rage_mode",
     "module_upgrade_names.json": "module_upgrade",
+    "skill_names.json": "skill_title",
+    "skill_descriptions.json": "skill_desc",
 }
 
 
@@ -268,6 +270,15 @@ class DatabaseManager:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
             if "rage_mode_name" not in existing:
                 self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN rage_mode_name TEXT DEFAULT ''")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 crew_unique_skills 缺少的 icon_path 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(crew_unique_skills)").fetchall()}
+            if "icon_path" not in existing:
+                self._conn.execute("ALTER TABLE crew_unique_skills ADD COLUMN icon_path TEXT DEFAULT ''")
                 self._conn.commit()
         except Exception:
             pass
@@ -572,11 +583,34 @@ class DatabaseManager:
             return 0
         text = fp.read_text(encoding="utf-8")
         fp.unlink(missing_ok=True)
+        # 合并多行 msgstr 续行格式
+        lines = text.splitlines(keepends=True)
+        merged = []
+        in_msgstr = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('msgstr '):
+                in_msgstr = True
+                merged.append(line)
+            elif in_msgstr and stripped.startswith('"') and not stripped.startswith('msgid '):
+                if merged and merged[-1].strip().startswith('msgstr ""'):
+                    content = stripped[1:-1]
+                    merged[-1] = f'msgstr "{content}"\n'
+                elif merged:
+                    content = stripped[1:-1]
+                    last = merged[-1]
+                    if last.strip().startswith('msgstr "') and last.strip().endswith('"'):
+                        merged[-1] = last.rstrip('\n')[:-1] + content + '"\n'
+            else:
+                in_msgstr = False
+                merged.append(line)
+        text = ''.join(merged)
         items = []
         blocks = re.split(r'\n(?=msgid)', text)
+        _Q = re.compile(r'^msgstr\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
         for block in blocks:
             m = re.search(r'^msgid\s+"(.+)"\s*$', block, re.MULTILINE)
-            s = re.search(r'^msgstr\s+"(.+)"\s*$', block, re.MULTILINE)
+            s = _Q.search(block)
             if m and s and m.group(1) and s.group(1):
                 items.append((m.group(1), s.group(1), ""))
         if items:
