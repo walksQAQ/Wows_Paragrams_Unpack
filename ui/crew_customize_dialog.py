@@ -9,8 +9,6 @@ CrewCustomizeDialog —— 自定义稀有/精英舰长的强化技能和国家�
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QGroupBox, QScrollArea, QWidget, QGridLayout,
@@ -285,7 +283,7 @@ class CrewCustomizeDialog(QDialog):
                             """)
                             hl.addWidget(cb)
                             # 图标
-                            if icon_path and Path(icon_path).exists():
+                            if icon_path:
                                 pix = QPixmap(icon_path)
                                 if not pix.isNull():
                                     icon_label = QLabel()
@@ -399,7 +397,7 @@ class CrewCustomizeDialog(QDialog):
                         QPushButton:hover { background:#e0e0e0; border-color:#999; }
                     """)
                     btn.setCheckable(False)
-                    if icon_path and Path(icon_path).exists():
+                    if icon_path:
                         pix = QPixmap(icon_path)
                         if not pix.isNull():
                             btn.setIcon(QIcon(pix))
@@ -432,7 +430,6 @@ class CrewCustomizeDialog(QDialog):
         from services.database_service import get_db
         from services.skill_service import SkillService
         from PySide6.QtWidgets import QCheckBox
-        from pathlib import Path
         from PySide6.QtGui import QPixmap, QIcon
         from PySide6.QtCore import QSize
         from models.name_mapping import Mapping as NMAP
@@ -544,15 +541,14 @@ class CrewCustomizeDialog(QDialog):
             self._epic_checkboxes[sk] = cb
             hl.addWidget(cb)
             # 技能图标
-            icon_path = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "skills" / f"{icon_name}.png"
-            if icon_path.exists():
-                pix = QPixmap(str(icon_path))
-                if not pix.isNull():
-                    icon_label = QLabel()
-                    icon_label.setPixmap(pix.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                    icon_label.setFixedSize(28, 28)
-                    icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
-                    hl.addWidget(icon_label)
+            icon_path = f":/resources/pictures/skills/{icon_name}.png"
+            pix = QPixmap(icon_path)
+            if not pix.isNull():
+                icon_label = QLabel()
+                icon_label.setPixmap(pix.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                icon_label.setFixedSize(28, 28)
+                icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
+                hl.addWidget(icon_label)
             # 技能名称
             name_label = QLabel(sname)
             name_label.setStyleSheet("color:#000; font-size:11px; font-weight:bold; min-width:80px;")

@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 from services.database_service import DatabaseManager
 from pathlib import Path
-from utils.path_utils import get_split_dir, get_bundled_dir
+from utils.path_utils import get_split_dir
 from app.signals import bus
 
 
@@ -470,10 +470,16 @@ class AnalysisStore:
                                 })
                                 cs.setdefault("atba", []).append(entry)
                             elif hp_cat == "Torpedoes":
+                                is_drum = module_data.get("isDrumChargeable", False)
+                                dctp = sv.get("drumChargeTimeParams")
                                 entry.update({
                                     "launcher_name": gn,
                                     "rotation_speed": _v((sv.get("rotationSpeed") or [None, None])[0]),
                                 })
+                                if is_drum and dctp and isinstance(dctp, (list, tuple)) and len(dctp) >= 3:
+                                    entry["is_drum_chargeable"] = _bn(is_drum)
+                                    entry["drum_charge_time"] = dctp[0]
+                                    entry["drum_max_charges"] = int(dctp[2])
                                 cs.setdefault("torpedoes", []).append(entry)
                             elif hp_cat == "AirDefense":
                                 if not re.match(r'^(Medium|Near|Far)\d*_?', gn):
@@ -862,6 +868,14 @@ class AnalysisStore:
                          (version_code, ship_id, letter, nm, cnt, _v(r.get("num_barrels"), 0), r.get("reload_time"), r.get("rotation_speed")))
             self._rel(ship_id, nm, "torpedo", letter, cnt, version_code)
             self._ammo(ship_id, nm, "torpedo", letter, r.get("ammo_list", []), version_code)
+            # 弹鼓/充能数据
+            if r.get("is_drum_chargeable"):
+                conn.execute("INSERT OR REPLACE INTO ship_module_torpedo_ext (version_code, ship_id, config_group, module_key, is_drum_chargeable, drum_charge_time, drum_max_charges, drum_full_reload_time) VALUES (?,?,?,?,?,?,?,?)",
+                             (version_code, ship_id, letter, nm,
+                              _v(r.get("is_drum_chargeable"), 0),
+                              _v(r.get("drum_charge_time"), 0),
+                              _v(r.get("drum_max_charges"), 0),
+                              _v(r.get("reload_time"), 0)))
 
     def _write_aa(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
@@ -1258,14 +1272,12 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
                       _v(raw_data.get("baseTrainingLevel"), 1)))
         unique = raw_data.get("UniqueSkills", {}) or {}
         MK = {"triggerIsSubRibbons", "triggerJoinRibbons", "triggerRibbonsTypes"}
-        talents_dir = get_bundled_dir() / "resources" / "pictures" / "talents"
-        # 图片文件名用的是短 index（如 PAW102），而不是带人名的全 ID（如 PAW102_Halsey）
+        # 天赋图标用 QRC 路径
         crew_index = raw_data.get("index", crew_id).split("_")[0] if "_" in raw_data.get("index", crew_id) else raw_data.get("index", crew_id)
         for sk, sv in unique.items():
             if not isinstance(sv, dict):
                 continue
             eff = {ek: ev for ek, ev in sv.items() if ek not in MK and isinstance(ev, dict)}
-            # 查找天赋图标：文件名 = {crew_index}_{triggerType.upper()}_{uniqueTypes排序}.png
             icon_path = ""
             try:
                 unique_types = sorted(set(
@@ -1275,9 +1287,7 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
                 if unique_types:
                     trigger_type_str = (sv.get("triggerType") or "achievement").upper()
                     fname = f"{crew_index}_{trigger_type_str}_" + "_".join(str(t) for t in unique_types) + ".png"
-                    img_file = talents_dir / fname
-                    if img_file.exists():
-                        icon_path = str(img_file.resolve())
+                    icon_path = f":/resources/pictures/talents/{fname}"
             except Exception:
                 pass
             conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

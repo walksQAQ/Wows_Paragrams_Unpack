@@ -1618,7 +1618,27 @@ class ShipPresenter(BasePresenter):
                 parts = [f"{n} x{c}" for n, c in zip(launcher_names, launcher_counts)]
                 name_str = " + ".join(parts)
             items.append(self.make_item("鱼雷发射管", name_str, o)); o += 1
-            if grp['reload_time']: items.append(self.make_item("装填时间", str(grp['reload_time']), o, unit="s")); o += 1
+            # 先检测是否有弹鼓/充能数据
+            has_drum = False
+            for mk in grp["launchers"]:
+                ext = conn.execute(
+                    "SELECT * FROM ship_module_torpedo_ext WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND module_key=?",
+                    (vc, ship_id, f"{letter}%", mk)).fetchone()
+                if ext and ext['is_drum_chargeable']:
+                    has_drum = True
+                    break
+            # 有弹鼓机制时不显示基础装填时间，用弹鼓数据替代
+            if has_drum:
+                items.append(self.make_item("特殊机制", "弹鼓式装填", o, row_type="header")); o += 1
+                ct = ext['drum_charge_time']
+                mc = ext['drum_max_charges']
+                if ct: items.append(self.make_item("单发装填时间", f"{ct:.0f}", o, unit="s")); o += 1
+                if mc: items.append(self.make_item("单座鱼雷管最大预装填数量", f"{mc:.0f} 枚", o)); o += 1
+                frt = ext['drum_full_reload_time']
+                if frt and frt != ct * mc:
+                    items.append(self.make_item("完全装填时间", f"{frt:.0f}", o, unit="s")); o += 1
+            else:
+                if grp['reload_time']: items.append(self.make_item("装填时间", str(grp['reload_time']), o, unit="s")); o += 1
             if grp.get('rotation_speed'):
                 items.append(self.make_item("水平回转速度", f"{grp['rotation_speed']:.1f}", o, unit="°/s")); o += 1
                 rot_180 = 180.0 / grp['rotation_speed']

@@ -275,6 +275,20 @@ CREATE TABLE IF NOT EXISTS ship_module_torpedoes (
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
+-- 4a. 鱼雷弹鼓/充能扩增表
+CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    is_drum_chargeable INTEGER DEFAULT 0,
+    drum_charge_time REAL DEFAULT 0,
+    drum_max_charges INTEGER DEFAULT 0,
+    drum_full_reload_time REAL DEFAULT 0,
+    PRIMARY KEY (version_code, ship_id, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
+);
+
 -- 5. 防空炮组件属性表
 CREATE TABLE IF NOT EXISTS ship_module_aa (
     version_code TEXT NOT NULL,
