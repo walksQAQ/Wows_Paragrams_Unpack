@@ -91,6 +91,7 @@ def run_process() -> None:
         "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
         "Aircraft": "Aircraft", "Ability": "Ability",
         "Modernization": "Modernization", "Crew": "Crew",
+        "Other": "Other", "Exterior": "Exterior",
     }
 
     def _collect_entity(k: str, v: dict, data_by_category: dict,

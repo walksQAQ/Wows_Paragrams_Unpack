@@ -188,6 +188,7 @@ class Mapping:
         "callFightersTimeDelayAttack": "攻击前所需时间",
         "callFightersWorkTimeCoeff": "巡逻战斗机/截击机消耗品作用时间",
         "planeConsumableReloadTime": "中队消耗品冷却时间",
+        "planeConsumablesWorkTime": "中队消耗品作用时间",
         "planeConsumableWorkTime": "中队消耗品作用时间",
         "regeneratedHPPartCoef": "使用维修小组消耗品时的生命恢复效率",
         "regenerateHealthAdditionalConsumables": "维修消耗品装载数",

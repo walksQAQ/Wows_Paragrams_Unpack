@@ -152,6 +152,7 @@ class BasePresenter:
                   unit: str = "",
                   raw_value=None,
                   details: list[dict] = None,
+                  color: str = "",
                   ) -> dict:
         """创建一个展示项
 
@@ -167,12 +168,14 @@ class BasePresenter:
             unit: 单位（如 "节", "公里", "%"），渲染时与 value 分开显示
             raw_value: 原始数值（用于计算/交互）
             details: 二级详细数据列表，格式 [{name, value, unit}...]
+            color: 值文本颜色（如 "#1b8a1b" 绿色），为空则自动判断
         """
         return {
             "name": name, "value": value, "order": order,
             "row_type": row_type, "unit": unit,
             "raw_value": raw_value,
             "details": details or [],
+            "color": color,
         }
 
     @staticmethod

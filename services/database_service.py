@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 28
+DB_SCHEMA_VERSION = 32
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -290,6 +290,27 @@ class DatabaseManager:
                 self.import_enum_translations()
         except Exception:
             self.import_enum_translations()
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 rotation_speed 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            if "rotation_speed" not in existing:
+                self._conn.execute("ALTER TABLE ship_module_torpedoes ADD COLUMN rotation_speed REAL")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 plane_basic_info 缺少的 field_minefield 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            for col, typ in [("field_minefield", "TEXT DEFAULT ''"),
+                             ("jato_duration", "REAL"),
+                             ("jato_speed_mult", "REAL")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
 
     def _init_core_tables(self) -> None:
         """内联兜底（正式环境走 database_new.sql）"""
