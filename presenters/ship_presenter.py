@@ -1633,7 +1633,7 @@ class ShipPresenter(BasePresenter):
                 ct = ext['drum_charge_time']
                 mc = ext['drum_max_charges']
                 if ct: items.append(self.make_item("单发装填时间", f"{ct:.0f}", o, unit="s")); o += 1
-                if mc: items.append(self.make_item("单座鱼雷管最大预装填数量", f"{mc:.0f} 枚", o)); o += 1
+                if mc: items.append(self.make_item("最大预装填数量", f"{mc:.0f} 枚", o)); o += 1
                 frt = ext['drum_full_reload_time']
                 if frt and frt != ct * mc:
                     items.append(self.make_item("完全装填时间", f"{frt:.0f}", o, unit="s")); o += 1

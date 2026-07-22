@@ -22,7 +22,10 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 
-from utils.path_utils import get_app_dir
+from utils.path_utils import get_app_dir, get_bundled_dir
+
+# 显式导入 QRC 编译模块，确保 Nuitka 打包时不会将其作为死代码剔除
+import app._resources  # noqa: F401
 
 # 确定应用根目录（Nuitka 打包后使用 exe 所在目录）
 _app_dir = get_app_dir() if "__compiled__" in globals() else Path(__file__).resolve().parent
@@ -31,12 +34,22 @@ if str(_app_dir) not in sys.path:
 
 
 def load_stylesheet(app: QApplication) -> None:
-    """加载 QSS 样式表（可选，从 QRC 读取）"""
+    """加载 QSS 样式表（优先 QRC，回退到文件系统）"""
     from PySide6.QtCore import QFile, QIODevice
     qf = QFile(":/resources/styles/main.qss")
     if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
         app.setStyleSheet(str(qf.readAll(), encoding="utf-8"))
         qf.close()
+        print("[main] QSS loaded from QRC")
+        return
+    # QRC 不可用时回退到文件系统
+    style_path = get_bundled_dir() / "resources" / "styles" / "main.qss"
+    if style_path.exists():
+        with open(style_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+        print(f"[main] QSS loaded from filesystem: {style_path}")
+    else:
+        print(f"[main] WARNING: QSS not found (QRC failed, filesystem missing: {style_path})")
 
 
 def main() -> None:

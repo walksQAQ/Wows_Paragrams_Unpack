@@ -22,7 +22,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo [QRC] 编译 _resources.py ...
 set RCC_TOOL=.venv\Lib\site-packages\PySide6\rcc.exe
 if exist "%RCC_TOOL%" (
-    "%RCC_TOOL%" resources.qrc -o app/_resources.py
+    "%RCC_TOOL%" -g python resources.qrc -o app/_resources.py
 ) else (
     %PYTHON% -m PySide6.rcc resources.qrc -o app/_resources.py 2>nul
     if %ERRORLEVEL% NEQ 0 (
@@ -45,7 +45,6 @@ echo [QRC] 资源编译完成。
     --enable-plugin=pyside6 ^
     --include-data-file="tools/*.exe=tools/" ^
     --include-module=app._resources ^
-    --nofollow-import-to=app._resources ^
     --include-module=services.GameParams ^
     --include-module=polib,requests ^
     --output-filename=WowsAnalyzer.exe ^
