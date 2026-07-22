@@ -333,7 +333,7 @@ class DetailPanel(QWidget):
                     "_Fighter": "✈", "_DiveBomber": "💥", "_TorpedoBomber": "⚓",
                     "_FlightControl": "🎯", "_SkipBomber": "💥", "_MineBomber": "💣"}
         UC_NAMES = {"_Artillery": "主炮", "_Torpedoes": "鱼雷", "_Hull": "船体",
-                    "_Engine": "引擎", "_Suo": "火控",
+                    "_Engine": "引擎", "_Suo": "火控", "_Sonar": "声呐",
                     "_Fighter": "攻击机", "_DiveBomber": "俯冲轰炸机",
                     "_TorpedoBomber": "鱼雷轰炸机", "_FlightControl": "飞控",
                     "_SkipBomber": "弹跳轰炸机", "_MineBomber": "水雷轰炸机"}
@@ -343,6 +343,7 @@ class DetailPanel(QWidget):
             "_Hull": "module_Hull.png",
             "_Engine": "module_Engine.png",
             "_Suo": "module_Suo.png",
+            "_Sonar": "module_Sonar.png",
             "_Fighter": "module_Fighter.png",
             "_DiveBomber": "module_DiveBomber.png",
             "_TorpedoBomber": "module_TorpedoBomber.png",
@@ -364,6 +365,7 @@ class DetailPanel(QWidget):
         UC_OWN_SLOT = {
             "_Artillery": "artillery", "_Torpedoes": "torpedoes",
             "_Hull": "hull", "_Engine": "engine", "_Suo": "fireControl",
+            "_Sonar": "pinger",
             "_Fighter": "fighter", "_DiveBomber": "diveBomber",
             "_TorpedoBomber": "torpedoBomber", "_FlightControl": "flightControl",
             "_SkipBomber": "skipBomber", "_MineBomber": "mineBomber",
@@ -480,6 +482,11 @@ class DetailPanel(QWidget):
                     btn.clicked.connect(
                         partial(self._on_fire_control_click, fc_key)
                     )
+                elif ut == "_Sonar":
+                    sonar_key = mod["id"]
+                    btn.clicked.connect(
+                        partial(self._on_sonar_click, sonar_key)
+                    )
                 elif ut in ("_Fighter", "_DiveBomber", "_TorpedoBomber", "_FlightControl", "_SkipBomber", "_MineBomber"):
                     part_id = mod["id"]
                     btn.clicked.connect(
@@ -498,7 +505,7 @@ class DetailPanel(QWidget):
             return group
 
         # 所有配件模块整合到一行，居中对齐
-        ALL_UC = ["_Artillery", "_Torpedoes", "_Hull", "_Engine", "_Suo",
+        ALL_UC = ["_Artillery", "_Torpedoes", "_Hull", "_Engine", "_Suo", "_Sonar",
                    "_Fighter", "_DiveBomber", "_TorpedoBomber", "_SkipBomber", "_MineBomber"]
 
         row = QWidget()
@@ -1695,7 +1702,8 @@ class DetailPanel(QWidget):
                                 SELECT skill_key, trigger_type, max_trigger_num,
                                        effects_json, icon_path,
                                        trigger_achievement, trigger_damage_num,
-                                       trigger_damage_type, trigger_ribbon_types, trigger_ribbons_num
+                                       trigger_damage_type, trigger_ribbon_types, trigger_ribbons_num,
+                                       damage_percent_threshold
                                 FROM crew_unique_skills
                                 WHERE version_code=? AND crew_id=?
                                 ORDER BY sort_index
@@ -1734,7 +1742,10 @@ class DetailPanel(QWidget):
                                             label += f" ({dmg_zh})"
                                         return label + " 伤害时触发"
                                     elif trig_type == "health":
-                                        return f"战舰血量低于 {sk_row.get('damage_percent_threshold', 0)*100:.0f}% 时触发"
+                                        thr = sk_row['damage_percent_threshold']
+                                        if thr:
+                                            return f"战舰血量低于 {thr*100:.0f}% 时触发"
+                                        return "受到伤害导致血量降低时触发"
                                     elif trig_type == "enemyVehiclesDead":
                                         return f"敌方舰艇被击沉时触发"
                                     elif trig_type == "rageMode":
@@ -1744,6 +1755,7 @@ class DetailPanel(QWidget):
                                 def _format_effect(effect_key, effect_val, mod_map, cur_st):
                                     """格式化一条效果描述（cur_st=当前舰船种类）"""
                                     lines = []
+                                    is_level = effect_val.get("levelDependent", False)
                                     for k, v in effect_val.items():
                                         if k in ("uniqueType", "percentTalent", "levelDependent", "workTime"):
                                             continue
@@ -1761,6 +1773,8 @@ class DetailPanel(QWidget):
                                                         break
                                         else:
                                             _add_talent_line(lines, zh, v, is_pct)
+                                    if is_level:
+                                        lines.insert(0, '<div style="color:#888; font-size:11px;">该天赋作用时间等于战舰等级</div>')
                                     return "\n".join(lines) if lines else None
 
                                 def _add_talent_line(ln, label, v, is_pct):
@@ -1768,9 +1782,16 @@ class DetailPanel(QWidget):
                                         ln.append(f"{'启用' if v else ''} {label}")
                                     elif isinstance(v, (int, float)):
                                         if is_pct:
-                                            pct = (v - 1.0) * 100
-                                            sign = "+" if pct >= 0 else ""
-                                            ln.append(f"{sign}{pct:.1f}% {label}")
+                                            if abs(v) < 0.5:  # 原始加法值（如 0.01 = +1%）
+                                                if abs(v) < 0.001: return  # 无变化跳过
+                                                pct = v * 100
+                                                sign = "+" if pct >= 0 else ""
+                                                ln.append(f"{sign}{pct:.1f}% {label}")
+                                            else:  # 系数（如 1.1 = +10%）
+                                                if abs(v - 1.0) < 0.001: return  # 无变化跳过
+                                                pct = (v - 1.0) * 100
+                                                sign = "+" if pct >= 0 else ""
+                                                ln.append(f"{sign}{pct:.1f}% {label}")
                                         elif isinstance(v, float) and 0.5 <= v <= 2.0:
                                             pct = (v - 1.0) * 100
                                             sign = "+" if pct >= 0 else ""
@@ -1848,8 +1869,10 @@ class DetailPanel(QWidget):
                                     tip_lines.append('</div>')
                                     btn.setToolTip("\n".join(tip_lines))
                                     self._us_layout.insertWidget(self._us_layout.count() - 1, btn)
-                        except Exception:
-                            pass
+                        except Exception as _tal_e:
+                            import traceback
+                            from app.signals import bus
+                            bus.log_message.emit(f"[天赋] {cd.get('crew_id','?')}: {_tal_e} | {traceback.format_exc()}")
 
                 # 保存基础样式表，选中颜色变更时重设
                 _combo_base_qss = self._crew_combo.styleSheet()
@@ -2015,6 +2038,11 @@ class DetailPanel(QWidget):
     def _on_fire_control_click(self, fc_key: str) -> None:
         """火控配件按钮点击：不切换配置字母，只刷新主炮系数"""
         self._active_fire_control_key = fc_key
+        self._refresh_data_only()
+
+    def _on_sonar_click(self, sonar_key: str) -> None:
+        """声呐配件按钮点击：不切换配置字母，只过滤声呐模块数据"""
+        self._active_sonar_key = sonar_key
         self._refresh_data_only()
 
     def _on_hull_module_click(self, hull_key: str) -> None:
@@ -3287,9 +3315,10 @@ class DetailPanel(QWidget):
                 return
             _eng_key = getattr(self, '_active_engine_key', '')
             _fc_key = getattr(self, '_active_fire_control_key', '')
+            _sonar_key = getattr(self, '_active_sonar_key', '')
             _mod_keys = getattr(self, '_active_module_keys', {})
             data = presenter.build(self._current_filename, version_code=vc, modifiers=modifiers,
-                                   engine_letter=_eng_key, fire_control_key=_fc_key,
+                                   engine_letter=_eng_key, fire_control_key=_fc_key, sonar_key=_sonar_key,
                                    active_module_keys=_mod_keys)
             if data:
                 self._current_analyzed = data
@@ -3340,9 +3369,10 @@ class DetailPanel(QWidget):
                             _combined[k] = v
             _eng_key = getattr(self, '_active_engine_key', '')
             _fc_key = getattr(self, '_active_fire_control_key', '')
+            _sonar_key = getattr(self, '_active_sonar_key', '')
             _mod_keys = getattr(self, '_active_module_keys', {})
             data = presenter.build(self._current_filename, version_code=vc, modifiers=_combined or None,
-                                   engine_letter=_eng_key, fire_control_key=_fc_key,
+                                   engine_letter=_eng_key, fire_control_key=_fc_key, sonar_key=_sonar_key,
                                    active_module_keys=_mod_keys)
             if data:
                 self._current_analyzed = data
@@ -3719,6 +3749,7 @@ class DetailPanel(QWidget):
         self._active_config_letter = "A"
         self._active_engine_key = ""
         self._active_fire_control_key = ""
+        self._active_sonar_key = ""
         self._active_hull_key = ""
         self._active_module_keys: dict[str, str] = {}
         # 从 presenter 数据中获取基础配置字母

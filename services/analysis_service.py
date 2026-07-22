@@ -102,6 +102,7 @@ MODULE_PATTERNS = {
     "DepthChargeGuns": re.compile(r"(?:([A-Z]+\d*)_)?DepthChargeGuns(?:Default)?"),
     "AirArmament": re.compile(r'(?:([A-Z]+\d*)_)?AirArmament(?:Default)?'),
     "FlightControl": re.compile(r'(?:([A-Z]+\d*)_)?FlightControl(?:Default)?'),
+    "PingerGun": re.compile(r'(?:([A-Z]+\d*)_)?PingerGun(?:Default)?'),
 }
 
 HP_PATTERNS = {
@@ -376,6 +377,13 @@ class AnalysisStore:
                     combined_stats.setdefault(lt, {})["hangar" if current_cat == "AirArmament" else "flight_control"] = module_data
                 continue
 
+            if current_cat == "PingerGun":
+                for lt in target_letters:
+                    combined_stats.setdefault(lt, {}).setdefault("pinger", []).append({
+                        "module_key": mod_key, "data": module_data
+                    })
+                continue
+
             if current_cat in ("Artillery", "SecondaryArtillery", "ATBA", "AirDefense", "Torpedoes", "DepthChargeGuns"):
                 sys_max_dist = module_data.get("maxDist") or module_data.get("maxdist") or module_data.get("maxDistance") or module_data.get("maxRange") or 0
                 sys_sigma = module_data.get("sigmaCount") or module_data.get("sigma") or None
@@ -537,6 +545,7 @@ class AnalysisStore:
             self._write_depth_charge(ship_id, letter, cs, version_code=version_code)
             self._write_aircraft(ship_id, letter, cs, version_code=version_code)
             self._write_air_support(ship_id, letter, cs, version_code=version_code)
+            self._write_pinger(ship_id, letter, cs, version_code=version_code)
 
         self._write_consumables(ship_id, raw_data, version_code=version_code)
         self._write_rage_mode(ship_id, raw_data, version_code=version_code)
@@ -876,6 +885,30 @@ class AnalysisStore:
                               _v(r.get("drum_charge_time"), 0),
                               _v(r.get("drum_max_charges"), 0),
                               _v(r.get("reload_time"), 0)))
+
+    def _write_pinger(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
+        conn = self.conn
+        items = cs.get("pinger", [])
+        if not items:
+            return
+        for item in items:
+            md = item.get("data", {})
+            mod_key = item.get("module_key", f"Pinger_{letter}_{items.index(item)}")
+            wave_reload = _v(md.get("waveReloadTime"), 0)
+            wave_dist = _v(md.get("waveDistance"), 0)
+            sector_life = _v(md.get("sectorLifetime"), 0)
+            max_wave_hits = _v(md.get("maxWaveHits"), 0)
+            exposing_waves = _v(md.get("exposingWavesTotalSpawnAmount"), 0)
+            wave_hit_life = _v(md.get("waveHitLifeTime"), 0)
+            # waveParams[0].waveSpeed 数组，取第一个值
+            wp = md.get("waveParams", [])
+            wave_speed = wp[0].get("waveSpeed", [0])[0] if wp and isinstance(wp[0], dict) else 0
+            hp = md.get("HitLocationPingerGun", {}) or {}
+            hp_max = _v(hp.get("maxHP"), 0)
+            conn.execute(
+                "INSERT OR REPLACE INTO ship_module_pinger (version_code, ship_id, config_group, module_key, count, wave_reload_time, wave_distance, sector_lifetime, max_wave_hits, exposing_waves, wave_hit_life, wave_speed, hp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (version_code, ship_id, letter, mod_key, 1, wave_reload, wave_dist, sector_life, max_wave_hits, exposing_waves, wave_hit_life, wave_speed, hp_max))
+            self._rel(ship_id, mod_key, "pinger", letter, 1, version_code)
 
     def _write_aa(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
