@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 32
+DB_SCHEMA_VERSION = 33
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -117,12 +117,21 @@ class DatabaseManager:
         if 0 < current_ver < DB_SCHEMA_VERSION:
             self._drop_all_tables()
 
-        sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
-        if sql_path.exists():
-            sql_text = sql_path.read_text(encoding="utf-8")
+        # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
+        from PySide6.QtCore import QFile, QIODevice
+        qf = QFile(":/resources/database/database_new.sql")
+        if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
+            sql_text = str(qf.readAll(), encoding="utf-8")
+            qf.close()
             self._conn.executescript(sql_text)
         else:
-            self._init_core_tables()
+            # 回退到文件系统（源码模式或 standalone 无 QRC 的备用路径）
+            sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
+            if sql_path.exists():
+                sql_text = sql_path.read_text(encoding="utf-8")
+                self._conn.executescript(sql_text)
+            else:
+                self._init_core_tables()
         self._conn.commit()
 
         if self.get_current_version() < DB_SCHEMA_VERSION:
@@ -308,6 +317,24 @@ class DatabaseManager:
                              ("jato_speed_mult", "REAL")]:
                 if col not in existing:
                     self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 ship_module_torpedo_ext 鱼雷弹鼓扩增表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                is_drum_chargeable INTEGER DEFAULT 0,
+                drum_charge_time REAL DEFAULT 0,
+                drum_max_charges INTEGER DEFAULT 0,
+                drum_full_reload_time REAL DEFAULT 0,
+                PRIMARY KEY (version_code, ship_id, config_group, module_key),
+                FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
+            )""")
             self._conn.commit()
         except Exception:
             pass

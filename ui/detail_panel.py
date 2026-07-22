@@ -24,6 +24,7 @@ from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
 from app.signals import bus
 from services.database_service import get_db
 from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
+from utils.path_utils import get_app_dir
 from ui.ship_card_widget import ShipDetailGrid, ShipCardWidget, SECTION_ICONS
 
 
@@ -209,7 +210,7 @@ class DetailPanel(QWidget):
 
     @staticmethod
     def _epic_config_path() -> str:
-        return str(Path(__file__).resolve().parent.parent / "resources" / "epic_skill_config.json")
+        return str(get_app_dir() / "epic_skill_config.json")
 
     @staticmethod
     def _load_epic_config() -> dict:
@@ -251,7 +252,7 @@ class DetailPanel(QWidget):
         from pathlib import Path
         from PySide6.QtGui import QPixmap
         from PySide6.QtWidgets import QLabel
-        _OVERLAY_PATH = str(Path(__file__).resolve().parent.parent / "resources" / "pictures" / "icon_epic_skill.png")
+        _OVERLAY_PATH = ":/resources/pictures/icon_epic_skill.png"
         for _row in range(4):
             for _col in range(6):
                 _btn = skill_btns[_row][_col] if _row < len(skill_btns) and _col < len(skill_btns[_row]) else None
@@ -348,7 +349,7 @@ class DetailPanel(QWidget):
             "_SkipBomber": "module_SkipBomber.png",
             "_MineBomber": "module_MineBomber.png",
         }
-        MODULES_IMAGE_DIR = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modules"
+        MODULES_IMAGE_DIR = ":/resources/pictures/modules"
         SLOT2SEC = {
             "artillery": "主炮", "torpedoes": "鱼雷", "hull": "船体",
             "engine": "引擎", "atba": "副炮",
@@ -454,15 +455,16 @@ class DetailPanel(QWidget):
 
                 # 加载模块图片作为按钮图标
                 img_file = UC_IMAGE_MAP.get(ut)
-                if img_file and (MODULES_IMAGE_DIR / img_file).exists():
-                    img_path = MODULES_IMAGE_DIR / img_file
-                    pixmap = QPixmap(str(img_path))
-                    scaled = pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    btn.setIcon(QIcon(scaled))
-                    btn.setIconSize(QSize(24, 24))
-                else:
-                    btn.setText("缺少图片")
-                    btn.setStyleSheet(BTN_STYLE.replace("font-size: 9px;", "font-size: 8px;").replace("color: #333;", "color: #999;"))
+                if img_file:
+                    _qp = f"{MODULES_IMAGE_DIR}/{img_file}"
+                    pixmap = QPixmap(_qp)
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        btn.setIcon(QIcon(scaled))
+                        btn.setIconSize(QSize(24, 24))
+                    else:
+                        btn.setText("缺少图片")
+                        btn.setStyleSheet(BTN_STYLE.replace("font-size: 9px;", "font-size: 8px;").replace("color: #333;", "color: #999;"))
 
                 if ut == "_Hull":
                     btn.clicked.connect(
@@ -545,7 +547,7 @@ class DetailPanel(QWidget):
                 for m in config.get("modernizations", []):
                     mods_by_slot.setdefault(m["slot"], []).append(m)
                 max_slots = max(mods_by_slot.keys()) + 1 if mods_by_slot else 0
-                modernization_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modernization"
+                modernization_dir = ":/resources/pictures/modernization"
                 if not hasattr(self, '_selected_mods'):
                     self._selected_mods: dict[int, dict] = {}
                 if not hasattr(self, '_selected_skill_mods'):
@@ -588,9 +590,9 @@ class DetailPanel(QWidget):
                             ob.setCheckable(True)
                             ob.setStyleSheet(SLOT_STYLE)
                             ob.setObjectName(mid)
-                            img = modernization_dir / f"icon_modernization_{mid}.png"
-                            if img.exists():
-                                pix = QPixmap(str(img))
+                            img = f"{modernization_dir}/icon_modernization_{mid}.png"
+                            pix = QPixmap(img)
+                            if not pix.isNull():
                                 ob.setIcon(QIcon(pix.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                                 ob.setIconSize(QSize(28,28))
                             else:
@@ -671,8 +673,8 @@ class DetailPanel(QWidget):
                     layout.addWidget(col, stretch=1)
                     continue
 
-                signal_flags_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "signal_flags"
-                slot_types_dir = signal_flags_dir / "slot_types"
+                signal_flags_dir = ":/resources/pictures/signal_flags"
+                slot_types_dir = ":/resources/pictures/signal_flags/slot_types"
                 signal_slots = config.get("signal_slots", [])
                 SIG_BTN = """
                     QPushButton { background: #3a3a3a; border: 1px solid #555;
@@ -701,10 +703,10 @@ class DetailPanel(QWidget):
                 # 恢复信号旗选择的辅助函数
                 def _restore_flag(btn, flag_data, fd_dir):
                     img_key = flag_data.get("image_key", flag_data['mod_id'])
-                    flag_img = fd_dir / f"{img_key}.png"
+                    flag_img = f"{fd_dir}/{img_key}.png"
                     btn.setChecked(True)
-                    if flag_img.exists():
-                        pix = QPixmap(str(flag_img))
+                    pix = QPixmap(flag_img)
+                    if not pix.isNull():
                         btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                         btn.setIconSize(QSize(36,36))
                     btn.setText("")
@@ -724,14 +726,14 @@ class DetailPanel(QWidget):
                 slot_btns: list[QPushButton] = []
                 for si, slot in enumerate(signal_slots):
                     slot_label = slot.get('label', '')
-                    slot_img = slot_types_dir / f"Param{si:03d}_SlotType.png"
+                    slot_img = f"{slot_types_dir}/Param{si:03d}_SlotType.png"
                     btn = QPushButton()
                     btn.setFixedSize(40, 40)
                     btn.setCheckable(True)
                     btn.setStyleSheet(SIG_BTN)
                     btn.setToolTip(f"槽{si+1}: {slot_label}")
-                    if slot_img.exists():
-                        pix = QPixmap(str(slot_img))
+                    pix = QPixmap(slot_img)
+                    if not pix.isNull():
                         btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                         btn.setIconSize(QSize(36,36))
                     else:
@@ -790,7 +792,7 @@ class DetailPanel(QWidget):
                     pl.addWidget(none_btn)
 
                     for f in flags:
-                        flag_img = signal_flags_dir / f"{f.get('image_key', f['mod_id'])}.png"
+                        flag_img = f"{signal_flags_dir}/{f.get('image_key', f['mod_id'])}.png"
                         disp_name = f.get("name", f['mod_id'])
                         rarity_label = RARITY_NAMES.get(f.get("rarity", 0), str(f.get("rarity", 0)))
                         # tooltip：加成效果
@@ -803,8 +805,8 @@ class DetailPanel(QWidget):
                                 mods_str = "\n" + "\n".join(items)
                         mitem = QPushButton()
                         mitem.setStyleSheet(MENU_BTN)
-                        if flag_img.exists():
-                            pixf = QPixmap(str(flag_img))
+                        pixf = QPixmap(flag_img)
+                        if not pixf.isNull():
                             mitem.setIcon(QIcon(pixf.scaled(24,24,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                             mitem.setIconSize(QSize(24,24))
                         # 显示名称 + 稀有度
@@ -848,9 +850,9 @@ class DetailPanel(QWidget):
                 def _apply_signal_flag(btn, flag_data, slot_label, fd_dir):
                     btn.setChecked(True)
                     img_key = flag_data.get("image_key", flag_data['mod_id'])
-                    flag_img = fd_dir / f"{img_key}.png"
-                    if flag_img.exists():
-                        pix2 = QPixmap(str(flag_img))
+                    flag_img = f"{fd_dir}/{img_key}.png"
+                    pix2 = QPixmap(flag_img)
+                    if not pix2.isNull():
                         btn.setIcon(QIcon(pix2.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                         btn.setIconSize(QSize(36,36))
                     btn.setText("")
@@ -870,9 +872,9 @@ class DetailPanel(QWidget):
 
                 def _clear_signal_flag(btn, slot_idx, st_dir, slot_label):
                     btn.setChecked(False)
-                    slot_img = st_dir / f"Param{slot_idx:03d}_SlotType.png"
-                    if slot_img.exists():
-                        pix3 = QPixmap(str(slot_img))
+                    slot_img = f"{st_dir}/Param{slot_idx:03d}_SlotType.png"
+                    pix3 = QPixmap(slot_img)
+                    if not pix3.isNull():
                         btn.setIcon(QIcon(pix3.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
                         btn.setIconSize(QSize(36,36))
                     btn.setText("")
@@ -1480,9 +1482,10 @@ class DetailPanel(QWidget):
                             # 尝试加载图标
                             pix = None
                             if icon_name:
-                                icon_path = Path(f"resources/pictures/skills/{icon_name}.png")
-                                if icon_path.exists():
-                                    pix = QPixmap(str(icon_path.resolve()))
+                                icon_path = f":/resources/pictures/skills/{icon_name}.png"
+                                pix = QPixmap(icon_path)
+                                if pix.isNull():
+                                    pix = None
                             btn = QPushButton()
                             if pix and not pix.isNull():
                                 btn.setIcon(QIcon(pix))
@@ -1494,7 +1497,7 @@ class DetailPanel(QWidget):
                             if rarity in ("EPIC", "LEGENDARY"):
                                 btn.setStyleSheet(SKILL_BTN)
                                 # 左上角 EPIC 标记
-                                _epic_pix = QPixmap(str(Path("resources/pictures/icon_epic_skill.png").resolve()))
+                                _epic_pix = QPixmap(":/resources/pictures/icon_epic_skill.png")
                                 if not _epic_pix.isNull():
                                     _epic_label = QLabel(btn)
                                     _epic_pix_scaled = _epic_pix.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -1790,8 +1793,9 @@ class DetailPanel(QWidget):
                                     btn.setStyleSheet(UNIQUE_BTN)
                                     btn.setCheckable(False)
                                     # 如果有图标，显示图片
-                                    if icon_path and Path(icon_path).exists():
+                                    if icon_path:
                                         pix = QPixmap(icon_path)
+                                        if pix.isNull(): pix = None
                                         if not pix.isNull():
                                             btn.setIcon(QIcon(pix))
                                             btn.setIconSize(QSize(22, 22))
@@ -2226,7 +2230,7 @@ class DetailPanel(QWidget):
                             from PySide6.QtGui import QPixmap, QIcon
                             from PySide6.QtCore import QSize
                             from PySide6.QtWidgets import QPushButton, QLabel
-                            ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+                            ammo_dir = ":/resources/pictures/ammo_types"
                             ga = raw_ammo[ammo_idx:ammo_idx+ac]; ammo_idx += ac
                             br = QWidget(); bl = QHBoxLayout(br); bl.setContentsMargins(4,0,4,0); bl.setSpacing(6); bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
                             st = QStackedWidget(); st.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum); st.setVisible(False)
@@ -2258,8 +2262,8 @@ class DetailPanel(QWidget):
                                             cand.insert(0, "ammo_torpedo_subdefault_improve_0.png")
                                     cand.extend(["ammo_torpedo_0.png","ammo_bomber_torpedo_0.png"])
                                 if "depthcharge" in sp: cand.extend(["ammo_depthcharge_0.png","ammo_airsupport_depthcharge_0.png"])
-                                ip = next((p for c in cand if (p:=ammo_dir/c).exists()), None)
-                                if ip: pix = QPixmap(str(ip)); btn.setIcon(QIcon(pix.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
+                                ip = next((p for c in cand if not (p:=QPixmap(f":/resources/pictures/ammo_types/{c}")).isNull()), None)
+                                if ip: btn.setIcon(QIcon(ip.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
                                 else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;","padding:2px;font-size:8px;color:#333;"))
                                 bl.addWidget(btn)
                                 st.addWidget(ShipCardWidget({"label":an,"items":di}) if di else (QLabel("无详细数据",styleSheet="color:#999;font-size:11px;padding:8px;",alignment=Qt.AlignmentFlag.AlignCenter)))
@@ -2344,7 +2348,7 @@ class DetailPanel(QWidget):
                 background: #1a73e8; border-color: #1a73e8;
             }
         """
-        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+        ammo_dir = ":/resources/pictures/ammo_types"
 
         for sl in labels:
             content = contents.get(sl, {})
@@ -2456,11 +2460,10 @@ class DetailPanel(QWidget):
                             candidates.append("ammo_airsupport_depthcharge_0.png")
                         img_path = None
                         for c in candidates:
-                            p = ammo_dir / c
-                            if p.exists(): img_path = p; break
-                        if img_path and img_path.exists():
-                            pixmap = QPixmap(str(img_path))
-                            scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            p = QPixmap(f":/resources/pictures/ammo_types/{c}")
+                            if not p.isNull(): img_path = p; break
+                        if img_path and not img_path.isNull():
+                            scaled = img_path.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                             btn.setIcon(QIcon(scaled))
                             btn.setIconSize(QSize(28, 28))
                         else:
@@ -2496,7 +2499,7 @@ class DetailPanel(QWidget):
                             background: #1a73e8; border-color: #1a73e8;
                         }
                     """
-                    consumables_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "consumables"
+                    consumables_dir = ":/resources/pictures/consumables"
                     con_btn_row = QWidget()
                     cbr_layout = QHBoxLayout(con_btn_row)
                     cbr_layout.setContentsMargins(4, 2, 4, 2)
@@ -2516,9 +2519,9 @@ class DetailPanel(QWidget):
                         btn.setStyleSheet(CON_BTN_STYLE)
                         btn.setToolTip(dname)
                         img_file = f"consumable_{cid}_0.png"
-                        img_path = consumables_dir / img_file
-                        if img_path.exists():
-                            pixmap = QPixmap(str(img_path))
+                        img_path = f"{consumables_dir}/{img_file}"
+                        pixmap = QPixmap(img_path)
+                        if not pixmap.isNull():
                             scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                             btn.setIcon(QIcon(scaled))
                             btn.setIconSize(QSize(32, 32))
@@ -2615,7 +2618,7 @@ class DetailPanel(QWidget):
         layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+        ammo_dir = ":/resources/pictures/ammo_types"
         BTN_STYLE = """
             QPushButton {
                 background: #3a3a3a;
@@ -2708,11 +2711,10 @@ class DetailPanel(QWidget):
                         candidates.append("ammo_airsupport_depthcharge_0.png")
                     img_path = None
                     for c in candidates:
-                        p = ammo_dir / c
-                        if p.exists(): img_path = p; break
-                    if img_path and img_path.exists():
-                        pixmap = QPixmap(str(img_path))
-                        scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        p = QPixmap(f":/resources/pictures/ammo_types/{c}")
+                        if not p.isNull(): img_path = p; break
+                    if img_path and not img_path.isNull():
+                        scaled = img_path.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                         btn.setIcon(QIcon(scaled))
                         btn.setIconSize(QSize(28, 28))
                     else:
@@ -2751,7 +2753,7 @@ class DetailPanel(QWidget):
         for rs in raw_slots:
             slots_map[rs["slot_index"]].append(rs)
 
-        consumables_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "consumables"
+        consumables_dir = ":/resources/pictures/consumables"
 
         BTN_STYLE = """
             QPushButton {
@@ -2794,9 +2796,9 @@ class DetailPanel(QWidget):
 
                 # 加载消耗品图片
                 img_file = f"consumable_{cid}_0.png"
-                img_path = consumables_dir / img_file
-                if img_path.exists():
-                    pixmap = QPixmap(str(img_path))
+                img_path = f"{consumables_dir}/{img_file}"
+                pixmap = QPixmap(img_path)
+                if not pixmap.isNull():
                     scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     btn.setIcon(QIcon(scaled))
                     btn.setIconSize(QSize(32, 32))
@@ -2841,8 +2843,7 @@ class DetailPanel(QWidget):
         rname = raw.get("rage_mode_name", "")
         dname = raw.get("display_name", "战斗指令")
 
-        ragemode_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ragemode"
-        preview_path = ragemode_dir / f"rageMode_{rname}_preview_0.png"
+        preview_path = ":/resources/pictures/ragemode/rageMode_" + rname + "_preview_0.png"
 
         btn = QPushButton("")
         btn.setFixedSize(32, 32)
@@ -2868,8 +2869,8 @@ class DetailPanel(QWidget):
         """
         btn.setStyleSheet(BTN_STYLE)
 
-        if preview_path.exists():
-            pixmap = QPixmap(str(preview_path))
+        pixmap = QPixmap(preview_path)
+        if not pixmap.isNull():
             scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             btn.setIcon(QIcon(scaled))
             btn.setIconSize(QSize(28, 28))
@@ -2972,7 +2973,7 @@ class DetailPanel(QWidget):
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(6)
 
-        ammo_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "ammo_types"
+        ammo_dir = ":/resources/pictures/ammo_types"
 
         BTN_STYLE = """
             QPushButton {
@@ -3098,11 +3099,9 @@ class DetailPanel(QWidget):
                     btn.setStyleSheet(BTN_STYLE)
                     btn.setToolTip(aname)
 
-                    img_path = next((ammo_dir / c for c in candidates if (ammo_dir / c).exists()), None)
+                    img_path = next((p for c in candidates if not (p:=QPixmap(f":/resources/pictures/ammo_types/{c}")).isNull()), None)
                     if img_path:
-                        pixmap = QPixmap(str(img_path))
-                        scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        btn.setIcon(QIcon(scaled))
+                        btn.setIcon(QIcon(img_path.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
                         btn.setIconSize(QSize(28, 28))
                     else:
                         btn.setText(aname[:2] if aname else "?")
