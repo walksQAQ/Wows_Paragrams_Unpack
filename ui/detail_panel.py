@@ -509,13 +509,25 @@ class DetailPanel(QWidget):
         layout.addWidget(col1)
 
         # 分隔线
-        sep_count = 0
+        _ship_status = config.get("group_status", "")
+        _hide_config = _ship_status in ("disabled", "unavailable", "event", "preserved")
         for section_key in ["upgrade", "signal", "commander"]:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.VLine)
             sep.setStyleSheet("QFrame{color:#c8c8c8;}")
             sep.setFixedWidth(1)
             layout.addWidget(sep)
+
+            if _hide_config:
+                _titles = {"upgrade": "升级品", "signal": "信号旗", "commander": "舰长"}
+                col, cl = _col(_titles.get(section_key, ""))
+                _ph = QLabel("该舰船状态\n不支持此功能")
+                _ph.setStyleSheet("color:#bbb; font-size:10px; padding:4px;")
+                _ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cl.addWidget(_ph)
+                cl.addStretch()
+                layout.addWidget(col)
+                continue
 
             if section_key == "upgrade":  # 第2列：升级品
                 col, cl = _col("升级品")
