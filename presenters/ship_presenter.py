@@ -2307,7 +2307,7 @@ class ShipPresenter(BasePresenter):
                 # ── 弹药数据 ──
                 if arm:
                     pbi = conn.execute(
-                        "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+                        "SELECT species, ammo_type, custom_ui_postfix FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
                         (vc, arm)).fetchone()
                     if pbi:
                         species = pbi['species'] or ""
