@@ -289,6 +289,25 @@ CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
     FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
 );
 
+-- 4b. 潜艇声呐(Pinger)组件属性表
+CREATE TABLE IF NOT EXISTS ship_module_pinger (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    count INTEGER,
+    wave_reload_time REAL,
+    wave_distance REAL,
+    sector_lifetime REAL,
+    max_wave_hits INTEGER,
+    exposing_waves INTEGER,
+    wave_hit_life REAL,
+    wave_speed REAL,
+    hp REAL,
+    PRIMARY KEY (version_code, ship_id, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
 -- 5. 防空炮组件属性表
 CREATE TABLE IF NOT EXISTS ship_module_aa (
     version_code TEXT NOT NULL,

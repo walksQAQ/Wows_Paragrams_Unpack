@@ -141,7 +141,7 @@ class CrewCustomizeDialog(QDialog):
                         """生成触发条件文本"""
                         tzh = trig_map.get(trig_type, trig_type or "?")
                         if trig_type == "achievement":
-                            ach = sk_row.get('trigger_achievement') or ""
+                            ach = sk_row['trigger_achievement'] or ""
                             ach_zh = ach_map.get(ach, ach)
                             return f"获得 {ach_zh} 成就触发"
                         elif trig_type == "ribbons":
@@ -150,42 +150,39 @@ class CrewCustomizeDialog(QDialog):
                             except Exception:
                                 types = []
                             rnames = [rib_map.get(str(t), str(t)) for t in types]
-                            num = sk_row.get('trigger_ribbons_num') or ""
+                            num = sk_row['trigger_ribbons_num'] or ""
                             return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
                         elif trig_type == "damage":
-                            dmg = sk_row.get('trigger_damage_num') or 0
+                            dmg = sk_row['trigger_damage_num'] or 0
                             from models.name_mapping import Mapping as NMAP2
-                            dmg_zh = getattr(NMAP2, 'DAMAGE_TYPE_MAP', {}).get(str(sk_row.get('trigger_damage_type') or ""), "")
+                            dmg_zh = getattr(NMAP2, 'DAMAGE_TYPE_MAP', {}).get(str(sk_row['trigger_damage_type'] or ""), "")
                             label = f"受到 {dmg/10000:.0f}万"
                             if dmg_zh:
                                 label += f" ({dmg_zh})"
                             return label + " 伤害时触发"
                         elif trig_type == "health":
-                            thr = sk_row.get('damage_percent_threshold') or 0
-                            return f"战舰血量低于 {thr*100:.0f}% 时触发"
+                            thr = sk_row['damage_percent_threshold']
+                            if thr:
+                                return f"战舰血量低于 {thr*100:.0f}% 时触发"
+                            return "受到伤害导致血量降低时触发"
                         return tzh
 
                     def _format_talent_effects_text(eff_dict, mod_map, ship_type_en=""):
-                        """格式化天赋效果为多行文本，返回(头部名称行, 效果行列表)"""
+                        """格式化天赋效果为多行文本，隐藏分组标题，仅返回单行修饰符列表"""
                         lines = []
                         for ek, ev in eff_dict.items():
                             if not isinstance(ev, dict):
                                 continue
-                            # 效果名称
-                            zh_name = mod_map.get(ek, ek)
-                            # 提取子键值（过滤元数据）
-                            parts = []
+                            is_level = ev.get('levelDependent', False)
                             is_pct = ev.get('percentTalent', False)
                             for sub_k, sub_v in ev.items():
                                 if sub_k in _skip_meta_keys:
                                     continue
                                 sub_zh = mod_map.get(sub_k, sub_k)
                                 if isinstance(sub_v, dict):
-                                    # 按舰种取值
                                     if ship_type_en and sub_v.get(ship_type_en) is not None:
                                         sub_v = sub_v[ship_type_en]
                                     else:
-                                        # 取第一个数值
                                         for x in sub_v.values():
                                             if isinstance(x, (int, float)):
                                                 sub_v = x
@@ -195,15 +192,24 @@ class CrewCustomizeDialog(QDialog):
                                 if not isinstance(sub_v, (int, float)):
                                     continue
                                 if is_pct:
-                                    pct = (sub_v - 1.0) * 100 if sub_v < 2.0 else sub_v * 100
+                                    if abs(sub_v) < 0.5:
+                                        if abs(sub_v) < 0.001: continue
+                                        pct = sub_v * 100
+                                        sign = "+" if pct >= 0 else ""
+                                        lines.append(f"{sign}{pct:.1f}% {sub_zh}")
+                                    else:
+                                        if abs(sub_v - 1.0) < 0.001: continue
+                                        pct = (sub_v - 1.0) * 100
+                                        sign = "+" if pct >= 0 else ""
+                                        lines.append(f"{sign}{pct:.1f}% {sub_zh}")
+                                elif isinstance(sub_v, float) and 0.5 <= sub_v <= 2.0:
+                                    pct = (sub_v - 1.0) * 100
                                     sign = "+" if pct >= 0 else ""
-                                    parts.append(f"{sub_zh} {sign}{pct:.0f}%")
+                                    lines.append(f"{sign}{pct:.1f}% {sub_zh}")
                                 else:
-                                    parts.append(f"{sub_zh} {sub_v:+.0f}" if sub_v >= 0 else f"{sub_zh} {sub_v:.0f}")
-                            if parts:
-                                lines.append(f"<b>{zh_name}</b>：{'，'.join(parts)}")
-                            else:
-                                lines.append(f"<b>{zh_name}</b>")
+                                    lines.append(f"{sub_zh} {sub_v:+.0f}" if sub_v else f"{sub_zh} {sub_v:.0f}")
+                            if is_level:
+                                lines.insert(0, "该天赋作用时间等于战舰等级")
                         return lines
 
                     def _build_talent_tooltip(talent_row) -> str:
@@ -240,6 +246,7 @@ class CrewCustomizeDialog(QDialog):
                     for lname, ltalents in by_legend.items():
                         # 传奇舰长姓名标签
                         header = QLabel(f"✦ {lname}")
+                        header.setWordWrap(False)
                         header.setStyleSheet("color:#c60; font-size:12px; font-weight:bold; padding:4px 0 2px 0;")
                         sc_layout.addWidget(header)
                         for t in ltalents:
@@ -258,7 +265,6 @@ class CrewCustomizeDialog(QDialog):
                             trig_text = _build_trigger_text(t, t.get('trigger_type',''), _trigger_map, _ribbon_map, _achievement_map)
                             # 行容器
                             row = QWidget()
-                            row.setFixedHeight(60)
                             hl = QHBoxLayout(row)
                             hl.setContentsMargins(6, 2, 6, 2)
                             hl.setSpacing(8)
@@ -303,12 +309,14 @@ class CrewCustomizeDialog(QDialog):
                             right_layout.addWidget(trig_label)
                             # 效果
                             if eff_desc_lines:
-                                eff_html = "<span style='color:#4fc3f7; font-size:10px;'>效果：</span>"
-                                eff_html += "<span style='color:#ddd; font-size:10px;'>" + " | ".join(eff_desc_lines) + "</span>"
-                                eff_label = QLabel(eff_html)
-                                eff_label.setWordWrap(True)
-                                eff_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-                                right_layout.addWidget(eff_label)
+                                eff_header = QLabel("<span style='color:#4fc3f7; font-size:10px;'>效果：</span>")
+                                eff_header.setAttribute(Qt.WA_TransparentForMouseEvents)
+                                right_layout.addWidget(eff_header)
+                                for _el in eff_desc_lines:
+                                    _el_label = QLabel(f"<span style='color:#ddd; font-size:10px;'>{_el}</span>")
+                                    _el_label.setWordWrap(True)
+                                    _el_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                                    right_layout.addWidget(_el_label)
                             # 触发次数
                             if t.get('max_trigger_num'):
                                 cnt_label = QLabel(f"<span style='color:#888; font-size:9px;'>每场最多触发 {t['max_trigger_num']} 次</span>")
@@ -377,6 +385,85 @@ class CrewCustomizeDialog(QDialog):
         tl.addStretch()
 
         from services.database_service import get_db
+        from models.name_mapping import Mapping as NMAP
+        _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
+        _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
+        _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
+        _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
+        _skip_meta_keys = {'percentTalent', 'uniqueType', 'levelDependent', 'v', 'value'}
+
+        def _trigger_text(row):
+            tt = row['trigger_type'] or ''
+            tzh = _trigger_map.get(tt, tt or '?')
+            if tt == 'achievement':
+                ach = row['trigger_achievement'] or ''
+                aname = _achievement_map.get(ach, ach)
+                return f"获得勋章「{aname}」时触发" if aname else tzh
+            elif tt == 'ribbons':
+                rnames = [(_ribbon_map.get(r, r)) for r in json.loads(row['trigger_ribbon_types'] or '[]')]
+                num = row['trigger_ribbons_num'] or ''
+                return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
+            elif tt == 'damage':
+                dmg = row['trigger_damage_num'] or 0
+                dmg_zh = getattr(NMAP, 'DAMAGE_TYPE_MAP', {}).get(str(row['trigger_damage_type'] or ''), '')
+                label = f"受到 {dmg/10000:.0f}万"
+                if dmg_zh: label += f" ({dmg_zh})"
+                return label + " 伤害时触发"
+            elif tt == 'health':
+                thr = row['damage_percent_threshold']
+                if thr:
+                    return f"战舰血量低于 {thr*100:.0f}% 时触发"
+                return "受到伤害导致血量降低时触发"
+            return tzh
+
+        def _effects_text(eff_dict):
+            """返回单行修饰符列表，隐藏分组标题"""
+            lines = []
+            for ek, ev in eff_dict.items():
+                if not isinstance(ev, dict): continue
+                is_pct = ev.get('percentTalent', False)
+                is_level = ev.get('levelDependent', False)
+                for sub_k, sub_v in ev.items():
+                    if sub_k in _skip_meta_keys: continue
+                    sub_zh = _mod_map.get(sub_k, sub_k)
+                    if isinstance(sub_v, dict):
+                        for x in sub_v.values():
+                            if isinstance(x, (int, float)): sub_v = x; break
+                        else: continue
+                    if not isinstance(sub_v, (int, float)): continue
+                    if is_pct:
+                        if abs(sub_v) < 0.5:
+                            if abs(sub_v) < 0.001: continue
+                            pct = sub_v * 100
+                            lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
+                        else:
+                            if abs(sub_v - 1.0) < 0.001: continue
+                            pct = (sub_v - 1.0) * 100
+                            lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
+                    elif isinstance(sub_v, float) and 0.5 <= sub_v <= 2.0:
+                        pct = (sub_v - 1.0) * 100
+                        lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
+                    else:
+                        lines.append(f"{sub_zh} {sub_v:+.0f}" if sub_v else f"{sub_zh} {sub_v:.0f}")
+                if is_level:
+                    lines.insert(0, "该天赋作用时间等于战舰等级")
+            return lines
+
+        def _build_tip(row):
+            lines = ['<div style="font-size:12px; line-height:1.5;">']
+            desc = _trigger_text(row)
+            lines.append(f'<div style="color:#ffc107; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
+            try: eff = json.loads(row['effects_json']) if row['effects_json'] else {}
+            except Exception: eff = {}
+            if eff:
+                lines.append('<div style="color:#aaa; margin-top:4px;">效果：</div>')
+                for l in _effects_text(eff):
+                    lines.append(f'<div style="color:#ddd; padding-left:8px;">{l}</div>')
+            if row['max_trigger_num']:
+                lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {row["max_trigger_num"]} 次</div>')
+            lines.append('</div>')
+            return '\n'.join(lines)
+
         db = get_db()
         if db and db._conn:
             try:
@@ -397,6 +484,7 @@ class CrewCustomizeDialog(QDialog):
                         QPushButton:hover { background:#e0e0e0; border-color:#999; }
                     """)
                     btn.setCheckable(False)
+                    btn.setToolTip(_build_tip(sk))
                     if icon_path:
                         pix = QPixmap(icon_path)
                         if not pix.isNull():
@@ -514,7 +602,6 @@ class CrewCustomizeDialog(QDialog):
             # ── 行容器 ──
             row = QWidget()
             row.setStyleSheet("background:#f7f7f7; border:1px solid #ddd; border-radius:4px;")
-            row.setFixedHeight(40)
             hl = QHBoxLayout(row)
             hl.setContentsMargins(6, 2, 6, 2)
             hl.setSpacing(8)
@@ -568,14 +655,23 @@ class CrewCustomizeDialog(QDialog):
                 else:
                     v_reg = mv_reg
                 if isinstance(v_epic, (int, float)) and isinstance(v_reg, (int, float)):
-                    # 统一显示为百分比
+                    # 统一显示为百分比（与 detail_panel _add_talent_line 逻辑一致）
                     def _fmt(v):
-                        if v < 2.0:
+                        if isinstance(v, float) and 0.5 <= abs(v) < 2.0:
+                            # 系数（如 1.1 = +10%, 0.85 = -15%）
+                            if abs(v - 1.0) < 0.001: return ""
                             pct = (v - 1.0) * 100
                             return f"{pct:+.0f}%"
-                        return f"+{v:.0f}"
+                        elif isinstance(v, (int, float)) and abs(v) < 0.5:
+                            # 原始加法值（如 0.01 = +1%）
+                            if abs(v) < 0.001: return ""
+                            pct = v * 100
+                            return f"{pct:+.0f}%"
+                        return f"+{v:.0f}" if v else f"{v:.0f}"
                     reg_str = _fmt(v_reg)
                     ep_str = _fmt(v_epic)
+                    if not reg_str and not ep_str:
+                        continue
                     diff_text += f"<span style='color:#888;'>{zh}</span> "
                     diff_text += f"<span style='color:#aaa;'>{reg_str}</span>"
                     if reg_str != ep_str:

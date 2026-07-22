@@ -125,10 +125,10 @@ class ShipPresenter(BasePresenter):
     }
 
     def build(self, ship_id: str, version_code: str = "", modifiers: dict | None = None,
-              engine_letter: str = "", fire_control_key: str = "",
+              engine_letter: str = "", fire_control_key: str = "", sonar_key: str = "",
               active_module_keys: dict | None = None) -> dict | None:
         try:
-            return self._do_build(ship_id, version_code, modifiers, engine_letter, fire_control_key,
+            return self._do_build(ship_id, version_code, modifiers, engine_letter, fire_control_key, sonar_key,
                                   active_module_keys)
         except Exception as e:
             import traceback
@@ -187,7 +187,7 @@ class ShipPresenter(BasePresenter):
                         field = name
                     else:
                         field = self.MODIFIER_MAP.get(mod_key)
-                    if field and field == name:
+                    if field and field == name.strip():
                         try:
                             cur_str = item.get("value", "")
                             if not cur_str:
@@ -215,7 +215,7 @@ class ShipPresenter(BasePresenter):
                             pass
 
     def _do_build(self, ship_id: str, version_code: str = "", modifiers: dict | None = None,
-                  engine_letter: str = "", fire_control_key: str = "",
+                  engine_letter: str = "", fire_control_key: str = "", sonar_key: str = "",
                   active_module_keys: dict | None = None) -> dict | None:
         sections: list[dict] = []
         conn = self.conn
@@ -229,9 +229,12 @@ class ShipPresenter(BasePresenter):
             engine_letter = self._resolve_stock_module_key(conn, vc, ship_id, "_Engine")
         if not fire_control_key:
             fire_control_key = self._resolve_stock_module_key(conn, vc, ship_id, "_Suo")
+        if not sonar_key:
+            sonar_key = self._resolve_stock_module_key(conn, vc, ship_id, "_Sonar")
         # 为其他模块类型补上 stock key
         _type_to_comp_slot = {
             "_Hull": "hull", "_Artillery": "artillery", "_Torpedoes": "torpedoes",
+            "_Sonar": "pinger",
         }
         for ut, slot in _type_to_comp_slot.items():
             if ut not in active_module_keys:
@@ -273,7 +276,7 @@ class ShipPresenter(BasePresenter):
 
         # ── 4. 各类型模块数据 ────────────────────────────
         self._aircraft_sub_info = {}
-        self._append_modules(conn, vc, ship_id, sections, engine_letter, fire_control_key, active_module_keys)
+        self._append_modules(conn, vc, ship_id, sections, engine_letter, fire_control_key, active_module_keys, sonar_key)
 
         # ── 5. 应用升级品修饰符 ─────────────────────────
         self._mod_ship_type = basic['shiptype'] or ''
@@ -519,9 +522,9 @@ class ShipPresenter(BasePresenter):
                 if prep:
                     items.append(self.make_item(f"        准备时间: {prep}s", "", len(items)))
                 if cd_time:
-                    items.append(self.make_item(f"        冷却时间: {cd_time}s", "", len(items)))
+                    items.append(self.make_item(f"        冷却时间", f"{cd_time:.0f}", len(items), unit="s"))
                 if wt:
-                    items.append(self.make_item(f"        持续时间: {wt}s", "", len(items)))
+                    items.append(self.make_item(f"        持续时间", f"{wt:.0f}", len(items), unit="s"))
                 items.append(self.make_item(f"        消耗品效果:", "", len(items)))
                 # 按类型显示特有属性
                 if ct == "crashCrew":
@@ -812,13 +815,14 @@ class ShipPresenter(BasePresenter):
     # ── 模块 ───────────────────────────────────────────────
 
     def _append_modules(self, conn, vc, ship_id, sections, engine_letter="", fire_control_key="",
-                        active_module_keys: dict | None = None):
+                        active_module_keys: dict | None = None, sonar_key=""):
         # 获取所有配置组前缀字母
         letters = set()
         for tbl in ["ship_module_hulls", "ship_module_artillery", "ship_module_secondary_artillery",
                       "ship_module_atba",
                       "ship_module_torpedoes", "ship_module_aa", "ship_module_depth_charge",
-                      "ship_module_aircraft", "ship_module_air_support", "ship_module_engine"]:
+                      "ship_module_aircraft", "ship_module_air_support", "ship_module_engine",
+                      "ship_module_pinger"]:
             for r in conn.execute(
                 f"SELECT DISTINCT config_group FROM {tbl} WHERE version_code=? AND ship_id=?",
                 (vc, ship_id)).fetchall():
@@ -829,7 +833,7 @@ class ShipPresenter(BasePresenter):
 
         # 为每个字母收集各模块数据
         hull_data, arty_data, atba_data, secondary_arty_data, torp_data = {}, {}, {}, {}, {}
-        aa_data, dc_data, plane_data, asup_data = {}, {}, {}, {}
+        aa_data, dc_data, plane_data, asup_data, pinger_data = {}, {}, {}, {}, {}
 
         for letter in letters:
             self._build_hull(conn, vc, ship_id, letter, hull_data, engine_letter)
@@ -840,10 +844,12 @@ class ShipPresenter(BasePresenter):
             self._build_aa(conn, vc, ship_id, letter, aa_data)
             self._build_depth_charge(conn, vc, ship_id, letter, dc_data)
             self._build_air_support(conn, vc, ship_id, letter, asup_data)
+            self._build_pinger(conn, vc, ship_id, letter, pinger_data, sonar_key)
 
         for label, data in [("船体", hull_data), ("主炮", arty_data),
                              ("次级主炮", secondary_arty_data), ("副炮", atba_data),
-                             ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data)]:
+                             ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data),
+                             ("声呐", pinger_data)]:
             if data:
                 # 只取该 section 实际有数据的配置字母
                 section_letters = sorted(data.keys())
@@ -1828,6 +1834,29 @@ class ShipPresenter(BasePresenter):
         if items:
             result[letter] = (items, raw_ammo_types)
 
+    def _build_pinger(self, conn, vc, ship_id, letter, result, sonar_key=""):
+        items = []
+        o = 0
+        if sonar_key:
+            rows = conn.execute(
+                "SELECT * FROM ship_module_pinger WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND module_key=? ORDER BY module_key",
+                (vc, ship_id, f"{letter}%", sonar_key)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM ship_module_pinger WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key",
+                (vc, ship_id, f"{letter}%")).fetchall()
+        if not rows:
+            return
+        for idx, p in enumerate(rows):
+            mod_key = f"声呐模块 {idx + 1}"
+            if p['wave_reload_time']: items.append(self.make_item("声呐装填时间", str(p['wave_reload_time']), o, unit="s")); o += 1
+            if p['wave_distance']: items.append(self.make_item("声呐射程", f"{p['wave_distance'] / 1000:.2f}", o, unit="km")); o += 1
+            if p['sector_lifetime']: items.append(self.make_item("脉冲持续时间", str(p['sector_lifetime']), o, unit="s")); o += 1
+            if p['wave_speed']: items.append(self.make_item("脉冲速度", str(p['wave_speed']), o, unit="m/s")); o += 1
+            if p['exposing_waves']: items.append(self.make_item("暴露次数", str(p['exposing_waves']), o)); o += 1
+        if items:
+            result[letter] = (items, [])
+
     def _build_aircraft_panel(self, conn, vc, ship_id, letters, sections):
         """构建单一「舰载机」section，次级菜单按机种分 tab，tab 内按 config_prefix 分组"""
         # 收集所有飞机
@@ -2688,6 +2717,7 @@ class ShipPresenter(BasePresenter):
         upgrades: list[dict] = []
         # 按类型分组排序
         types_order = ["_Hull", "_Engine", "_Artillery", "_Suo", "_Torpedoes",
+                       "_Sonar",
                        "_Fighter", "_DiveBomber", "_TorpedoBomber", "_SkipBomber", "_MineBomber", "_FlightControl"]
         for ut in types_order:
             group = {k: v for k, v in upgrade_map.items() if v["type"] == ut}
