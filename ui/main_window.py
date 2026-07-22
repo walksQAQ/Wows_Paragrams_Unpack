@@ -192,7 +192,6 @@ class MainWindow(QMainWindow):
     # ── 信号槽 ────────────────────────────────────────────
 
     def _on_log(self, message: str) -> None:
-        self.status_label.setText(message)
         self.log_panel.append(message)
 
     def _on_category_changed(self, folder: str) -> None:

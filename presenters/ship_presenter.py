@@ -2034,6 +2034,7 @@ class ShipPresenter(BasePresenter):
                                            ("projectile_depth_charge_ext", "damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size")]:
                             ext = conn.execute(f"SELECT {cols} FROM {tbl} WHERE version_code=? AND projectile_id=?", (vc, arm)).fetchone()
                             if ext:
+                                ext = dict(ext)
                                 if tbl == "projectile_depth_charge_ext":
                                     if ext['damage']: detail_items.append(self.make_item("标伤", f"{ext['damage']:.0f}", di)); di += 1
                                     if ext['dc_speed']: detail_items.append(self.make_item("下沉速度", f"{ext['dc_speed']:.2f}", di, unit="m/s")); di += 1

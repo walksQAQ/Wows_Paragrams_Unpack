@@ -229,6 +229,41 @@ class SkillService:
 
         return result
 
+    def reload_skill_with_rarity(self, skill_key: str, rarity: str,
+                                 ship_type_en: str = "") -> Optional[dict]:
+        """按指定稀有度重新查询技能定义，返回可用于 grid 的 skill dict"""
+        db = self._get_db()
+        vc = self._get_version_code()
+        if not db or not vc:
+            return None
+        mods = {}
+        trigger = {}
+        try:
+            cur = db._conn.execute(
+                "SELECT modifiers_json, trigger_json FROM crew_skill_definitions WHERE version_code=? AND skill_key=? AND rarity=?",
+                (vc, skill_key, rarity)
+            )
+            row = cur.fetchone()
+            if row:
+                mods = json.loads(row["modifiers_json"]) if row["modifiers_json"] else {}
+                trigger = json.loads(row["trigger_json"]) if row["trigger_json"] else {}
+        except Exception:
+            pass
+        # 按舰种扁平化 dict 类型修饰符
+        if ship_type_en:
+            flat_mods = {}
+            for k, v in mods.items():
+                if isinstance(v, dict):
+                    v = v.get(ship_type_en) or next((x for x in v.values() if isinstance(x, (int, float))), v)
+                flat_mods[k] = v
+            mods = flat_mods
+        return {
+            "skill_key": skill_key,
+            "modifiers": mods,
+            "trigger": trigger,
+            "rarity": rarity,
+        }
+
     def get_ship_type_cn(self, ship_type_en_or_cn: str) -> str:
         """尝试转中文舰种名（用于 grid_map 查询）"""
         # 如果输入是英文，转中文；否则直接返回（已是最小中文名）
