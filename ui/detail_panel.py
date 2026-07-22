@@ -16,7 +16,7 @@ from functools import partial
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QTextEdit, QPushButton, QLabel, QFrame, QButtonGroup,
-    QScrollArea, QSizePolicy, QGridLayout,
+    QScrollArea, QSizePolicy, QGridLayout, QComboBox, QListView,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
@@ -136,6 +136,8 @@ class DetailPanel(QWidget):
 
     def _build_ship_pages(self, sections: list[dict], extra: dict | None = None) -> None:
         """将所有 section 以纵向流式布局展示：先分列，列内纵向叠放卡片"""
+        # 切换舰船时清空自定义配置缓存（仅内存）
+        DetailPanel._crew_custom_cache.clear()
         self._clear_pages()
         self._is_ship_mode = True
         sub_sections = (extra or {}).get("sub_sections", {})
@@ -200,7 +202,9 @@ class DetailPanel(QWidget):
         self._section_page_indices = {"全部": 0}
         self.stack.addWidget(outer_container)
 
-    # ── EPIC 技能配置持久化 ────────────────────────────
+    # ── EPIC 技能/天赋配置 ──
+    # 内存缓存（切换舰船时清空）
+    _crew_custom_cache: dict = {}
 
     @staticmethod
     def _epic_config_path() -> str:
@@ -227,12 +231,18 @@ class DetailPanel(QWidget):
             pass
 
     @staticmethod
-    def _apply_epic_overrides(grid_skills: list, epic_keys: list[str]):
-        """将 epic_keys 中匹配的技能强制标记为 EPIC 稀有度"""
+    def _apply_epic_overrides(grid_skills: list, epic_keys: list[str], skill_svc=None, ship_type_en=""):
+        """将 epic_keys 中匹配的技能重新查询为 EPIC 版本（替换整个 skill dict）"""
+        if not epic_keys:
+            return
         for row in grid_skills:
-            for sd in row:
+            for i, sd in enumerate(row):
                 if sd and sd.get('skill_key') in epic_keys:
-                    sd['rarity'] = 'EPIC'
+                    new_sd = skill_svc.reload_skill_with_rarity(sd['skill_key'], 'EPIC', ship_type_en) if skill_svc else None
+                    if new_sd:
+                        # 保留原位置的 icon_name（用于按钮图标）
+                        new_sd['icon_name'] = sd.get('icon_name', '')
+                        row[i] = new_sd
 
     @staticmethod
     def _refresh_epic_overlays(skill_btns: list, grid_skills: list, SKILL_BTN: str):
@@ -916,30 +926,51 @@ class DetailPanel(QWidget):
                 crew_row_layout.setContentsMargins(0,0,0,0); crew_row_layout.setSpacing(4)
 
                 self._crew_combo = QComboBox()
-                self._crew_combo.setMaxVisibleItems(10)
+                # 关键步骤：显式设置 QListView，确保滚轮事件与滚动条响应正常
+                self._crew_combo.setView(QListView())
+                self._crew_combo.setMaxVisibleItems(6)
+
+                # 补充 QListView 及 QScrollBar 的 QSS 样式
                 self._crew_combo.setStyleSheet("""
-                    font-size:11px; padding:2px 4px;
+                    QComboBox {
+                        font-size: 11px;
+                        padding: 2px 4px;
+                        background: #fff;
+                    }
                     QComboBox QAbstractItemView {
                         min-width: 200px;
-                        background: #2a2a2a; color: #ddd; selection-background-color: #1a73e8;
-                        border: 1px solid #444;
+                        background: #ffffff;
+                        color: #222;
+                        selection-background-color: #1a73e8;
+                        selection-color: #ffffff;
+                        border: 1px solid #ccc;
                         outline: none;
+                        padding: 2px;
                     }
-                    QComboBox QScrollBar:vertical {
-                        background: #1e1e1e; width: 14px; margin: 0;
+                    /* 明确指定垂直滚动条样式与宽度 */
+                    QComboBox QAbstractItemView QScrollBar:vertical {
+                        width: 10px;
+                        background: #f0f0f0;
                         border: none;
+                        margin: 0px;
+                        border-radius: 5px;
                     }
-                    QComboBox QScrollBar::handle:vertical {
-                        background: #666; min-height: 24px; border-radius: 5px;
+                    QComboBox QAbstractItemView QScrollBar::handle:vertical {
+                        background: #aaa;
+                        min-height: 20px;
+                        border-radius: 5px;
                         margin: 2px;
                     }
-                    QComboBox QScrollBar::handle:vertical:hover {
+                    QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {
                         background: #888;
                     }
-                    QComboBox QScrollBar::add-line:vertical, QComboBox QScrollBar::sub-line:vertical {
-                        height: 0; background: none;
+                    QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+                    QComboBox QAbstractItemView QScrollBar::sub-line:vertical {
+                        height: 0px;
+                        background: none;
                     }
-                    QComboBox QScrollBar::add-page:vertical, QComboBox QScrollBar::sub-page:vertical {
+                    QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+                    QComboBox QAbstractItemView QScrollBar::sub-page:vertical {
                         background: none;
                     }
                 """)
@@ -968,6 +999,7 @@ class DetailPanel(QWidget):
                     try:
                         cur = _db._conn.execute("""
                             SELECT c.crew_id, c.nation, c.is_unique, c.is_person, c.is_elite,
+                                   c.skills_container,
                                    COALESCE(n.lang_zh, c.person_name, c.crew_id) as disp,
                                    (SELECT COUNT(*) FROM crew_unique_skills us
                                     WHERE us.version_code=c.version_code AND us.crew_id=c.crew_id) as unique_skill_count
@@ -995,10 +1027,14 @@ class DetailPanel(QWidget):
 
                 # ── 传奇舰长（有国家天赋） ──
                 legends = [cd for cd in _crew_list if cd['is_unique'] and cd['unique_skill_count'] > 0]
-                # ── 特殊舰长（有独立强化技能组） ──
+                # ── 特殊舰长（is_unique 但有独立技能组） ──
                 specials = [cd for cd in _crew_list if cd['is_unique'] and cd['unique_skill_count'] == 0]
-                # ── 普通舰长 ──
-                regulars = [cd for cd in _crew_list if not cd['is_unique']]
+                # ── 有独立技能容器的通用舰长（如 PCW 系列自定义 PCOL） ──
+                named_regulars = [cd for cd in _crew_list if not cd['is_unique'] and cd.get('skills_container')
+                                  and cd['skills_container'] != 'PCOL001_CommonCrewSkills']
+                # ── 普通舰长（默认技能组） ──
+                generic_regulars = [cd for cd in _crew_list if not cd['is_unique']
+                                    and (not cd.get('skills_container') or cd['skills_container'] == 'PCOL001_CommonCrewSkills')]
                 
                 if legends:
                     for cd in legends:
@@ -1022,20 +1058,28 @@ class DetailPanel(QWidget):
                     for cd in specials:
                         self._crew_data.append(cd)
                         _model.appendRow(_colored_item(f"◆ {cd['disp']}", "#42a5f5"))
-                    # 自定义稀有舰长（蓝色）
-                    custom_entry = {
-                        'crew_id': '__custom__',
-                        'nation': db_nation,
-                        'is_unique': 0,
-                        'is_person': 0,
-                        'is_elite': 0,
-                        'disp': '自定义稀有舰长',
-                        'unique_skill_count': 0,
-                    }
-                    self._crew_data.append(custom_entry)
-                    _model.appendRow(_colored_item("◆ ✎ 自定义稀有舰长", "#42a5f5"))
-                
-                if regulars:
+
+                # ── 有独立 PCOL 的通用舰长（特殊通用舰长，青色标识） ──
+                if named_regulars:
+                    for cd in named_regulars:
+                        self._crew_data.append(cd)
+                        _model.appendRow(_colored_item(f"◈ {cd['disp']}", "#26c6da"))
+
+                # 自定义稀有舰长（蓝色，始终显示）
+                custom_entry = {
+                    'crew_id': '__custom__',
+                    'nation': db_nation,
+                    'is_unique': 0,
+                    'is_person': 0,
+                    'is_elite': 0,
+                    'disp': '自定义稀有舰长',
+                    'unique_skill_count': 0,
+                }
+                self._crew_data.append(custom_entry)
+                _model.appendRow(_colored_item("◆ ✎ 自定义稀有舰长", "#42a5f5"))
+
+                # ── 标准舰长（默认技能组） ──
+                if generic_regulars:
                     std_entry = {
                         'crew_id': '__standard__',
                         'nation': db_nation,
@@ -1077,8 +1121,9 @@ class DetailPanel(QWidget):
                 if self._crew_data and len(self._crew_data) > 0:
                     _first = self._crew_data[0]
                     if _first and _first['crew_id'] in ('__elite__', '__custom__'):
-                        _epic_cfg = self._load_epic_config()
-                        self._apply_epic_overrides(grid_skills, _epic_cfg.get(_first['crew_id'], []))
+                        _cached_init = DetailPanel._crew_custom_cache.get(_first['crew_id'], {})
+                        self._apply_epic_overrides(grid_skills, _cached_init.get("epic", []),
+                                                    skill_svc=_skill_svc, ship_type_en=cur_shiptype)
 
                 TIER_COST = {0: 1, 1: 2, 2: 3, 3: 4}  # 每层花费点数 = 层数
                 MAX_POINTS = 21
@@ -1582,8 +1627,9 @@ class DetailPanel(QWidget):
                         if 0 <= idx < len(self._crew_data):
                             _cd = self._crew_data[idx]
                             if _cd and _cd['crew_id'] in ('__elite__', '__custom__'):
-                                _epic_cfg = self._load_epic_config()
-                                self._apply_epic_overrides(grid_skills, _epic_cfg.get(_cd['crew_id'], []))
+                                _cached_cfg = DetailPanel._crew_custom_cache.get(_cd['crew_id'], {})
+                                self._apply_epic_overrides(grid_skills, _cached_cfg.get("epic", []),
+                                                            skill_svc=_skill_svc, ship_type_en=cur_shiptype)
                         # 重建按钮（tooltip 数据已变）
                         _rebuild_buttons()
                     else:
@@ -1750,7 +1796,7 @@ class DetailPanel(QWidget):
                                         for ek, ev in eff.items():
                                             if not isinstance(ev, dict):
                                                 continue
-                                            desc = _format_effect(ek, ev, _mod_map, _ship_type)
+                                            desc = _format_effect(ek, ev, _mod_map, cur_shiptype)
                                             if desc:
                                                 for _line in desc.split("\n"):
                                                     tip_lines.append(
@@ -1770,7 +1816,17 @@ class DetailPanel(QWidget):
                         except Exception:
                             pass
 
+                # 保存基础样式表，选中颜色变更时重设
+                _combo_base_qss = self._crew_combo.styleSheet()
+                def _sync_combo_color():
+                    _idx = self._crew_combo.currentIndex()
+                    _item = _model.item(_idx)
+                    if _item:
+                        _brush = _item.foreground()
+                        if _brush is not None:
+                            self._crew_combo.setStyleSheet(_combo_base_qss + f"\nQComboBox {{ color: {_brush.color().name()}; }}")
                 self._crew_combo.currentIndexChanged.connect(_on_crew_changed)
+                self._crew_combo.currentIndexChanged.connect(_sync_combo_color)
                 # 默认选中标准舰长
                 if self._crew_combo.count() > 0:
                     _default_idx = 0
@@ -1782,35 +1838,120 @@ class DetailPanel(QWidget):
 
                 # ── 自定义按钮 ──
                 def _open_customize():
-                    from ui.crew_customize_dialog import CrewCustomizeDialog
-                    idx = self._crew_combo.currentIndex()
-                    if idx < 0 or idx >= len(self._crew_data):
-                        return
-                    cd = self._crew_data[idx]
-                    if cd is None:
-                        return
-                    # 读取已有 EPIC 配置
-                    _epic_cfg = self._load_epic_config()
-                    # 精英/自定义舰长使用固定标识跨舰通用，其他舰长按舰船 ID 存储
-                    _cfg_key = cd['crew_id'] if cd['crew_id'] in ('__elite__', '__custom__') else self._current_filename
-                    _existing = _epic_cfg.get(_cfg_key, [])
-                    dlg = CrewCustomizeDialog(cd, db_nation, self,
-                                              ship_type_cn=ship_cn, ship_type_en=cur_shiptype)
-                    dlg.epic_skills = list(_existing)
-                    if dlg.exec():
-                        _epic_cfg[_cfg_key] = dlg.epic_skills
-                        self._save_epic_config(_epic_cfg)
-                        # 重建技能网格
-                        _default_pcol = "PCOL001_CommonCrewSkills"
-                        _new_grid = _skill_svc.get_grid_skills(ship_cn, container_id=_default_pcol, ship_type_en=cur_shiptype) if ship_cn else []
-                        grid_skills[:] = _new_grid
-                        # 对 elite/custom 应用 EPIC 覆盖
-                        if cd['crew_id'] in ('__elite__', '__custom__'):
-                            self._apply_epic_overrides(grid_skills, dlg.epic_skills)
-                        # 刷新按钮叠加标记和 tooltip
-                        DetailPanel._refresh_epic_overlays(skill_btns, grid_skills, SKILL_BTN)
-                        # 触发数据刷新
-                        self._refresh_data_only()
+                    try:
+                        from ui.crew_customize_dialog import CrewCustomizeDialog
+                        idx = self._crew_combo.currentIndex()
+                        if idx < 0 or idx >= len(self._crew_data):
+                            return
+                        cd = self._crew_data[idx]
+                        if cd is None:
+                            return
+                        # 读取已有配置（内存缓存优先，文件作为持久化后备）
+                        _cfg_key = cd['crew_id'] if cd['crew_id'] in ('__elite__', '__custom__') else self._current_filename
+                        _cached = DetailPanel._crew_custom_cache.get(_cfg_key)
+                        if _cached is not None:
+                            _existing_epic = _cached.get("epic", [])
+                            _existing_talent = _cached.get("talent")
+                        else:
+                            _existing_epic = []
+                            _existing_talent = None
+                        dlg = CrewCustomizeDialog(cd, db_nation, self,
+                                                  ship_type_cn=ship_cn, ship_type_en=cur_shiptype,
+                                                  epic_skills=_existing_epic,
+                                                  selected_talent=tuple(_existing_talent) if _existing_talent else None)
+                        if dlg.exec():
+                            # 仅保存到内存缓存（切换舰船时自动清空，不持久化到文件）
+                            _entry = {"epic": dlg.epic_skills, "talent": dlg.selected_talent}
+                            DetailPanel._crew_custom_cache[_cfg_key] = _entry
+                            # 重建技能网格
+                            _default_pcol = "PCOL001_CommonCrewSkills"
+                            _new_grid = _skill_svc.get_grid_skills(ship_cn, container_id=_default_pcol, ship_type_en=cur_shiptype) if ship_cn else []
+                            grid_skills[:] = _new_grid
+                            if cd['crew_id'] in ('__elite__', '__custom__'):
+                                self._apply_epic_overrides(grid_skills, dlg.epic_skills,
+                                                            skill_svc=_skill_svc, ship_type_en=cur_shiptype)
+                            # 完全重建技能按钮（tooltip 跟随 EPIC 数据自动更新）
+                            _rebuild_buttons()
+                            DetailPanel._refresh_epic_overlays(skill_btns, grid_skills, SKILL_BTN)
+                            # 刷新数据显示（含天赋修饰符）
+                            _talent_mods: dict = {}
+                            if dlg.selected_talent and _db and _db._conn:
+                                _t_crew, _t_skill = dlg.selected_talent[0], dlg.selected_talent[1]
+                                try:
+                                    _tcur = _db._conn.execute(
+                                        "SELECT effects_json FROM crew_unique_skills WHERE version_code=? AND crew_id=? AND skill_key=?",
+                                        (_db_vc, _t_crew, _t_skill)
+                                    )
+                                    _trow = _tcur.fetchone()
+                                    if _trow and _trow['effects_json']:
+                                        import json
+                                        _teff = json.loads(_trow['effects_json'])
+                                        for _ek, _ev in _teff.items():
+                                            if not isinstance(_ev, dict):
+                                                continue
+                                            _is_pct = _ev.get('percentTalent', False)
+                                            for _sk, _sv in _ev.items():
+                                                if _sk in ('percentTalent', 'uniqueType', 'levelDependent', 'planeSpawnTime', 'value', 'v'):
+                                                    continue
+                                                if isinstance(_sv, dict):
+                                                    if cur_shiptype and _sv.get(cur_shiptype) is not None:
+                                                        _sv = _sv[cur_shiptype]
+                                                    else:
+                                                        for _x in _sv.values():
+                                                            if isinstance(_x, (int, float)):
+                                                                _sv = _x
+                                                                break
+                                                            else:
+                                                                continue
+                                                if not isinstance(_sv, (int, float)):
+                                                    continue
+                                                if _is_pct:
+                                                    _pct = (_sv - 1.0) * 100 if _sv < 2.0 else _sv * 100
+                                                    _talent_mods[_sk] = 1.0 + _pct / 100.0
+                                                else:
+                                                    _talent_mods[_sk] = _sv
+                                except Exception:
+                                    pass
+                            self._refresh_data_only(_talent_mods if _talent_mods else None)
+                            # 刷新天赋显示按钮
+                            while self._us_layout.count():
+                                _w = self._us_layout.takeAt(0)
+                                if _w and _w.widget():
+                                    _w.widget().deleteLater()
+                            if dlg.selected_talent and _db and _db._conn:
+                                try:
+                                    _t_crew2, _t_skill2 = dlg.selected_talent[0], dlg.selected_talent[1]
+                                    _tcur2 = _db._conn.execute("""
+                                        SELECT skill_key, trigger_type, max_trigger_num, effects_json, icon_path
+                                        FROM crew_unique_skills WHERE version_code=? AND crew_id=? AND skill_key=?
+                                    """, (_db_vc, _t_crew2, _t_skill2))
+                                    _trow2 = _tcur2.fetchone()
+                                    if _trow2:
+                                        from pathlib import Path as _P
+                                        from PySide6.QtGui import QPixmap as _QP, QIcon as _QI
+                                        from PySide6.QtCore import QSize as _QS
+                                        _tbtn = QPushButton()
+                                        _tbtn.setStyleSheet("""
+                                            QPushButton { background:#1a1a1a; border:2px solid #ffc107;
+                                                          border-radius:6px; min-width:52px; min-height:52px;
+                                                          max-width:52px; max-height:52px;
+                                                          font-size:9px; color:#ffc107; padding:0px; }
+                                            QPushButton:hover { background:#2a2a2a; border-color:#ffd54f; }
+                                        """)
+                                        _tpath = _trow2['icon_path'] or ""
+                                        if _tpath and _P(_tpath).exists():
+                                            _tpix = _QP(_tpath)
+                                            if not _tpix.isNull():
+                                                _tbtn.setIcon(_QI(_tpix))
+                                                _tbtn.setIconSize(_QS(22, 22))
+                                        _tbtn.setToolTip(f"已选天赋：{_trow2['skill_key']}")
+                                        self._us_layout.addWidget(_tbtn)
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        import traceback
+                        from app.signals import bus
+                        bus.log_message.emit(f"⚠️ 自定义配置异常: {e}\n{traceback.format_exc()}")
 
                 self._crew_customize_btn.clicked.connect(_open_customize)
                 cl.addStretch()
@@ -3033,7 +3174,7 @@ class DetailPanel(QWidget):
             from app.signals import bus
             bus.log_message.emit(f"⚠️ 重算失败: {e}\n{traceback.format_exc()}")
 
-    def _refresh_data_only(self, modifiers: dict | None) -> None:
+    def _refresh_data_only(self, modifiers: dict | None = None) -> None:
         """仅刷新下方数据区，不触碰顶部配置栏（自动合并技能修饰符）"""
         from services.database_service import get_db
         from presenters.registry import PresenterRegistry

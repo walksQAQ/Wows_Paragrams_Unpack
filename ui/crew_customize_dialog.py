@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QGroupBox, QScrollArea, QWidget, QGridLayout,
-    QSizePolicy,
+    QSizePolicy, QCheckBox,
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap, QFont
@@ -24,13 +24,16 @@ class CrewCustomizeDialog(QDialog):
     """自定义舰长配置对话框"""
 
     def __init__(self, crew_data: dict, db_nation: str, parent=None,
-                 ship_type_cn: str = "", ship_type_en: str = ""):
+                 ship_type_cn: str = "", ship_type_en: str = "",
+                 epic_skills: list[str] | None = None,
+                 selected_talent: tuple | None = None):
         super().__init__(parent)
         self._crew_data = crew_data
         self._db_nation = db_nation
         self._ship_type_cn = ship_type_cn
         self._ship_type_en = ship_type_en
-        self.epic_skills: list[str] = []  # 外部读取：已勾选的 skill_key 列表
+        self.epic_skills: list[str] = list(epic_skills) if epic_skills else []
+        self.selected_talent: tuple | None = selected_talent
         self.setWindowTitle("自定义舰长配置")
         self.setMinimumSize(420, 400)
         self._max_epic = 3
@@ -96,7 +99,6 @@ class CrewCustomizeDialog(QDialog):
         self._build_epic_skill_section(layout)
         # ── 传奇天赋选择 ──
         from services.database_service import get_db
-        from PySide6.QtWidgets import QButtonGroup
 
         lbl = QLabel("精英舰长可学习一项同国籍传奇舰长的国家天赋（仅可选一项）：")
         lbl.setWordWrap(True)
@@ -106,8 +108,6 @@ class CrewCustomizeDialog(QDialog):
         vc = db.get_latest_version_code() or "" if db else ""
 
         # 查询同国籍所有传奇天赋
-        self._talent_group = QButtonGroup(self)
-        self._talent_group.setExclusive(True)
         self._selected_talent = None  # 存储选中天赋 (crew_id, skill_key)
 
         talents_found = False
@@ -116,7 +116,9 @@ class CrewCustomizeDialog(QDialog):
                 cur = db._conn.execute("""
                     SELECT us.skill_key, us.trigger_type, us.max_trigger_num,
                            us.effects_json, us.icon_path, us.sort_index,
-                           c.crew_id, COALESCE(n.lang_zh, c.person_name, c.crew_id) as legend_name
+                           c.crew_id, COALESCE(n.lang_zh, c.person_name, c.crew_id) as legend_name,
+                           us.trigger_achievement, us.trigger_damage_num, us.trigger_damage_type,
+                           us.trigger_ribbon_types, us.trigger_ribbons_num, us.damage_percent_threshold
                     FROM crew_unique_skills us
                     JOIN crew_basic_info c ON c.version_code=us.version_code AND c.crew_id=us.crew_id
                     LEFT JOIN name_mappings n ON n.id=c.display_name_id
@@ -128,38 +130,17 @@ class CrewCustomizeDialog(QDialog):
                 talents = cur.fetchall()
                 if talents:
                     talents_found = True
-                    from PySide6.QtWidgets import QGridLayout
+                    from PySide6.QtWidgets import QRadioButton
                     from models.name_mapping import Mapping as NMAP
                     _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
                     _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
                     _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
                     _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
 
-                    def _build_talent_tooltip(talent_row) -> str:
-                        """构建与主界面一致的传奇天赋 tooltip"""
-                        lines = ['<div style="font-size:12px; line-height:1.5;">']
-                        tt = talent_row['trigger_type'] or ""
-                        desc = _build_trigger_desc(talent_row, tt, _trigger_map, _ribbon_map, _achievement_map)
-                        lines.append(f'<div style="color:#ffc107; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
-                        try:
-                            eff = json.loads(talent_row['effects_json']) if talent_row['effects_json'] else {}
-                        except Exception:
-                            eff = {}
-                        if eff:
-                            lines.append('<div style="color:#aaa; margin-top:4px;">效果：</div>')
-                            for ek, ev in eff.items():
-                                if not isinstance(ev, dict):
-                                    continue
-                                desc = _format_talent_effect(ek, ev, _mod_map)
-                                if desc:
-                                    for _line in desc.split("\n"):
-                                        lines.append(f'<div style="color:#ddd; padding-left:8px;">{_line}</div>')
-                        if talent_row['max_trigger_num']:
-                            lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {talent_row["max_trigger_num"]} 次</div>')
-                        lines.append('</div>')
-                        return "\n".join(lines)
+                    _skip_meta_keys = {'percentTalent', 'uniqueType', 'levelDependent', 'v', 'value'}
 
-                    def _build_trigger_desc(sk_row, trig_type, trig_map, rib_map, ach_map):
+                    def _build_trigger_text(sk_row, trig_type, trig_map, rib_map, ach_map):
+                        """生成触发条件文本"""
                         tzh = trig_map.get(trig_type, trig_type or "?")
                         if trig_type == "achievement":
                             ach = sk_row.get('trigger_achievement') or ""
@@ -174,7 +155,7 @@ class CrewCustomizeDialog(QDialog):
                             num = sk_row.get('trigger_ribbons_num') or ""
                             return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
                         elif trig_type == "damage":
-                            dmg = sk_row.get('trigger_damage_num') or ""
+                            dmg = sk_row.get('trigger_damage_num') or 0
                             from models.name_mapping import Mapping as NMAP2
                             dmg_zh = getattr(NMAP2, 'DAMAGE_TYPE_MAP', {}).get(str(sk_row.get('trigger_damage_type') or ""), "")
                             label = f"受到 {dmg/10000:.0f}万"
@@ -182,21 +163,70 @@ class CrewCustomizeDialog(QDialog):
                                 label += f" ({dmg_zh})"
                             return label + " 伤害时触发"
                         elif trig_type == "health":
-                            return f"战舰血量低于 {sk_row.get('damage_percent_threshold', 0)*100:.0f}% 时触发"
+                            thr = sk_row.get('damage_percent_threshold') or 0
+                            return f"战舰血量低于 {thr*100:.0f}% 时触发"
                         return tzh
 
-                    def _format_talent_effect(effect_key, effect_val, mod_map):
-                        """格式化天赋效果描述"""
-                        zh = mod_map.get(effect_key, effect_key)
-                        v = effect_val.get('value') or effect_val.get('v')
-                        is_pct = effect_val.get('percentTalent', False)
-                        if v is None:
-                            return ""
-                        if is_pct:
-                            pct = (v - 1.0) * 100 if isinstance(v, float) and v < 2.0 else v * 100
-                            sign = "+" if pct >= 0 else ""
-                            return f"{zh} {sign}{pct:.1f}%"
-                        return f"{zh} {v:+.0f}" if isinstance(v, (int, float)) else str(v)
+                    def _format_talent_effects_text(eff_dict, mod_map, ship_type_en=""):
+                        """格式化天赋效果为多行文本，返回(头部名称行, 效果行列表)"""
+                        lines = []
+                        for ek, ev in eff_dict.items():
+                            if not isinstance(ev, dict):
+                                continue
+                            # 效果名称
+                            zh_name = mod_map.get(ek, ek)
+                            # 提取子键值（过滤元数据）
+                            parts = []
+                            is_pct = ev.get('percentTalent', False)
+                            for sub_k, sub_v in ev.items():
+                                if sub_k in _skip_meta_keys:
+                                    continue
+                                sub_zh = mod_map.get(sub_k, sub_k)
+                                if isinstance(sub_v, dict):
+                                    # 按舰种取值
+                                    if ship_type_en and sub_v.get(ship_type_en) is not None:
+                                        sub_v = sub_v[ship_type_en]
+                                    else:
+                                        # 取第一个数值
+                                        for x in sub_v.values():
+                                            if isinstance(x, (int, float)):
+                                                sub_v = x
+                                                break
+                                        else:
+                                            continue
+                                if not isinstance(sub_v, (int, float)):
+                                    continue
+                                if is_pct:
+                                    pct = (sub_v - 1.0) * 100 if sub_v < 2.0 else sub_v * 100
+                                    sign = "+" if pct >= 0 else ""
+                                    parts.append(f"{sub_zh} {sign}{pct:.0f}%")
+                                else:
+                                    parts.append(f"{sub_zh} {sub_v:+.0f}" if sub_v >= 0 else f"{sub_zh} {sub_v:.0f}")
+                            if parts:
+                                lines.append(f"<b>{zh_name}</b>：{'，'.join(parts)}")
+                            else:
+                                lines.append(f"<b>{zh_name}</b>")
+                        return lines
+
+                    def _build_talent_tooltip(talent_row) -> str:
+                        """构建天赋 tooltip"""
+                        lines = ['<div style="font-size:12px; line-height:1.5;">']
+                        tt = talent_row['trigger_type'] or ""
+                        desc = _build_trigger_text(talent_row, tt, _trigger_map, _ribbon_map, _achievement_map)
+                        lines.append(f'<div style="color:#ffc107; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
+                        try:
+                            eff = json.loads(talent_row['effects_json']) if talent_row['effects_json'] else {}
+                        except Exception:
+                            eff = {}
+                        if eff:
+                            lines.append('<div style="color:#aaa; margin-top:4px;">效果：</div>')
+                            eff_lines = _format_talent_effects_text(eff, _mod_map, self._ship_type_en)
+                            for l in eff_lines:
+                                lines.append(f'<div style="color:#ddd; padding-left:8px;">{l}</div>')
+                        if talent_row['max_trigger_num']:
+                            lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {talent_row["max_trigger_num"]} 次</div>')
+                        lines.append('</div>')
+                        return "\n".join(lines)
 
                     # 按传奇舰长分组显示
                     by_legend: dict[str, list] = {}
@@ -207,48 +237,108 @@ class CrewCustomizeDialog(QDialog):
                     scroll_content = QWidget()
                     sc_layout = QVBoxLayout(scroll_content)
                     sc_layout.setContentsMargins(0,0,0,0)
-                    sc_layout.setSpacing(8)
+                    sc_layout.setSpacing(6)
+                    _talent_cbs: list[QCheckBox] = []
                     for lname, ltalents in by_legend.items():
                         # 传奇舰长姓名标签
                         header = QLabel(f"✦ {lname}")
-                        header.setStyleSheet("color:#c60; font-size:12px; font-weight:bold; padding:2px 0;")
+                        header.setStyleSheet("color:#c60; font-size:12px; font-weight:bold; padding:4px 0 2px 0;")
                         sc_layout.addWidget(header)
-                        # 天赋按钮行
-                        row_w = QWidget()
-                        rl = QHBoxLayout(row_w)
-                        rl.setContentsMargins(0,0,0,0)
-                        rl.setSpacing(4)
                         for t in ltalents:
+                            t = dict(t)  # sqlite3.Row → dict
                             icon_path = t['icon_path'] or ""
-                            btn = QPushButton()
-                            btn.setCheckable(True)
-                            btn.setStyleSheet("""
-                                QPushButton { background:#f0f0f0; border:2px solid #ccc;
-                                              border-radius:6px; min-width:52px; min-height:52px;
-                                              max-width:52px; max-height:52px; font-size:8px;
-                                              color:#000; padding:0px; }
-                                QPushButton:hover { background:#e0e0e0; border-color:#999; }
-                                QPushButton:checked { background:#fff3e0; border-color:#ff8800; color:#c60; }
+                            # 解析效果
+                            eff_desc_lines = []
+                            try:
+                                eff = json.loads(t['effects_json']) if t['effects_json'] else {}
+                            except Exception:
+                                eff = {}
+                            if eff:
+                                eff_lines = _format_talent_effects_text(eff, _mod_map, self._ship_type_en)
+                                eff_desc_lines.extend(eff_lines)
+                            # 触发条件
+                            trig_text = _build_trigger_text(t, t.get('trigger_type',''), _trigger_map, _ribbon_map, _achievement_map)
+                            # 行容器
+                            row = QWidget()
+                            row.setFixedHeight(60)
+                            hl = QHBoxLayout(row)
+                            hl.setContentsMargins(6, 2, 6, 2)
+                            hl.setSpacing(8)
+                            # 复选框（类似强化技能，上限为1）
+                            cb = QCheckBox()
+                            cb.setChecked(False)
+                            cb.setStyleSheet("""
+                                QCheckBox { border:none; background:transparent; padding:0px; }
+                                QCheckBox::indicator {
+                                    width: 18px; height: 18px;
+                                    border: 2px solid #666;
+                                    border-radius: 3px;
+                                    background: #3a3a3a;
+                                }
+                                QCheckBox::indicator:checked {
+                                    background: #ff8800;
+                                    border-color: #ffaa33;
+                                }
+                                QCheckBox::indicator:hover {
+                                    border-color: #ff8800;
+                                }
                             """)
+                            hl.addWidget(cb)
+                            # 图标
                             if icon_path and Path(icon_path).exists():
                                 pix = QPixmap(icon_path)
                                 if not pix.isNull():
-                                    btn.setIcon(QIcon(pix))
-                                    btn.setIconSize(QSize(22, 22))
-                            else:
-                                short = t['skill_key'].split('_')[-1] if '_' in t['skill_key'] else t['skill_key'][:5]
-                                label = short
-                                if t['max_trigger_num']:
-                                    label += f"\n×{t['max_trigger_num']}"
-                                btn.setText(label)
-                            btn.setToolTip(_build_talent_tooltip(t))
-                            self._talent_group.addButton(btn)
-                            btn.talent_data = (t['crew_id'], t['skill_key'], lname)
-                            _td = btn.talent_data
-                            btn.clicked.connect(lambda checked, d=_td: self._on_talent_selected(d) if checked else None)
-                            rl.addWidget(btn)
-                        rl.addStretch()
-                        sc_layout.addWidget(row_w)
+                                    icon_label = QLabel()
+                                    icon_label.setPixmap(pix.scaled(36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                                    icon_label.setFixedSize(36, 36)
+                                    icon_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                                    icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
+                                    hl.addWidget(icon_label)
+                            # 右侧文本：触发条件 + 效果
+                            right_layout = QVBoxLayout()
+                            right_layout.setContentsMargins(0,0,0,0)
+                            right_layout.setSpacing(1)
+                            # 触发条件
+                            trig_label = QLabel(f"<span style='color:#ffc107; font-size:10px;'>触发：</span><span style='color:#ccc; font-size:10px;'>{trig_text}</span>")
+                            trig_label.setWordWrap(True)
+                            trig_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                            right_layout.addWidget(trig_label)
+                            # 效果
+                            if eff_desc_lines:
+                                eff_html = "<span style='color:#4fc3f7; font-size:10px;'>效果：</span>"
+                                eff_html += "<span style='color:#ddd; font-size:10px;'>" + " | ".join(eff_desc_lines) + "</span>"
+                                eff_label = QLabel(eff_html)
+                                eff_label.setWordWrap(True)
+                                eff_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                                right_layout.addWidget(eff_label)
+                            # 触发次数
+                            if t.get('max_trigger_num'):
+                                cnt_label = QLabel(f"<span style='color:#888; font-size:9px;'>每场最多触发 {t['max_trigger_num']} 次</span>")
+                                cnt_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+                                right_layout.addWidget(cnt_label)
+                            hl.addLayout(right_layout, 1)
+                            # 天赋选中逻辑（上限1个，类似强化技能）
+                            _td = (t['crew_id'], t['skill_key'], lname)
+                            def _on_talent_toggle(checked, _cb=cb, _td=_td):
+                                if checked:
+                                    # 取消前一个选中的天赋
+                                    for _b in _talent_cbs:
+                                        if _b is not _cb and _b.isChecked():
+                                            _b.setChecked(False)
+                                    self.selected_talent = _td
+                                else:
+                                    self.selected_talent = None
+                            cb.toggled.connect(_on_talent_toggle)
+                            cb._talent_skill_key = t['skill_key']
+                            _talent_cbs.append(cb)
+                            # 行点击
+                            def _row_click(e, _cb=cb):
+                                _cb.setChecked(not _cb.isChecked())
+                            row.mousePressEvent = _row_click
+                            row.setStyleSheet("background:#2a2a2a; border:1px solid #444; border-radius:4px;")
+                            # Tooltip
+                            row.setToolTip(_build_talent_tooltip(t))
+                            sc_layout.addWidget(row)
 
                     scroll = QScrollArea()
                     scroll.setWidgetResizable(True)
@@ -258,17 +348,28 @@ class CrewCustomizeDialog(QDialog):
                     scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
                     layout.addWidget(scroll)
 
-            except Exception:
-                pass
+                    # 恢复之前选中的天赋
+                    if self.selected_talent and _talent_cbs:
+                        _tgt_sk = self.selected_talent[1] if len(self.selected_talent) >= 2 else None
+                        for _cb in _talent_cbs:
+                            if hasattr(_cb, '_talent_skill_key') and _cb._talent_skill_key == _tgt_sk:
+                                _cb.setChecked(True)
+                                break
+
+            except Exception as e:
+                import traceback
+                _err = f"[CrewCustomize] _build_elite_section error: {e}\n{traceback.format_exc()}"
+                print(_err)
+                from app.signals import bus
+                try:
+                    bus.log_message.emit(_err)
+                except Exception:
+                    pass
 
         if not talents_found:
             note = QLabel("（当前国籍没有可学习的传奇天赋）")
             note.setStyleSheet("color:#888; font-size:11px; padding:4px 0;")
             layout.addWidget(note)
-
-    def _on_talent_selected(self, talent_data):
-        """记录选中的天赋"""
-        self._selected_talent = talent_data
 
     def _build_legendary_section(self, layout: QVBoxLayout):
         """传奇舰长：展示天赋信息"""
@@ -349,7 +450,7 @@ class CrewCustomizeDialog(QDialog):
         gl.setSpacing(4)
 
         lbl = QLabel("勾选需要切换为强化版本的技能：")
-            lbl.setStyleSheet("color:#000; font-size:11px;")
+        lbl.setStyleSheet("color:#000; font-size:11px;")
         gl.addWidget(lbl)
         limit_hint = QLabel(f"（最多可选 {self._max_epic} 个强化技能）")
         limit_hint.setStyleSheet("color:#888; font-size:10px;")
@@ -423,6 +524,22 @@ class CrewCustomizeDialog(QDialog):
             # 勾选框
             cb = QCheckBox()
             cb.setChecked(sk in self.epic_skills)
+            cb.setStyleSheet("""
+                QCheckBox { border:none; background:transparent; padding:0px; }
+                QCheckBox::indicator {
+                    width: 18px; height: 18px;
+                    border: 2px solid #666;
+                    border-radius: 3px;
+                    background: #3a3a3a;
+                }
+                QCheckBox::indicator:checked {
+                    background: #ff8800;
+                    border-color: #ffaa33;
+                }
+                QCheckBox::indicator:hover {
+                    border-color: #ff8800;
+                }
+            """)
             cb.stateChanged.connect(lambda checked, k=sk, c=cb: self._on_epic_toggle(k, checked, c))
             self._epic_checkboxes[sk] = cb
             hl.addWidget(cb)
@@ -434,6 +551,7 @@ class CrewCustomizeDialog(QDialog):
                     icon_label = QLabel()
                     icon_label.setPixmap(pix.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     icon_label.setFixedSize(28, 28)
+                    icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
                     hl.addWidget(icon_label)
             # 技能名称
             name_label = QLabel(sname)
