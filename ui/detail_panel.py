@@ -179,8 +179,8 @@ class DetailPanel(QWidget):
         columns_wrapper = QWidget()
         self._columns_wrapper = columns_wrapper
         self._ship_columns_layout = QHBoxLayout(columns_wrapper)
-        self._ship_columns_layout.setContentsMargins(0, 0, 0, 0)
-        self._ship_columns_layout.setSpacing(8)
+        self._ship_columns_layout.setContentsMargins(4, 0, 4, 0)
+        self._ship_columns_layout.setSpacing(2)
         self._ship_columns_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         main_layout.addWidget(columns_wrapper, stretch=1)
 
@@ -189,6 +189,7 @@ class DetailPanel(QWidget):
 
         self._ship_sections = sections
         self._ship_sub_sections = sub_sections
+        self._filter_sections_by_config()
         self._ship_container = columns_wrapper
         self._ship_column_widgets: list[QWidget] = []
         self._ship_column_layouts: list[QVBoxLayout] = []
@@ -464,20 +465,28 @@ class DetailPanel(QWidget):
                     btn.setStyleSheet(BTN_STYLE.replace("font-size: 9px;", "font-size: 8px;").replace("color: #333;", "color: #999;"))
 
                 if ut == "_Hull":
-                    affected = hull_affects.get(letter, [un])
                     btn.clicked.connect(
-                        partial(self._on_topbar_module_click, affected, letter)
+                        partial(self._on_hull_module_click, mod["id"])
+                    )
+                elif ut == "_Engine":
+                    engine_key = mod["id"]
+                    btn.clicked.connect(
+                        partial(self._on_engine_module_click, engine_key)
+                    )
+                elif ut == "_Suo":
+                    fc_key = mod["id"]
+                    btn.clicked.connect(
+                        partial(self._on_fire_control_click, fc_key)
                     )
                 elif ut in ("_Fighter", "_DiveBomber", "_TorpedoBomber", "_FlightControl", "_SkipBomber", "_MineBomber"):
-                    # 舰载机模块：传完整组件 ID 作为切换标识
-                    part_id = mod["id"]  # 如 "A1_Fighter"
+                    part_id = mod["id"]
                     btn.clicked.connect(
                         partial(self._on_aircraft_module_click, ut, part_id)
                     )
                 else:
-                    affected = [un]
+                    # 其余模块（主炮、鱼雷、防空等）：传完整组件 ID
                     btn.clicked.connect(
-                        partial(self._on_topbar_module_click, affected, letter)
+                        partial(self._on_other_module_click, ut, mod["id"])
                     )
                 bl.addWidget(btn)
                 if i == 0:
@@ -506,7 +515,7 @@ class DetailPanel(QWidget):
         l1.addWidget(row)
 
         l1.addStretch()
-        layout.addWidget(col1)
+        layout.addWidget(col1, stretch=1)
 
         # 分隔线
         _ship_status = config.get("group_status", "")
@@ -526,31 +535,16 @@ class DetailPanel(QWidget):
                 _ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cl.addWidget(_ph)
                 cl.addStretch()
-                layout.addWidget(col)
+                layout.addWidget(col, stretch=1)
                 continue
 
             if section_key == "upgrade":  # 第2列：升级品
                 col, cl = _col("升级品")
-                # 根据舰船等级决定可用槽位数
-                ship_tier = config.get("tier", 1)
-                if ship_tier <= 2:
-                    max_slots = 1
-                elif ship_tier <= 4:
-                    max_slots = 2
-                elif ship_tier == 5:
-                    max_slots = 3
-                elif ship_tier <= 7:
-                    max_slots = 4
-                elif ship_tier == 8:
-                    max_slots = 5
-                elif ship_tier <= 10:
-                    max_slots = 6
-                else:
-                    max_slots = 7
+                # 从实际可用的升级品数据确定槽位数量（部分特殊船有例外）
                 mods_by_slot: dict[int, list[dict]] = {}
                 for m in config.get("modernizations", []):
-                    if m["slot"] < max_slots:
-                        mods_by_slot.setdefault(m["slot"], []).append(m)
+                    mods_by_slot.setdefault(m["slot"], []).append(m)
+                max_slots = max(mods_by_slot.keys()) + 1 if mods_by_slot else 0
                 modernization_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "modernization"
                 if not hasattr(self, '_selected_mods'):
                     self._selected_mods: dict[int, dict] = {}
@@ -656,7 +650,7 @@ class DetailPanel(QWidget):
                     col_layout.addStretch()
                     uc_layout.addWidget(col_w)
                 cl.addWidget(upgrade_container)
-                layout.addWidget(col)
+                layout.addWidget(col, stretch=1)
 
             elif section_key == "signal":  # 第3列：信号旗（6槽位，图片按钮）
                 # WG 服暂无数信号旗数据
@@ -674,7 +668,7 @@ class DetailPanel(QWidget):
                     _wg_ph.setStyleSheet("color:#666; font-size:11px; padding:20px 8px;")
                     cl.addWidget(_wg_ph)
                     cl.addStretch()
-                    layout.addWidget(col)
+                    layout.addWidget(col, stretch=1)
                     continue
 
                 signal_flags_dir = Path(__file__).resolve().parent.parent / "resources" / "pictures" / "signal_flags"
@@ -753,8 +747,9 @@ class DetailPanel(QWidget):
                 # 信号旗选择面板：预先为每个槽位创建一页
                 flag_stack = QStackedWidget()
                 flag_stack.setVisible(False)
-                flag_stack.setStyleSheet("QStackedWidget{background:#2a2a2a;border:1px solid #555;border-radius:4px;}")
+                flag_stack.setStyleSheet("QStackedWidget{background:#2a2a2a;border:1px solid #555;border-radius:4px;max-height:300px;}")
                 flag_stack.setMaximumWidth(220)
+                flag_stack.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
                 _active_slot = [-1]  # 当前展开的槽位索引，-1=无
                 MENU_BTN = """
                     QPushButton { background: #3a3a3a; border: none;
@@ -837,12 +832,18 @@ class DetailPanel(QWidget):
                         slot_btns[idx].setChecked(False)
                     else:
                         flag_stack.setCurrentIndex(idx)
+                        # 在按钮下方弹出
+                        btn = slot_btns[idx]
+                        pos = btn.mapToGlobal(btn.rect().bottomLeft())
+                        flag_stack.move(pos)
                         flag_stack.setVisible(True)
                         _active_slot[0] = idx
                 for si in range(len(signal_slots)):
                     slot_btns[si].clicked.connect(lambda checked, idx=si: _on_slot_click(idx))
 
-                cl.addWidget(flag_stack)
+                # 点击外部关闭弹出菜单
+                flag_stack.installEventFilter(self)
+                self._flag_stack = flag_stack
 
                 def _apply_signal_flag(btn, flag_data, slot_label, fd_dir):
                     btn.setChecked(True)
@@ -903,7 +904,7 @@ class DetailPanel(QWidget):
                     self._refresh_data_only(all_mods if all_mods else None)
 
                 cl.addStretch()
-                layout.addWidget(col)
+                layout.addWidget(col, stretch=1)
 
             elif section_key == "commander":  # 第4列：舰长技能
                 # WG 服暂无舰长系统占位
@@ -921,7 +922,7 @@ class DetailPanel(QWidget):
                     _wg_placeholder.setStyleSheet("color:#666; font-size:11px; padding:20px 8px;")
                     cl.addWidget(_wg_placeholder)
                     cl.addStretch()
-                    layout.addWidget(col)
+                    layout.addWidget(col, stretch=1)
                     continue
 
                 # ── 按国籍查询可用舰长 ──
@@ -1347,24 +1348,33 @@ class DetailPanel(QWidget):
                     return "\n".join(lines)
 
                 def _update_skill_state():
-                    total_spent = sum(selected_tier_spent)
-                    remaining = MAX_POINTS - total_spent
-                    self._skill_pts_label.setText(f"技能点数: {total_spent} / {MAX_POINTS}")
+                    remaining = MAX_POINTS - sum(selected_tier_spent)
                     # 逐层检查解锁状态
                     for tier in range(4):
                         tier_locked = False
                         if tier > 0 and selected_tier_spent[tier - 1] < TIER_COST[tier - 1]:
                             tier_locked = True  # 上层未点至少1个技能
+                        if tier_locked:
+                            # 锁定层：清除已选
+                            for ci, btn in enumerate(skill_btns[tier]):
+                                if btn.isChecked():
+                                    btn.setChecked(False)
+                                    _pos_key = f"{tier}-{ci}"
+                                    if hasattr(self, '_selected_skill_mods'):
+                                        self._selected_skill_mods.pop(_pos_key, None)
+                                btn.setEnabled(False)
+                            selected_tier_spent[tier] = 0
+                            continue
                         for btn in skill_btns[tier]:
                             cost = TIER_COST[tier]
-                            if tier_locked:
-                                btn.setEnabled(False)
-                            elif btn.isChecked():
+                            if btn.isChecked():
                                 btn.setEnabled(True)  # 已选的保持可选
                             elif remaining >= cost:
                                 btn.setEnabled(True)
                             else:
                                 btn.setEnabled(False)
+                    total_spent = sum(selected_tier_spent)
+                    self._skill_pts_label.setText(f"技能点数: {total_spent} / {MAX_POINTS}")
 
                 def _make_skill_click(tier: int, col: int, btn: QPushButton, sk_mods: dict, sk_trigger: dict):
                     def _on_click(checked: bool):
@@ -1389,7 +1399,15 @@ class DetailPanel(QWidget):
                         else:
                             self._selected_skill_mods.pop(_pos_key, None)
                         # 合并升级品+技能所有修饰符
-                        _rebuild_with_skills()
+                        if not hasattr(self, '_skill_debounce_timer'):
+                            from PySide6.QtCore import QTimer
+                            self._skill_debounce_timer = QTimer(self)
+                            self._skill_debounce_timer.setSingleShot(True)
+                            self._skill_debounce_timer.setInterval(80)
+                            self._skill_debounce_timer.timeout.connect(_rebuild_with_skills)
+                        if self._skill_debounce_timer.isActive():
+                            self._skill_debounce_timer.stop()
+                        self._skill_debounce_timer.start()
                     return _on_click
 
                 def _rebuild_with_skills():
@@ -1594,6 +1612,7 @@ class DetailPanel(QWidget):
                     _update_skill_state()
 
                 cl.addWidget(skill_grid)
+                skill_grid.setMaximumWidth(380)
                 _rebuild_buttons()
 
                 # ── 舰长切换：更新天赋显示 ──
@@ -1967,7 +1986,7 @@ class DetailPanel(QWidget):
 
                 self._crew_customize_btn.clicked.connect(_open_customize)
                 cl.addStretch()
-                layout.addWidget(col)
+                layout.addWidget(col, stretch=1)
 
         return bar
 
@@ -1984,8 +2003,34 @@ class DetailPanel(QWidget):
                 stack.setCurrentIndex(i)
                 return
 
+    def _on_engine_module_click(self, engine_key: str) -> None:
+        """引擎模块按钮点击：不切换配置字母，只刷新引擎数据"""
+        self._active_engine_key = engine_key
+        self._refresh_data_only()
+
+    def _on_fire_control_click(self, fc_key: str) -> None:
+        """火控配件按钮点击：不切换配置字母，只刷新主炮系数"""
+        self._active_fire_control_key = fc_key
+        self._refresh_data_only()
+
+    def _on_hull_module_click(self, hull_key: str) -> None:
+        """船体模块按钮点击：记录完整组件 ID"""
+        self._active_hull_key = hull_key
+        self._active_config_letter = hull_key[0] if hull_key else "A"
+        self._refresh_data_only()
+
+    def _on_other_module_click(self, ut: str, mod_key: str) -> None:
+        """其余模块按钮点击（主炮/鱼雷/防空等）"""
+        self._active_module_keys[ut] = mod_key
+        self._active_config_letter = mod_key[0] if mod_key else "A"
+        self._refresh_data_only()
+
     def _on_topbar_module_click(self, section_labels: list[str], config_letter: str):
         """顶栏模块按钮点击：切换到对应子面板的配置页，支持同时切多个 section"""
+        # 记录当前激活的配置字母，用于过滤下方数据段
+        self._active_config_letter = config_letter
+        # 刷新数据显示
+        self._refresh_data_only()
         for sl in section_labels:
             ctrl = self._subwidget_controllers.get(sl)
             if ctrl is None:
@@ -2053,16 +2098,16 @@ class DetailPanel(QWidget):
             while len(self._ship_column_widgets) < cols:
                 col_w = QWidget()
                 col_layout = QVBoxLayout(col_w)
-                col_layout.setContentsMargins(0, 0, 0, 0)
+                col_layout.setContentsMargins(6, 0, 6, 0)
                 col_layout.setSpacing(8)
                 col_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
                 self._ship_column_layouts.append(col_layout)
                 self._ship_column_widgets.append(col_w)
                 self._ship_columns_layout.addWidget(col_w)
 
-            # 设置列宽拉伸：第0列2/3，其余列均分剩余
+            # 列宽：第0列窄（基础信息/消耗品），其余均分
             for i, w in enumerate(self._ship_column_widgets[:cols]):
-                stretch = 2 if i == 0 else (3 if cols == 3 else 2)
+                stretch = 1 if i == 0 else 2
                 self._ship_columns_layout.setStretchFactor(w, stretch)
 
             # 隐藏多余的列
@@ -2197,7 +2242,21 @@ class DetailPanel(QWidget):
                                     if at and _ap != "mine": cand.append(f"ammo_{_ap}_{at}_0.png")
                                     cand.append(f"ammo_{_ap}_0.png")
                                 if at: cand.append(f"ammo_{at}_0.png")
-                                if sp in ("torpedo","torpedobomber"): cand.extend(["ammo_torpedo_0.png","ammo_bomber_torpedo_0.png"])
+                                if sp in ("torpedo","torpedobomber"):
+                                    if "deepwater" in ai.get("raw_ammo_type", "").lower():
+                                        if sp == "torpedobomber":
+                                            cand.insert(0, "ammo_torpedo_deepwater_0.png")
+                                            cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                        else:
+                                            cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                            cand.insert(0, "ammo_torpedo_deepwater_0.png")
+                                    else:
+                                        tp = ai.get("torpedo_postfix", "")
+                                        if tp == "_subBurn":
+                                            cand.insert(0, "ammo_torpedo_subburn_0.png")
+                                        elif tp:
+                                            cand.insert(0, "ammo_torpedo_subdefault_improve_0.png")
+                                    cand.extend(["ammo_torpedo_0.png","ammo_bomber_torpedo_0.png"])
                                 if "depthcharge" in sp: cand.extend(["ammo_depthcharge_0.png","ammo_airsupport_depthcharge_0.png"])
                                 ip = next((p for c in cand if (p:=ammo_dir/c).exists()), None)
                                 if ip: pix = QPixmap(str(ip)); btn.setIcon(QIcon(pix.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
@@ -2376,11 +2435,21 @@ class DetailPanel(QWidget):
                         if at: candidates.append(f"ammo_{at}_0.png")
                         # 鱼雷回退
                         if sp in ("torpedo", "torpedobomber"):
+                            if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
+                                if sp == "torpedobomber":
+                                    candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                                    candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                else:
+                                    candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                    candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                            else:
+                                tp = ammo_info.get("torpedo_postfix", "")
+                                if tp == "_subBurn":
+                                    candidates.insert(0, "ammo_torpedo_subburn_0.png")
+                                elif tp:
+                                    candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
                             candidates.append("ammo_torpedo_0.png")
                             candidates.append("ammo_bomber_torpedo_0.png")
-                            if 'deep' in at.lower() or 'deep' in sp:
-                                candidates.append("ammo_torpedo_deepwater_0.png")
-                                candidates.append("ammo_bomber_torpedo_deepwater_0.png")
                         # 深水炸弹回退
                         if "depthcharge" in sp:
                             candidates.append("ammo_depthcharge_0.png")
@@ -2619,6 +2688,19 @@ class DetailPanel(QWidget):
                         candidates.append(f"ammo_{_ap}_0.png")
                     if at: candidates.append(f"ammo_{at}_0.png")
                     if sp in ("torpedo", "torpedobomber"):
+                        if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
+                            if sp == "torpedobomber":
+                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                            else:
+                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                        else:
+                            tp = ammo_info.get("torpedo_postfix", "")
+                            if tp == "_subBurn":
+                                candidates.insert(0, "ammo_torpedo_subburn_0.png")
+                            elif tp:
+                                candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
                         candidates.append("ammo_torpedo_0.png")
                         candidates.append("ammo_bomber_torpedo_0.png")
                     if "depthcharge" in sp:
@@ -2723,7 +2805,8 @@ class DetailPanel(QWidget):
                     btn.setText(cid[:2] if cid else "?")
                     btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:9px; color:#333;"))
 
-                btn.clicked.connect(partial(self._on_consumable_btn_click, cid, dname, container))
+                ckey = rs.get('config_key', 'Default')
+                btn.clicked.connect(partial(self._on_consumable_btn_click, cid, dname, ckey, container))
                 sr_layout.addWidget(btn)
 
             sr_layout.addStretch()
@@ -2893,14 +2976,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: #3a3a3a;
-                border: 1px solid #555;
+                background: #f5f5f5;
+                border: 1px solid #ddd;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: #4a4a4a;
+                background: #e8e8e8;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -2910,114 +2993,140 @@ class DetailPanel(QWidget):
 
         ammo_idx = 0
         for grp_idx, grp_items in enumerate(mount_groups):
-            # 由 tooltip 展示的属性名，从卡片显示中去掉
             TOOLTIP_NAMES = {
                 "横向散步公式", "弹着群系数(Sigma)", "纵向散步系数",
                 "水平回转速度", "垂直回转速度", "口径",
             }
 
-            # 构建该炮的数据卡片（仅显示剩余属性）
-            display_items = [it for it in grp_items if it.get("name", "") not in TOOLTIP_NAMES]
-            grp_section = {"label": "", "items": display_items}
-            card = ShipCardWidget(grp_section)
-            # 炮塔悬浮 tooltip：提取散步/Sigma 等属性
-            tip_parts = []
+            # ── 1. 过滤掉 Tooltip 属性以及数据末尾的分割线/占位符 ──
+            display_items = []
             for it in grp_items:
-                n = it.get("name", "")
-                v = it.get("value", "")
-                u = it.get("unit", "")
-                if n in TOOLTIP_NAMES:
-                    display = f"{v} {u}" if u else v
-                    tip_parts.append(f"<b>{n}</b>: {display}")
-            if tip_parts:
-                card.setToolTip("<br>".join(tip_parts))
-            elif section_tooltip:
-                # 外部传入的 tooltip（支援机组等）
-                card.setToolTip("<br>".join(section_tooltip))
-            layout.addWidget(card)
+                name = it.get("name", "")
+                row_type = it.get("row_type", "")
+                val = it.get("value")
 
-            # 按顺序分配该炮对应的弹药数据
+                # 1.1 过滤属于 Tooltip 的属性
+                if name in TOOLTIP_NAMES:
+                    continue
+                # 1.2 过滤分隔线 (separator) 以及不带名称和内容的空占位行
+                if row_type == "separator":
+                    continue
+                if not name and (val is None or str(val).strip() == ""):
+                    continue
+                    
+                display_items.append(it)
+
+            # ── 2. 深度校验：过滤掉值为空的无效字段 ──
+            valid_items = [
+                it for it in display_items 
+                if (it.get("name") and (it.get("value") is not None and str(it.get("value")).strip() != ""))
+            ]
+
+            # 计算该组涉及的弹药数量（无论当前炮卡片显示与否，都要步进 ammo_idx 保证游标对齐）
             ammo_count = sum(1 for it in grp_items if it.get("name") == "弹药" and it.get("value"))
-            mount_ammo = raw_ammo[ammo_idx:ammo_idx + ammo_count]
+            mount_ammo = raw_ammo[ammo_idx: ammo_idx + ammo_count]
             ammo_idx += ammo_count
-            if not mount_ammo:
+
+            # 重点拦截：如果这一组既没有可显示的有效属性，也没有弹药图标，直接 skip，绝不生成任何 UI 控件！
+            if not valid_items and not mount_ammo:
                 continue
 
-            # 弹药按钮行
-            btn_row = QWidget()
-            bl = QHBoxLayout(btn_row)
-            bl.setContentsMargins(4, 0, 4, 0)
-            bl.setSpacing(6)
-            bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            # ── 3. 只有存在有效属性时，才生成卡片 ──
+            if valid_items:
+                grp_section = {"label": "", "items": display_items}
+                card = ShipCardWidget(grp_section)
 
-            ammo_stack = QStackedWidget()
-            ammo_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-            ammo_stack.setVisible(False)  # 未选中时隐藏，不占空间
+                # 提取 Tooltip
+                tip_parts = []
+                for it in grp_items:
+                    n, v, u = it.get("name", ""), it.get("value", ""), it.get("unit", "")
+                    if n in TOOLTIP_NAMES and (v is not None and str(v).strip() != ""):
+                        display = f"{v} {u}".strip() if u else v
+                        tip_parts.append(f"<b>{n}</b>: {display}")
 
-            for ammo_info in mount_ammo:
-                aname = ammo_info.get("name", "")
-                detail_items = ammo_info.get("detail_items", [])
+                if tip_parts:
+                    card.setToolTip("<br>".join(tip_parts))
+                elif section_tooltip:
+                    card.setToolTip("<br>".join(section_tooltip))
 
-                atype_lower = ammo_info.get("ammo_type", "").lower()
-                species_lower = ammo_info.get("species", "").lower()
+                layout.addWidget(card)
 
-                candidates = []
-                if species_lower:
-                    candidates.append(f"ammo_{species_lower}_{atype_lower}_0.png" if atype_lower else f"ammo_{species_lower}_0.png")
-                if atype_lower and atype_lower != species_lower:
-                    candidates.append(f"ammo_{atype_lower}_0.png")
-                # 鱼雷回退
-                if species_lower in ("torpedo", "torpedobomber"):
-                    candidates.append("ammo_torpedo_0.png")
-                    candidates.append("ammo_bomber_torpedo_0.png")
-                # 深水炸弹回退
-                if "depthcharge" in species_lower:
-                    candidates.append("ammo_depthcharge_0.png")
-                    candidates.append("ammo_airsupport_depthcharge_0.png")
+            # ── 4. 只有存在弹药数据时，才生成弹药按钮行及 Stack 面板 ──
+            if mount_ammo:
+                btn_row = QWidget()
+                bl = QHBoxLayout(btn_row)
+                bl.setContentsMargins(4, 0, 4, 0)
+                bl.setSpacing(6)
+                bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-                btn = QPushButton("")
-                btn.setFixedSize(36, 36)
-                btn.setCheckable(True)
-                btn.setStyleSheet(BTN_STYLE)
-                btn.setToolTip(aname)
+                ammo_stack = QStackedWidget()
+                ammo_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+                ammo_stack.setVisible(False)
 
-                img_path = None
-                for c in candidates:
-                    p = ammo_dir / c
-                    if p.exists():
-                        img_path = p
-                        break
+                for ammo_info in mount_ammo:
+                    aname = ammo_info.get("name", "")
+                    detail_items = ammo_info.get("detail_items", [])
+                    atype_lower = ammo_info.get("ammo_type", "").lower()
+                    species_lower = ammo_info.get("species", "").lower()
 
-                if img_path and img_path.exists():
-                    pixmap = QPixmap(str(img_path))
-                    scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    btn.setIcon(QIcon(scaled))
-                    btn.setIconSize(QSize(28, 28))
-                else:
-                    btn.setText(aname[:2] if aname else "?")
-                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:8px; color:#333;"))
+                    candidates = []
+                    if species_lower:
+                        candidates.append(f"ammo_{species_lower}_{atype_lower}_0.png" if atype_lower else f"ammo_{species_lower}_0.png")
+                    if atype_lower and atype_lower != species_lower:
+                        candidates.append(f"ammo_{atype_lower}_0.png")
+                    if species_lower in ("torpedo", "torpedobomber"):
+                        if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
+                            if species_lower == "torpedobomber":
+                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                            else:
+                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
+                        else:
+                            tp = ammo_info.get("torpedo_postfix", "")
+                            if tp == "_subBurn":
+                                candidates.insert(0, "ammo_torpedo_subburn_0.png")
+                            elif tp:
+                                candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
+                        candidates.extend(["ammo_torpedo_0.png", "ammo_bomber_torpedo_0.png"])
+                    if "depthcharge" in species_lower:
+                        candidates.extend(["ammo_depthcharge_0.png", "ammo_airsupport_depthcharge_0.png"])
 
-                bl.addWidget(btn)
+                    btn = QPushButton("")
+                    btn.setFixedSize(36, 36)
+                    btn.setCheckable(True)
+                    btn.setStyleSheet(BTN_STYLE)
+                    btn.setToolTip(aname)
 
-                if detail_items:
-                    detail_section = {"label": aname, "items": detail_items}
-                    detail_card = ShipCardWidget(detail_section)
-                else:
-                    detail_card = QLabel("无详细数据")
-                    detail_card.setStyleSheet("color:#999; font-size:11px; padding:8px;")
-                    detail_card.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    img_path = next((ammo_dir / c for c in candidates if (ammo_dir / c).exists()), None)
+                    if img_path:
+                        pixmap = QPixmap(str(img_path))
+                        scaled = pixmap.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        btn.setIcon(QIcon(scaled))
+                        btn.setIconSize(QSize(28, 28))
+                    else:
+                        btn.setText(aname[:2] if aname else "?")
+                        btn.setStyleSheet(BTN_STYLE + "QPushButton { font-size: 8px; color: #333; }")
 
-                ammo_stack.addWidget(detail_card)
+                    bl.addWidget(btn)
 
-                ci = ammo_stack.count() - 1
-                btn.clicked.connect(
-                    lambda checked, i=ci, s=ammo_stack, b=btn, bl_=bl:
-                    self._on_ammo_btn_click(i, s, bl_, b)
-                )
+                    if detail_items:
+                        detail_card = ShipCardWidget({"label": aname, "items": detail_items})
+                    else:
+                        detail_card = QLabel("无详细数据")
+                        detail_card.setStyleSheet("color: #999; font-size: 11px; padding: 8px;")
+                        detail_card.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            bl.addStretch()
-            layout.addWidget(btn_row)
-            layout.addWidget(ammo_stack)
+                    ammo_stack.addWidget(detail_card)
+
+                    ci = ammo_stack.count() - 1
+                    btn.clicked.connect(
+                        lambda checked=False, i=ci, s=ammo_stack, b=btn, l=bl: self._on_ammo_btn_click(i, s, l, b)
+                    )
+
+                bl.addStretch()
+                layout.addWidget(btn_row)
+                layout.addWidget(ammo_stack)
 
         return container
 
@@ -3177,7 +3286,12 @@ class DetailPanel(QWidget):
             presenter = PresenterRegistry.get_presenter(etype, db._conn)
             if not presenter:
                 return
-            data = presenter.build(self._current_filename, version_code=vc, modifiers=modifiers)
+            _eng_key = getattr(self, '_active_engine_key', '')
+            _fc_key = getattr(self, '_active_fire_control_key', '')
+            _mod_keys = getattr(self, '_active_module_keys', {})
+            data = presenter.build(self._current_filename, version_code=vc, modifiers=modifiers,
+                                   engine_letter=_eng_key, fire_control_key=_fc_key,
+                                   active_module_keys=_mod_keys)
             if data:
                 self._current_analyzed = data
                 self._apply_analyzed()
@@ -3225,18 +3339,41 @@ class DetailPanel(QWidget):
                                     _combined[k] = ev_f * nv_f
                         except (ValueError, TypeError):
                             _combined[k] = v
-            data = presenter.build(self._current_filename, version_code=vc, modifiers=_combined or None)
+            _eng_key = getattr(self, '_active_engine_key', '')
+            _fc_key = getattr(self, '_active_fire_control_key', '')
+            _mod_keys = getattr(self, '_active_module_keys', {})
+            data = presenter.build(self._current_filename, version_code=vc, modifiers=_combined or None,
+                                   engine_letter=_eng_key, fire_control_key=_fc_key,
+                                   active_module_keys=_mod_keys)
             if data:
                 self._current_analyzed = data
                 self._ship_sections = data.get("sections", [])
                 self._ship_sub_sections = (data.get("extra") or {}).get("sub_sections", {})
+                self._filter_sections_by_config()
                 self._rebuild_ship_grid()
         except Exception as e:
             import traceback
             from app.signals import bus
             bus.log_message.emit(f"⚠️ 重算失败: {e}\n{traceback.format_exc()}")
 
-    def _on_consumable_btn_click(self, cid: str, dname: str, parent_container: QWidget):
+    def _filter_sections_by_config(self):
+        """根据当前 _active_config_letter 过滤各 section 的 items"""
+        if not hasattr(self, '_active_config_letter') or not self._ship_sections:
+            return
+        _letter = self._active_config_letter
+        for sec in self._ship_sections:
+            _letters = sec.get("_config_letters")
+            _items_by_letter = sec.get("_items_by_letter")
+            if not _letters or not _items_by_letter or len(_letters) <= 1:
+                continue
+            # 从 _items_by_letter 中精确取对应字母的 items
+            sec["items"] = _items_by_letter.get(_letter, _items_by_letter.get(_letters[0], []))
+            # 同步更新弹药数据
+            _ammo_by_letter = sec.get("_ammo_by_letter", {})
+            if _ammo_by_letter:
+                sec["raw_ammo_types"] = _ammo_by_letter.get(_letter, _ammo_by_letter.get(_letters[0], []))
+
+    def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget):
         """消耗品按钮点击：查询数据库并展示详情卡片"""
         from ui.ship_card_widget import ShipCardWidget
         from services.database_service import get_db
@@ -3259,9 +3396,12 @@ class DetailPanel(QWidget):
                 vc = vc_row[0]
 
             cfg = conn.execute(
-                "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? "
-                "AND config_key='Default'",
-                (vc, cid)).fetchone()
+                "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
+                (vc, cid, ckey)).fetchone()
+            if not cfg:
+                cfg = conn.execute(
+                    "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
+                    (vc, cid)).fetchone()
             if not cfg:
                 cfg = conn.execute(
                     "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? "
@@ -3389,13 +3529,14 @@ class DetailPanel(QWidget):
                 elif ct == "regenCrew":
                     rr = cfgd.get('regenerationHPSpeed', 0) or cfgd.get('regenerationRate', 0)
                     if rr:
-                        # 查询该船血量，计算实际每秒回复量
+                        # 查询该船血量（按当前配置字母），计算实际每秒回复量
                         try:
                             ship_id = self._current_filename or ""
+                            _letter = getattr(self, '_active_config_letter', 'A')
                             h_hp = conn.execute(
                                 "SELECT health FROM ship_module_hulls "
-                                "WHERE version_code=? AND ship_id=? AND health IS NOT NULL LIMIT 1",
-                                (vc, ship_id)).fetchone()
+                                "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
+                                (vc, ship_id, f"{_letter}%")).fetchone()
                             if h_hp and h_hp['health']:
                                 actual_hp = rr * h_hp['health']
                                 kv("每秒回复血量", f"+{actual_hp:.0f} HP")
@@ -3576,6 +3717,18 @@ class DetailPanel(QWidget):
         self._current_analyzed = None
         self._selected_mods: dict[int, dict] = {}
         self._selected_skill_mods: dict[str, dict] = {}
+        self._active_config_letter = "A"
+        self._active_engine_key = ""
+        self._active_fire_control_key = ""
+        self._active_hull_key = ""
+        self._active_module_keys: dict[str, str] = {}
+        # 从 presenter 数据中获取基础配置字母
+        if self._current_analyzed:
+            _cb = self._current_analyzed.get("config_bar", {})
+            if _cb and isinstance(_cb, dict):
+                _stock_letter = _cb.get("_stock_config_letter", "")
+                if _stock_letter:
+                    self._active_config_letter = _stock_letter
 
         db = get_db()
         if db.exists:

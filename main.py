@@ -84,6 +84,8 @@ def main() -> None:
                     f"🔄 加载数据库 [{server}]: {db.db_path.name} "
                     f"({stats['total_entities']} 实体)")
                 bus.can_process_data.emit(True)
+                # 刷新完成后重新选中舰船大类
+                QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
             else:
                 bus.log_message.emit("ℹ️ 数据库为空，请加载数据")
         except Exception as e:

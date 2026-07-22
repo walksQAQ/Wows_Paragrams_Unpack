@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS ship_upgrade_info (
     upgrade_key TEXT NOT NULL,            -- ShipUpgradeInfo 键名，如 'PAUA506_MONAGHAN'
     uc_type TEXT NOT NULL,                -- 升级类型，如 '_Artillery','_Hull','_Engine','_Torpedoes','_Suo'
     components_json TEXT NOT NULL DEFAULT '{}',  -- 组件映射 JSON: {"artillery":["A1_Artillery","B1_Artillery"],...}
+    prev TEXT NOT NULL DEFAULT '',         -- 前置升级 key，空表示初始（stock）
     PRIMARY KEY (version_code, ship_id, upgrade_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -364,11 +365,24 @@ CREATE TABLE IF NOT EXISTS ship_module_engine (
     backward_forsage_power REAL,
     forward_speed_on_flood REAL,       -- 进水时前进速度惩罚系数
     backward_speed_on_flood REAL,      -- 进水时后退速度惩罚系数
+    speed_coef REAL,                   -- 航速修正系数：实际航速=船体基础航速×(1+speed_coef)
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
--- 10. 战斗指令属性表
+-- 10. 火控配件属性表
+CREATE TABLE IF NOT EXISTS ship_module_fire_control (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    config_group TEXT NOT NULL DEFAULT '',
+    max_dist_coef REAL,
+    sigma_count_coef REAL,
+    PRIMARY KEY (version_code, ship_id, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
+-- 11. 战斗指令属性表
 CREATE TABLE IF NOT EXISTS ship_rage_mode (
     version_code TEXT NOT NULL,
     ship_id TEXT NOT NULL,
