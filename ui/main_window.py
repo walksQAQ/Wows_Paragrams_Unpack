@@ -136,6 +136,8 @@ class MainWindow(QMainWindow):
 
         # ── 窗口居中 ────────────────────────────────────
         QTimer.singleShot(0, self._center_window)
+        # 启动时自动选中舰船大类
+        QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
 
     # ── 菜单 ──────────────────────────────────────────────
 

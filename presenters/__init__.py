@@ -17,20 +17,8 @@ presenters —— 数据显示层（Presenter Pattern）。
 
 from presenters.registry import PresenterRegistry
 from presenters.ship_presenter import ShipPresenter
-from presenters.gun_presenter import GunPresenter
-from presenters.projectile_presenter import ProjectilePresenter
-from presenters.plane_presenter import PlanePresenter
-from presenters.consumable_presenter import ConsumablePresenter
-from presenters.modernization_presenter import ModernizationPresenter
-from presenters.crew_presenter import CrewPresenter
 
 __all__ = [
     "PresenterRegistry",
     "ShipPresenter",
-    "GunPresenter",
-    "ProjectilePresenter",
-    "PlanePresenter",
-    "ConsumablePresenter",
-    "ModernizationPresenter",
-    "CrewPresenter",
 ]

@@ -6,7 +6,7 @@
 """
 
 __title__ = "Wows/Korabli Paragrams Unpack"
-__version__ = "3.1.2"
+__version__ = "3.2.0"
 __description__ = "World of Warships / Mir Korabli 游戏数据分析工具"
 __author__ = "walksQAQ"
 __author_email__ = ""
