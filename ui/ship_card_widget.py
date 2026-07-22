@@ -108,6 +108,7 @@ class ShipCardWidget(QGroupBox):
         """
         super().__init__(parent)
         self.setProperty("class", "ShipCardWidget")
+        self._adjusting = False
 
         # 标题（含图标）
         label = section.get("label", "")
@@ -138,6 +139,10 @@ class ShipCardWidget(QGroupBox):
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setStretchLastSection(True)
+        # 行高自适应文字换行
+        self._table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        # 启用文字换行
+        self._table.setWordWrap(True)
 
         self._populate_items(section.get("items", []))
 
@@ -148,8 +153,17 @@ class ShipCardWidget(QGroupBox):
 
         layout.addWidget(self._table)
 
-        # 自适应高度
-        self._adjust_height()
+        # 延迟自适应高度，等布局完成后再计算
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._adjust_height)
+
+    def resizeEvent(self, event):
+        """窗口缩放时重新调整高度"""
+        if not self._adjusting:
+            self._adjusting = True
+            super().resizeEvent(event)
+            self._adjust_height()
+            self._adjusting = False
 
     def _populate_items(self, items: list[dict]) -> None:
         """填充所有数据行"""
@@ -184,8 +198,11 @@ class ShipCardWidget(QGroupBox):
         # 右列：数值 + 单位
         display_value = f"{value} {unit}" if unit and value else (value or unit or "")
         value_item = QTableWidgetItem(display_value)
-        # 百分比值着色：+xx% 绿色，-xx% 红色
-        if "%" in display_value:
+        # 显式颜色优先
+        color = item.get("color", "")
+        if color:
+            value_item.setForeground(QColor(color))
+        elif "%" in display_value:
             stripped = display_value.strip()
             if stripped.startswith("+"):
                 value_item.setForeground(QColor("#1b8a1b"))
@@ -295,6 +312,16 @@ class ShipCardWidget(QGroupBox):
 
     def _adjust_height(self) -> None:
         """根据行数自动调整卡片高度"""
+        if self._adjusting:
+            return
+        # 检查 self._table 是否仍有效（可能在重建时已被销毁）
+        try:
+            _ = self._table.rowCount()
+        except (RuntimeError, AttributeError):
+            self._adjusting = False
+            return
+        self._adjusting = True
+        self._table.resizeRowsToContents()
         rows = self._table.rowCount()
         height = 4
         for r in range(rows):
@@ -302,6 +329,7 @@ class ShipCardWidget(QGroupBox):
         self._table.setFixedHeight(height)
         card_height = height + 22
         self.setFixedHeight(card_height)
+        self._adjusting = False
 
 
 # ══════════════════════════════════════════════════════════
