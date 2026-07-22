@@ -2384,6 +2384,7 @@ class ShipPresenter(BasePresenter):
             "ship_id": ship_id,
             "shiptype": self.resolve_enum("ship_class", basic['shiptype']) if basic['shiptype'] else "",
             "shiptype_en": basic['shiptype'] or "",
+            "group_status": basic['group_status_key'] or "",
             "module_groups": module_groups,
             "engine": engine_name,
             "consumables": consumables,
