@@ -172,6 +172,8 @@ class ShipCardWidget(QGroupBox):
 
             if row_type == "header":
                 self._add_header_row(item)
+            elif row_type == "sub_header":
+                self._add_sub_header_row(item)
             elif row_type == "separator":
                 self._add_separator_row()
             elif row_type == "button_group":
@@ -202,16 +204,18 @@ class ShipCardWidget(QGroupBox):
         color = item.get("color", "")
         if color:
             value_item.setForeground(QColor(color))
-        elif "%" in display_value:
+        else:
             stripped = display_value.strip()
-            if stripped.startswith("+"):
-                value_item.setForeground(QColor("#1b8a1b"))
-            elif stripped.startswith("-"):
-                value_item.setForeground(QColor("#d32f2f"))
+            # 仅对含数字的正负值自动着色（纯文本 +/− 不处理）
+            has_sign = stripped.startswith("+") or stripped.startswith("-")
+            has_digit = any(c.isdigit() for c in stripped)
+            if has_sign and has_digit:
+                if stripped.startswith("+"):
+                    value_item.setForeground(QColor("#1b8a1b"))
+                else:
+                    value_item.setForeground(QColor("#d32f2f"))
             else:
                 value_item.setForeground(QColor(VALUE_COLOR))
-        else:
-            value_item.setForeground(QColor(VALUE_COLOR))
         value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._table.setItem(row, 1, value_item)
@@ -245,6 +249,25 @@ class ShipCardWidget(QGroupBox):
         self._table.setItem(row, 0, cell)
 
         # 占位
+        empty = QTableWidgetItem("")
+        empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(row, 1, empty)
+
+    def _add_sub_header_row(self, item: dict) -> None:
+        """添加次标题行，仅略微加粗，介于 header 与 kv 之间"""
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+
+        name = item.get("name", "")
+        cell = QTableWidgetItem(name)
+        cell.setForeground(QColor("#666666"))
+        bold_font = QFont()
+        bold_font.setBold(True)
+        bold_font.setPointSize(10)
+        cell.setFont(bold_font)
+        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(row, 0, cell)
+
         empty = QTableWidgetItem("")
         empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 1, empty)

@@ -192,20 +192,13 @@ class CrewCustomizeDialog(QDialog):
                                 if not isinstance(sub_v, (int, float)):
                                     continue
                                 if is_pct:
-                                    if abs(sub_v) < 0.5:
-                                        if abs(sub_v) < 0.001: continue
-                                        pct = sub_v * 100
-                                        sign = "+" if pct >= 0 else ""
-                                        lines.append(f"{sign}{pct:.1f}% {sub_zh}")
-                                    else:
-                                        if abs(sub_v - 1.0) < 0.001: continue
-                                        pct = (sub_v - 1.0) * 100
-                                        sign = "+" if pct >= 0 else ""
-                                        lines.append(f"{sign}{pct:.1f}% {sub_zh}")
+                                    ft = NMAP.format_modifier(sub_k, sub_v, color=True)
+                                    if ft:
+                                        lines.append(ft + " " + sub_zh)
                                 elif isinstance(sub_v, float) and 0.5 <= sub_v <= 2.0:
-                                    pct = (sub_v - 1.0) * 100
-                                    sign = "+" if pct >= 0 else ""
-                                    lines.append(f"{sign}{pct:.1f}% {sub_zh}")
+                                    ft = NMAP.format_modifier(sub_k, sub_v, color=True)
+                                    if ft:
+                                        lines.append(ft + " " + sub_zh)
                                 else:
                                     lines.append(f"{sub_zh} {sub_v:+.0f}" if sub_v else f"{sub_zh} {sub_v:.0f}")
                             if is_level:
@@ -230,7 +223,7 @@ class CrewCustomizeDialog(QDialog):
                         if talent_row['max_trigger_num']:
                             lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {talent_row["max_trigger_num"]} 次</div>')
                         lines.append('</div>')
-                        return "\n".join(lines)
+                        return "".join(lines)
 
                     # 按传奇舰长分组显示
                     by_legend: dict[str, list] = {}
@@ -432,17 +425,13 @@ class CrewCustomizeDialog(QDialog):
                         else: continue
                     if not isinstance(sub_v, (int, float)): continue
                     if is_pct:
-                        if abs(sub_v) < 0.5:
-                            if abs(sub_v) < 0.001: continue
-                            pct = sub_v * 100
-                            lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
-                        else:
-                            if abs(sub_v - 1.0) < 0.001: continue
-                            pct = (sub_v - 1.0) * 100
-                            lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
+                        ft = NMAP.format_modifier(sub_k, sub_v, color=True)
+                        if ft:
+                            lines.append(" " + ft + " " + sub_zh)
                     elif isinstance(sub_v, float) and 0.5 <= sub_v <= 2.0:
-                        pct = (sub_v - 1.0) * 100
-                        lines.append(f"{' +' if pct>=0 else ''}{pct:.1f}% {sub_zh}")
+                        ft = NMAP.format_modifier(sub_k, sub_v, color=True)
+                        if ft:
+                            lines.append(" " + ft + " " + sub_zh)
                     else:
                         lines.append(f"{sub_zh} {sub_v:+.0f}" if sub_v else f"{sub_zh} {sub_v:.0f}")
                 if is_level:
@@ -462,7 +451,7 @@ class CrewCustomizeDialog(QDialog):
             if row['max_trigger_num']:
                 lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {row["max_trigger_num"]} 次</div>')
             lines.append('</div>')
-            return '\n'.join(lines)
+            return ''.join(lines)
 
         db = get_db()
         if db and db._conn:
@@ -655,21 +644,9 @@ class CrewCustomizeDialog(QDialog):
                 else:
                     v_reg = mv_reg
                 if isinstance(v_epic, (int, float)) and isinstance(v_reg, (int, float)):
-                    # 统一显示为百分比（与 detail_panel _add_talent_line 逻辑一致）
-                    def _fmt(v):
-                        if isinstance(v, float) and 0.5 <= abs(v) < 2.0:
-                            # 系数（如 1.1 = +10%, 0.85 = -15%）
-                            if abs(v - 1.0) < 0.001: return ""
-                            pct = (v - 1.0) * 100
-                            return f"{pct:+.0f}%"
-                        elif isinstance(v, (int, float)) and abs(v) < 0.5:
-                            # 原始加法值（如 0.01 = +1%）
-                            if abs(v) < 0.001: return ""
-                            pct = v * 100
-                            return f"{pct:+.0f}%"
-                        return f"+{v:.0f}" if v else f"{v:.0f}"
-                    reg_str = _fmt(v_reg)
-                    ep_str = _fmt(v_epic)
+                    from models.name_mapping import Mapping as NMAP_FMT
+                    reg_str = NMAP_FMT.format_modifier(mk, v_reg, color=True)
+                    ep_str = NMAP_FMT.format_modifier(mk, v_epic, color=True)
                     if not reg_str and not ep_str:
                         continue
                     diff_text += f"<span style='color:#888;'>{zh}</span> "

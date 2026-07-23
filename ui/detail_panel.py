@@ -605,22 +605,11 @@ class DetailPanel(QWidget):
                             else:
                                 ob.setText(mid[:2])
                                 ob.setStyleSheet(SLOT_STYLE.replace("padding:2px;","padding:2px;font-size:8px;color:#bbb;"))
-                            tt_parts = [mod.get("name", mid)]
+                            tt_parts = [f'<div style="font-weight:bold;">{mod.get("name", mid)}</div>']
                             mod_dict = mod.get("modifiers", {})
                             if mod_dict:
                                 from models.name_mapping import Mapping as NMM
-                                # 沿用 modernization_analyzer 的显示逻辑
-                                NO_PCT = {"planeExtraHangarSize", "AAAuraDamageBonus", "additionalConsumables",
-                                          "planeAdditionalConsumables", "AAExtraBubbles",
-                                          "smokeGeneratorAdditionalConsumables", "asNumPacksBonus",
-                                          "speedBoostersAdditionalConsumables"}
-                                FACTOR_KEYS = {"AABubbleDamageBonus"}
-                                SECOND_KEYS = {"crashCrewWorkTimeBonus", "torpedoBomberAimingTime", "fighterAimingTime"}
-                                KM_KEYS = {"visionXRayMineDist", "visionXRayTorpedoDist"}
-                                SP_PCT_KEYS = {"engineBackwardForsageMaxSpeed", "engineBackwardForsagePower",
-                                               "engineForwardForsageMaxSpeed", "engineForwardForsagePower",
-                                               "hydrophoneWaveSpeedCoeff", "regeneratedHPPartCoef", "boostCoeffForsage"}
-                                tt_parts.append("─" * 20)
+                                tt_parts.append('<hr style="border-color:#555;">')
                                 for mk, mv in sorted(mod_dict.items()):
                                     label = NMM.MODIFIER_MAP.get(mk, mk)
                                     if isinstance(mv, dict):
@@ -629,29 +618,12 @@ class DetailPanel(QWidget):
                                         mv_f = float(mv)
                                         if mv_f == 0:
                                             continue
-                                        if mk in NO_PCT:
-                                            pct = f"{'+' if mv_f > 0 else ''}{mv_f:g}"
-                                        elif mk in FACTOR_KEYS:
-                                            pct = f"{'+' if mv_f > 0 else ''}{round(mv_f * 7, 0):.0f}"
-                                        elif mk in SECOND_KEYS:
-                                            pct = f"{'+' if mv_f > 0 else ''}{mv_f:g}s"
-                                        elif mk in KM_KEYS:
-                                            pct = f"{mv_f / 1000:g}km"
-                                        elif mk in SP_PCT_KEYS:
-                                            pct_val = round(mv_f * 100, 1)
-                                            if pct_val == int(pct_val):
-                                                pct_val = int(pct_val)
-                                            pct = f"{'+' if pct_val > 0 else ''}{pct_val}%"
-                                        else:
-                                            pct_val = round((mv_f - 1.0) * 100, 3)
-                                            sign = "+" if pct_val > 0 else ""
-                                            pct = f"{sign}{pct_val:g}%"
-                                        tt_parts.append(f"{label}: {pct}")
+                                        ft = NMM.format_modifier(mk, mv_f, color=True)
+                                        if ft:
+                                            tt_parts.append(f'<div style="white-space:nowrap;">{label}: {ft}</div>')
                                     except (ValueError, TypeError):
-                                        tt_parts.append(f"{label}: {mv}")
-                                    except (ValueError, TypeError):
-                                        tt_parts.append(f"{label}: {mv}")
-                            ob.setToolTip("\n".join(tt_parts))
+                                        tt_parts.append(f'<div>{label}: {mv}</div>')
+                            ob.setToolTip(NMM.rich_tooltip("".join(tt_parts)))
                             ob.clicked.connect(lambda checked, si=i, m=mod, btn=ob: self._on_mod_opt_click(si, m, btn))
                             if self._selected_mods.get(i) and self._selected_mods[i]["mod_id"] == mid:
                                 ob.setChecked(True)
@@ -693,18 +665,15 @@ class DetailPanel(QWidget):
                 from models.name_mapping import Mapping as _NM
 
                 def _fmt_mod(mk, mv):
-                    """格式化修饰符显示值：Bonus 类为加法值，其余为乘法因子"""
+                    """格式化修饰符显示值"""
                     cn = _NM.MODIFIER_MAP.get(mk, mk)
-                    # 处理分舰种字典
                     if isinstance(mv, dict):
                         _st = config.get("shiptype", "")
                         mv = mv.get(_st) or next((v for v in mv.values() if isinstance(v, (int, float))), 0)
                     if isinstance(mv, (int, float)):
-                        if 'Bonus' in mk:
-                            return f"{cn}: {mv*100:+.1f}%"
-                        else:
-                            pct = (mv - 1) * 100
-                            return f"{cn}: {pct:+.1f}%"
+                        ft = _NM.format_modifier(mk, mv, color=True)
+                        if ft:
+                            return f"{cn}: {ft}"
                     return f"{cn}: {mv}"
 
                 # 恢复信号旗选择的辅助函数
@@ -724,7 +693,7 @@ class DetailPanel(QWidget):
                             items.append(_fmt_mod(mk, mv))
                         if items:
                             mods_str = "\n" + "\n".join(items)
-                    btn.setToolTip(f"{flag_data.get('name','')}{mods_str}\n{flag_data.get('label','')}")
+                    btn.setToolTip(_NM.rich_tooltip(f"{flag_data.get('name','')}{mods_str}\n{flag_data.get('label','')}"))
 
                 # 顶部：6个槽位按钮
                 slot_grid = QWidget()
@@ -818,7 +787,7 @@ class DetailPanel(QWidget):
                             mitem.setIconSize(QSize(24,24))
                         # 显示名称 + 稀有度
                         mitem.setText(f"  {disp_name}")
-                        mitem.setToolTip(f"{disp_name}\n{mods_str}" if mods_str else disp_name)
+                        mitem.setToolTip(_NM.rich_tooltip(f"{disp_name}\n{mods_str}" if mods_str else disp_name))
                         fd = f
                         mitem.clicked.connect(lambda checked=False, b=slot_btn, fdata=fd, lb=slot_label, fd_dir=signal_flags_dir: (
                             _apply_signal_flag(b, fdata, lb, fd_dir),
@@ -870,7 +839,7 @@ class DetailPanel(QWidget):
                             items.append(_fmt_mod(mk, mv))
                         if items:
                             mods_str = "\n" + "\n".join(items)
-                    btn.setToolTip(f"{flag_data.get('name','')}{mods_str}\n{slot_label}")
+                    btn.setToolTip(_NM.rich_tooltip(f"{flag_data.get('name','')}{mods_str}\n{slot_label}"))
                     # 存储选择并触发重算
                     si = next((i for i, b in enumerate(slot_btns) if b is btn), -1)
                     if si >= 0:
@@ -1266,7 +1235,7 @@ class DetailPanel(QWidget):
                         elif mk in ("uwCoeffBonus", "prioritySectorStrengthBonus", "ignorePTZBonus"):
                             zh = _mm.get(mk, mk)
                             # 整数百分比（如 7 = +7%，25 = +25%）
-                            _add_mod_line(lines, zh, mv, _force_pct=True)
+                            _add_mod_line(lines, zh, mv, _force_pct=True, mod_key=mk)
                             continue
                         elif mk == "dcSplashSizeMultiplier":
                             # 同时显示两条描述
@@ -1310,11 +1279,11 @@ class DetailPanel(QWidget):
                                 _he = mv.get("HE", mv.get("he", None))
                                 _cs = mv.get("CS", mv.get("cs", mv.get("SAP", None)))
                                 if _he is not None:
-                                    _add_mod_line(lines, "高爆弹伤害", _he)
+                                    _add_mod_line(lines, "高爆弹伤害", _he, mod_key=mk)
                                 if _cs is not None:
-                                    _add_mod_line(lines, "半穿甲弹伤害", _cs)
+                                    _add_mod_line(lines, "半穿甲弹伤害", _cs, mod_key=mk)
                             else:
-                                _add_mod_line(lines, _mm.get(mk, mk), mv)
+                                _add_mod_line(lines, _mm.get(mk, mk), mv, mod_key=mk)
                             continue
                         else:
                             zh = _mm.get(mk, mk)
@@ -1325,29 +1294,31 @@ class DetailPanel(QWidget):
                             # 按当前舰种过滤
                             if st and st in mv:
                                 v = mv[st]
-                                _add_mod_line(lines, zh, v, _force_pct=(mk in _pct_keys))
+                                _add_mod_line(lines, zh, v, _force_pct=(mk in _pct_keys), mod_key=mk)
                             else:
                                 for k, v in mv.items():
                                     if isinstance(v, (int, float)):
-                                        _add_mod_line(lines, f"{zh} ({k})", v, _force_pct=(mk in _pct_keys))
+                                        _add_mod_line(lines, f"{zh} ({k})", v, _force_pct=(mk in _pct_keys), mod_key=mk)
                                         break
                         else:
-                            _add_mod_line(lines, zh, mv, _force_pct=(mk in _pct_keys))
+                            _add_mod_line(lines, zh, mv, _force_pct=(mk in _pct_keys), mod_key=mk)
                     return lines
 
-                def _add_mod_line(lines, label, v, _force_pct=False):
+                def _add_mod_line(lines, label, v, _force_pct=False, mod_key=""):
                     """添加一行修饰符描述（自动判断类型）"""
                     if isinstance(v, bool):
                         lines.append(f"启用 {label}" if v else label)
                     elif isinstance(v, (int, float)):
-                        # 强制百分比（如 uwCoeffBonus: 7 = +7.00%）
-                        if _force_pct:
+                        if mod_key:
+                            from models.name_mapping import Mapping as _NMAP_FMT2
+                            ft = _NMAP_FMT2.format_modifier(mod_key, v, color=True)
+                            if ft:
+                                lines.append(ft + " " + label)
+                        elif _force_pct:
                             lines.append(f"{label} +{v:.2f}%" if v >= 0 else f"{label} {v:.2f}%")
-                        # 乘数百分比（如 1.10 = +10.00%，0.60 = -40.00%）
                         elif isinstance(v, float) and v < 2.0:
                             pct = (v - 1.0) * 100
                             lines.append(f"{label} {pct:+.2f}%")
-                        # 整数值保留整数显示
                         elif isinstance(v, int) or (isinstance(v, float) and v == int(v)):
                             _iv = int(v)
                             lines.append(f"{label} {_iv:+.0f}" if _iv >= 0 else f"{label} {_iv:.0f}")
@@ -1601,7 +1572,7 @@ class DetailPanel(QWidget):
                                         for _ml in _format_skill_mod(tmods, cur_shiptype):
                                             tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
                                 tip_lines.append('</div>')
-                                btn.setToolTip("\n".join(tip_lines))
+                                btn.setToolTip("".join(tip_lines))
                                 btn.setToolTipDuration(10000)
                             else:
                                 btn.setToolTip(f"{cur_shiptype} 第{row+1}层 第{col_idx+1}列 (消耗{row+1}点)")
@@ -1765,37 +1736,31 @@ class DetailPanel(QWidget):
                                             # 按舰种区分（如 visibilityDistCoeff）
                                             if cur_st and cur_st in v:
                                                 sv = v[cur_st]
-                                                _add_talent_line(lines, zh, sv, is_pct)
+                                                _add_talent_line(lines, zh, sv, is_pct, mod_key=k)
                                             else:
                                                 for skey, sv in v.items():
                                                     if isinstance(sv, (int, float)):
-                                                        _add_talent_line(lines, f"{zh} ({skey})", sv, is_pct)
+                                                        _add_talent_line(lines, f"{zh} ({skey})", sv, is_pct, mod_key=k)
                                                         break
                                         else:
-                                            _add_talent_line(lines, zh, v, is_pct)
+                                            _add_talent_line(lines, zh, v, is_pct, mod_key=k)
                                     if is_level:
                                         lines.insert(0, '<div style="color:#888; font-size:11px;">该天赋作用时间等于战舰等级</div>')
                                     return "\n".join(lines) if lines else None
 
-                                def _add_talent_line(ln, label, v, is_pct):
+                                def _add_talent_line(ln, label, v, is_pct, mod_key=""):
                                     if isinstance(v, bool):
                                         ln.append(f"{'启用' if v else ''} {label}")
                                     elif isinstance(v, (int, float)):
                                         if is_pct:
-                                            if abs(v) < 0.5:  # 原始加法值（如 0.01 = +1%）
-                                                if abs(v) < 0.001: return  # 无变化跳过
-                                                pct = v * 100
-                                                sign = "+" if pct >= 0 else ""
-                                                ln.append(f"{sign}{pct:.1f}% {label}")
-                                            else:  # 系数（如 1.1 = +10%）
-                                                if abs(v - 1.0) < 0.001: return  # 无变化跳过
-                                                pct = (v - 1.0) * 100
-                                                sign = "+" if pct >= 0 else ""
-                                                ln.append(f"{sign}{pct:.1f}% {label}")
+                                            from models.name_mapping import Mapping as _NMAP_FMT
+                                            ft = _NMAP_FMT.format_modifier(mod_key or "", v, color=True)
+                                            if ft:
+                                                ln.append(ft + " " + label)
                                         elif isinstance(v, float) and 0.5 <= v <= 2.0:
-                                            pct = (v - 1.0) * 100
-                                            sign = "+" if pct >= 0 else ""
-                                            ln.append(f"{sign}{pct:.1f}% {label}")
+                                            ft = _NMAP_FMT.format_modifier(mod_key or "", v, color=True)
+                                            if ft:
+                                                ln.append(ft + " " + label)
                                         else:
                                             ln.append(f"{label} {v:+.0f}" if v else f"{label} {v:.0f}")
 
@@ -1867,7 +1832,7 @@ class DetailPanel(QWidget):
                                         )
 
                                     tip_lines.append('</div>')
-                                    btn.setToolTip("\n".join(tip_lines))
+                                    btn.setToolTip("".join(tip_lines))
                                     self._us_layout.insertWidget(self._us_layout.count() - 1, btn)
                         except Exception as _tal_e:
                             import traceback
@@ -2049,6 +2014,11 @@ class DetailPanel(QWidget):
         """船体模块按钮点击：记录完整组件 ID"""
         self._active_hull_key = hull_key
         self._active_config_letter = hull_key[0] if hull_key else "A"
+        # 切换船体时清空火控/引擎 key，让 presenter 自动解析新配置的 stock 值
+        self._active_engine_key = ""
+        self._active_fire_control_key = ""
+        self._active_sonar_key = ""
+        self._active_module_keys = {}
         self._refresh_data_only()
 
     def _on_other_module_click(self, ut: str, mod_key: str) -> None:
@@ -2139,7 +2109,7 @@ class DetailPanel(QWidget):
 
             # 列宽：第0列窄（基础信息/消耗品），其余均分
             for i, w in enumerate(self._ship_column_widgets[:cols]):
-                stretch = 1 if i == 0 else 2
+                stretch = 2 if i == 0 else 3
                 self._ship_columns_layout.setStretchFactor(w, stretch)
 
             # 隐藏多余的列
@@ -2224,7 +2194,8 @@ class DetailPanel(QWidget):
                 if items and title == "支援":
                     # 支援机组：按 header 拆分为多个机组，各自独立 tooltip
                     KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间",
-                                 "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药"}
+                                 "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药",
+                                 "巡航速度", "最大速度", "最小速度", "中队飞机数量"}
                     groups: list[list[dict]] = []
                     cur_grp: list[dict] = []
                     for it in items:
@@ -2623,8 +2594,9 @@ class DetailPanel(QWidget):
         items = section.get("items", [])
         raw_ammo = section.get("raw_ammo_types", [])
 
-        KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间",
-                     "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药"}
+        KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间", "攻击编组数量", "最远到位时间", "巡航速度", 
+                     "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药",
+                     "最大速度", "最小速度"}
 
         # 按 header 拆分为多个机组
         groups: list[list[dict]] = []
@@ -2836,7 +2808,32 @@ class DetailPanel(QWidget):
                     btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", "padding: 2px; font-size:9px; color:#333;"))
 
                 ckey = rs.get('config_key', 'Default')
-                btn.clicked.connect(partial(self._on_consumable_btn_click, cid, dname, ckey, container))
+                # 计算 additionalConsumables 修饰符值（升级品 + 技能）
+                _extra_count = 0
+                # 升级品：_selected_mods 的每个值有 "modifiers" 子键
+                for _m in getattr(self, '_selected_mods', {}).values():
+                    _mods = _m.get("modifiers", {}) if isinstance(_m, dict) else {}
+                    if "additionalConsumables" in _mods:
+                        _mv = _mods["additionalConsumables"]
+                        if isinstance(_mv, dict):
+                            _st = (self._current_analyzed or {}).get("config_bar", {}).get("shiptype_en", "")
+                            _mv = _mv.get(_st) or next((x for x in _mv.values() if isinstance(x, (int, float))), 0)
+                        try:
+                            _extra_count += int(float(_mv))
+                        except (ValueError, TypeError):
+                            pass
+                # 技能：_selected_skill_mods 的值本身就是修饰符 dict
+                for _sk_mods in getattr(self, '_selected_skill_mods', {}).values():
+                    if isinstance(_sk_mods, dict) and "additionalConsumables" in _sk_mods:
+                        _mv = _sk_mods["additionalConsumables"]
+                        if isinstance(_mv, dict):
+                            _st = (self._current_analyzed or {}).get("config_bar", {}).get("shiptype_en", "")
+                            _mv = _mv.get(_st) or next((x for x in _mv.values() if isinstance(x, (int, float))), 0)
+                        try:
+                            _extra_count += int(float(_mv))
+                        except (ValueError, TypeError):
+                            pass
+                btn.clicked.connect(partial(self._on_consumable_btn_click, cid, dname, ckey, container, _extra_count))
                 sr_layout.addWidget(btn)
 
             sr_layout.addStretch()
@@ -2982,12 +2979,15 @@ class DetailPanel(QWidget):
         raw_ammo = section.get("raw_ammo_types", [])
         section_tooltip = section.get("tooltip_items", [])
 
-        # 按火炮/深弹名称拆分 items，每座炮/发射器一组
+        # 按火炮/深弹/鱼雷名称或 header 拆分 items，每座炮/发射器一组
         mount_groups: list[list[dict]] = []
         cur: list[dict] = []
         for item in all_items:
-            if item.get("name") in ("火炮名称", "深弹名称") and cur:
-                mount_groups.append(cur)
+            is_splitter = (item.get("row_type") == "header" or
+                           (item.get("name") in ("炮塔", "深弹发射器", "鱼雷发射管") and cur))
+            if is_splitter:
+                if cur:
+                    mount_groups.append(cur)
                 cur = [item]
             else:
                 cur.append(item)
@@ -3005,14 +3005,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = """
             QPushButton {
-                background: #f5f5f5;
-                border: 1px solid #ddd;
+                background: #3a3a3a;
+                border: 1px solid #555;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: #e8e8e8;
+                background: #4a4a4a;
                 border-color: #1a73e8;
             }
             QPushButton:checked {
@@ -3023,7 +3023,6 @@ class DetailPanel(QWidget):
         ammo_idx = 0
         for grp_idx, grp_items in enumerate(mount_groups):
             TOOLTIP_NAMES = {
-                "横向散步公式", "弹着群系数(Sigma)", "纵向散步系数",
                 "水平回转速度", "垂直回转速度", "口径",
             }
 
@@ -3037,7 +3036,10 @@ class DetailPanel(QWidget):
                 # 1.1 过滤属于 Tooltip 的属性
                 if name in TOOLTIP_NAMES:
                     continue
-                # 1.2 过滤分隔线 (separator) 以及不带名称和内容的空占位行
+                # 1.2 过滤"弹药"行（已由下方弹药按钮展示）
+                if name == "弹药":
+                    continue
+                # 1.3 过滤分隔线 (separator) 以及不带名称和内容的空占位行
                 if row_type == "separator":
                     continue
                 if not name and (val is None or str(val).strip() == ""):
@@ -3113,9 +3115,10 @@ class DetailPanel(QWidget):
                                 candidates.insert(0, "ammo_torpedo_deepwater_0.png")
                         else:
                             tp = ammo_info.get("torpedo_postfix", "")
+                            is_guided = ammo_info.get("is_guided", False)
                             if tp == "_subBurn":
                                 candidates.insert(0, "ammo_torpedo_subburn_0.png")
-                            elif tp:
+                            elif tp and is_guided:
                                 candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
                         candidates.extend(["ammo_torpedo_0.png", "ammo_bomber_torpedo_0.png"])
                     if "depthcharge" in species_lower:
@@ -3286,7 +3289,8 @@ class DetailPanel(QWidget):
                         _additive_keys = {"additionalConsumables", "planeAdditionalConsumables", "planeExtraHangarSize",
                                           "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
                                           "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
-                                          "torpedoReloaderAdditionalConsumables"}
+                                          "torpedoReloaderAdditionalConsumables",
+                                          "crashCrewWorkTimeBonus"}
                         if k in _additive_keys:
                             all_mods[k] = ev_f + nv_f
                         else:
@@ -3356,15 +3360,18 @@ class DetailPanel(QWidget):
                     else:
                         try:
                             ev, nv = _combined[k], v
-                            # dict 值保留给 presenter 按舰种处理
-                            if isinstance(ev, dict) or isinstance(nv, dict):
-                                _combined[k] = v
-                            else:
-                                ev_f, nv_f = float(ev), float(nv)
-                                if k in _additive_keys:
-                                    _combined[k] = ev_f + nv_f
-                                else:
-                                    _combined[k] = ev_f * nv_f
+                            # dict 型修饰符（按舰种区分值）：按当前舰种提取标量
+                            _cur_st = ""
+                            if hasattr(self, '_current_analyzed') and self._current_analyzed:
+                                _cb = self._current_analyzed.get("config_bar", {})
+                                _cur_st = _cb.get("shiptype", "") if isinstance(_cb, dict) else ""
+                            if isinstance(ev, dict):
+                                ev = ev.get(_cur_st) or next((x for x in ev.values() if isinstance(x, (int, float))), 1.0)
+                            if isinstance(nv, dict):
+                                nv = nv.get(_cur_st) or next((x for x in nv.values() if isinstance(x, (int, float))), 1.0)
+                            ev_f, nv_f = float(ev), float(nv)
+                            _add = k in _additive_keys
+                            _combined[k] = ev_f + nv_f if _add else ev_f * nv_f
                         except (ValueError, TypeError):
                             _combined[k] = v
             _eng_key = getattr(self, '_active_engine_key', '')
@@ -3402,7 +3409,7 @@ class DetailPanel(QWidget):
             if _ammo_by_letter:
                 sec["raw_ammo_types"] = _ammo_by_letter.get(_letter, _ammo_by_letter.get(_letters[0], []))
 
-    def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget):
+    def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget, extra_count: int = 0) -> None:
         """消耗品按钮点击：查询数据库并展示详情卡片"""
         from ui.ship_card_widget import ShipCardWidget
         from services.database_service import get_db
@@ -3455,33 +3462,43 @@ class DetailPanel(QWidget):
 
                 kv("名称", dname)
                 num_raw = cfgd.get('numConsumables') or cfgd.get('num_consumables') or "0"
-                if num_raw not in ('0', 0):
-                    kv("数量", '无限' if str(num_raw) == '-1' else str(num_raw))
+                if extra_count and num_raw not in ('0', 0, '-1'):
+                    try:
+                        num_raw = str(int(num_raw) + extra_count)
+                    except (ValueError, TypeError):
+                        pass
                 prep = float(cfgd.get('preparationTime', 0) or 0)
                 cd_time = float(cfgd.get('reloadTime', 0) or 0)
                 wt = float(cfgd.get('workTime', 0) or 0)
-                # 应用已选升级品的修饰符
+                # 应用已选升级品的修饰符（冷却/持续时间）
                 if hasattr(self, '_selected_mods') and self._selected_mods:
-                    from presenters.ship_presenter import ShipPresenter as _SP
-                    _ship_type = ""
+                    from presenters.ship_presenter import ShipPresenter as _SP_MOD
+                    from models.name_mapping import Mapping as _NMAP_FMT
+                    _reload_label = _SP_MOD.MODIFIER_MAP.get("ConsumableReloadTime")
+                    _duration_label = _SP_MOD.MODIFIER_MAP.get("ConsumablesWorkTime")
                     for _m in self._selected_mods.values():
                         for _mk, _mv in _m.get("modifiers", {}).items():
-                            _field = _SP.MODIFIER_MAP.get(_mk)
-                            if _field == "冷却时间" and cd_time:
-                                _mv_f = float(_mv) if not isinstance(_mv, dict) else float(next(v for v in _mv.values()))
-                                cd_time *= (_mv_f if 0.5 <= _mv_f <= 1.5 else 1)
-                            elif _field == "持续时间" and wt:
-                                _mv_f = float(_mv) if not isinstance(_mv, dict) else float(next(v for v in _mv.values()))
-                                wt *= (_mv_f if 0.5 <= _mv_f <= 1.5 else 1)
+                            if isinstance(_mv, dict):
+                                _mv_f = float(next((x for x in _mv.values() if isinstance(x, (int, float))), 0))
+                            else:
+                                _mv_f = float(_mv)
+                            _fmt = _NMAP_FMT.MODIFIER_FORMAT_MAP.get(_mk, "coeff")
+                            _field = _SP_MOD.MODIFIER_MAP.get(_mk)
+                            if _field == _reload_label and cd_time:
+                                cd_time = cd_time * _mv_f if _fmt == "coeff" else cd_time + _mv_f
+                            elif _field == _duration_label and wt:
+                                wt = wt * _mv_f if _fmt == "coeff" else wt + _mv_f
+                if num_raw not in ('0', 0):
+                    kv("数量", '无限' if str(num_raw) == '-1' else str(num_raw))
                 is_auto = cfgd.get('isAutoConsumable', False)
                 if is_auto:
                     kv("自动使用", "是")
                 if prep:
-                    kv("准备时间", f"{prep}s")
+                    kv("准备时间", f"{prep:.2f}s")
                 if cd_time:
-                    kv("冷却时间", f"{cd_time}s")
+                    kv("冷却时间", f"{cd_time:.2f}s")
                 if wt:
-                    kv("持续时间", f"{wt}s")
+                    kv("持续时间", f"{wt:.2f}s")
 
                 items.append(bp.make_item("消耗品效果", "", row_type="header", order=len(items)))
                 ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
@@ -3569,10 +3586,15 @@ class DetailPanel(QWidget):
                             if h_hp and h_hp['health']:
                                 actual_hp = rr * h_hp['health']
                                 kv("每秒回复血量", f"+{actual_hp:.0f} HP")
+                                kv("每秒回复比例", f"+{rr*100:.2f}%")
+                                # 单次总回复比例 = 每秒回复比例 × 持续时间
+                                if wt:
+                                    total_pct = rr * wt * 100
+                                    kv("单次总回复比例", f"+{total_pct:.2f}%")
                             else:
-                                kv("每秒回复血量", f"{'+' if rr > 0 else ''}{rr*100:.2f}%")
+                                kv("每秒回复比例", f"+{rr*100:.2f}%")
                         except Exception:
-                            kv("每秒回复血量", f"{'+' if rr > 0 else ''}{rr*100:.2f}%")
+                            kv("每秒回复比例", f"+{rr*100:.2f}%")
                     # 从 ship_module_hulls 查询该船的回复率数据
                     try:
                         ship_id = self._current_filename or ""

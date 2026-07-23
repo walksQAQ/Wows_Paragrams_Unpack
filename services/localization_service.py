@@ -128,7 +128,7 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
 
     # 消耗品
     pat = re.compile(r'msgid "IDS_DOCK_CONSUME_TITLE_((?:P[XYC]\d{3}|[A-Z0-9]+)_[A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k: v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["consumable_names"] = {"path": save(data, "consumable_names.json"), "count": len(data)}
 
     # 舰船名
@@ -149,7 +149,7 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
 
     # 火炮
     pat = re.compile(r'msgid "IDS_(P[A-Z]G[A-Z]+.*?)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k: v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_DOCK")}
+    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_DOCK")}
     stats["guns_names"] = {"path": save(data, "guns_names.json"), "count": len(data)}
 
     # 弹药
@@ -172,8 +172,14 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     data = {k: v for k, v in pat.findall(raw) if v.strip()}
     stats["rage_mode_names"] = {"path": save(data, "rage_mode_names.json"), "count": len(data)}
 
+    # 鱼雷发射管分组名称（如 IDS_SHIP_PARAM_TORPEDO_GUNS_GROUP_BOW）
+    pat = re.compile(r'msgid "(IDS_SHIP_PARAM_TORPEDO_GUNS_GROUP_[A-Z_]+)"\s+msgstr ' + _Q, re.MULTILINE)
+    data = {k: v for k, v in pat.findall(raw) if v.strip()}
+    stats["torpedo_group_names"] = {"path": save(data, "torpedo_group_names.json"), "count": len(data)}
+
     # 舰船升级键（ShipUpgradeInfo 中的 upgrade_key，如 PAUH941_MIDWAY_1945）
-    pat = re.compile(r'msgid "IDS_(PAU[A-Z][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
+    # 格式: P[国籍]U[槽位类型][编号]_[名称]，[A-Z]匹配任意国籍
+    pat = re.compile(r'msgid "IDS_(P[A-Z]U[A-Z][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["module_upgrade_names"] = {"path": save(data, "module_upgrade_names.json"), "count": len(data)}
 

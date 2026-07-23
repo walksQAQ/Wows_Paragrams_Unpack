@@ -52,6 +52,24 @@ def load_stylesheet(app: QApplication) -> None:
         print(f"[main] WARNING: QSS not found (QRC failed, filesystem missing: {style_path})")
 
 
+def _patch_tooltip() -> None:
+    """全局修补 QWidget.setToolTip，自动将含 HTML 标记的文本转为富文本格式。
+    
+    Qt 的 tooltip 仅在文本以 '<' 开头时才启用富文本渲染，否则会将 HTML
+    标签原文显示。此修补确保所有 tooltip 中的 HTML 都能正确渲染。
+    """
+    from PySide6.QtWidgets import QWidget
+    from models.name_mapping import Mapping
+    _orig_set_tooltip = QWidget.setToolTip
+
+    def _patched_set_tooltip(self, text: str) -> None:
+        if isinstance(text, str) and "<" in text and ">" in text:
+            text = Mapping.rich_tooltip(text)
+        _orig_set_tooltip(self, text)
+
+    QWidget.setToolTip = _patched_set_tooltip
+
+
 def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
@@ -60,6 +78,9 @@ def main() -> None:
     app.setApplicationName(__about__.__title__)
     app.setApplicationVersion(__about__.__version__)
     app.setOrganizationName(__about__.__author__)
+
+    # 全局修补：所有 QWidget.setToolTip 自动处理 HTML 富文本
+    _patch_tooltip()
 
     # 2. 加载样式
     load_stylesheet(app)
