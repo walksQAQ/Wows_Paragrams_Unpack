@@ -43,7 +43,7 @@
 
 ## 📸 程序主界面截图
 
-![程序截图](FilesNotNeedInProgram\程序截图.png)
+![程序截图](FilesNotNeedInProgram/程序截图.png)
 
 
 ## ⚠️ 免责声明
