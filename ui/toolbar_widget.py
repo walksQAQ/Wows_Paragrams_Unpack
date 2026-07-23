@@ -89,7 +89,6 @@ class TopToolbar(QWidget):
         self.rb_lesta = QRadioButton("Lesta")
         self.rb_wg = QRadioButton("Wargaming")
         self.rb_lesta.setStyleSheet("color: #000000; font-size: 12px; spacing: 4px;")
-        self.rb_lesta.setChecked(True)
         # Wargaming 暂时禁用
         self.rb_wg.setEnabled(False)
         self.rb_wg.setStyleSheet("color: #cccccc; font-size: 12px; spacing: 4px;")
@@ -210,3 +209,7 @@ class TopToolbar(QWidget):
             self.rb_wg.setChecked(True)
         elif t == "Lesta":
             self.rb_lesta.setChecked(True)
+        else:
+            # "未选择" 时取消所有选中
+            self.rb_lesta.setChecked(False)
+            self.rb_wg.setChecked(False)
