@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 34
+DB_SCHEMA_VERSION = 35
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -34,6 +34,7 @@ NAME_MAPPING_FILES: dict[str, str] = {
     "module_upgrade_names.json": "module_upgrade",
     "skill_names.json": "skill_title",
     "skill_descriptions.json": "skill_desc",
+    "torpedo_group_names.json": "torpedo_group",
 }
 
 
@@ -181,7 +182,7 @@ class DatabaseManager:
         # ── 迁移：补齐 ship_module_air_support 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_air_support)").fetchall()}
-            for col_name, col_type in [("support_type", "TEXT")]:
+            for col_name, col_type in [("support_type", "TEXT"), ("min_time_to_attack", "REAL"), ("max_time_to_attack", "REAL")]:
                 if col_name not in existing:
                     try:
                         self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
@@ -306,6 +307,74 @@ class DatabaseManager:
             if "rotation_speed" not in existing:
                 self._conn.execute("ALTER TABLE ship_module_torpedoes ADD COLUMN rotation_speed REAL")
                 self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 torpedo_angles_narrow/wide/use_one_shot 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            for col_name, col_type in [("torpedo_angles_narrow", "REAL DEFAULT 0"),
+                                        ("torpedo_angles_wide", "REAL DEFAULT 0"),
+                                        ("use_one_shot", "INTEGER DEFAULT 0")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 top_module_key/launcher_name 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            for col_name, col_type in [("top_module_key", "TEXT DEFAULT ''"),
+                                        ("launcher_name", "TEXT DEFAULT ''")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：为各武器表补齐 launcher_name 列 ──
+        _WEAPON_TABLES = ["ship_module_artillery", "ship_module_atba",
+                          "ship_module_secondary_artillery", "ship_module_depth_charge"]
+        for _tbl in _WEAPON_TABLES:
+            try:
+                _existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({_tbl})").fetchall()}
+                if "launcher_name" not in _existing:
+                    self._conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN launcher_name TEXT DEFAULT ''")
+                self._conn.commit()
+            except Exception:
+                pass
+
+        # ── 迁移：创建 ship_module_torpedo_config 表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_torpedo_config (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                use_groups INTEGER DEFAULT 0,
+                groups_json TEXT,
+                groups_names_json TEXT,
+                groups_counts_json TEXT,
+                loaders_json TEXT,
+                num_torps_in_salvo INTEGER DEFAULT 0,
+                use_one_shot INTEGER DEFAULT 0,
+                one_shot_wait_time REAL DEFAULT 0,
+                module_reload_time REAL DEFAULT 0,
+                PRIMARY KEY (version_code, ship_id, config_group),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedo_config 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedo_config)").fetchall()}
+            for col_name, col_type in [("groups_counts_json", "TEXT"), ("loaders_json", "TEXT"),
+                                        ("ammo_switch_coeff", "REAL DEFAULT 0")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedo_config ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
         except Exception:
             pass
 

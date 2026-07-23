@@ -367,6 +367,8 @@ class AnalysisStore:
                                 "work_time": v.get("workTime", 0),
                                 "max_range": _v(v.get("maxDist")) if v.get("maxDist") is not None else None,
                                 "min_range": _v(v.get("minDist")) if v.get("minDist") is not None else None,
+                                "min_time_to_attack": _v(v.get("minTimeToAttackPoint")),
+                                "max_time_to_attack": _v(v.get("maxTimeToAttackPoint")),
                                 "armament_name": self._find_armament(v.get("planeName", "")),
                                 "support_type": v.get("uiType", ""),
                             })
@@ -480,15 +482,39 @@ class AnalysisStore:
                             elif hp_cat == "Torpedoes":
                                 is_drum = module_data.get("isDrumChargeable", False)
                                 dctp = sv.get("drumChargeTimeParams")
+                                # 鱼雷散布角度
+                                t_angles = sv.get("torpedoAngles", [])
+                                angle_narrow = _v(t_angles[0]) if len(t_angles) > 0 else 0
+                                angle_wide = _v(t_angles[1]) if len(t_angles) > 1 else 0
                                 entry.update({
                                     "launcher_name": gn,
+                                    "hp_module_key": sk,  # 原始 HP 键名，用于分组匹配
+                                    "top_module_key": mod_key,  # 顶层模块 key（如 A1_Torpedoes），用于配置栏切换
+                                    "module_variant": variant,
                                     "rotation_speed": _v((sv.get("rotationSpeed") or [None, None])[0]),
+                                    "torpedo_angles_narrow": angle_narrow,
+                                    "torpedo_angles_wide": angle_wide,
+                                    "use_one_shot": _bn(sv.get("useOneShot", False)),
                                 })
                                 if is_drum and dctp and isinstance(dctp, (list, tuple)) and len(dctp) >= 3:
                                     entry["is_drum_chargeable"] = _bn(is_drum)
                                     entry["drum_charge_time"] = dctp[0]
                                     entry["drum_max_charges"] = int(dctp[2])
                                 cs.setdefault("torpedoes", []).append(entry)
+                                # 模块级配置（首个 HP 模块处理时记录一次）
+                                if not cs.get("_torpedo_config_written"):
+                                    cs["_torpedo_config_written"] = True
+                                    cs["_torpedo_config"] = {
+                                        "use_groups": _bn(module_data.get("useGroups", False)),
+                                        "groups_json": module_data.get("groups", []),
+                                        "groups_names_json": module_data.get("groupsNames", []),
+                                        "loaders_json": module_data.get("loaders", []),
+                                        "num_torps_in_salvo": _v(module_data.get("numTorpsInSalvo"), 0),
+                                        "use_one_shot": _bn(module_data.get("useOneShot", False)),
+                                        "one_shot_wait_time": _v(module_data.get("oneShotWaitTime"), 0),
+                                        "module_reload_time": _v(module_data.get("reloadTime"), 0),
+                                        "ammo_switch_coeff": _v(module_data.get("ammoSwitchCoeff"), 0),
+                                    }
                             elif hp_cat == "AirDefense":
                                 if not re.match(r'^(Medium|Near|Far)\d*_?', gn):
                                     cs.setdefault("aa", []).append({
@@ -524,6 +550,8 @@ class AnalysisStore:
                         conf = module_data.get(ck)
                         if conf:
                             mn = "连发射击模式" if "Switchable" in ck else "弹鼓炮"
+                            if "Switchable" in ck:
+                                conf["isSwitchable"] = True
                             for lt in target_letters:
                                 drum_configs[lt] = {"name": mn, "conf": conf}
                             break
@@ -560,9 +588,11 @@ class AnalysisStore:
         sui = raw_data.get("ShipUpgradeInfo")
         if not isinstance(sui, dict):
             return
-        uc_type_map = {
-            "PAUA": "_Artillery", "PAUE": "_Engine", "PAUH": "_Hull",
-            "PAUS": "_Suo", "PAUT": "_Torpedoes",
+        # 升级键格式: P[国籍]U[槽位类型][编号]_[名称]
+        # 槽位类型字母（第4位）决定升级类型，与国籍无关
+        slot_type_map = {
+            "A": "_Artillery", "E": "_Engine", "H": "_Hull",
+            "S": "_Suo", "T": "_Torpedoes",
         }
         # 收集所有出现的模块 ID，尝试从原始 JSON 中解析名称
         all_module_ids: set[str] = set()
@@ -570,8 +600,8 @@ class AnalysisStore:
         for upgrade_key, upgrade_val in sui.items():
             if not isinstance(upgrade_val, dict):
                 continue
-            prefix = upgrade_key[:4]
-            uc_type = uc_type_map.get(prefix, upgrade_val.get("ucType", ""))
+            slot_letter = upgrade_key[3] if len(upgrade_key) >= 4 else ""
+            uc_type = slot_type_map.get(slot_letter, upgrade_val.get("ucType", ""))
             prev = upgrade_val.get("prev", "") or ""
             components = upgrade_val.get("components", {})
             filtered = {k: v for k, v in components.items() if isinstance(v, list) and v}
@@ -804,8 +834,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_artillery (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_artillery (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           r.get("rotation_speed_h"), r.get("rotation_speed_v"),
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0)))
@@ -836,8 +866,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_atba (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_atba (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0)))
             self._rel(ship_id, gn, "atba", letter, cnt, version_code)
@@ -858,8 +888,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_secondary_artillery (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim, caliber) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_secondary_artillery (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim, caliber) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           r.get("rotation_speed_h"), r.get("rotation_speed_v"),
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0),
@@ -869,22 +899,81 @@ class AnalysisStore:
 
     def _write_torpedoes(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
-        for key, group in self._weapon_groups(cs.get("torpedoes", []), "launcher_name").items():
+        # 按 launcher_name + module_variant 分组，确保 A1/A2 等不同变体的数据不合并
+        for key, group in self._weapon_groups(cs.get("torpedoes", []), "launcher_name", "module_variant").items():
             nm = key[0]
+            mv = key[1]
             cnt = len(group)
             r = group[0]
-            conn.execute("INSERT OR REPLACE INTO ship_module_torpedoes (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, rotation_speed) VALUES (?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, nm, cnt, _v(r.get("num_barrels"), 0), r.get("reload_time"), r.get("rotation_speed")))
-            self._rel(ship_id, nm, "torpedo", letter, cnt, version_code)
-            self._ammo(ship_id, nm, "torpedo", letter, r.get("ammo_list", []), version_code)
+            # 不同变体使用不同的 module_key 以区分
+            mod_key = f"{nm}_{mv}" if mv else nm
+            top_mod_key = r.get("top_module_key", "")
+            conn.execute("INSERT OR REPLACE INTO ship_module_torpedoes (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, rotation_speed, torpedo_angles_narrow, torpedo_angles_wide, use_one_shot, top_module_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, mod_key, nm, cnt, _v(r.get("num_barrels"), 0), r.get("reload_time"), r.get("rotation_speed"),
+                          r.get("torpedo_angles_narrow", 0), r.get("torpedo_angles_wide", 0),
+                          _bn(r.get("use_one_shot", False)), top_mod_key))
+            self._rel(ship_id, mod_key, "torpedo", letter, cnt, version_code)
+            self._ammo(ship_id, mod_key, "torpedo", letter, r.get("ammo_list", []), version_code)
             # 弹鼓/充能数据
             if r.get("is_drum_chargeable"):
                 conn.execute("INSERT OR REPLACE INTO ship_module_torpedo_ext (version_code, ship_id, config_group, module_key, is_drum_chargeable, drum_charge_time, drum_max_charges, drum_full_reload_time) VALUES (?,?,?,?,?,?,?,?)",
-                             (version_code, ship_id, letter, nm,
+                             (version_code, ship_id, letter, mod_key,
                               _v(r.get("is_drum_chargeable"), 0),
                               _v(r.get("drum_charge_time"), 0),
                               _v(r.get("drum_max_charges"), 0),
                               _v(r.get("reload_time"), 0)))
+        # 模块级配置
+        tcfg = cs.get("_torpedo_config")
+        if tcfg:
+            import json
+            # 按 HP 模块键名统计每组鱼雷管数量
+            # 建立 hp_module_key → (count, num_barrels, launcher_name) 映射
+            hp_map: dict[str, dict] = {}
+            for entry in cs.get("torpedoes", []):
+                hp_key = entry.get("hp_module_key", "")
+                if hp_key:
+                    hp_map[hp_key] = {
+                        "count": entry.get("count", 1),
+                        "num_barrels": entry.get("num_barrels", 1),
+                        "launcher_name": entry.get("launcher_name", ""),
+                    }
+            # 计算每个分组包含的鱼雷管数，带发射器明细
+            groups_data = tcfg.get("groups_json", [])
+            groups_counts: list[dict] = []
+            for g_entry in groups_data:
+                gid = g_entry[0]
+                gmodules = g_entry[1]
+                # 按 launcher_name 统计该分组内各型号发射器的数量
+                launcher_details: dict[str, dict] = {}
+                total_tubes = 0
+                for hp_key in gmodules:
+                    info = hp_map.get(hp_key)
+                    if info:
+                        ln = info["launcher_name"]
+                        if ln not in launcher_details:
+                            launcher_details[ln] = {"count": 0, "num_barrels": info["num_barrels"]}
+                        launcher_details[ln]["count"] += info["count"]
+                        total_tubes += info["count"] * info["num_barrels"]
+                # 转为列表用于序列化
+                launchers_list = [{"name": ln, "count": ld["count"], "num_barrels": ld["num_barrels"]}
+                                  for ln, ld in launcher_details.items()]
+                groups_counts.append({
+                    "group_id": gid,
+                    "launchers": launchers_list,
+                    "total_tubes": total_tubes,
+                })
+            conn.execute("INSERT OR REPLACE INTO ship_module_torpedo_config (version_code, ship_id, config_group, use_groups, groups_json, groups_names_json, groups_counts_json, loaders_json, num_torps_in_salvo, use_one_shot, one_shot_wait_time, module_reload_time, ammo_switch_coeff) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter,
+                          _v(tcfg.get("use_groups"), 0),
+                          json.dumps(tcfg.get("groups_json", []), ensure_ascii=False),
+                          json.dumps(tcfg.get("groups_names_json", []), ensure_ascii=False),
+                          json.dumps(groups_counts, ensure_ascii=False),
+                          json.dumps(tcfg.get("loaders_json", []), ensure_ascii=False),
+                          _v(tcfg.get("num_torps_in_salvo"), 0),
+                          _bn(tcfg.get("use_one_shot", False)),
+                          _v(tcfg.get("one_shot_wait_time"), 0),
+                          _v(tcfg.get("module_reload_time"), 0),
+                          _v(tcfg.get("ammo_switch_coeff"), 0)))
 
     def _write_pinger(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
@@ -963,7 +1052,7 @@ class AnalysisStore:
                     "FROM projectile_depth_charge_ext WHERE version_code=? AND projectile_id=?",
                     (version_code, aid)).fetchone()
             rows.append((
-                version_code, ship_id, letter, gn, gn, cnt,
+                version_code, ship_id, letter, gn, gn, gn, cnt,
                 _v(item.get("reload_time")), _v(item.get("shot_delay")),
                 item.get("max_packs"), item.get("num_shots"),
                 item.get("num_bombs"),
@@ -977,10 +1066,10 @@ class AnalysisStore:
         if rows:
             conn.executemany(
                 "INSERT OR REPLACE INTO ship_module_depth_charge "
-                "(version_code, ship_id, config_group, module_key, gun_name, count, "
+                "(version_code, ship_id, config_group, module_key, launcher_name, gun_name, count, "
                 "reload_time, shot_delay, max_packs, num_shots, num_bombs, "
                 "projectile_id, damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             for row in rows:
                 self._rel(ship_id, row[3], "depthCharge", letter, 1, version_code)
 
@@ -1001,8 +1090,8 @@ class AnalysisStore:
         items = cs.get("air_support", [])
         if not items:
             return
-        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, armament_name, support_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("armament_name"), i.get("support_type", "")) for i in items])
+        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, min_time_to_attack, max_time_to_attack, armament_name, support_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("min_time_to_attack"), i.get("max_time_to_attack"), i.get("armament_name"), i.get("support_type", "")) for i in items])
         seen = set()
         for i in items:
             pn = i.get("plane_name") or ""

@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_version_seq ON data_version_registry(version_id);
 -- ═════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS name_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT NOT NULL,       -- 'ship','ammo','gun','consumable','modernization','plane','rage_mode','crew'
+    category TEXT NOT NULL,       -- 'ship','ammo','gun','consumable','modernization','plane','rage_mode','crew','torpedo_group'
     key_name TEXT NOT NULL,       -- 原始 Key 保持大写 (如 'PASA002', 'IDS_PJSB018')
     lang_zh TEXT NOT NULL,        -- 中文翻译
     UNIQUE(category, key_name)
@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS ship_module_atba (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     count INTEGER,
     num_barrels INTEGER,
     reload_time REAL,
@@ -241,6 +242,7 @@ CREATE TABLE IF NOT EXISTS ship_module_secondary_artillery (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     count INTEGER,                       -- 同型号炮塔数量
     num_barrels INTEGER,                 -- 每座联装数
     reload_time REAL,                    -- 装填时间 (s)
@@ -271,6 +273,11 @@ CREATE TABLE IF NOT EXISTS ship_module_torpedoes (
     reload_time REAL,
     rotation_speed REAL,
     torpedo_angles TEXT,                 -- JSON 如 ["/-60","60"]
+    torpedo_angles_narrow REAL DEFAULT 0, -- 窄散布模式角度
+    torpedo_angles_wide REAL DEFAULT 0,   -- 宽散布模式角度
+    use_one_shot INTEGER DEFAULT 0,       -- 是否支持单发射击
+    launcher_name TEXT DEFAULT '',        -- 干净发射器名（如 PJGT199_610mm6_Type_0），用于显示名解析
+    top_module_key TEXT DEFAULT '',       -- 顶层模块 key（如 A1_Torpedoes），用于配置栏切换
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -287,6 +294,25 @@ CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
     drum_full_reload_time REAL DEFAULT 0,
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
+);
+
+-- 4c. 鱼雷模块配置表（含分组、齐射、单发等模块级参数）
+CREATE TABLE IF NOT EXISTS ship_module_torpedo_config (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    use_groups INTEGER DEFAULT 0,
+    groups_json TEXT,                    -- JSON: 分组定义 [[0,["HP_..."]],[1,["HP_..."]]]
+    groups_names_json TEXT,              -- JSON: 分组名称 [[name,[group_ids]]]
+    groups_counts_json TEXT,             -- JSON: 分组统计 [{"group_id":0,"launchers":[...],"total_tubes":6}]
+    loaders_json TEXT,                   -- JSON: 装填器分配 [[loader_count,[group_ids]]]
+    num_torps_in_salvo INTEGER DEFAULT 0,-- 每次装填鱼雷数
+    use_one_shot INTEGER DEFAULT 0,       -- 模块级是否支持单发射击
+    one_shot_wait_time REAL DEFAULT 0,    -- 单发模式下发射间隔
+    module_reload_time REAL DEFAULT 0,    -- 模块级装填时间
+    ammo_switch_coeff REAL DEFAULT 0,     -- 弹药切换系数，多弹药时切换时间 = 系数 × shotDelay
+    PRIMARY KEY (version_code, ship_id, config_group),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
 -- 4b. 潜艇声呐(Pinger)组件属性表
@@ -335,6 +361,7 @@ CREATE TABLE IF NOT EXISTS ship_module_depth_charge (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     gun_name TEXT,
     count INTEGER,
     reload_time REAL,
