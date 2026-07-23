@@ -24,7 +24,7 @@ class AppConfig:
     game_version: str = "Unknown"
     game_data_state: bool = False
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
-    keep_split_json: bool = True  # 解析后是否保留 split JSON 文件
+    keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 3859335）
 
     @classmethod

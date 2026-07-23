@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 12
+DB_SCHEMA_VERSION = 35
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -31,6 +31,10 @@ NAME_MAPPING_FILES: dict[str, str] = {
     "modernization_names.json": "modernization",
     "plane_names.json": "plane",
     "rage_mode_names.json": "rage_mode",
+    "module_upgrade_names.json": "module_upgrade",
+    "skill_names.json": "skill_title",
+    "skill_descriptions.json": "skill_desc",
+    "torpedo_group_names.json": "torpedo_group",
 }
 
 
@@ -114,12 +118,21 @@ class DatabaseManager:
         if 0 < current_ver < DB_SCHEMA_VERSION:
             self._drop_all_tables()
 
-        sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
-        if sql_path.exists():
-            sql_text = sql_path.read_text(encoding="utf-8")
+        # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
+        from PySide6.QtCore import QFile, QIODevice
+        qf = QFile(":/resources/database/database_new.sql")
+        if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
+            sql_text = str(qf.readAll(), encoding="utf-8")
+            qf.close()
             self._conn.executescript(sql_text)
         else:
-            self._init_core_tables()
+            # 回退到文件系统（源码模式或 standalone 无 QRC 的备用路径）
+            sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
+            if sql_path.exists():
+                sql_text = sql_path.read_text(encoding="utf-8")
+                self._conn.executescript(sql_text)
+            else:
+                self._init_core_tables()
         self._conn.commit()
 
         if self.get_current_version() < DB_SCHEMA_VERSION:
@@ -169,7 +182,7 @@ class DatabaseManager:
         # ── 迁移：补齐 ship_module_air_support 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_air_support)").fetchall()}
-            for col_name, col_type in [("support_type", "TEXT")]:
+            for col_name, col_type in [("support_type", "TEXT"), ("min_time_to_attack", "REAL"), ("max_time_to_attack", "REAL")]:
                 if col_name not in existing:
                     try:
                         self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
@@ -252,11 +265,30 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 ship_module_hulls 缺少的 size 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}
+            for col, typ in [("length", "REAL"), ("width", "REAL"), ("height", "REAL")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_hulls ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：补齐 ship_rage_mode 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
             if "rage_mode_name" not in existing:
                 self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN rage_mode_name TEXT DEFAULT ''")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 crew_unique_skills 缺少的 icon_path 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(crew_unique_skills)").fetchall()}
+            if "icon_path" not in existing:
+                self._conn.execute("ALTER TABLE crew_unique_skills ADD COLUMN icon_path TEXT DEFAULT ''")
                 self._conn.commit()
         except Exception:
             pass
@@ -268,6 +300,136 @@ class DatabaseManager:
                 self.import_enum_translations()
         except Exception:
             self.import_enum_translations()
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 rotation_speed 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            if "rotation_speed" not in existing:
+                self._conn.execute("ALTER TABLE ship_module_torpedoes ADD COLUMN rotation_speed REAL")
+                self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 torpedo_angles_narrow/wide/use_one_shot 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            for col_name, col_type in [("torpedo_angles_narrow", "REAL DEFAULT 0"),
+                                        ("torpedo_angles_wide", "REAL DEFAULT 0"),
+                                        ("use_one_shot", "INTEGER DEFAULT 0")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedoes 缺少的 top_module_key/launcher_name 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
+            for col_name, col_type in [("top_module_key", "TEXT DEFAULT ''"),
+                                        ("launcher_name", "TEXT DEFAULT ''")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：为各武器表补齐 launcher_name 列 ──
+        _WEAPON_TABLES = ["ship_module_artillery", "ship_module_atba",
+                          "ship_module_secondary_artillery", "ship_module_depth_charge"]
+        for _tbl in _WEAPON_TABLES:
+            try:
+                _existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({_tbl})").fetchall()}
+                if "launcher_name" not in _existing:
+                    self._conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN launcher_name TEXT DEFAULT ''")
+                self._conn.commit()
+            except Exception:
+                pass
+
+        # ── 迁移：创建 ship_module_torpedo_config 表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_torpedo_config (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                use_groups INTEGER DEFAULT 0,
+                groups_json TEXT,
+                groups_names_json TEXT,
+                groups_counts_json TEXT,
+                loaders_json TEXT,
+                num_torps_in_salvo INTEGER DEFAULT 0,
+                use_one_shot INTEGER DEFAULT 0,
+                one_shot_wait_time REAL DEFAULT 0,
+                module_reload_time REAL DEFAULT 0,
+                PRIMARY KEY (version_code, ship_id, config_group),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_torpedo_config 缺少的列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedo_config)").fetchall()}
+            for col_name, col_type in [("groups_counts_json", "TEXT"), ("loaders_json", "TEXT"),
+                                        ("ammo_switch_coeff", "REAL DEFAULT 0")]:
+                if col_name not in existing:
+                    self._conn.execute(f"ALTER TABLE ship_module_torpedo_config ADD COLUMN {col_name} {col_type}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 ship_module_pinger 潜艇声呐表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_pinger (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                count INTEGER,
+                wave_reload_time REAL,
+                wave_distance REAL,
+                sector_lifetime REAL,
+                max_wave_hits INTEGER,
+                exposing_waves INTEGER,
+                wave_hit_life REAL,
+                wave_speed REAL,
+                hp REAL,
+                PRIMARY KEY (version_code, ship_id, config_group, module_key),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 plane_basic_info 缺少的 field_minefield 列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            for col, typ in [("field_minefield", "TEXT DEFAULT ''"),
+                             ("jato_duration", "REAL"),
+                             ("jato_speed_mult", "REAL")]:
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 ship_module_torpedo_ext 鱼雷弹鼓扩增表 ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                module_key TEXT NOT NULL,
+                is_drum_chargeable INTEGER DEFAULT 0,
+                drum_charge_time REAL DEFAULT 0,
+                drum_max_charges INTEGER DEFAULT 0,
+                drum_full_reload_time REAL DEFAULT 0,
+                PRIMARY KEY (version_code, ship_id, config_group, module_key),
+                FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
+            )""")
+            self._conn.commit()
+        except Exception:
+            pass
 
     def _init_core_tables(self) -> None:
         """内联兜底（正式环境走 database_new.sql）"""
@@ -561,11 +723,34 @@ class DatabaseManager:
             return 0
         text = fp.read_text(encoding="utf-8")
         fp.unlink(missing_ok=True)
+        # 合并多行 msgstr 续行格式
+        lines = text.splitlines(keepends=True)
+        merged = []
+        in_msgstr = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('msgstr '):
+                in_msgstr = True
+                merged.append(line)
+            elif in_msgstr and stripped.startswith('"') and not stripped.startswith('msgid '):
+                if merged and merged[-1].strip().startswith('msgstr ""'):
+                    content = stripped[1:-1]
+                    merged[-1] = f'msgstr "{content}"\n'
+                elif merged:
+                    content = stripped[1:-1]
+                    last = merged[-1]
+                    if last.strip().startswith('msgstr "') and last.strip().endswith('"'):
+                        merged[-1] = last.rstrip('\n')[:-1] + content + '"\n'
+            else:
+                in_msgstr = False
+                merged.append(line)
+        text = ''.join(merged)
         items = []
         blocks = re.split(r'\n(?=msgid)', text)
+        _Q = re.compile(r'^msgstr\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)
         for block in blocks:
             m = re.search(r'^msgid\s+"(.+)"\s*$', block, re.MULTILINE)
-            s = re.search(r'^msgstr\s+"(.+)"\s*$', block, re.MULTILINE)
+            s = _Q.search(block)
             if m and s and m.group(1) and s.group(1):
                 items.append((m.group(1), s.group(1), ""))
         if items:

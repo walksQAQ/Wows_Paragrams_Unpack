@@ -22,12 +22,7 @@ from models.name_mapping import Mapping as NM
 class BasePresenter:
     """Presenter 基类"""
 
-    # 飞机 key 前缀映射（新旧命名兼容）
-    PLANE_PREFIX_MAP = {
-        "PAUB": "PAAB", "PAUD": "PAAD", "PAUI": "PAAF",
-        "PAMA": "PAAJ", "PAJA": "PAAJ", "PAFR": "PAAF",
-        "PAGE": "PAAG", "PAIT": "PAAI", "PAPN": "PAAN",
-    }
+
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -105,32 +100,38 @@ class BasePresenter:
             return {}
 
     def resolve_plane(self, raw_key: str) -> str:
-        """解析飞机名称（兼容新旧前缀）"""
+        """解析飞机名称（查找 name_mappings 表）"""
         plane_mappings = self.get_name_map("plane")
         key = raw_key.upper()
         if key in plane_mappings:
             return plane_mappings[key]
-        for old_pref, new_pref in self.PLANE_PREFIX_MAP.items():
-            if key.startswith(old_pref):
-                alt = new_pref + key[len(old_pref):]
-                if alt in plane_mappings:
-                    return plane_mappings[alt]
         base = key.split("_")[0]
         if base in plane_mappings:
             return plane_mappings[base]
-        for old_pref, new_pref in self.PLANE_PREFIX_MAP.items():
-            if base.startswith(old_pref):
-                alt = base.replace(old_pref, new_pref, 1)
-                if alt in plane_mappings:
-                    return plane_mappings[alt]
         return raw_key
 
     def resolve_plane_id(self, raw_key: str) -> str:
-        """解析飞机 ID，将旧前缀映射到新前缀（用于 plane_basic_info 查询）"""
-        for old_pref, new_pref in self.PLANE_PREFIX_MAP.items():
-            if raw_key.upper().startswith(old_pref):
-                return new_pref + raw_key[len(old_pref):]
+        """解析飞机 ID（用于 plane_basic_info 查询）"""
         return raw_key
+
+    # ── 武器名解析 ──────────────────────────────────────
+
+    @staticmethod
+    def resolve_weapon_name(row: dict | sqlite3.Row, default_key: str = "") -> str:
+        """从 DB 行中提取用于显示名解析的 key，优先 launcher_name 再 module_key"""
+        try:
+            ln = row['launcher_name']
+            if ln:
+                return ln
+        except (KeyError, IndexError, TypeError):
+            pass
+        try:
+            mk = row['module_key']
+            if mk:
+                return mk
+        except (KeyError, IndexError, TypeError):
+            pass
+        return default_key
 
     # ── 值格式化 ──────────────────────────────────────────
 
@@ -147,9 +148,68 @@ class BasePresenter:
         return f"{val * 100:.{digits}f}%"
 
     @staticmethod
-    def make_item(name: str, value: str = "", order: int = 0) -> dict:
-        return {"name": name, "value": value, "order": order}
+    def make_item(name: str, value: str = "", order: int = 0,
+                  row_type: str = "kv",
+                  unit: str = "",
+                  raw_value=None,
+                  details: list[dict] = None,
+                  color: str = "",
+                  ) -> dict:
+        """创建一个展示项
+
+        Args:
+            name: 标签名（左列）
+            value: 值文本（右列）
+            order: 排序序号
+            row_type: 行类型
+                "kv"        - 普通键值对
+                "header"    - 分段标题
+                "separator" - 分隔线
+                "button_group" - 按钮组（如 DOT 数量选择）
+            unit: 单位（如 "节", "公里", "%"），渲染时与 value 分开显示
+            raw_value: 原始数值（用于计算/交互）
+            details: 二级详细数据列表，格式 [{name, value, unit}...]
+            color: 值文本颜色（如 "#1b8a1b" 绿色），为空则自动判断
+        """
+        return {
+            "name": name, "value": value, "order": order,
+            "row_type": row_type, "unit": unit,
+            "raw_value": raw_value,
+            "details": details or [],
+            "color": color,
+        }
 
     @staticmethod
-    def make_section(label: str, items: list[dict]) -> dict:
-        return {"label": label, "items": items}
+    def make_section(label: str, items: list[dict],
+                     icon: str = "") -> dict:
+        """创建一个数据分区
+
+        Args:
+            label: 分区标题
+            items: 展示项列表
+            icon: 分区图标（如 "🚢", "🔫"）
+        """
+        return {"label": label, "items": items, "icon": icon}
+
+    @staticmethod
+    def append_props(items: list[dict], row,
+                     props: list[tuple[str, str, str]],
+                     start_order: int = 0) -> int:
+        """从数据库行中批量添加属性到 items 列表
+
+        Args:
+            items: 目标 items 列表
+            row: sqlite3.Row 对象
+            props: [(列名, 显示标签, 单位), ...]
+            start_order: 起始排序序号
+
+        Returns:
+            下一个可用序号
+        """
+        o = start_order
+        for col, label, unit in props:
+            val = row[col] if col in row.keys() else None
+            if val is not None:
+                items.append(BasePresenter.make_item(label, str(val), o, unit=unit))
+                o += 1
+        return o

@@ -22,7 +22,6 @@ class CategoryBar(QWidget):
     # 分类定义：(图标, 显示名, 文件夹名)
     CATEGORIES = [
         ("🚢", "舰船", "Ship"),
-        ("👤", "舰长", "Crew"),
     ]
 
     BTN_STYLE = """
@@ -76,6 +75,17 @@ class CategoryBar(QWidget):
         # 启动时不选中任何分类，由用户点击触发
 
         layout.addStretch()
+
+        # 监听外部选择（如启动时自动选中）
+        bus.folder_selected.connect(self._on_external_folder)
+
+    def _on_external_folder(self, folder: str) -> None:
+        """外部触发分类选择时同步按钮状态"""
+        if folder == "__REFRESH__":
+            return
+        for btn, (_, _, cat_folder) in zip(self._btns, self.CATEGORIES):
+            btn.setChecked(cat_folder == folder)
+        self._active = folder
 
     def clear_selection(self) -> None:
         """取消所有分类按钮的选中状态"""

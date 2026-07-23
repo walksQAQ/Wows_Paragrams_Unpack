@@ -109,7 +109,7 @@ class BrowserPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("BrowserPanel")
-        self.setFixedWidth(300)
+        self.setFixedWidth(250)
         self.setStyleSheet("""
             #BrowserPanel {
                 background-color: #f0f0f0;
@@ -137,17 +137,11 @@ class BrowserPanel(QWidget):
         """)
         layout.addWidget(self.search_box)
 
-        # ── 多选筛选行 ─
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(4)
-
+        # ── 多选筛选行（分两行，适应窄面板） ─
         self.ms_nation = MultiSelectCombo("全部国家")
         self.ms_type = MultiSelectCombo("全部舰种")
         self.ms_tier = MultiSelectCombo("全部等级")
         self.ms_crew_type = MultiSelectCombo("全部类型")
-        for ms in (self.ms_nation, self.ms_type, self.ms_tier, self.ms_crew_type):
-            filter_row.addWidget(ms)
-
         self.btn_reset = QPushButton("↺")
         self.btn_reset.setToolTip("重置筛选条件")
         self.btn_reset.setFixedWidth(26)
@@ -159,8 +153,19 @@ class BrowserPanel(QWidget):
             }
             QPushButton:hover { background: #d0d0d0; border-color: #0078d4; color: #1a1a1a; }
         """)
-        filter_row.addWidget(self.btn_reset)
-        layout.addLayout(filter_row)
+
+        filter_row1 = QHBoxLayout()
+        filter_row1.setSpacing(4)
+        filter_row1.addWidget(self.ms_nation)
+        filter_row1.addWidget(self.ms_type)
+        layout.addLayout(filter_row1)
+
+        filter_row2 = QHBoxLayout()
+        filter_row2.setSpacing(4)
+        filter_row2.addWidget(self.ms_tier)
+        filter_row2.addWidget(self.ms_crew_type)
+        filter_row2.addWidget(self.btn_reset)
+        layout.addLayout(filter_row2)
 
         # ── 文件列表 ─
         self.file_list = QListWidget()
