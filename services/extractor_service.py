@@ -66,7 +66,9 @@ def _extract_with_tool(target_dir, game_path, latest_bin, unpack_exe, app_dir):
     command = [unpack_exe, "-x", idx_path, "-p", "../../../res_packages",
                "-I", "content/*.data"]
     proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            cwd=str(app_dir))
+                            stdin=subprocess.DEVNULL,
+                            cwd=str(app_dir),
+                            creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         stdout, stderr = proc.communicate(timeout=180)
     except subprocess.TimeoutExpired:

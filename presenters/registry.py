@@ -13,12 +13,6 @@ from typing import Optional
 
 from presenters.base_presenter import BasePresenter
 from presenters.ship_presenter import ShipPresenter
-from presenters.gun_presenter import GunPresenter
-from presenters.projectile_presenter import ProjectilePresenter
-from presenters.plane_presenter import PlanePresenter
-from presenters.consumable_presenter import ConsumablePresenter
-from presenters.modernization_presenter import ModernizationPresenter
-from presenters.crew_presenter import CrewPresenter
 
 
 # ── 类型映射 ──────────────────────────────────────────────
@@ -26,23 +20,11 @@ from presenters.crew_presenter import CrewPresenter
 # entity_type → Presenter 类
 PRESENTER_MAP: dict[str, type[BasePresenter]] = {
     "ship": ShipPresenter,
-    "gun": GunPresenter,
-    "projectile": ProjectilePresenter,
-    "plane": PlanePresenter,
-    "consumable": ConsumablePresenter,
-    "modernization": ModernizationPresenter,
-    "crew": CrewPresenter,
 }
 
 # 外部 category 名（如 "Ship", "Aircraft"）→ entity_type 映射
 CATEGORY_TO_ETYPE: dict[str, str] = {
     "Ship": "ship",
-    "Gun": "gun",
-    "Projectile": "projectile",
-    "Aircraft": "plane",
-    "Ability": "consumable",
-    "Modernization": "modernization",
-    "Crew": "crew",
 }
 
 

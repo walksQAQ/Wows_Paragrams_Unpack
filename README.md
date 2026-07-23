@@ -2,7 +2,7 @@
 
 > 战舰世界 / Korabli 游戏数据自动化提取与分析工具
 >
-> **当前版本: v3.1.1**
+> **当前版本: v3.2.0**
 
 ---
 
@@ -39,6 +39,12 @@
 
 
 ---
+<br>
+
+## 📸 程序主界面截图
+
+![程序截图](FilesNotNeedInProgram\程序截图.png)
+
 
 ## ⚠️ 免责声明
 
@@ -58,4 +64,3 @@
 - **walksQAQ** — 开发维护
 - 仓库: [https://github.com/walksQAQ/Wows_Paragrams_Unpack]
 - 下载编译好的程序请到 **Releases** 页面查找。
-- 当前程序版本 v3.1.1

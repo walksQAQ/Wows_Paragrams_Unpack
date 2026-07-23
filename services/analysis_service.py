@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from typing import Callable, Optional
 
 from services.database_service import DatabaseManager
+from pathlib import Path
 from utils.path_utils import get_split_dir
 from app.signals import bus
 
@@ -94,12 +95,14 @@ MODULE_PATTERNS = {
     "DiveBomber": re.compile(r'(?:([A-Z]+\d*)_)?DiveBomber(?:Default)?'),
     "Fighter": re.compile(r'(?:([A-Z]+\d*)_)?Fighter(?:Default)?'),
     "SkipBomber": re.compile(r'(?:([A-Z]+\d*)_)?SkipBomber(?:Default)?'),
+    "MineBomber": re.compile(r'(?:([A-Z]+\d*)_)?MineBomber(?:Default)?'),
     "TorpedoBomber": re.compile(r'(?:([A-Z]+\d*)_)?TorpedoBomber(?:Default)?'),
     "AirSupport": re.compile(r'(?:([A-Z]+\d*)_)?AirSupport(?:Default)?'),
     "AirDefense": re.compile(r'(?:([A-Z]+\d*)_)?AirDefense(?:Default)?'),
     "DepthChargeGuns": re.compile(r"(?:([A-Z]+\d*)_)?DepthChargeGuns(?:Default)?"),
     "AirArmament": re.compile(r'(?:([A-Z]+\d*)_)?AirArmament(?:Default)?'),
     "FlightControl": re.compile(r'(?:([A-Z]+\d*)_)?FlightControl(?:Default)?'),
+    "PingerGun": re.compile(r'(?:([A-Z]+\d*)_)?PingerGun(?:Default)?'),
 }
 
 HP_PATTERNS = {
@@ -160,7 +163,7 @@ PROJECTILE_EXT_MAP = {
             "alertDist", "armingTime",
             "burnProb", "uwCritical",
             lambda r: _bn(r.get("isDeepWater")),
-            lambda r: r.get("deepWaterIgnoreClasses") or ""
+            lambda r: ", ".join(r.get("ignoreClasses", [])) or ""
         ),
     },
     "DepthCharge": {
@@ -203,6 +206,34 @@ PROJECTILE_EXT_MAP = {
             "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
             "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
             lambda r: 0,
+        ),
+    },
+    "Mine": {
+        "table": "projectile_mine_ext",
+        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
+                 "flood_generation, uw_critical, health, max_depth, fall_time, "
+                 "affected_by_ptz, apply_ptz_coeff"),
+        "phs": 11,
+        "fields": (
+            "alphaDamage", "damage", "explosionRadius", "burnProb",
+            lambda r: _bn(r.get("floodGeneration")),
+            "uwCritical", "health", "maxDepth", "fallTime",
+            lambda r: _bn(r.get("affectedByPTZ")),
+            lambda r: _bn(r.get("applyPTZCoeff")),
+        ),
+    },
+    "PlaneSeaMine": {
+        "table": "projectile_mine_ext",
+        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
+                 "flood_generation, uw_critical, health, max_depth, fall_time, "
+                 "affected_by_ptz, apply_ptz_coeff"),
+        "phs": 11,
+        "fields": (
+            "alphaDamage", "damage", "explosionRadius", "burnProb",
+            lambda r: _bn(r.get("floodGeneration")),
+            "uwCritical", "health", "maxDepth", "fallTime",
+            lambda r: _bn(r.get("affectedByPTZ")),
+            lambda r: _bn(r.get("applyPTZCoeff")),
         ),
     },
     "Rocket": {
@@ -300,7 +331,7 @@ class AnalysisStore:
             variant = m2.group(2) if m2 and m2.group(2) else ""
 
             # 飞机（仅当存在纯 B 前缀的飞机模块时才拆 AB → A+B）
-            if current_cat in ("DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber"):
+            if current_cat in ("DiveBomber", "TorpedoBomber", "Fighter", "SkipBomber", "MineBomber"):
                 if prefix == "AB":
                     has_pure_b_air = any(
                         k.startswith("B") and any(
@@ -315,7 +346,7 @@ class AnalysisStore:
                         pn, arm = pl, module_data.get("armamentName", "")
                     else:
                         continue
-                    config_prefix = m.group(1) if m else lt
+                    config_prefix = mod_key  # 完整模块名如 "A1_Fighter"
                     for lt in target_letters:
                         combined_stats[lt].setdefault("aircraft", []).append(
                             {"plane_name": pn, "armament_name": arm, "module_variant": variant, "plane_type": current_cat,
@@ -336,6 +367,8 @@ class AnalysisStore:
                                 "work_time": v.get("workTime", 0),
                                 "max_range": _v(v.get("maxDist")) if v.get("maxDist") is not None else None,
                                 "min_range": _v(v.get("minDist")) if v.get("minDist") is not None else None,
+                                "min_time_to_attack": _v(v.get("minTimeToAttackPoint")),
+                                "max_time_to_attack": _v(v.get("maxTimeToAttackPoint")),
                                 "armament_name": self._find_armament(v.get("planeName", "")),
                                 "support_type": v.get("uiType", ""),
                             })
@@ -344,6 +377,13 @@ class AnalysisStore:
             if current_cat in ("AirArmament", "FlightControl"):
                 for lt in target_letters:
                     combined_stats.setdefault(lt, {})["hangar" if current_cat == "AirArmament" else "flight_control"] = module_data
+                continue
+
+            if current_cat == "PingerGun":
+                for lt in target_letters:
+                    combined_stats.setdefault(lt, {}).setdefault("pinger", []).append({
+                        "module_key": mod_key, "data": module_data
+                    })
                 continue
 
             if current_cat in ("Artillery", "SecondaryArtillery", "ATBA", "AirDefense", "Torpedoes", "DepthChargeGuns"):
@@ -440,8 +480,41 @@ class AnalysisStore:
                                 })
                                 cs.setdefault("atba", []).append(entry)
                             elif hp_cat == "Torpedoes":
-                                entry.update({"launcher_name": gn})
+                                is_drum = module_data.get("isDrumChargeable", False)
+                                dctp = sv.get("drumChargeTimeParams")
+                                # 鱼雷散布角度
+                                t_angles = sv.get("torpedoAngles", [])
+                                angle_narrow = _v(t_angles[0]) if len(t_angles) > 0 else 0
+                                angle_wide = _v(t_angles[1]) if len(t_angles) > 1 else 0
+                                entry.update({
+                                    "launcher_name": gn,
+                                    "hp_module_key": sk,  # 原始 HP 键名，用于分组匹配
+                                    "top_module_key": mod_key,  # 顶层模块 key（如 A1_Torpedoes），用于配置栏切换
+                                    "module_variant": variant,
+                                    "rotation_speed": _v((sv.get("rotationSpeed") or [None, None])[0]),
+                                    "torpedo_angles_narrow": angle_narrow,
+                                    "torpedo_angles_wide": angle_wide,
+                                    "use_one_shot": _bn(sv.get("useOneShot", False)),
+                                })
+                                if is_drum and dctp and isinstance(dctp, (list, tuple)) and len(dctp) >= 3:
+                                    entry["is_drum_chargeable"] = _bn(is_drum)
+                                    entry["drum_charge_time"] = dctp[0]
+                                    entry["drum_max_charges"] = int(dctp[2])
                                 cs.setdefault("torpedoes", []).append(entry)
+                                # 模块级配置（首个 HP 模块处理时记录一次）
+                                if not cs.get("_torpedo_config_written"):
+                                    cs["_torpedo_config_written"] = True
+                                    cs["_torpedo_config"] = {
+                                        "use_groups": _bn(module_data.get("useGroups", False)),
+                                        "groups_json": module_data.get("groups", []),
+                                        "groups_names_json": module_data.get("groupsNames", []),
+                                        "loaders_json": module_data.get("loaders", []),
+                                        "num_torps_in_salvo": _v(module_data.get("numTorpsInSalvo"), 0),
+                                        "use_one_shot": _bn(module_data.get("useOneShot", False)),
+                                        "one_shot_wait_time": _v(module_data.get("oneShotWaitTime"), 0),
+                                        "module_reload_time": _v(module_data.get("reloadTime"), 0),
+                                        "ammo_switch_coeff": _v(module_data.get("ammoSwitchCoeff"), 0),
+                                    }
                             elif hp_cat == "AirDefense":
                                 if not re.match(r'^(Medium|Near|Far)\d*_?', gn):
                                     cs.setdefault("aa", []).append({
@@ -451,15 +524,25 @@ class AnalysisStore:
                             elif hp_cat == "DepthChargeGuns":
                                 # 模块级数据
                                 ammo_id = (sv.get("ammoList") or [None])[0]
-                                cs.setdefault("depth_charge", []).append({
-                                    "gun_name": gn, "count": 1,
-                                    "reload_time": _v(module_data.get("reloadTime")),
-                                    "shot_delay": _v(module_data.get("shotDelay")),
-                                    "max_packs": _v(module_data.get("maxPacks")),
-                                    "num_shots": _v(module_data.get("numShots")),
-                                    "num_bombs": _v(sv.get("numBombs")),
-                                    "ammo_id": ammo_id,
-                                })
+                                # 同 gun_name 合并计数
+                                dc_list = cs.setdefault("depth_charge", [])
+                                existing = None
+                                for dc in dc_list:
+                                    if dc["gun_name"] == gn:
+                                        existing = dc
+                                        break
+                                if existing:
+                                    existing["count"] += 1
+                                else:
+                                    dc_list.append({
+                                        "gun_name": gn, "count": 1,
+                                        "reload_time": _v(module_data.get("reloadTime")),
+                                        "shot_delay": _v(module_data.get("shotDelay")),
+                                        "max_packs": _v(module_data.get("maxPacks")),
+                                        "num_shots": _v(module_data.get("numShots")),
+                                        "num_bombs": _v(sv.get("numBombs")),
+                                        "ammo_id": ammo_id,
+                                    })
                         break
 
                 if current_cat == "Artillery":
@@ -467,12 +550,15 @@ class AnalysisStore:
                         conf = module_data.get(ck)
                         if conf:
                             mn = "连发射击模式" if "Switchable" in ck else "弹鼓炮"
+                            if "Switchable" in ck:
+                                conf["isSwitchable"] = True
                             for lt in target_letters:
                                 drum_configs[lt] = {"name": mn, "conf": conf}
                             break
 
         self._write_hulls(ship_id, raw_data, version_code=version_code)
         self._write_engine(ship_id, raw_data, version_code=version_code)
+        self._write_fire_control(ship_id, raw_data, version_code=version_code)
         self._scan_planes(raw_data, combined_stats)
 
         letters = sorted(combined_stats.keys())
@@ -487,11 +573,75 @@ class AnalysisStore:
             self._write_depth_charge(ship_id, letter, cs, version_code=version_code)
             self._write_aircraft(ship_id, letter, cs, version_code=version_code)
             self._write_air_support(ship_id, letter, cs, version_code=version_code)
+            self._write_pinger(ship_id, letter, cs, version_code=version_code)
 
         self._write_consumables(ship_id, raw_data, version_code=version_code)
         self._write_rage_mode(ship_id, raw_data, version_code=version_code)
 
+        # 解析 ShipUpgradeInfo
+        self._write_upgrade_info(ship_id, raw_data, version_code=version_code)
+
     # ── Ship 子写入器 ─────────────────────────────────────
+
+    def _write_upgrade_info(self, ship_id: str, raw_data: dict, version_code: str = ""):
+        """解析 ShipUpgradeInfo 并存入库，同时提取模块名称映射"""
+        sui = raw_data.get("ShipUpgradeInfo")
+        if not isinstance(sui, dict):
+            return
+        # 升级键格式: P[国籍]U[槽位类型][编号]_[名称]
+        # 槽位类型字母（第4位）决定升级类型，与国籍无关
+        slot_type_map = {
+            "A": "_Artillery", "E": "_Engine", "H": "_Hull",
+            "S": "_Suo", "T": "_Torpedoes",
+        }
+        # 收集所有出现的模块 ID，尝试从原始 JSON 中解析名称
+        all_module_ids: set[str] = set()
+
+        for upgrade_key, upgrade_val in sui.items():
+            if not isinstance(upgrade_val, dict):
+                continue
+            slot_letter = upgrade_key[3] if len(upgrade_key) >= 4 else ""
+            uc_type = slot_type_map.get(slot_letter, upgrade_val.get("ucType", ""))
+            prev = upgrade_val.get("prev", "") or ""
+            components = upgrade_val.get("components", {})
+            filtered = {k: v for k, v in components.items() if isinstance(v, list) and v}
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ship_upgrade_info
+                   (version_code, ship_id, upgrade_key, uc_type, components_json, prev)
+                   VALUES (?,?,?,?,?,?)""",
+                (version_code, ship_id, upgrade_key, uc_type, json.dumps(filtered, ensure_ascii=False), prev)
+            )
+            # 收集所有模块 ID
+            for mods in filtered.values():
+                for m in mods:
+                    all_module_ids.add(m)
+
+        # 尝试从原始 JSON 中为模块 ID 提取名称
+        name_items = []
+        for mid in all_module_ids:
+            # 跳过系统内部名称
+            if mid.endswith("Default") or mid in ("None", ""):
+                continue
+            # 跳过已有映射的
+            existing = self.conn.execute(
+                "SELECT 1 FROM name_mappings WHERE key_name=?",
+                (mid.upper(),)).fetchone()
+            if existing:
+                continue
+            # 尝试从原始 JSON 的对应 key 中找 name 字段
+            mod_data = raw_data.get(mid)
+            if isinstance(mod_data, dict):
+                display_name = mod_data.get("name") or ""
+                if display_name and display_name != mid:
+                    name_items.append(("module_upgrade", mid.upper(), display_name))
+        if name_items:
+            try:
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
+                    name_items)
+                self.conn.commit()
+            except Exception:
+                pass
 
     def _write_hulls(self, ship_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
@@ -510,8 +660,11 @@ class AnalysisStore:
                 (version_code, ship_id, config_group, module_key, health, max_speed,
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  visibility_factor_by_plane, has_citadel,
-                 hull_regen_part, citadel_regen_part, engine_power)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 hull_regen_part, citadel_regen_part, engine_power,
+                 length, width, height,
+                 draft, torpedo_protection, fire_duration, flood_duration,
+                 fire_prob, flood_prob, fire_dps, flood_dps)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),
@@ -520,7 +673,24 @@ class AnalysisStore:
                  mod_data.get("visibilityFactorByPlane"),
                  _bn(mod_data.get("Cit")),
                  hull.get("regeneratedHPPart"), cit.get("regeneratedHPPart"),
-                 mod_data.get("enginePower")))
+                 mod_data.get("enginePower"),
+                 _v((mod_data.get("size") or [None])[0]) if mod_data.get("size") and len(mod_data["size"]) > 0 else None,
+                 _v((mod_data.get("size") or [None])[1]) if mod_data.get("size") and len(mod_data["size"]) > 1 else None,
+                 _v((mod_data.get("size") or [None])[2]) if mod_data.get("size") and len(mod_data["size"]) > 2 else None,
+                 _v(mod_data.get("draft")),
+                 # 鱼雷防护(ПТЗ) = 1 - 进水概率 × 3（floodNodes[0][0] 即进水概率）
+                 (1.0 - _v((mod_data.get("floodNodes") or [None])[0][0]) * 3.0)
+                 if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 0
+                 and _v((mod_data.get("floodNodes") or [None])[0][0]) is not None
+                 else None,
+                 # 从 burnNodes 取第三个值（起火持续时间），第一个值（起火概率），第二个值（每秒灼烧血量%）
+                 _v((mod_data.get("burnNodes") or [None])[0][2]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 2 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][2]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 2 else None,
+                 _v((mod_data.get("burnNodes") or [None])[0][0]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 0 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][0]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 0 else None,
+                 # 每秒灼烧/进水血量百分比
+                 _v((mod_data.get("burnNodes") or [None])[0][1]) if mod_data.get("burnNodes") and len(mod_data["burnNodes"][0]) > 1 else None,
+                 _v((mod_data.get("floodNodes") or [None])[0][1]) if mod_data.get("floodNodes") and len(mod_data["floodNodes"][0]) > 1 else None))
             if sub:
                 conn.execute("""INSERT OR REPLACE INTO ship_module_hulls_ext
                     (version_code, ship_id, config_group, module_key,
@@ -562,20 +732,74 @@ class AnalysisStore:
                     conn.executemany("INSERT OR REPLACE INTO ship_sub_depth_states (version_code, ship_id, config_group, module_key, state_name, underwater_max_speed) VALUES (?,?,?,?,?,?)", rows)
 
     def _write_engine(self, ship_id: str, raw_data: dict, version_code: str = ""):
-        eng = raw_data.get("EngineDefault") or {}
-        if not eng:
-            return
-        hms = None
+        """从原始数据中提取所有引擎模块（含 EngineDefault 和 AB1_Engine 等）并入库"""
+        # 先读取默认引擎（如果有）
+        engine_keys = set()
         for mk, md in raw_data.items():
-            if isinstance(md, dict) and md.get("maxSpeed"):
-                hms = md["maxSpeed"]
-                break
-        bs = hms * (1 + (_v(eng.get("backwardSpeedOnFlood"), 0))) if hms else None
-        self.conn.execute("INSERT OR REPLACE INTO ship_module_engine (version_code, ship_id, config_group, module_key, engine_type, engine_power, forward_max_speed, backward_max_speed, forward_forsage_power, backward_forsage_power) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                          (version_code, ship_id, "A", "EngineDefault", eng.get("engineType"),
-                           eng.get("histEnginePower") or eng.get("enginePower"),
-                           hms, bs, eng.get("forwardEngineForsag") or eng.get("forwardEngineForsagMaxSpeed"),
-                           eng.get("backwardEngineForsag") or eng.get("backwardEngineForsagMaxSpeed")))
+            if not isinstance(md, dict):
+                continue
+            if mk == "EngineDefault":
+                engine_keys.add(mk)
+            elif mk.endswith("_Engine") and MODULE_PATTERNS["Hull"].match(mk) is None:
+                # 匹配 AB1_Engine, AB2_Engine 等引擎模块 key
+                engine_keys.add(mk)
+        if not engine_keys:
+            return
+        # 找 hull 模块获取 base maxSpeed（用于计算航速修正）
+        base_max_speed = None
+        for mk, md in raw_data.items():
+            if isinstance(md, dict) and MODULE_PATTERNS["Hull"].match(mk):
+                if md.get("maxSpeed"):
+                    base_max_speed = md["maxSpeed"]
+                    break
+        if base_max_speed is None:
+            for mk, md in raw_data.items():
+                if isinstance(md, dict) and md.get("maxSpeed"):
+                    base_max_speed = md["maxSpeed"]
+                    break
+        for ek in engine_keys:
+            eng = raw_data[ek]
+            if not isinstance(eng, dict):
+                continue
+            letter = _extract_letter(ek)
+            if letter == "Hull":
+                letter = "A"  # "HullDefault" → A
+            engine_type = eng.get("engineType")
+            engine_power = eng.get("histEnginePower") or eng.get("enginePower")
+            speed_coef = eng.get("speedCoef")
+            fwd_speed = base_max_speed
+            if speed_coef is not None and speed_coef != 0 and base_max_speed:
+                fwd_speed = base_max_speed * (1 + speed_coef)
+            bwd_speed = fwd_speed * (1 + (_v(eng.get("backwardSpeedOnFlood"), 0))) if fwd_speed else None
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ship_module_engine
+                   (version_code, ship_id, config_group, module_key,
+                    engine_type, engine_power, forward_max_speed, backward_max_speed,
+                    forward_forsage_power, backward_forsage_power,
+                    forward_speed_on_flood, backward_speed_on_flood, speed_coef)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (version_code, ship_id, letter, ek,
+                 engine_type, engine_power, fwd_speed, bwd_speed,
+                 eng.get("forwardEngineForsag") or eng.get("forwardEngineForsagMaxSpeed"),
+                 eng.get("backwardEngineForsag") or eng.get("backwardEngineForsagMaxSpeed"),
+                 _v(eng.get("forwardSpeedOnFlood")),
+                 _v(eng.get("backwardSpeedOnFlood")),
+                 speed_coef))
+
+    def _write_fire_control(self, ship_id: str, raw_data: dict, version_code: str = ""):
+        """提取火控配件数据"""
+        for mk, md in raw_data.items():
+            if not isinstance(md, dict) or not mk.endswith("_FireControl"):
+                continue
+            letter = _extract_letter(mk)
+            if letter == "Hull":
+                letter = "A"
+            self.conn.execute(
+                """INSERT OR REPLACE INTO ship_module_fire_control
+                   (version_code, ship_id, module_key, config_group, max_dist_coef, sigma_count_coef)
+                   VALUES (?,?,?,?,?,?)""",
+                (version_code, ship_id, mk, letter,
+                 md.get("maxDistCoef"), md.get("sigmaCountCoef")))
 
     def _weapon_groups(self, items, *keys):
         g: dict = {}
@@ -610,8 +834,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_artillery (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_artillery (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           r.get("rotation_speed_h"), r.get("rotation_speed_v"),
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0)))
@@ -642,8 +866,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_atba (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_atba (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0)))
             self._rel(ship_id, gn, "atba", letter, cnt, version_code)
@@ -664,8 +888,8 @@ class AnalysisStore:
             ir, mr, ide = r.get("ideal_radius", 0), r.get("min_radius", 0), r.get("ideal_distance", 0)
             em = md or r.get("max_dist", 0) or ide
             mr2 = em / 1000 if em else None
-            conn.execute("INSERT OR REPLACE INTO ship_module_secondary_artillery (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim, caliber) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, gn, cnt, br, rt, sv, mr2,
+            conn.execute("INSERT OR REPLACE INTO ship_module_secondary_artillery (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, sigma, max_range, rotation_speed_h, rotation_speed_v, ideal_radius, min_radius, ideal_distance, radius_zero, radius_delim, radius_max, delim, caliber) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, gn, gn, cnt, br, rt, sv, mr2,
                           r.get("rotation_speed_h"), r.get("rotation_speed_v"),
                           ir, mr, ide,
                           r.get("radius_zero", 0), r.get("radius_delim", 0), r.get("radius_max", 0), r.get("delim", 0),
@@ -675,14 +899,105 @@ class AnalysisStore:
 
     def _write_torpedoes(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
-        for key, group in self._weapon_groups(cs.get("torpedoes", []), "launcher_name").items():
+        # 按 launcher_name + module_variant 分组，确保 A1/A2 等不同变体的数据不合并
+        for key, group in self._weapon_groups(cs.get("torpedoes", []), "launcher_name", "module_variant").items():
             nm = key[0]
+            mv = key[1]
             cnt = len(group)
             r = group[0]
-            conn.execute("INSERT OR REPLACE INTO ship_module_torpedoes (version_code, ship_id, config_group, module_key, count, num_barrels, reload_time) VALUES (?,?,?,?,?,?,?)",
-                         (version_code, ship_id, letter, nm, cnt, _v(r.get("num_barrels"), 0), r.get("reload_time")))
-            self._rel(ship_id, nm, "torpedo", letter, cnt, version_code)
-            self._ammo(ship_id, nm, "torpedo", letter, r.get("ammo_list", []), version_code)
+            # 不同变体使用不同的 module_key 以区分
+            mod_key = f"{nm}_{mv}" if mv else nm
+            top_mod_key = r.get("top_module_key", "")
+            conn.execute("INSERT OR REPLACE INTO ship_module_torpedoes (version_code, ship_id, config_group, module_key, launcher_name, count, num_barrels, reload_time, rotation_speed, torpedo_angles_narrow, torpedo_angles_wide, use_one_shot, top_module_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter, mod_key, nm, cnt, _v(r.get("num_barrels"), 0), r.get("reload_time"), r.get("rotation_speed"),
+                          r.get("torpedo_angles_narrow", 0), r.get("torpedo_angles_wide", 0),
+                          _bn(r.get("use_one_shot", False)), top_mod_key))
+            self._rel(ship_id, mod_key, "torpedo", letter, cnt, version_code)
+            self._ammo(ship_id, mod_key, "torpedo", letter, r.get("ammo_list", []), version_code)
+            # 弹鼓/充能数据
+            if r.get("is_drum_chargeable"):
+                conn.execute("INSERT OR REPLACE INTO ship_module_torpedo_ext (version_code, ship_id, config_group, module_key, is_drum_chargeable, drum_charge_time, drum_max_charges, drum_full_reload_time) VALUES (?,?,?,?,?,?,?,?)",
+                             (version_code, ship_id, letter, mod_key,
+                              _v(r.get("is_drum_chargeable"), 0),
+                              _v(r.get("drum_charge_time"), 0),
+                              _v(r.get("drum_max_charges"), 0),
+                              _v(r.get("reload_time"), 0)))
+        # 模块级配置
+        tcfg = cs.get("_torpedo_config")
+        if tcfg:
+            import json
+            # 按 HP 模块键名统计每组鱼雷管数量
+            # 建立 hp_module_key → (count, num_barrels, launcher_name) 映射
+            hp_map: dict[str, dict] = {}
+            for entry in cs.get("torpedoes", []):
+                hp_key = entry.get("hp_module_key", "")
+                if hp_key:
+                    hp_map[hp_key] = {
+                        "count": entry.get("count", 1),
+                        "num_barrels": entry.get("num_barrels", 1),
+                        "launcher_name": entry.get("launcher_name", ""),
+                    }
+            # 计算每个分组包含的鱼雷管数，带发射器明细
+            groups_data = tcfg.get("groups_json", [])
+            groups_counts: list[dict] = []
+            for g_entry in groups_data:
+                gid = g_entry[0]
+                gmodules = g_entry[1]
+                # 按 launcher_name 统计该分组内各型号发射器的数量
+                launcher_details: dict[str, dict] = {}
+                total_tubes = 0
+                for hp_key in gmodules:
+                    info = hp_map.get(hp_key)
+                    if info:
+                        ln = info["launcher_name"]
+                        if ln not in launcher_details:
+                            launcher_details[ln] = {"count": 0, "num_barrels": info["num_barrels"]}
+                        launcher_details[ln]["count"] += info["count"]
+                        total_tubes += info["count"] * info["num_barrels"]
+                # 转为列表用于序列化
+                launchers_list = [{"name": ln, "count": ld["count"], "num_barrels": ld["num_barrels"]}
+                                  for ln, ld in launcher_details.items()]
+                groups_counts.append({
+                    "group_id": gid,
+                    "launchers": launchers_list,
+                    "total_tubes": total_tubes,
+                })
+            conn.execute("INSERT OR REPLACE INTO ship_module_torpedo_config (version_code, ship_id, config_group, use_groups, groups_json, groups_names_json, groups_counts_json, loaders_json, num_torps_in_salvo, use_one_shot, one_shot_wait_time, module_reload_time, ammo_switch_coeff) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (version_code, ship_id, letter,
+                          _v(tcfg.get("use_groups"), 0),
+                          json.dumps(tcfg.get("groups_json", []), ensure_ascii=False),
+                          json.dumps(tcfg.get("groups_names_json", []), ensure_ascii=False),
+                          json.dumps(groups_counts, ensure_ascii=False),
+                          json.dumps(tcfg.get("loaders_json", []), ensure_ascii=False),
+                          _v(tcfg.get("num_torps_in_salvo"), 0),
+                          _bn(tcfg.get("use_one_shot", False)),
+                          _v(tcfg.get("one_shot_wait_time"), 0),
+                          _v(tcfg.get("module_reload_time"), 0),
+                          _v(tcfg.get("ammo_switch_coeff"), 0)))
+
+    def _write_pinger(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
+        conn = self.conn
+        items = cs.get("pinger", [])
+        if not items:
+            return
+        for item in items:
+            md = item.get("data", {})
+            mod_key = item.get("module_key", f"Pinger_{letter}_{items.index(item)}")
+            wave_reload = _v(md.get("waveReloadTime"), 0)
+            wave_dist = _v(md.get("waveDistance"), 0)
+            sector_life = _v(md.get("sectorLifetime"), 0)
+            max_wave_hits = _v(md.get("maxWaveHits"), 0)
+            exposing_waves = _v(md.get("exposingWavesTotalSpawnAmount"), 0)
+            wave_hit_life = _v(md.get("waveHitLifeTime"), 0)
+            # waveParams[0].waveSpeed 数组，取第一个值
+            wp = md.get("waveParams", [])
+            wave_speed = wp[0].get("waveSpeed", [0])[0] if wp and isinstance(wp[0], dict) else 0
+            hp = md.get("HitLocationPingerGun", {}) or {}
+            hp_max = _v(hp.get("maxHP"), 0)
+            conn.execute(
+                "INSERT OR REPLACE INTO ship_module_pinger (version_code, ship_id, config_group, module_key, count, wave_reload_time, wave_distance, sector_lifetime, max_wave_hits, exposing_waves, wave_hit_life, wave_speed, hp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (version_code, ship_id, letter, mod_key, 1, wave_reload, wave_dist, sector_life, max_wave_hits, exposing_waves, wave_hit_life, wave_speed, hp_max))
+            self._rel(ship_id, mod_key, "pinger", letter, 1, version_code)
 
     def _write_aa(self, ship_id: str, letter: str, cs: dict, version_code: str = ""):
         conn = self.conn
@@ -737,7 +1052,7 @@ class AnalysisStore:
                     "FROM projectile_depth_charge_ext WHERE version_code=? AND projectile_id=?",
                     (version_code, aid)).fetchone()
             rows.append((
-                version_code, ship_id, letter, gn, gn, cnt,
+                version_code, ship_id, letter, gn, gn, gn, cnt,
                 _v(item.get("reload_time")), _v(item.get("shot_delay")),
                 item.get("max_packs"), item.get("num_shots"),
                 item.get("num_bombs"),
@@ -751,10 +1066,10 @@ class AnalysisStore:
         if rows:
             conn.executemany(
                 "INSERT OR REPLACE INTO ship_module_depth_charge "
-                "(version_code, ship_id, config_group, module_key, gun_name, count, "
+                "(version_code, ship_id, config_group, module_key, launcher_name, gun_name, count, "
                 "reload_time, shot_delay, max_packs, num_shots, num_bombs, "
                 "projectile_id, damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             for row in rows:
                 self._rel(ship_id, row[3], "depthCharge", letter, 1, version_code)
 
@@ -775,8 +1090,8 @@ class AnalysisStore:
         items = cs.get("air_support", [])
         if not items:
             return
-        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, armament_name, support_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("armament_name"), i.get("support_type", "")) for i in items])
+        self.conn.executemany("INSERT OR REPLACE INTO ship_module_air_support (version_code, ship_id, config_group, module_key, plane_name, charges, reload_time, work_time, max_range, min_range, min_time_to_attack, max_time_to_attack, armament_name, support_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              [(version_code, ship_id, letter, i.get("plane_name") or "", i.get("plane_name"), i.get("charges"), i.get("reload_time"), i.get("work_time"), i.get("max_range"), i.get("min_range"), i.get("min_time_to_attack"), i.get("max_time_to_attack"), i.get("armament_name"), i.get("support_type", "")) for i in items])
         seen = set()
         for i in items:
             pn = i.get("plane_name") or ""
@@ -789,10 +1104,14 @@ class AnalysisStore:
         return r[0] if r else ""
 
     def _scan_planes(self, raw_data: dict, cs: dict):
+        """收集主循环未覆盖的飞机数据（形如 Pxxx 的顶层 key）"""
         for key, val in raw_data.items():
             if not isinstance(val, dict) or any(p.match(key) for p in MODULE_PATTERNS.values()):
                 continue
-            if "planes" in val or PLANE_PREFIX_RE.match(key):
+            if "planes" in val:
+                # 这些由主循环处理，跳过以避免重复
+                continue
+            if PLANE_PREFIX_RE.match(key):
                 lt = "A" if not (key.startswith("A_") or key.startswith("B_")) else key[0]
                 cs.setdefault(lt, {}).setdefault("aircraft", []).append(
                     {"plane_name": key, "armament_name": "", "module_variant": "", "plane_type": "",
@@ -929,11 +1248,12 @@ class AnalysisStore:
                "inner_bombs_percentage, visibility_factor, "
                "skip_height, aiming_height, "
                "post_attack_invulnerability_duration, "
-               "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4) "
+               "jato_duration, jato_speed_mult, "
+               "ability_slot_0, ability_slot_1, ability_slot_2, ability_slot_3, ability_slot_4, field_minefield) "
                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?)")
+               "?,?,?,?,?,?,?,?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
@@ -978,11 +1298,30 @@ class AnalysisStore:
                       _v(raw_data.get("skipHeight")),
                       _v(raw_data.get("aimingHeight")),
                       _v(raw_data.get("postAttackInvulnerabilityDuration")),
+                      _v(raw_data.get("jatoDuration")),
+                      _v(raw_data.get("jatoSpeedMultiplier")),
                       _ability_str(raw_data.get("PlaneAbilities"), 0),
                       _ability_str(raw_data.get("PlaneAbilities"), 1),
                       _ability_str(raw_data.get("PlaneAbilities"), 2),
                       _ability_str(raw_data.get("PlaneAbilities"), 3),
-_ability_str(raw_data.get("PlaneAbilities"), 4)))
+_ability_str(raw_data.get("PlaneAbilities"), 4),
+                      raw_data.get("field") or ""))
+
+    def store_minefield(self, mfid: str, raw_data: dict, version_code: str = ""):
+        """存入雷场定义（Minefield Other 类型）"""
+        conn = self.conn
+        layer1 = raw_data.get("layer_1") or {}
+        conn.execute("""INSERT OR REPLACE INTO minefield_info
+            (version_code, minefield_id, radius, activation_delay, life_time, mines, distribution_json, sea_mine_id, depth)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+                     (version_code, mfid,
+                      _v(raw_data.get("radius")),
+                      _v(raw_data.get("activationDelay")),
+                      _v(raw_data.get("lifeTime")),
+                      _i(raw_data.get("mines")),
+                      _json_dumps(raw_data.get("distribution", {})),
+                      raw_data.get("seaMine") or "",
+                      _v(layer1.get("depth"))))
 
     # ── 5. Ability ───────────────────────────────────────
 
@@ -1032,24 +1371,48 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
     def store_crew(self, crew_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
         pers = raw_data.get("CrewPersonality", {}) or {}
+        person_name = pers.get("personName", "")
+        # 写入 name_mappings：key = IDS_{personName 全大写}
+        name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
+                ("crew", name_key, person_name or crew_id))
+            conn.commit()
+        except Exception:
+            pass
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
             (version_code, crew_id, display_name_id, crew_index, crew_id_num, person_name, nation,
              is_unique, is_animated, is_elite, is_person, is_retrainable, skills_container, base_training_level)
             VALUES (?,?,(SELECT id FROM name_mappings WHERE category='crew' AND key_name=?),?,?,?,?,?,?,?,?,?,?,?)""",
-                     (version_code, crew_id, crew_id.upper(),
+                     (version_code, crew_id, name_key,
                       raw_data.get("index", crew_id), _i(raw_data.get("id")),
-                      pers.get("personName", ""), raw_data.get("typeinfo", {}).get("nation", ""),
+                      person_name, raw_data.get("typeinfo", {}).get("nation", ""),
                       _bn(pers.get("isUnique")), _bn(pers.get("isAnimated")),
                       _bn(pers.get("isElite")), _bn(pers.get("isPerson")),
                       _bn(pers.get("isRetrainable")), raw_data.get("skillsContainer"),
                       _v(raw_data.get("baseTrainingLevel"), 1)))
         unique = raw_data.get("UniqueSkills", {}) or {}
         MK = {"triggerIsSubRibbons", "triggerJoinRibbons", "triggerRibbonsTypes"}
+        # 天赋图标用 QRC 路径
+        crew_index = raw_data.get("index", crew_id).split("_")[0] if "_" in raw_data.get("index", crew_id) else raw_data.get("index", crew_id)
         for sk, sv in unique.items():
             if not isinstance(sv, dict):
                 continue
             eff = {ek: ev for ek, ev in sv.items() if ek not in MK and isinstance(ev, dict)}
-            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            icon_path = ""
+            try:
+                unique_types = sorted(set(
+                    int(ev.get("uniqueType")) for ev in eff.values()
+                    if isinstance(ev, dict) and "uniqueType" in ev
+                ))
+                if unique_types:
+                    trigger_type_str = (sv.get("triggerType") or "achievement").upper()
+                    fname = f"{crew_index}_{trigger_type_str}_" + "_".join(str(t) for t in unique_types) + ".png"
+                    icon_path = f":/resources/pictures/talents/{fname}"
+            except Exception:
+                pass
+            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (version_code, crew_id, sk, _v(sv.get("sortIndex"), 0),
                           sv.get("triggerType"), sv.get("maxTriggerNum"),
                           sv.get("triggerAchievement"), sv.get("triggerDamageNum"),
@@ -1057,7 +1420,86 @@ _ability_str(raw_data.get("PlaneAbilities"), 4)))
                           sv.get("triggerRibbonsNum"),
                           str(sv.get("triggerRibbonsTypes", [])),
                           str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
-                          _json_dumps(eff)))
+                          _json_dumps(eff), icon_path))
+
+    # ── 8. Signal Flags (Exterior/PCEF*) ────────────────
+
+    def store_signal_flag(self, mod_id: str, raw_data: dict, version_code: str = ""):
+        conn = self.conn
+        actual_id = raw_data.get("index", mod_id)
+        # 仅处理 PCEF 开头的战斗信号旗
+        if not actual_id.startswith("PCEF"):
+            return
+        conn.execute("""INSERT OR REPLACE INTO signal_flags
+            (version_code, mod_id, name, rarity, signal_type, modifiers_json, flags_json, cost_cr)
+            VALUES (?,?,?,?,?,?,?,?)""",
+                     (version_code, actual_id,
+                      raw_data.get("name", ""),
+                      raw_data.get("rarity", 1),
+                      raw_data.get("signalType", 0),
+                      _json_dumps(raw_data.get("modifiers", {})),
+                      _json_dumps(raw_data.get("flags", [])),
+                      raw_data.get("costCR", 0)))
+
+    # ── 9. Skill Definitions (PCOK) ────────────────────
+
+    def store_skill_definition(self, skill_key: str, raw_data: dict, version_code: str = ""):
+        """存入 PCOK 技能效果定义"""
+        conn = self.conn
+        rarity_keys = [k for k in raw_data if k in ("COMMON","REGULAR","RARE","EPIC","LEGENDARY")]
+        for rarity in rarity_keys:
+            rd = raw_data[rarity]
+            mods = dict(rd.get("modifiers", {}))
+            trigger_data = {}
+            trigger_mods = {}
+            trigger = rd.get("LogicTrigger", {})
+            if isinstance(trigger, dict):
+                tmods = trigger.get("modifiers", {})
+                if tmods:
+                    trigger_mods = dict(tmods)
+                    # 记录触发条件（不合并到主 modifiers，UI 中分开显示）
+                    trigger_data = {
+                        "triggerType": trigger.get("triggerType", ""),
+                        "dividerValue": trigger.get("dividerValue", 1.0),
+                        "dividerType": trigger.get("dividerType", ""),
+                        "duration": trigger.get("duration", 0.0),
+                        "triggerRibbonsTypes": trigger.get("triggerRibbonsTypes", []),
+                        "triggerRibbonsNum": trigger.get("triggerRibbonsNum", 0),
+                        "triggerIsSubRibbons": trigger.get("triggerIsSubRibbons", False),
+                        "buffParamsName": trigger.get("buffParamsName", ""),
+                        "buoyancyStates": trigger.get("buoyancyStates", []),
+                        "burnCount": trigger.get("burnCount", 0),
+                        "floodCount": trigger.get("floodCount", 0),
+                        "coolingDelay": trigger.get("coolingDelay", 0.0),
+                        "changePriorityTargetPenalty": trigger.get("changePriorityTargetPenalty", 1.0),
+                        "heatInterpolator": trigger.get("heatInterpolator", []),
+                        "coolingInterpolator": trigger.get("coolingInterpolator", []),
+                        "modifiers": trigger_mods,
+                    }
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_definitions
+                (version_code, skill_key, rarity, modifiers_json, trigger_json, available_ship_types)
+                VALUES (?,?,?,?,?,?)""",
+                         (version_code, skill_key, rarity,
+                          _json_dumps(mods),
+                          _json_dumps(trigger_data),
+                          _json_dumps(rd.get("availableShipTypes", []))))
+
+    # ── 10. Skill Containers (PCOL) ────────────────────
+
+    def store_skill_container(self, container_id: str, raw_data: dict, version_code: str = ""):
+        """存入 PCOL 技能容器"""
+        conn = self.conn
+        for sk, sv in raw_data.items():
+            if sk in ("id", "index", "name", "typeinfo"):
+                continue
+            if not isinstance(sv, dict):
+                continue
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_containers
+                (version_code, container_id, skill_key, skill_type, ship_type_subtypes)
+                VALUES (?,?,?,?,?)""",
+                         (version_code, container_id, sk,
+                          sv.get("skillType", ""),
+                          _json_dumps(sv.get("skillSubTypeByShipType", {}))))
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1086,6 +1528,8 @@ class AnalysisService:
             "Ship": store.store_ship, "Projectile": store.store_projectile,
             "Aircraft": store.store_plane, "Ability": store.store_consumable,
             "Modernization": store.store_mod, "Crew": store.store_crew,
+            "Exterior": store.store_signal_flag,
+            "Other": lambda eid, rd, **kw: self._store_other(eid, rd, db=(db or _get_db()), **kw),
         }
         m = func_map.get(category)
         if not m:
@@ -1098,13 +1542,26 @@ class AnalysisService:
         except Exception as e:
             bus.log_message.emit(f"⚠️ [分析] {category}/{entity_id} 失败: {e}")
 
+    def _store_other(self, entity_id, raw_data, version_code="", db=None):
+        """处理 Other 类型实体（雷场、技能定义/容器等）"""
+        from services.database_service import get_db as _get_db
+        store = AnalysisStore(db or _get_db())
+        species = (raw_data.get("typeinfo") or {}).get("species", "")
+        if species == "Minefield":
+            store.store_minefield(entity_id, raw_data, version_code=version_code)
+        elif entity_id.startswith("PCOK") or entity_id.startswith("PCOK_"):
+            skill_key = re.sub(r'^PCOK\d+_', '', entity_id)
+            store.store_skill_definition(skill_key, raw_data, version_code=version_code)
+        elif entity_id.startswith("PCOL") or entity_id.startswith("PCOL_"):
+            store.store_skill_container(entity_id, raw_data, version_code=version_code)
+
     def precompute_all(self, db: DatabaseManager,
                        data_by_category: dict[str, dict[str, dict]] | None = None,
                        version_code: str = "") -> dict:
         results: dict[str, int] = {}
         total_processed = 0
         split_dir = get_split_dir()
-        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew"]
+        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew", "Exterior", "Other"]
         raw_conn = db._conn
 
         def _process_batch(items):
@@ -1136,6 +1593,39 @@ class AnalysisService:
                     continue
                 items = sorted(cd.items())
                 results[cat_name] = _process_batch(items)
+
+            # ── 额外处理 PCOK/PCOL 技能数据 ──
+            try:
+                other_dir = get_split_dir() / "Other"
+                if other_dir.exists():
+                    store = AnalysisStore(db)
+                    for fp in sorted(other_dir.glob("PCOK*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
+                            store.store_skill_definition(skill_key, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    for fp in sorted(other_dir.glob("PCOL*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            store.store_skill_container(fp.stem, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    raw_conn.commit()
+                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
+                # ── 额外处理雷场数据 ──
+                for fp in sorted(other_dir.glob("*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        if raw.get("typeinfo", {}).get("species") == "Minefield":
+                            store.store_minefield(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+
             bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
         else:
             if not split_dir.exists():
@@ -1151,6 +1641,9 @@ class AnalysisService:
                     results[cat_name] = 0
                     continue
                 fps = sorted(cat_dir.glob("*.json"))
+                # Exterior 目录只取 PCEF 开头的战斗信号旗
+                if cat_name == "Exterior":
+                    fps = [f for f in fps if f.stem.startswith("PCEF")]
                 items = []
                 for fp in fps:
                     try:
@@ -1158,6 +1651,39 @@ class AnalysisService:
                     except Exception:
                         continue
                 results[cat_name] = _process_batch(items)
+
+            # ── 额外处理 PCOK/PCOL 技能数据 ──
+            try:
+                other_dir = split_dir / "Other"
+                if other_dir.exists():
+                    store = AnalysisStore(db)
+                    for fp in sorted(other_dir.glob("PCOK*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
+                            store.store_skill_definition(skill_key, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    for fp in sorted(other_dir.glob("PCOL*.json")):
+                        try:
+                            raw = json.loads(fp.read_text("utf-8"))
+                            store.store_skill_container(fp.stem, raw, version_code=version_code)
+                        except Exception:
+                            pass
+                    raw_conn.commit()
+                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
+                # ── 额外处理雷场数据 ──
+                for fp in sorted(other_dir.glob("*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        if raw.get("typeinfo", {}).get("species") == "Minefield":
+                            store.store_minefield(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+
             bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
 
         return results

@@ -23,7 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_version_seq ON data_version_registry(version_id);
 -- ═════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS name_mappings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT NOT NULL,       -- 'ship','ammo','gun','consumable','modernization','plane','rage_mode','crew'
+    category TEXT NOT NULL,       -- 'ship','ammo','gun','consumable','modernization','plane','rage_mode','crew','torpedo_group'
     key_name TEXT NOT NULL,       -- 原始 Key 保持大写 (如 'PASA002', 'IDS_PJSB018')
     lang_zh TEXT NOT NULL,        -- 中文翻译
     UNIQUE(category, key_name)
@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS ship_module_relations (
 );
 CREATE INDEX IF NOT EXISTS idx_ship_rel_lookup ON ship_module_relations(version_code, ship_id, config_group);
 
+-- 舰船升级关系（ShipUpgradeInfo），记录各升级槽位的兼容模块
+CREATE TABLE IF NOT EXISTS ship_upgrade_info (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    upgrade_key TEXT NOT NULL,            -- ShipUpgradeInfo 键名，如 'PAUA506_MONAGHAN'
+    uc_type TEXT NOT NULL,                -- 升级类型，如 '_Artillery','_Hull','_Engine','_Torpedoes','_Suo'
+    components_json TEXT NOT NULL DEFAULT '{}',  -- 组件映射 JSON: {"artillery":["A1_Artillery","B1_Artillery"],...}
+    prev TEXT NOT NULL DEFAULT '',         -- 前置升级 key，空表示初始（stock）
+    PRIMARY KEY (version_code, ship_id, upgrade_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 3a. 舰船模块信息层 (Ship Module Info)
@@ -107,6 +119,17 @@ CREATE TABLE IF NOT EXISTS ship_module_hulls (
     hull_regen_part REAL,                -- 船体恢复比例
     citadel_regen_part REAL,             -- 核心恢复比例
     engine_power REAL,                   -- 引擎马力 (hp)
+    length REAL,                         -- 舰长 (m)
+    width REAL,                          -- 舰宽 (m)
+    height REAL,                         -- 舰高 (m)
+    draft REAL,                          -- 吃水深度 (m)
+    torpedo_protection REAL,             -- 鱼雷防护(ПТЗ)减伤百分比
+    fire_duration REAL,                  -- 起火持续时间 (s)
+    flood_duration REAL,                 -- 进水持续时间 (s)
+    fire_prob REAL,                      -- 被点火概率
+    flood_prob REAL,                     -- 进水概率
+    fire_dps REAL,                       -- 每秒灼烧血量 (%)
+    flood_dps REAL,                      -- 每秒进水血量 (%)
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -194,6 +217,7 @@ CREATE TABLE IF NOT EXISTS ship_module_atba (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     count INTEGER,
     num_barrels INTEGER,
     reload_time REAL,
@@ -218,6 +242,7 @@ CREATE TABLE IF NOT EXISTS ship_module_secondary_artillery (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     count INTEGER,                       -- 同型号炮塔数量
     num_barrels INTEGER,                 -- 每座联装数
     reload_time REAL,                    -- 装填时间 (s)
@@ -248,6 +273,63 @@ CREATE TABLE IF NOT EXISTS ship_module_torpedoes (
     reload_time REAL,
     rotation_speed REAL,
     torpedo_angles TEXT,                 -- JSON 如 ["/-60","60"]
+    torpedo_angles_narrow REAL DEFAULT 0, -- 窄散布模式角度
+    torpedo_angles_wide REAL DEFAULT 0,   -- 宽散布模式角度
+    use_one_shot INTEGER DEFAULT 0,       -- 是否支持单发射击
+    launcher_name TEXT DEFAULT '',        -- 干净发射器名（如 PJGT199_610mm6_Type_0），用于显示名解析
+    top_module_key TEXT DEFAULT '',       -- 顶层模块 key（如 A1_Torpedoes），用于配置栏切换
+    PRIMARY KEY (version_code, ship_id, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
+-- 4a. 鱼雷弹鼓/充能扩增表
+CREATE TABLE IF NOT EXISTS ship_module_torpedo_ext (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    is_drum_chargeable INTEGER DEFAULT 0,
+    drum_charge_time REAL DEFAULT 0,
+    drum_max_charges INTEGER DEFAULT 0,
+    drum_full_reload_time REAL DEFAULT 0,
+    PRIMARY KEY (version_code, ship_id, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id, config_group, module_key) REFERENCES ship_module_torpedoes(version_code, ship_id, config_group, module_key) ON DELETE CASCADE
+);
+
+-- 4c. 鱼雷模块配置表（含分组、齐射、单发等模块级参数）
+CREATE TABLE IF NOT EXISTS ship_module_torpedo_config (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    use_groups INTEGER DEFAULT 0,
+    groups_json TEXT,                    -- JSON: 分组定义 [[0,["HP_..."]],[1,["HP_..."]]]
+    groups_names_json TEXT,              -- JSON: 分组名称 [[name,[group_ids]]]
+    groups_counts_json TEXT,             -- JSON: 分组统计 [{"group_id":0,"launchers":[...],"total_tubes":6}]
+    loaders_json TEXT,                   -- JSON: 装填器分配 [[loader_count,[group_ids]]]
+    num_torps_in_salvo INTEGER DEFAULT 0,-- 每次装填鱼雷数
+    use_one_shot INTEGER DEFAULT 0,       -- 模块级是否支持单发射击
+    one_shot_wait_time REAL DEFAULT 0,    -- 单发模式下发射间隔
+    module_reload_time REAL DEFAULT 0,    -- 模块级装填时间
+    ammo_switch_coeff REAL DEFAULT 0,     -- 弹药切换系数，多弹药时切换时间 = 系数 × shotDelay
+    PRIMARY KEY (version_code, ship_id, config_group),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
+-- 4b. 潜艇声呐(Pinger)组件属性表
+CREATE TABLE IF NOT EXISTS ship_module_pinger (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    count INTEGER,
+    wave_reload_time REAL,
+    wave_distance REAL,
+    sector_lifetime REAL,
+    max_wave_hits INTEGER,
+    exposing_waves INTEGER,
+    wave_hit_life REAL,
+    wave_speed REAL,
+    hp REAL,
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
@@ -279,6 +361,7 @@ CREATE TABLE IF NOT EXISTS ship_module_depth_charge (
     ship_id TEXT NOT NULL,
     config_group TEXT NOT NULL,
     module_key TEXT NOT NULL,
+    launcher_name TEXT DEFAULT '',
     gun_name TEXT,
     count INTEGER,
     reload_time REAL,
@@ -340,11 +423,26 @@ CREATE TABLE IF NOT EXISTS ship_module_engine (
     backward_max_speed REAL,
     forward_forsage_power REAL,
     backward_forsage_power REAL,
+    forward_speed_on_flood REAL,       -- 进水时前进速度惩罚系数
+    backward_speed_on_flood REAL,      -- 进水时后退速度惩罚系数
+    speed_coef REAL,                   -- 航速修正系数：实际航速=船体基础航速×(1+speed_coef)
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
--- 10. 战斗指令属性表
+-- 10. 火控配件属性表
+CREATE TABLE IF NOT EXISTS ship_module_fire_control (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    module_key TEXT NOT NULL,
+    config_group TEXT NOT NULL DEFAULT '',
+    max_dist_coef REAL,
+    sigma_count_coef REAL,
+    PRIMARY KEY (version_code, ship_id, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
+-- 11. 战斗指令属性表
 CREATE TABLE IF NOT EXISTS ship_rage_mode (
     version_code TEXT NOT NULL,
     ship_id TEXT NOT NULL,
@@ -377,6 +475,18 @@ CREATE TABLE IF NOT EXISTS ship_consumable_slots (
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
+-- 12. 信号旗数据表（从 Exterior/PCEF*.json 提取）
+CREATE TABLE IF NOT EXISTS signal_flags (
+    version_code TEXT NOT NULL,
+    mod_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    rarity INTEGER DEFAULT 1,
+    signal_type INTEGER DEFAULT 0,
+    modifiers_json TEXT DEFAULT '{}',
+    flags_json TEXT DEFAULT '[]',
+    cost_cr INTEGER DEFAULT 0,
+    PRIMARY KEY (version_code, mod_id)
+);
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 3b. 武器模块配套弹药信息层 (Weapon Module Ammo Info)
@@ -565,6 +675,25 @@ CREATE TABLE IF NOT EXISTS projectile_bomb_ext (
     FOREIGN KEY (version_code, projectile_id) REFERENCES projectile_basic_info(version_code, projectile_id) ON DELETE CASCADE
 );
 
+-- 2f. 水雷属性扩增表 (species='Mine' / 'PlaneSeaMine')
+CREATE TABLE IF NOT EXISTS projectile_mine_ext (
+    version_code TEXT NOT NULL,
+    projectile_id TEXT NOT NULL,
+    alpha_damage REAL,
+    damage REAL,
+    explosion_radius REAL,
+    burn_prob REAL,
+    flood_generation REAL,
+    uw_critical REAL,
+    health REAL,
+    max_depth REAL,
+    fall_time REAL,
+    affected_by_ptz INTEGER,
+    apply_ptz_coeff INTEGER,
+    PRIMARY KEY (version_code, projectile_id),
+    FOREIGN KEY (version_code, projectile_id) REFERENCES projectile_basic_info(version_code, projectile_id) ON DELETE CASCADE
+);
+
 -- ═════════════════════════════════════════════════════════════════════
 -- 3c. 消耗品组件信息层 (Consumable Module Info)
 -- ═════════════════════════════════════════════════════════════════════
@@ -653,13 +782,30 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     skip_height REAL,                     -- 跳弹轰炸机：弹跳高度/距离
     aiming_height REAL,                   -- 跳弹轰炸机：瞄准视角基准高度
     post_attack_invulnerability_duration REAL,
+    jato_duration REAL,
+    jato_speed_mult REAL,
     ability_slot_0 TEXT,
     ability_slot_1 TEXT,
     ability_slot_2 TEXT,
     ability_slot_3 TEXT,
     ability_slot_4 TEXT,
+    field_minefield TEXT,
     PRIMARY KEY (version_code, plane_id),
     FOREIGN KEY (version_code, plane_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
+);
+
+-- 雷场定义（来自 Aircraft 的 field 引用）
+CREATE TABLE IF NOT EXISTS minefield_info (
+    version_code TEXT NOT NULL,
+    minefield_id TEXT NOT NULL,
+    radius REAL DEFAULT 0,
+    activation_delay REAL DEFAULT 0,
+    life_time REAL DEFAULT 0,
+    mines INTEGER DEFAULT -1,
+    distribution_json TEXT DEFAULT '{}',
+    sea_mine_id TEXT DEFAULT '',
+    depth REAL DEFAULT 0,
+    PRIMARY KEY (version_code, minefield_id)
 );
 
 
@@ -703,8 +849,34 @@ CREATE TABLE IF NOT EXISTS crew_unique_skills (
     trigger_join_ribbons INTEGER DEFAULT 0,
     trigger_allowed_ships TEXT,
     effects_json TEXT DEFAULT '{}',
+    icon_path TEXT DEFAULT '',
     PRIMARY KEY (version_code, crew_id, skill_key),
     FOREIGN KEY (version_code, crew_id) REFERENCES crew_basic_info(version_code, crew_id) ON DELETE CASCADE
+);
+
+-- ═════════════════════════════════════════════════════════════════════
+-- 4b. 指挥官技能系统
+-- ═════════════════════════════════════════════════════════════════════
+
+-- 技能效果定义（来自 PCOK 文件）
+CREATE TABLE IF NOT EXISTS crew_skill_definitions (
+    version_code TEXT NOT NULL,
+    skill_key TEXT NOT NULL,
+    rarity TEXT NOT NULL DEFAULT 'REGULAR',
+    modifiers_json TEXT DEFAULT '{}',
+    trigger_json TEXT DEFAULT '{}',
+    available_ship_types TEXT DEFAULT '[]',
+    PRIMARY KEY (version_code, skill_key, rarity)
+);
+
+-- 技能容器（来自 PCOL 文件）
+CREATE TABLE IF NOT EXISTS crew_skill_containers (
+    version_code TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    skill_key TEXT NOT NULL,
+    skill_type TEXT DEFAULT '',
+    ship_type_subtypes TEXT DEFAULT '{}',
+    PRIMARY KEY (version_code, container_id, skill_key)
 );
 
 

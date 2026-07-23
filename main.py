@@ -24,6 +24,9 @@ from PySide6.QtCore import Qt
 
 from utils.path_utils import get_app_dir, get_bundled_dir
 
+# 显式导入 QRC 编译模块，确保 Nuitka 打包时不会将其作为死代码剔除
+import app._resources  # noqa: F401
+
 # 确定应用根目录（Nuitka 打包后使用 exe 所在目录）
 _app_dir = get_app_dir() if "__compiled__" in globals() else Path(__file__).resolve().parent
 if str(_app_dir) not in sys.path:
@@ -31,20 +34,53 @@ if str(_app_dir) not in sys.path:
 
 
 def load_stylesheet(app: QApplication) -> None:
-    """加载 QSS 样式表（可选）"""
-    # resources/ 是打包内置资源，用 get_bundled_dir() 定位
+    """加载 QSS 样式表（优先 QRC，回退到文件系统）"""
+    from PySide6.QtCore import QFile, QIODevice
+    qf = QFile(":/resources/styles/main.qss")
+    if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
+        app.setStyleSheet(str(qf.readAll(), encoding="utf-8"))
+        qf.close()
+        print("[main] QSS loaded from QRC")
+        return
+    # QRC 不可用时回退到文件系统
     style_path = get_bundled_dir() / "resources" / "styles" / "main.qss"
     if style_path.exists():
         with open(style_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
+        print(f"[main] QSS loaded from filesystem: {style_path}")
+    else:
+        print(f"[main] WARNING: QSS not found (QRC failed, filesystem missing: {style_path})")
+
+
+def _patch_tooltip() -> None:
+    """全局修补 QWidget.setToolTip，自动将含 HTML 标记的文本转为富文本格式。
+    
+    Qt 的 tooltip 仅在文本以 '<' 开头时才启用富文本渲染，否则会将 HTML
+    标签原文显示。此修补确保所有 tooltip 中的 HTML 都能正确渲染。
+    """
+    from PySide6.QtWidgets import QWidget
+    from models.name_mapping import Mapping
+    _orig_set_tooltip = QWidget.setToolTip
+
+    def _patched_set_tooltip(self, text: str) -> None:
+        if isinstance(text, str) and "<" in text and ">" in text:
+            text = Mapping.rich_tooltip(text)
+        _orig_set_tooltip(self, text)
+
+    QWidget.setToolTip = _patched_set_tooltip
 
 
 def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
-    app.setApplicationName("Wows/Korabli gamedata unpack and analyze")
-    app.setApplicationVersion("3.1.1")
-    app.setOrganizationName("WowsParagrams")
+    import __about__
+
+    app.setApplicationName(__about__.__title__)
+    app.setApplicationVersion(__about__.__version__)
+    app.setOrganizationName(__about__.__author__)
+
+    # 全局修补：所有 QWidget.setToolTip 自动处理 HTML 富文本
+    _patch_tooltip()
 
     # 2. 加载样式
     load_stylesheet(app)
@@ -61,7 +97,7 @@ def main() -> None:
     window.show()
 
     # 5. 启动时写入一条日志
-    bus.log_message.emit(f"应用启动 | 版本: {app.applicationVersion()}")
+    bus.log_message.emit(f"应用启动 | 应用版本: {app.applicationVersion()}")
     bus.log_message.emit(f"数据目录: {app_ctx.ctx.data_dir}")
     bus.log_message.emit(f"当前服务器: {app_ctx.ctx.wows_type}")
 
@@ -82,6 +118,8 @@ def main() -> None:
                     f"🔄 加载数据库 [{server}]: {db.db_path.name} "
                     f"({stats['total_entities']} 实体)")
                 bus.can_process_data.emit(True)
+                # 刷新完成后重新选中舰船大类
+                QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
             else:
                 bus.log_message.emit("ℹ️ 数据库为空，请加载数据")
         except Exception as e:
