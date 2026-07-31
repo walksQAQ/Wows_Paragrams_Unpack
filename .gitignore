@@ -16,3 +16,4 @@ _archive/scripts/others.txt
 out.txt
 err.txt
 app/_resources.py
+test_extract/
