@@ -117,17 +117,17 @@
 | Korabli idx | Magic | 类型名 | Item Size | count | size | 备注 |
 |-----|--------|------|-----------|-------|------|------|
 | 0 | 0x5069C471 | MaterialPrototype | 0x78 | 28,822 | 10.9MB | ✅ 与 WoWS 同 |
-| 1 | 0xD9BB9F4A | **SkeletonPrototype** | ? | 39,369 | **76.5MB** | 🆕 Korabli 独有（非 WoWS 的 SkeletonExtender） |
+| 1 | 0xD9BB9F4A | **SkeletonPrototype** | 0x40 | 38,287 | **73.1MB** | 🆕 Korabli 独有（非 WoWS 的 SkeletonExtender）|
 | 2 | 0x480DC57B | VisualPrototype | 0x70 | 118,502 | 44.5MB | ✅ |
 | 3 | 0xA9576F28 | ModelPrototype | 0x28 | 118,530 | 3.8MB | ✅ |
-| 4 | 0xDF80CF54 | **ModelFbxPrototype** | ? | 0 | 16B | 🆕 空 blob |
+| 4 | 0xDF80CF54 | **ModelFbxPrototype** | 0x10 | 0 | 16B | 🆕 空 blob |
 | 5 | 0xEB23E0AF | EffectPrototype | 0x10 | 2,469 | 17.3MB | ✅（粒子！） |
 | 6 | 0x42E15336 | EffectPresetPrototype | 0x10 | 1,689 | 27KB | ✅ |
 | 7 | 0xDFC8F8E0 | EffectMetadataPrototype | 0x10 | 1,689 | 468KB | ✅ |
 | 8 | 0xF64359AA | AtlasContourProto | 0x10 | 285 | 606KB | ✅ |
-| 9 | 0xACE328C6 | **MiscSettingsPrototype** | ? | 1 | 33.7KB | 🆕 |
-| 10 | 0x42AF895E | **TrailPrototype** | ? | 31 | 19.6KB | 🆕（粒子轨迹） |
-| 11 | 0xCD880533 | **VfxMaterialPrototype** | ? | 3 | 4.9KB | 🆕 |
+| 9 | 0xACE328C6 | **MiscSettingsPrototype** | 0x28 | 1 | 33.7KB | 🆕 |
+| 10 | 0x42AF895E | **TrailPrototype** | 0x1a0 | 29 | 19.6KB | 🆕（粒子轨迹）|
+| 11 | 0xCD880533 | **VfxMaterialPrototype** | 0x210 | 3 | 4.9KB | 🆕 |
 
 > 🔑 **识别方法**：从 `bin/<bin目录名>/bin64/Korabli64.exe`（42.5MB）提取 ASCII 字符串，计算 MurmurHash3_x86_32 匹配各 blob 的 prototypeMagic，一次命中全部 12 个类型名。
 
@@ -147,6 +147,15 @@
 - 12 个 blob 的 prototypeMagic 全部识别为类型名（见 §8）
 - 确认 7 个类型与 WoWS 一致，5 个为 Korabli 独有
 - 方法：从 `Korabli64.exe` 提取 ASCII 字符串 → 计算 MurmurHash3_x86_32 → 匹配 magic
+
+**✅ 已完成**（2026-08，Ghidra MCP 二进制逆向 5 个新类型的 item_size 与记录布局）：
+- 逆向方法链：search_strings(类型名) → xrefs(注册函数) → 注册表条目[7]=deserialize → 复制/批量/逐记录解析(字段名在错误日志) → 实际 blob 数据验证
+- **SkeletonPrototype**（0xD9BB9F4A, item_size=0x40）：count u32 + rotationLimitsCount u32 + 7 relptr（nameMapNameIds u32[] / nameMapNodeIds u16[] / nameIds u32[] / matrices 4x4float[] / rotationLimits Vec4×2[] / rotationLimitsIds u16[] / parentIds u16[]），relptr 基准=记录起始 → OOL
+- **TrailPrototype**（0x42AF895E, item_size=0x1a0）：8×纹理{flags,pad,relptr,pad}→OOL 路径 + color/size/emission 关键帧(relptr→(time,value)[]) + Vector2/Vector4/float 属性 + u8 technique/bool 区（字段名 57 个）
+- **VfxMaterialPrototype**（0xCD880533, item_size=0x210）：3×shader 路径 + cpuProperties(0x60B) + 3×Properties 块(0x80B each: 8×u16 count + planeDesc + 10×u64 relptr)
+- **MiscSettingsPrototype**（0xACE328C6, item_size=0x28）：3×u16 count + 4×u64 relptr(necessary/optional/redundant/structuralNameIds → u32[])
+- **ModelFbxPrototype**（0xDF80CF54, item_size=0x10）：空 blob（count=0）
+- 完整布局已记录于 `docs/assets-bin-format.md`
 
 **待完成**（需要 Binary Ninja 级反汇编，或数据推断）：
 1. **新类型的 item_size 与记录布局**：SkeletonPrototype / ModelFbxPrototype / MiscSettingsPrototype / TrailPrototype / VfxMaterialPrototype 的固定记录步长与字段
