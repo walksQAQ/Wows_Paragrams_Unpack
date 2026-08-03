@@ -22,18 +22,51 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from new_extractor.idx_parser import (
+from data_extractor.idx_parser import (
     VfsEntry,
     FileInfo,
     build_file_tree,
     load_idx_directory,
     get_file_tree_stats,
 )
-from new_extractor.pkg_reader import PkgReader, PkgError
+from data_extractor.pkg_reader import PkgReader, PkgError
+
+
+# 每个 worker 进程内复用的 PkgReader 缓存 (pkgs_dir -> reader)
+# 进程池每 worker 一个进程, 各自持有独立缓存, 无跨进程共享
+_PKG_READER_CACHE: dict[str, PkgReader] = {}
+
+
+def _get_worker_reader(pkgs_dir: str) -> PkgReader:
+    """获取/创建当前进程内的 PkgReader (按 pkgs_dir 复用)。"""
+    reader = _PKG_READER_CACHE.get(pkgs_dir)
+    if reader is None:
+        reader = PkgReader(pkgs_dir)
+        _PKG_READER_CACHE[pkgs_dir] = reader
+    return reader
+
+
+def _parallel_extract_worker(args: tuple) -> tuple[Path, Optional[str]]:
+    """进程池 worker：流式提取单个文件到输出路径（独立 PkgReader，低内存）。
+
+    参数 (pkgs_dir, volume_filename, file_info, out_path) 均为可 pickle 的基本类型。
+    返回 (out_path, None) 成功 / (out_path, 错误信息) 失败。
+    """
+    pkgs_dir, volume_filename, file_info, out_path = args
+    try:
+        # 复用当前进程的 reader (避免每个任务重复构建)
+        reader = _get_worker_reader(pkgs_dir)
+        reader.extract_to_file(volume_filename, file_info, out_path)
+        # bc7prep 纹理解码 (仅当需要)
+        reader.decode_bc7prep_file(out_path)
+        return Path(out_path), None
+    except Exception as e:  # noqa: BLE001 —— 子进程内捕获, 汇报给主进程
+        return Path(out_path), str(e)
 
 
 class ExtractorError(Exception):
@@ -243,6 +276,7 @@ class GameExtractor:
         flatten: bool = False,
         strip_prefix: bool = False,
         dry_run: bool = False,
+        workers: int = 0,
     ) -> list[Path]:
         """提取匹配模式的文件。
 
@@ -252,13 +286,35 @@ class GameExtractor:
             flatten: 压平目录结构（所有文件输出到同一目录）
             strip_prefix: 去除匹配的最长公共前缀
             dry_run: 仅打印，不实际写入
+            workers: 并行进程数。
+                    - 0/负值 = 自动（默认, 用 CPU 核数, 上限 8）
+                    - 1 = 顺序
+                    - >1 = 多进程并行解压
+                    纯 Python Kraken 解压受 GIL 限制, 线程无法并行 CPU 密集,
+                    因此用多进程。每个进程独立流式解压写盘, 内存峰值 ≈
+                    workers × 单文件流式峰值（约几 MB）, 仍保持低内存。
 
         返回:
             已提取文件的路径列表
         """
         output_dir = Path(output_dir)
         matches = self._match_files(patterns, strip_prefix)
-        extracted: list[Path] = []
+
+        if dry_run:
+            extracted: list[Path] = []
+            for match in matches:
+                if match.is_directory:
+                    continue
+                out_path = output_dir / match.output_path
+                print(f"[DRY RUN] {match.vfs_path} → {out_path}")
+                extracted.append(out_path)
+            return extracted
+
+        nworkers = self._resolve_workers(workers)
+        if nworkers > 1:
+            return self._extract_parallel(matches, output_dir, nworkers)
+
+        extracted = []
 
         for match in matches:
             if match.is_directory:
@@ -266,23 +322,77 @@ class GameExtractor:
 
             out_path = output_dir / match.output_path
 
-            if dry_run:
-                print(f"[DRY RUN] {match.vfs_path} → {out_path}")
-                extracted.append(out_path)
-                continue
-
             # 确保父目录存在
             out_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 读取并写入
+            # 流式提取 (低内存: 一个一个文件边解压边写, 不整体驻留内存)
             try:
-                data = self._pkg_reader.read_file(
-                    match.volume_filename, match.file_info
+                self._pkg_reader.extract_to_file(
+                    match.volume_filename, match.file_info, out_path
                 )
-                out_path.write_bytes(data)
+                # bc7prep 纹理解码 (仅当文件是 bc7prep 时整体处理)
+                self._pkg_reader.decode_bc7prep_file(out_path)
                 extracted.append(out_path)
             except (PkgError, OSError) as e:
                 print(f"[ERROR] 提取失败 {match.vfs_path}: {e}")
+
+        return extracted
+
+    @staticmethod
+    def _resolve_workers(workers: int) -> int:
+        """解析并行进程数。
+
+        - workers == 1: 顺序执行
+        - workers > 1:  使用指定进程数
+        - workers <= 0: 自动用 CPU 核数 (上限 8)
+        """
+        if workers == 1:
+            return 1
+        if workers > 1:
+            return workers
+        cpus = os.cpu_count() or 4
+        return min(cpus, 8)
+
+    def _extract_parallel(
+        self,
+        matches: list[FileMatch],
+        output_dir: Path,
+        workers: int,
+    ) -> list[Path]:
+        """多进程并行提取（每个文件一个任务, 流式解压写盘）。
+
+        调度策略: 大文件优先提交, 避免大文件被大量小文件挤到任务队列尾部,
+        导致最后的 worker 长时间空闲等待。
+        """
+        # 收集任务: 先建好所有父目录, 再分发到子进程
+        file_matches = [m for m in matches if not m.is_directory]
+        # 大文件优先 (解压后大小降序)
+        file_matches.sort(key=lambda m: m.file_info.unpacked_size, reverse=True)
+
+        tasks: list[tuple] = []
+        for match in file_matches:
+            out_path = output_dir / match.output_path
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            tasks.append((
+                str(self._pkgs_dir),
+                match.volume_filename,
+                match.file_info,
+                str(out_path),
+            ))
+
+        extracted: list[Path] = []
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_parallel_extract_worker, t): t
+                for t in tasks
+            }
+            for fut in as_completed(futures):
+                task = futures[fut]
+                out_path, err = fut.result()
+                if err:
+                    print(f"[ERROR] 提取失败 {task[1]}: {err}")
+                else:
+                    extracted.append(out_path)
 
         return extracted
 
@@ -362,10 +472,12 @@ class GameExtractor:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        data = self._pkg_reader.read_file(
-            entry.volume.filename, entry.file_info
+        # 流式提取 (低内存: 边解压边写)
+        self._pkg_reader.extract_to_file(
+            entry.volume.filename, entry.file_info, output_path
         )
-        output_path.write_bytes(data)
+        # bc7prep 纹理解码 (仅当需要时)
+        self._pkg_reader.decode_bc7prep_file(output_path)
         return output_path
 
     def print_stats(self) -> None:

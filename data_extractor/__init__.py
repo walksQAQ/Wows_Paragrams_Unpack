@@ -1,5 +1,5 @@
 """
-new_extractor —— 新一代战舰世界资源提取模块。
+data_extractor —— 新一代战舰世界资源提取模块。
 
 基于 landaire/wows-toolkit (Rust) 的 IDX/PKG 文件格式分析重新实现，
 支持提取任意类型文件（.data, .png, .jpg, .xml, .model 等），
@@ -15,7 +15,7 @@ new_extractor —— 新一代战舰世界资源提取模块。
 依赖： Python ≥ 3.10, 无第三方库依赖（仅使用标准库）。
 """
 
-from new_extractor.idx_parser import (
+from data_extractor.idx_parser import (
     IdxFile,
     FileInfo,
     Volume,
@@ -27,12 +27,12 @@ from new_extractor.idx_parser import (
     IDX_MAGIC,
 )
 
-from new_extractor.pkg_reader import (
+from data_extractor.pkg_reader import (
     PkgReader,
     PkgError,
 )
 
-from new_extractor.extractor import (
+from data_extractor.extractor import (
     GameExtractor,
     ExtractorError,
     list_files,

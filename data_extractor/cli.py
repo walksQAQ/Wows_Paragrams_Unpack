@@ -1,37 +1,37 @@
 """
-new_extractor 命令行入口 —— 用于测试和验证提取功能。
+data_extractor 命令行入口 —— 用于测试和验证提取功能。
 
 提供与 wowsunpack.exe / pfsunpack2.exe 相似的 CLI 接口。
 
 用法::
 
     # 列出文件树统计信息
-    python -m new_extractor.cli stats D:/World_of_Warships_RU/Korabli
+    python -m data_extractor.cli stats D:/World_of_Warships_RU/Korabli
 
     # 列出匹配的文件
-    python -m new_extractor.cli list D:/World_of_Warships_RU/Korabli "content/**/*.data"
+    python -m data_extractor.cli list D:/World_of_Warships_RU/Korabli "content/**/*.data"
 
     # 列出目录内容
-    python -m new_extractor.cli ls D:/World_of_Warships_RU/Korabli content/
+    python -m data_extractor.cli ls D:/World_of_Warships_RU/Korabli content/
 
     # 提取匹配的文件
-    python -m new_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
+    python -m data_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
         "content/**/*.data" "gui/**/*.png" --output ./extracted
 
     # 提取单个文件
-    python -m new_extractor.cli get D:/World_of_Warships_RU/Korabli "^
+    python -m data_extractor.cli get D:/World_of_Warships_RU/Korabli "^
         "content/GameParams.data" --output ./extracted/GameParams.data
 
     # 提取全部内容（完整解包）
-    python -m new_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
+    python -m data_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
         "**/*" --output ./full_extract
 
     # 指定版本目录
-    python -m new_extractor.cli list D:/World_of_Warships_RU/Korabli "^
+    python -m data_extractor.cli list D:/World_of_Warships_RU/Korabli "^
         "gui/**/*" --bin <bin目录名>
 
     # 只查看会提取哪些文件（dry-run）
-    python -m new_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
+    python -m data_extractor.cli extract D:/World_of_Warships_RU/Korabli "^
         "content/**/*.xml" --dry-run
 """
 
@@ -41,7 +41,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from new_extractor import (
+from data_extractor import (
     GameExtractor,
     ExtractorError,
     list_files as list_files_fn,
@@ -106,6 +106,7 @@ def cmd_extract(args: argparse.Namespace) -> None:
             flatten=args.flatten,
             strip_prefix=args.strip_prefix,
             dry_run=args.dry_run,
+            workers=getattr(args, 'workers', 0),
         )
         if args.dry_run:
             print(f"\n[DRY RUN] 将提取 {len(extracted)} 个文件到: {output_dir}")
@@ -173,26 +174,26 @@ def _format_size(bytes_val: int) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="战舰世界资源提取工具 (new_extractor)",
+        description="战舰世界资源提取工具 (data_extractor)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
   # 统计信息
-  python -m new_extractor.cli stats "D:/World_of_Warships_RU/Korabli"
+  python -m data_extractor.cli stats "D:/World_of_Warships_RU/Korabli"
 
   # 列出所有 .data 文件
-  python -m new_extractor.cli list "D:/World_of_Warships_RU/Korabli" "content/**/*.data"
+  python -m data_extractor.cli list "D:/World_of_Warships_RU/Korabli" "content/**/*.data"
 
   # 提取所有 PNG 图片
-  python -m new_extractor.cli extract "D:/World_of_Warships_RU/Korabli" \\
+  python -m data_extractor.cli extract "D:/World_of_Warships_RU/Korabli" \\
       "gui/**/*.png" --output ./extracted
 
   # 指定版本
-  python -m new_extractor.cli list "D:/World_of_Warships_RU/Korabli" \\
+  python -m data_extractor.cli list "D:/World_of_Warships_RU/Korabli" \\
       "content/**/*" --bin <bin目录名>
 
   # 完整解包（提取全部文件）
-  python -m new_extractor.cli extract "D:/World_of_Warships_RU/Korabli" \\
+  python -m data_extractor.cli extract "D:/World_of_Warships_RU/Korabli" \\
       "**/*" --output ./full_extract
         """,
     )
@@ -228,6 +229,8 @@ def main() -> None:
     p_extract.add_argument("--flatten", "-f", action="store_true", help="压平目录结构")
     p_extract.add_argument("--strip-prefix", action="store_true", help="去除匹配前缀")
     p_extract.add_argument("--dry-run", "-n", action="store_true", help="仅预览不写入")
+    p_extract.add_argument("--workers", "-w", type=int, default=0,
+                           help="并行进程数; 默认0=自动(CPU核数, 上限8), 1=顺序")
     p_extract.set_defaults(func=cmd_extract)
 
     # get (single file)

@@ -3163,3 +3163,97 @@ def decompress(src: bytes, dst_len: int) -> bytes:
         remaining -= dst_bytes
     
     return bytes(dst)
+
+
+class KrakenStreamError(Exception):
+    """Kraken 流无法逐块解压（遇到 restart=False 的跨块引用块）"""
+    pass
+
+
+def decompress_stream(src: bytes, dst_len: int):
+    """逐块解压 Oodle Kraken 流 —— 生成器，每 256KB 一块。
+
+    与 :func:`decompress` 输出逐字节一致，但一次只持有单块（≤256KB）内存，
+    适合"边解压边写文件"的低内存流式解包。
+
+    依赖 Korabli pkg 的 Kraken 流 restart=True（每块独立解码）。
+    若遇到 restart=False 的块（跨块引用历史数据，无法独立解码），
+    抛出 :class:`KrakenStreamError`，调用方可回退到 :func:`decompress`。
+    """
+    src_off = 0
+    offset = 0
+    remaining = dst_len
+    hdr = None
+
+    while remaining != 0:
+        if src_off >= len(src):
+            raise ValueError("Kraken: insufficient input")
+
+        # 每 256KB 解析一次 Kraken 头
+        if (offset & 0x3FFFF) == 0:
+            hdr, src_off = _parse_kraken_header(src, src_off)
+            if hdr is None:
+                raise ValueError("Kraken: invalid header")
+            if not hdr['restart']:
+                raise KrakenStreamError(
+                    "Kraken: 非 restart 块无法流式解压, 请回退到 decompress()"
+                )
+
+        is_kraken = hdr['decoder_type'] in (6, 10, 12)
+        chunk_limit = 0x40000 if is_kraken else 0x4000
+        dst_bytes = min(chunk_limit, remaining)
+        block = bytearray(dst_bytes)
+
+        # 未压缩块 (uncompressed=1): 直接拷贝 dst_bytes 字节
+        if hdr['uncompressed']:
+            if src_off + dst_bytes > len(src):
+                raise ValueError("Kraken: not enough input for uncompressed")
+            block[:] = src[src_off:src_off + dst_bytes]
+            src_off += dst_bytes
+            yield bytes(block)
+            offset += dst_bytes
+            remaining -= dst_bytes
+            continue
+
+        qh, src_off = _parse_quantum_header(src, src_off, hdr['use_checksums'])
+        if qh is None:
+            raise ValueError("Kraken: invalid quantum header")
+
+        cs = qh['compressed_size']
+
+        if cs == 0:
+            wmd = qh['whole_match_distance']
+            if wmd != 0:
+                for i in range(dst_bytes):
+                    block[i] = block[i - wmd]
+            else:
+                for i in range(dst_bytes):
+                    block[i] = qh['checksum'] & 0xFF
+            yield bytes(block)
+            offset += dst_bytes
+            remaining -= dst_bytes
+            continue
+
+        if cs > dst_bytes:
+            raise ValueError("Kraken: compressed size > dst bytes")
+
+        if src_off + cs > len(src):
+            raise ValueError("Kraken: not enough input for quantum")
+
+        if cs == dst_bytes:
+            block[:] = src[src_off:src_off + dst_bytes]
+            src_off += dst_bytes
+        else:
+            if hdr['decoder_type'] in (6, 10, 12):
+                chunk_data = src[src_off:src_off + cs]
+                n = _decode_quantum(block, 0, chunk_data, bytearray(), dst_bytes,
+                                    hdr['decoder_type'], hdr['restart'])
+                if n < 0:
+                    raise ValueError("Kraken: quantum decode failed")
+                src_off += n
+            else:
+                raise ValueError(f"Kraken: unsupported decoder type {hdr['decoder_type']}")
+
+        yield bytes(block)
+        offset += dst_bytes
+        remaining -= dst_bytes

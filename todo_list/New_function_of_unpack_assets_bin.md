@@ -2,7 +2,7 @@
 
 ## 概述
 
-在当前纯 Python 解包器（`new_extractor/`）基础上，新增对 `content/assets.bin`（BigWorld **PrototypeDatabase**）的**提取 + 解码**能力，实现类似 [landaire/wows-toolkit](https://github.com/landaire/wows-toolkit) 的 `AssetsBinVfs` / `decode_prototype_to_json` 功能：把二进制 prototype 记录解码为可读 **JSON/XML**（含粒子效果、材质、视觉原型等）。
+在当前纯 Python 解包器（`data_extractor/`）基础上，新增对 `content/assets.bin`（BigWorld **PrototypeDatabase**）的**提取 + 解码**能力，实现类似 [landaire/wows-toolkit](https://github.com/landaire/wows-toolkit) 的 `AssetsBinVfs` / `decode_prototype_to_json` 功能：把二进制 prototype 记录解码为可读 **JSON/XML**（含粒子效果、材质、视觉原型等）。
 
 参考项目（Rust 实现，已逆向并文档化）：
 - `crates/wowsunpack/src/models/assets_bin.rs` — PrototypeDatabase 解析
@@ -15,7 +15,7 @@
 ## 一、现状与目标
 
 ### 现状（已完成）
-- `new_extractor/` 已能提取 `content/assets.bin` 的**原始字节**（`compression_info=0x700000006` container/Kraken 解压，大小 227,301,560B，已通过 10000 文件 CRC 回归）
+- `data_extractor/` 已能提取 `content/assets.bin` 的**原始字节**（`compression_info=0x700000006` container/Kraken 解压，大小 227,301,560B，已通过 10000 文件 CRC 回归）
 - 粒子效果 XML（`helpers/particles/sfx_fail.xml`、`postfx_animations.xml`）为**明文 stored XML**，已能直接提取
 - 粒子纹理（`particles/textures/particles.{atlas,dds,dd0,dd1,dd2}`）已能提取，dd0/dd1 自动解码为标准 BC7
 
@@ -235,7 +235,7 @@
 ### 步骤 6：UI / CLI 集成
 
 - 在现有 PySide6 应用中新增"Assets.bin 浏览/解码"页面（复用 detail_panel 的 StackedWidget 模式）
-- 或提供 `new_extractor/` CLI：`--assets <path>` 列出原型，`--assets-decode <path>` 解码为 JSON
+- 或提供 `data_extractor/` CLI：`--assets <path>` 列出原型，`--assets-decode <path>` 解码为 JSON
 - 参考现有 `ui/` 与 `services/` 分层
 
 ---
@@ -279,4 +279,4 @@
 - wows-toolkit `docs/MODELS.md`：assets.bin / .geometry / .visual 完整格式文档（权威）
 - wows-toolkit `crates/wowsunpack/src/models/assets_bin.rs`：PrototypeDatabase 解析参考
 - wows-toolkit `scripts/decode_mfm.py`：Python 版 MaterialPrototype 解码参考（可直接借鉴）
-- 新代码现有基础：`new_extractor/kraken.py`（纯 Python 解压）、`pkg_reader.py`（seek+read 低内存提取）
+- 新代码现有基础：`data_extractor/kraken.py`（纯 Python 解压）、`pkg_reader.py`（seek+read 低内存提取）

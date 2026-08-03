@@ -31,7 +31,7 @@ import struct
 from pathlib import Path
 from typing import Optional
 
-from new_extractor.idx_parser import FileInfo
+from data_extractor.idx_parser import FileInfo
 
 
 # ── 压缩信息常量 ──────────────────────────────────────────
@@ -49,7 +49,7 @@ class PkgReader:
     """PKG 卷文件读取器。
 
     按需缓存 .pkg 文件内容，支持按 FileInfo 定位并提取数据。
-    container 模式通过 ``new_extractor.kraken`` 纯 Python 实现解压 Oodle Kraken 流。
+    container 模式通过 ``data_extractor.kraken`` 纯 Python 实现解压 Oodle Kraken 流。
     """
 
     def __init__(self, pkgs_dir: str | Path):
@@ -80,7 +80,7 @@ class PkgReader:
     def _check_kraken() -> bool:
         """检查纯 Python Kraken 解压器是否可用"""
         try:
-            from new_extractor.kraken import decompress  # noqa: F401
+            from data_extractor.kraken import decompress  # noqa: F401
             return True
         except ImportError:
             return False
@@ -156,10 +156,10 @@ class PkgReader:
             if not self._kraken_available:
                 raise PkgError(
                     f"container 模式需要 Kraken 解压器\n"
-                    f"new_extractor/kraken.py 未正确加载"
+                    f"data_extractor/kraken.py 未正确加载"
                 )
             meta = self.parse_container_header(entry_data)
-            from new_extractor.kraken import decompress as kraken_decompress
+            from data_extractor.kraken import decompress as kraken_decompress
             compressed = entry_data[meta["header_size"]:]
             data = kraken_decompress(
                 compressed, meta["unpacked_size"]
@@ -189,6 +189,102 @@ class PkgReader:
             )
         return data
 
+    # ── 流式提取 (低内存: 一个一个文件边读边写) ─────────────
+
+    def extract_to_file(self, volume_filename: str,
+                        file_info: FileInfo, out_path: str | Path) -> Path:
+        """流式提取单个文件到输出文件。
+
+        与 :meth:`read_file` 输出一致，但**边解压边写文件**，
+        任何时刻内存只保留一小块（≤256KB），既不高内存也不变慢：
+
+        - stored (0x6): 分块拷贝 (1MB/块)，不整体读入内存
+        - container (0x700000006): Kraken 逐块解压 (≤256KB/块) 直接写入；
+          若流非 restart 结构自动回退到整体解压 (保持正确性)
+
+        返回: 输出文件路径
+        """
+        pkg_path = self._pkgs_dir / volume_filename
+        if not pkg_path.exists():
+            raise PkgError(f"PKG 文件不存在: {pkg_path}")
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # ── stored 模式: 分块拷贝 ────────────────────────
+        if file_info.compression_info == STORED_FLAG:
+            CHUNK = 1 << 20  # 1MB
+            with open(pkg_path, 'rb') as f, open(out_path, 'wb') as out:
+                f.seek(file_info.offset)
+                remaining = file_info.size
+                while remaining > 0:
+                    chunk = f.read(min(CHUNK, remaining))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    remaining -= len(chunk)
+            return out_path
+
+        # ── container 模式: Kraken 逐块解压流式写 ────────
+        if file_info.compression_info == CONTAINER_FLAG:
+            if not self._kraken_available:
+                raise PkgError(
+                    f"container 模式需要 Kraken 解压器\n"
+                    f"data_extractor/kraken.py 未正确加载"
+                )
+            with open(pkg_path, 'rb') as f:
+                f.seek(file_info.offset)
+                entry_data = f.read(file_info.size)
+            meta = self.parse_container_header(entry_data)
+            compressed = entry_data[meta["header_size"]:]
+            from data_extractor.kraken import (
+                decompress as kraken_decompress,
+                decompress_stream,
+                KrakenStreamError,
+            )
+            try:
+                with open(out_path, 'wb') as out:
+                    for block in decompress_stream(
+                        compressed, meta["unpacked_size"]
+                    ):
+                        out.write(block)
+            except KrakenStreamError:
+                # 极少数非 restart 流 (跨块引用): 回退到整体解压
+                data = kraken_decompress(
+                    compressed, meta["unpacked_size"]
+                )
+                out_path.write_bytes(data)
+            return out_path
+
+        # ── 未知模式 ────────────────────────────────────
+        raise PkgError(
+            f"未知 compression_info=0x{file_info.compression_info:x} "
+            f"({volume_filename} @ {file_info.offset})"
+        )
+
+    @staticmethod
+    def file_needs_bc7prep(path: str | Path) -> bool:
+        """快速判断文件是否为 bc7prep 纹理 (仅读 196 字节头, 不加载全文)。"""
+        try:
+            with open(path, 'rb') as f:
+                head = f.read(196)
+        except OSError:
+            return False
+        if len(head) < 196:
+            return False
+        if head[:4] != b'DDS ':
+            return False
+        return struct.unpack_from('<I', head, 148)[0] == 0x000007BC
+
+    def decode_bc7prep_file(self, path: str | Path) -> None:
+        """若文件是 bc7prep 纹理, 解码为标准 BC7 并原地重写 (与 pfsunpack2 一致)。"""
+        if not self.file_needs_bc7prep(path):
+            return
+        path = Path(path)
+        data = path.read_bytes()
+        decoded = self._decode_bc7prep(data)
+        if decoded is not data:
+            path.write_bytes(decoded)
+
     # ── bc7prep 纹理解码 ─────────────────────────────────
 
     @staticmethod
@@ -206,7 +302,7 @@ class PkgReader:
         if struct.unpack_from('<I', data, 148)[0] != 0x000007BC:
             return data
         try:
-            from new_extractor.bc7prep import bc7prep_decode
+            from data_extractor.bc7prep import bc7prep_decode
             pixels = bc7prep_decode(data[196:], len(data) - 196, data[148:196])
             header = bytearray(data[:148])
             # Oodle Texture 在 DDS 保留字段 offset40 写入 0x1 标记; 解码后清零 (与 pfsunpack2 一致)
