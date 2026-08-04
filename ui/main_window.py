@@ -143,6 +143,12 @@ class MainWindow(QMainWindow):
 
     def _setup_menu(self) -> None:
         menubar = self.menuBar()
+
+        # 工具菜单（assets.bin 浏览器等）
+        tools_menu = menubar.addMenu("工具")
+        assets_action = tools_menu.addAction("assets.bin 浏览器...")
+        assets_action.triggered.connect(self._on_open_assets_viewer)
+
         settings_menu = menubar.addMenu("设置")
 
         adv_action = settings_menu.addAction("高级设置...")
@@ -155,6 +161,17 @@ class MainWindow(QMainWindow):
 
         about_action = menubar.addAction("关于")
         about_action.triggered.connect(self._on_about)
+
+    def _on_open_assets_viewer(self) -> None:
+        """打开 assets.bin 可视化浏览器（独立顶层窗口，置顶居中，懒创建单实例）。"""
+        from uncode_assets.gui import AssetsBinViewer
+        if not hasattr(self, "_assets_viewer") or self._assets_viewer is None:
+            # 独立顶层窗口：不挂在主窗口下，避免 Z 序被主窗口遮挡、样式混淆
+            self._assets_viewer = AssetsBinViewer()
+            self._assets_viewer.center_on_screen(self)
+        self._assets_viewer.show()
+        self._assets_viewer.raise_()
+        self._assets_viewer.activateWindow()
 
     def _on_advanced_settings(self) -> None:
         from ui.advanced_settings import AdvancedSettingsDialog

@@ -1342,6 +1342,35 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
         if rows:
             conn.executemany("INSERT OR REPLACE INTO consumable_configs (version_code, consumable_id, config_key, consumable_type, extra_json) VALUES (?,?,?,?,?)", rows)
 
+    def store_consumable_buff(self, buff_id: str, raw_data: dict, version_code: str = ""):
+        """存入消耗品增益（buff）实体各等级数据（如 PCOM065 MassHealAllyBuff）。
+
+        raw_data 结构：{"level_1": {...allyHealthRegenPercent...}, "level_2": ..., ...}
+        """
+        conn = self.conn
+        if hasattr(raw_data, "__dict__"):
+            raw_data = raw_data.__dict__
+        for key, val in raw_data.items():
+            if not isinstance(key, str) or not key.startswith("level_"):
+                continue
+            try:
+                lvl = int(key.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+            if hasattr(val, "__dict__"):
+                val = val.__dict__
+            ally = 0.0
+            try:
+                ally = float(val.get("allyHealthRegenPercent", 0) or 0)
+            except (TypeError, ValueError):
+                ally = 0.0
+            conn.execute(
+                "INSERT OR REPLACE INTO consumable_buff "
+                "(version_code, buff_id, buff_level, ally_health_regen_percent, buff_json) "
+                "VALUES (?,?,?,?,?)",
+                (version_code, buff_id, lvl, ally,
+                 json.dumps(val, default=str, ensure_ascii=False)))
+
     # ── 6. Modernization ─────────────────────────────────
 
     def store_mod(self, mod_id: str, raw_data: dict, result=None, version_code: str = ""):
@@ -1554,6 +1583,8 @@ class AnalysisService:
             store.store_skill_definition(skill_key, raw_data, version_code=version_code)
         elif entity_id.startswith("PCOL") or entity_id.startswith("PCOL_"):
             store.store_skill_container(entity_id, raw_data, version_code=version_code)
+        elif entity_id.startswith("PCOM") or entity_id.startswith("PCOM_"):
+            store.store_consumable_buff(entity_id, raw_data, version_code=version_code)
 
     def precompute_all(self, db: DatabaseManager,
                        data_by_category: dict[str, dict[str, dict]] | None = None,

@@ -51,8 +51,10 @@ class TopToolbar(QWidget):
         self.btn_load = QPushButton("📦  加载数据")
         self.btn_lang = QPushButton("🌐  加载文本")
         self.btn_refresh = QPushButton("🔄  刷新界面")
+        self.btn_copy = QPushButton("📋  复制当前舰船信息")
+        self.btn_copy.setToolTip("将当前选中舰船的完整信息面板以文本格式复制到剪贴板")
 
-        for b in (self.btn_load, self.btn_lang, self.btn_refresh):
+        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_copy):
             b.setStyleSheet(self.BTN_STYLE)
             layout.addWidget(b)
 
@@ -106,6 +108,7 @@ class TopToolbar(QWidget):
         self.btn_load.clicked.connect(self._on_load)
         self.btn_lang.clicked.connect(self._on_lang)
         self.btn_refresh.clicked.connect(self._on_refresh)
+        self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
         bus.task_progress.connect(self._on_progress)
         bus.localization_ready.connect(self._enable_all)
         bus.data_loaded.connect(self._on_extract_done)
