@@ -717,6 +717,17 @@ CREATE TABLE IF NOT EXISTS consumable_configs (
     FOREIGN KEY (version_code, consumable_id) REFERENCES consumable_basic_info(version_code, consumable_id) ON DELETE CASCADE
 );
 
+-- 消耗品增益（buff）各等级数据（如 PCOM065_ConsumableMassHealAllyBuff）
+CREATE TABLE IF NOT EXISTS consumable_buff (
+    version_code TEXT NOT NULL,
+    buff_id TEXT NOT NULL,
+    buff_level INTEGER NOT NULL,
+    ally_health_regen_percent REAL,
+    buff_json TEXT DEFAULT '{}',
+    PRIMARY KEY (version_code, buff_id, buff_level),
+    FOREIGN KEY (version_code, buff_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
+);
+
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 3c. 飞机属性表 (Aircraft)

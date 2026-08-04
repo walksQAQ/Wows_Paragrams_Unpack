@@ -16,3 +16,6 @@ _archive/scripts/others.txt
 out.txt
 err.txt
 app/_resources.py
+test_extract/
+uncode_assets/shaders.py
+todo_list/*.js

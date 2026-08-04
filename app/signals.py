@@ -43,6 +43,9 @@ class SignalBus(QObject):
     # 用于统一控制 sidebar 按钮的启用/禁用
     can_process_data = Signal(bool)
 
+    # ── 操作请求 ──────────────────────────────────────────
+    copy_ship_info = Signal()           # 请求将当前舰船全信息复制到剪贴板
+
 
 # 全局单例 —— 整个应用共用这一个信号总线对象
 bus = SignalBus()
