@@ -163,10 +163,12 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._on_about)
 
     def _on_open_assets_viewer(self) -> None:
-        """打开 assets.bin 可视化浏览器（懒创建，保持单实例）。"""
+        """打开 assets.bin 可视化浏览器（独立顶层窗口，置顶居中，懒创建单实例）。"""
         from uncode_assets.gui import AssetsBinViewer
         if not hasattr(self, "_assets_viewer") or self._assets_viewer is None:
-            self._assets_viewer = AssetsBinViewer(parent=self)
+            # 独立顶层窗口：不挂在主窗口下，避免 Z 序被主窗口遮挡、样式混淆
+            self._assets_viewer = AssetsBinViewer()
+            self._assets_viewer.center_on_screen(self)
         self._assets_viewer.show()
         self._assets_viewer.raise_()
         self._assets_viewer.activateWindow()

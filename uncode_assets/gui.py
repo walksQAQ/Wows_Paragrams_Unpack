@@ -21,8 +21,9 @@ from typing import Optional
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QMainWindow, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
+    QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
     QPushButton, QLabel, QFileDialog, QLineEdit, QStatusBar, QToolBar,
+    QHeaderView, QAbstractItemView,
 )
 
 from .errors import AssetsBinError
@@ -74,6 +75,9 @@ class _LoadWorker(QThread):
 
 class AssetsBinViewer(QMainWindow):
     """assets.bin 可视化浏览器。"""
+
+    #: 每个目录最多直接显示的文件节点数，超出显示占位项（避免大目录卡死 UI）
+    MAX_FILES_PER_DIR = 1000
 
     def __init__(self, source: Optional[str] = None, parent=None):
         super().__init__(parent)
@@ -137,6 +141,11 @@ class AssetsBinViewer(QMainWindow):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(1)
+        # 列宽随内容自适应，长路径/文件名超出时出现水平滚动条
+        self.tree.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.tree.setAutoScroll(True)
         self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemClicked.connect(self._on_item_clicked)
         splitter.addWidget(self.tree)
@@ -155,6 +164,23 @@ class AssetsBinViewer(QMainWindow):
         self.setStatusBar(status)
         self.status_label = QLabel("就绪")
         status.addPermanentWidget(self.status_label)
+
+    # ── 窗口定位 ────────────────────────────────────────
+
+    def center_on_screen(self, relative_to: Optional[QWidget] = None) -> None:
+        """把窗口居中到指定窗口（默认主屏）。作为独立顶层窗口时避免与主窗口重叠被遮挡。"""
+        from PySide6.QtGui import QGuiApplication
+        if relative_to is not None and relative_to.isVisible():
+            geo = relative_to.frameGeometry()
+            x = geo.x() + (geo.width() - self.width()) // 2
+            y = geo.y() + (geo.height() - self.height()) // 2
+            self.move(max(x, 0), max(y, 0))
+            return
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            self.move(geo.x() + (geo.width() - self.width()) // 2,
+                      geo.y() + (geo.height() - self.height()) // 2)
 
     # ── 加载 ────────────────────────────────────────────
 
@@ -222,12 +248,24 @@ class AssetsBinViewer(QMainWindow):
             item.setChildIndicatorPolicy(
                 QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
             parent_item.addChild(item)
+        # 文件节点：限制数量，避免一次性加入海量节点导致 UI 卡顿
+        shown = 0
         for f in files:
+            if shown >= self.MAX_FILES_PER_DIR:
+                remaining = len(files) - shown
+                placeholder = QTreeWidgetItem(
+                    [f"… 还有 {remaining} 个文件（请用顶部搜索定位）"])
+                placeholder.setData(0, Qt.ItemDataRole.UserRole, None)
+                placeholder.setFlags(
+                    placeholder.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                parent_item.addChild(placeholder)
+                break
             item = QTreeWidgetItem([f.filename])
             item.setData(0, Qt.ItemDataRole.UserRole, f.path)
             tname = f.prototype_type.name if f.prototype_type else "?"
             item.setToolTip(0, f"{f.path}  [{tname}]")
             parent_item.addChild(item)
+            shown += 1
 
     def _find_dir_item(self, dir_path: str) -> Optional[QTreeWidgetItem]:
         """按路径在树中定位目录节点（沿已展开路径查找）。"""
@@ -276,14 +314,26 @@ class AssetsBinViewer(QMainWindow):
         keyword = self.search_edit.text().strip().lower()
         if not keyword or self._svc is None:
             return
+        # 优先匹配文件名（快），找不到再匹配完整路径（较慢）
         first: Optional[VirtualFile] = None
         count = 0
         for f in self._svc.vfs.all_files():
-            if keyword in f.path.lower():
+            if keyword in f.filename.lower():
                 count += 1
                 if first is None:
                     first = f
-        self.status_label.setText(f"匹配 {count} 个文件")
+                if count >= 500:
+                    break
+        if first is None:
+            for f in self._svc.vfs.all_files():
+                if keyword in f.path.lower():
+                    count += 1
+                    if first is None:
+                        first = f
+                    if count >= 500:
+                        break
+        msg = f"匹配 {count} 个文件" + ("（已达上限 500）" if count >= 500 else "")
+        self.status_label.setText(msg if count else "无匹配")
         if first:
             self._reveal_file(first)
 

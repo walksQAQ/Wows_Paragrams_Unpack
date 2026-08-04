@@ -28,13 +28,19 @@ from .parser import (
 from .types import (
     KORABLI_TYPES,
     PrototypeType,
+    can_decode,
+    can_decode_name,
+    list_types,
     type_from_blob_index,
+    type_from_extension,
     type_from_magic,
+    type_from_name,
 )
 from .decoders import (
     decode_by_type,
     decode_prototype_to_json,
     decode_record,
+    parse_mfm_from_db,
 )
 from .vfs import AssetsBinVfs, VirtualFile
 from .service import AssetsBinService
@@ -43,7 +49,8 @@ __all__ = [
     "AssetsBinError", "InvalidMagicError", "OutOfBoundsError", "ParseError",
     "PathNotFoundError", "UnsupportedVersionError",
     "PrototypeDatabase", "PrototypeLocation", "parse_assets_bin",
-    "KORABLI_TYPES", "PrototypeType", "type_from_blob_index", "type_from_magic",
-    "decode_by_type", "decode_prototype_to_json", "decode_record",
+    "KORABLI_TYPES", "PrototypeType", "type_from_blob_index", "type_from_extension",
+    "type_from_magic", "type_from_name", "can_decode", "can_decode_name", "list_types",
+    "decode_by_type", "decode_prototype_to_json", "decode_record", "parse_mfm_from_db",
     "AssetsBinVfs", "VirtualFile", "AssetsBinService",
 ]

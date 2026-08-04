@@ -18,10 +18,15 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
-from .decoders import decode_prototype_to_json, decode_record
+from .decoders import (
+    decode_material,
+    decode_prototype_to_json,
+    decode_record,
+    parse_mfm_from_db,
+)
 from .errors import AssetsBinError
 from .parser import PrototypeDatabase, parse_assets_bin
-from .types import PrototypeType, type_from_magic
+from .types import PrototypeType, can_decode, type_from_magic
 from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
@@ -119,8 +124,11 @@ class AssetsBinService:
         if cache_path is not None and Path(cache_path).exists():
             try:
                 import pickle
+                from .vfs import CACHE_VERSION
                 with open(cache_path, "rb") as fh:
                     idx = pickle.load(fh)
+                if idx.get("version") != CACHE_VERSION:
+                    raise ValueError("缓存版本过旧，需重建")
                 self._vfs = AssetsBinVfs.from_index(self._db, idx["files"], idx["dirs"])
                 self._from_cache = True
                 return
@@ -230,6 +238,24 @@ class AssetsBinService:
             raise AssetsBinError(f"未知 prototype 类型: {path}")
         data = self.vfs.open_file(path)
         return decode_prototype_to_json(data, self.db, f.prototype_type)
+
+    def can_decode_path(self, path: str) -> bool:
+        """该虚拟文件是否有结构化解码器（对齐 wows-toolkit `can_decode_prototype`）。"""
+        return can_decode(self.vfs.prototype_type(path))
+
+    def decode_material_by_path(self, path: str) -> dict:
+        """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material` / `parse_mfm_from_db`）。"""
+        f = self.vfs.get_file(path)
+        if f is None:
+            raise AssetsBinError(f"虚拟文件不存在: {path}")
+        if f.prototype_type is None or f.prototype_type.name != "MaterialPrototype":
+            raise AssetsBinError(f"路径不是 MaterialPrototype: {path} ({f.prototype_type})")
+        data = self.vfs.open_file(path)
+        return decode_material(data, self.db)
+
+    def decode_mfm_by_self_id(self, self_id: int) -> Optional[dict]:
+        """按 selfId 反查并解码 MFM 材质（对齐 wows-toolkit `parse_mfm_from_db`）。"""
+        return parse_mfm_from_db(self.db, self_id)
 
     # ── 批量导出 ─────────────────────────────────────────
 

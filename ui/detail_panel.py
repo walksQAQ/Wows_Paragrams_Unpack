@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from pathlib import Path
 
 from functools import partial
 
@@ -24,7 +23,6 @@ from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
 from app.signals import bus
 from services.database_service import get_db
 from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
-from utils.path_utils import get_app_dir
 from ui.ship_card_widget import ShipDetailGrid, ShipCardWidget, SECTION_ICONS
 
 
@@ -103,6 +101,7 @@ class DetailPanel(QWidget):
         self._show_hint()
         # 启动时不通知 ModuleSelect，保持空白占位
         bus.file_selected.connect(self._on_file_selected)
+        bus.copy_ship_info.connect(self._copy_ship_info_to_clipboard)
 
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时重建舰船网格（带防重入锁）"""
@@ -207,30 +206,6 @@ class DetailPanel(QWidget):
     # ── EPIC 技能/天赋配置 ──
     # 内存缓存（切换舰船时清空）
     _crew_custom_cache: dict = {}
-
-    @staticmethod
-    def _epic_config_path() -> str:
-        return str(get_app_dir() / "epic_skill_config.json")
-
-    @staticmethod
-    def _load_epic_config() -> dict:
-        p = DetailPanel._epic_config_path()
-        try:
-            if Path(p).exists():
-                import json
-                return json.loads(Path(p).read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return {}
-
-    @staticmethod
-    def _save_epic_config(cfg: dict):
-        p = DetailPanel._epic_config_path()
-        try:
-            import json
-            Path(p).write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
 
     @staticmethod
     def _apply_epic_overrides(grid_skills: list, epic_keys: list[str], skill_svc=None, ship_type_en=""):
@@ -3409,6 +3384,73 @@ class DetailPanel(QWidget):
             if _ammo_by_letter:
                 sec["raw_ammo_types"] = _ammo_by_letter.get(_letter, _ammo_by_letter.get(_letters[0], []))
 
+    # ── 全信息复制 ─────────────────────────────────────────
+
+    def _copy_ship_info_to_clipboard(self) -> None:
+        """将当前舰船的全信息面板（ship_presenter 输出的 sections）以文本格式复制到剪贴板"""
+        if not self._is_ship_mode or not self._ship_sections:
+            bus.log_message.emit("ℹ️ 当前未选中舰船，无法复制")
+            return
+        try:
+            from PySide6.QtWidgets import QApplication
+            text = self._render_sections_to_text(self._ship_sections)
+            if not text.strip():
+                bus.log_message.emit("⚠️ 当前舰船无数据可复制")
+                return
+            QApplication.clipboard().setText(text)
+            bus.log_message.emit(f"📋 已复制「{self._current_filename}」完整信息到剪贴板")
+        except Exception as e:
+            import traceback
+            bus.log_message.emit(f"⚠️ 复制失败: {e}\n{traceback.format_exc()}")
+
+    @staticmethod
+    def _render_sections_to_text(sections: list[dict]) -> str:
+        """将 ship_presenter 输出的 sections 结构渲染为纯文本（键值面板格式）"""
+        lines: list[str] = []
+        for sec in sections:
+            label = sec.get("label", "")
+            icon = sec.get("icon", "")
+            title = f"{icon} {label}".strip() if icon else label
+            if title:
+                lines.append(title)
+                lines.append("─" * max(4, len(title) * 2))
+            for item in sec.get("items", []):
+                rt = item.get("row_type", "kv")
+                name = item.get("name", "")
+                if rt == "header":
+                    lines.append(f"【{name}】")
+                elif rt == "sub_header":
+                    lines.append(f"· {name}")
+                elif rt == "separator":
+                    lines.append("")
+                elif rt == "button_group":
+                    raw = item.get("raw_value", {})
+                    cur = raw.get("current", "") if isinstance(raw, dict) else ""
+                    if name:
+                        lines.append(f"{name}: {cur}".rstrip(": ") if cur else name)
+                    elif cur:
+                        lines.append(str(cur))
+                else:  # kv
+                    value = item.get("value", "")
+                    unit = item.get("unit", "")
+                    disp = f"{value} {unit}".strip() if unit and value else (value or unit or "")
+                    details = item.get("details", []) or []
+                    if details:
+                        lines.append(f"{name}: {disp}" if name else disp)
+                        for d in details:
+                            dn = d.get("name", "")
+                            dv = d.get("value", "")
+                            du = d.get("unit", "")
+                            dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
+                            if dn:
+                                lines.append(f"    {dn}: {dd}")
+                            elif dd:
+                                lines.append(f"    {dd}")
+                    else:
+                        lines.append(f"{name}: {disp}".rstrip(": ") if name else disp)
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
     def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget, extra_count: int = 0) -> None:
         """消耗品按钮点击：查询数据库并展示详情卡片"""
         from ui.ship_card_widget import ShipCardWidget
@@ -3642,6 +3684,79 @@ class DetailPanel(QWidget):
                     ac = cfgd.get('affectedClasses', [])
                     if ac:
                         kv("限制探测舰种", ', '.join(ac))
+                elif ct == "planeSmokeGenerator":
+                    ad = cfgd.get('activationDelay', 0)
+                    r = float(cfgd.get('radius', 0) or 0)
+                    if ad:
+                        kv("生效延迟", f"{ad}s")
+                    if r:
+                        kv("烟雾半径", f"{r*3:.2f}m")
+                elif ct == "supportBuoy":
+                    bdv = cfgd.get('battleDropVisualName', 'Unknown')
+                    bda = cfgd.get('battleDropActivationTime', 0)
+                    zlt = cfgd.get('zoneLifetime', 0)
+                    kv("区域", bdv)
+                    if bda:
+                        kv("布置时间", f"{bda}s")
+                    if zlt:
+                        kv("持续时间", f"{zlt}s")
+                elif ct == "vampireDamage":
+                    dgm = cfgd.get('damageGMHealCoeff', 0)
+                    if dgm:
+                        kv("伤害转化系数", f"{dgm*100:.2f}%")
+                elif ct == "massHeal":
+                    ohp = cfgd.get('ownHealPart', 0)
+                    if ohp:
+                        # 查询该船血量（按当前配置字母），计算实际每秒回复量（同维修小组）
+                        try:
+                            ship_id = self._current_filename or ""
+                            _letter = getattr(self, '_active_config_letter', 'A')
+                            h_hp = conn.execute(
+                                "SELECT health FROM ship_module_hulls "
+                                "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
+                                (vc, ship_id, f"{_letter}%")).fetchone()
+                            if h_hp and h_hp['health']:
+                                actual_hp = ohp * h_hp['health']
+                                kv("每秒回复血量", f"+{actual_hp:.0f} HP")
+                                kv("每秒回复比例", f"+{ohp*100:.2f}%")
+                                # 单次总回复比例 = 每秒回复比例 × 持续时间
+                                if wt:
+                                    total_pct = ohp * wt * 100
+                                    kv("单次总回复比例", f"+{total_pct:.2f}%")
+                            else:
+                                kv("每秒回复比例", f"+{ohp*100:.2f}%")
+                        except Exception:
+                            kv("每秒回复比例", f"+{ohp*100:.2f}%")
+                        # 从 ship_module_hulls 查询该船的回复率数据
+                        try:
+                            ship_id = self._current_filename or ""
+                            h = conn.execute(
+                                "SELECT hull_regen_part, citadel_regen_part FROM ship_module_hulls "
+                                "WHERE version_code=? AND ship_id=? LIMIT 1",
+                                (vc, ship_id)).fetchone()
+                            if h and (h['hull_regen_part'] is not None or h['citadel_regen_part'] is not None):
+                                hrp_str = f"{h['hull_regen_part']*100:.0f}%" if h['hull_regen_part'] is not None else "N/A"
+                                crp_str = f"{h['citadel_regen_part']*100:.0f}%" if h['citadel_regen_part'] is not None else "N/A"
+                                kv("回复率 (船体/核心区)", f"{hrp_str}/{crp_str}")
+                        except Exception:
+                            pass
+                    wr = cfgd.get('workRadius', 0)
+                    if wr:
+                        kv("友军回复作用半径", f"{wr*3/100:.2f} km")
+                    abn = cfgd.get('allyBuffName', '')
+                    abl = cfgd.get('allyBuffLevel', 1)
+                    if abn:
+                        try:
+                            buff_row = conn.execute(
+                                "SELECT ally_health_regen_percent FROM consumable_buff "
+                                "WHERE version_code=? AND buff_id=? AND buff_level=?",
+                                (vc, abn, abl)).fetchone()
+                            if buff_row and buff_row['ally_health_regen_percent']:
+                                kv("友军每秒回复", f"+{buff_row['ally_health_regen_percent']*100:.2f}%")
+                            else:
+                                kv("友军增益", f"{abn} (等级{abl})")
+                        except Exception:
+                            kv("友军增益", f"{abn} (等级{abl})")
                 else:
                     kv("", "该消耗品类型未知，请催促作者更新解析逻辑，谢谢。")
             else:

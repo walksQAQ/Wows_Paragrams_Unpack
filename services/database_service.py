@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 35
+DB_SCHEMA_VERSION = 36
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -206,6 +206,21 @@ class DatabaseManager:
                         self._conn.execute(f"ALTER TABLE ship_module_depth_charge ADD COLUMN {col_name} {col_type}")
                     except Exception:
                         pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 consumable_buff 消耗品增益表（QRC 内嵌 SQL 过期时的兜底） ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS consumable_buff (
+                version_code TEXT NOT NULL,
+                buff_id TEXT NOT NULL,
+                buff_level INTEGER NOT NULL,
+                ally_health_regen_percent REAL,
+                buff_json TEXT DEFAULT '{}',
+                PRIMARY KEY (version_code, buff_id, buff_level),
+                FOREIGN KEY (version_code, buff_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
+            )""")
             self._conn.commit()
         except Exception:
             pass

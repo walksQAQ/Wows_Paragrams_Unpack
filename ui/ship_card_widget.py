@@ -143,6 +143,8 @@ class ShipCardWidget(QGroupBox):
         self._table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         # 启用文字换行
         self._table.setWordWrap(True)
+        # 单元格文本不省略号截断（setTextElideMode 属于视图，而非 QTableWidgetItem）
+        self._table.setTextElideMode(Qt.TextElideMode.ElideNone)
 
         self._populate_items(section.get("items", []))
 

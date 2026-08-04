@@ -108,7 +108,7 @@ def run_process() -> None:
             shutil.rmtree(str(split_dir))
         split_dir.mkdir(parents=True)
 
-        for n in ["GameParams_py2.data", "GameParams.data"]:
+        for n in ["GameParams_py3.data", "GameParams_py2.data", "GameParams.data"]:
             p = data_dir / n
             if p.exists():
                 found = str(p)
@@ -187,7 +187,7 @@ def run_process() -> None:
                 if not app_ctx.config.keep_split_json and split_dir.exists():
                     shutil.rmtree(str(split_dir))
                     bus.log_message.emit("🧹 split 临时文件已清理")
-                for n in ["GameParams_py2.data", "GameParams.data"]:
+                for n in ["GameParams_py3.data", "GameParams_py2.data", "GameParams.data"]:
                     p = data_dir / n
                     if p.exists():
                         p.unlink()

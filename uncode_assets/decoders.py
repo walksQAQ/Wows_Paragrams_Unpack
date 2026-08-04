@@ -136,31 +136,122 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 
 # ── VisualPrototype ───────────────────────────────────────────────────────
 
-def decode_visual(data: bytes, db: PrototypeDatabase) -> dict:
+def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> dict:
     """解码 VisualPrototype（Korabli 实测 0x80B/条，blob 2）。
 
-    ⚠️ Korabli Visual 布局与 WoWS 不同（WoWS 0x70：节点/渲染集/LOD），
-    完整字段逆向中（见 todo_list 文档「校验 7 个已知类型」待办）。
-    此处输出实测固定区字段 + 原始字节。
+    2026-08-03 真实数据逆向布局：
+      +0x00/+0x10 bbox1 min/max, +0x40/+0x50 bbox2 min/max
+      +0x20 u64 geometry 资源ID（.geometry）, +0x28 u64 primitives 资源ID
+      +0x30 u64 render_sets_count, +0x38 u64 render_sets relptr（基准=blob 起点）
+      +0x60 u64 geometry2, +0x68 u64 primitives2（第二组资源）
+      +0x70 u64 lods_count, +0x78 u64 lods relptr
     """
     if len(data) < 0x80:
         raise ParseError(f"VisualPrototype 数据过短: {len(data)}")
-    return {
+
+    index = db.build_self_id_index()
+
+    def path_of(h: int) -> str:
+        if h == 0:
+            return ""
+        if h == 0xFFFFFFFFFFFFFFFF:
+            return "(none)"
+        idx = index.get(h)
+        return db.reconstruct_path(idx, index) if idx is not None else f"0x{h:016X}"
+
+    render_sets_count = B.read_u64(data, 0x30)
+    render_sets_rel = B.read_u64(data, 0x38)
+    lods_count = B.read_u64(data, 0x70)
+    lods_rel = B.read_u64(data, 0x78)
+
+    result = {
         "_type": "VisualPrototype",
-        "_layout": "korabli-raw (0x80B, 完整布局待逆向)",
         "bounding_box": {
             "min": _arr(B.parse_vec3(data, 0x00)),
             "max": _arr(B.parse_vec3(data, 0x10)),
-            "min2": _arr(B.parse_vec3(data, 0x40)),
-            "max2": _arr(B.parse_vec3(data, 0x50)),
         },
-        "quad_0x20": [B.read_u32(data, 0x20 + i * 4) for i in range(4)],
-        "quad_0x30": [B.read_u32(data, 0x30 + i * 4) for i in range(4)],
-        "quad_0x60": [B.read_u32(data, 0x60 + i * 4) for i in range(4)],
-        "count_0x70": B.read_u64(data, 0x70),
-        "ptr_0x78": B.read_u64(data, 0x78),
-        "raw_hex": data[:0x80].hex(),
+        "bounding_box_2": {
+            "min": _arr(B.parse_vec3(data, 0x40)),
+            "max": _arr(B.parse_vec3(data, 0x50)),
+        },
+        "geometry_path": path_of(B.read_u64(data, 0x20)),
+        "geometry_id": f"0x{B.read_u64(data, 0x20):016X}",
+        "primitives_path": path_of(B.read_u64(data, 0x28)),
+        "primitives_id": f"0x{B.read_u64(data, 0x28):016X}",
+        "geometry_2_path": path_of(B.read_u64(data, 0x60)),
+        "primitives_2_path": path_of(B.read_u64(data, 0x68)),
+        "render_sets_count": render_sets_count,
+        "lods_count": lods_count,
     }
+
+    # render_sets / lods 指向的 OOL 数据：按 *.vertices 分组识别为结构项。
+    # render_sets 区 = [rs_pos, lod_pos)；lods 区 = [lod_pos, 下一记录 render_sets_rel)。
+    def _region(relptr: int) -> Optional[int]:
+        pos = relptr - record_base
+        return pos if 0 <= pos < len(data) else None
+
+    rs_pos = _region(render_sets_rel)
+    lod_pos = _region(lods_rel)
+
+    # 下一记录（data 中偏移 item_size=0x80 处）的 render_sets_rel 作为 lods 区结束
+    lod_end = len(data)
+    if len(data) >= 0x80 + 0x38 + 8:
+        nxt = B.read_u64(data, 0x80 + 0x38)
+        if nxt and nxt > lods_rel:
+            lod_end = min(nxt - record_base, len(data))
+
+    if rs_pos is not None:
+        rs_end = lod_pos if (lod_pos is not None and lod_pos > rs_pos) else len(data)
+        result["render_sets_items"] = _ool_items(data, rs_pos, db, index,
+                                                 max_len=max(0, rs_end - rs_pos))
+    else:
+        result["render_sets_items"] = []
+    if lod_pos is not None and lods_count:
+        result["lods_items"] = _ool_items(data, lod_pos, db, index,
+                                          max_len=max(0, lod_end - lod_pos))
+    else:
+        result["lods_items"] = []
+    return result
+
+
+def _ool_items(data: bytes, pos: int, db: PrototypeDatabase,
+               self_id_index: Dict[int, int], max_len: int = 0x300) -> List[dict]:
+    """把 render_sets / lods 的 OOL 数据解析为结构化项列表。
+
+    每项以 '*.vertices' 标记起始，跟随 '*.indices'、'SHIPMAT*' 材质名、
+    '*_Jnt_BlendBone'/'Scene Root' 节点名；*.mfm 材质路径由 u64 selfId 反查。
+    （项边界依据 *.vertices 出现位置，节点归属可能跨项，为尽力解析。）
+    """
+    items: List[dict] = []
+    cur: Optional[dict] = None
+    end = min(pos + max_len, len(data))
+
+    for off in range(pos, end - 4, 4):
+        v = B.read_u32(data, off)
+        s = db.strings.get_string_by_id(v)
+        if not s:
+            continue
+        if s.endswith('.vertices'):
+            cur = {"shape_vertices": s, "shape_indices": "",
+                   "material": "", "material_mfm": "", "nodes": []}
+            items.append(cur)
+        elif cur is not None:
+            if s.endswith('.indices'):
+                cur["shape_indices"] = s
+            elif s.startswith('SHIPMAT'):
+                cur["material"] = s
+            elif s == 'Scene Root' or s.endswith('_Jnt_BlendBone'):
+                cur["nodes"].append(s)
+
+    # u64 → selfId 资源路径（材质 *.mfm）
+    for off in range(pos, end - 8, 8):
+        v = B.read_u64(data, off)
+        idx = self_id_index.get(v)
+        if idx is not None:
+            path = db.reconstruct_path(idx, self_id_index)
+            if path.endswith('.mfm') and items:
+                items[-1]["material_mfm"] = path
+    return items
 
 
 # ── ModelPrototype ────────────────────────────────────────────────────────
@@ -168,21 +259,38 @@ def decode_visual(data: bytes, db: PrototypeDatabase) -> dict:
 def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
     """解码 ModelPrototype（Korabli 实测 0x20B/条，blob 3）。
 
-    ⚠️ Korabli Model 布局与 WoWS（0x28：visual/动画/涂装）不同，
-    完整字段逆向中；此处输出实测固定区字段 + 原始字节。
+    2026-08-03 真实数据逆向：两个 u64 均为 selfId 资源引用——
+      +0x00 model_resource_id  → .model 路径（可为 0）
+      +0x08 visual_resource_id → .visual 路径
+      +0x10 2×f32  距离/尺寸参数（3/8/10/16/400/50000…）
+      +0x18 u32    count（多数 11，少数 8/9/10）
+      +0x1C u32    tail（通常 0）
     """
     if len(data) < 0x20:
         raise ParseError(f"ModelPrototype 数据过短: {len(data)}")
+
+    model_id = B.read_u64(data, 0x00)
+    visual_id = B.read_u64(data, 0x08)
+    index = db.build_self_id_index()
+
+    def path_of(self_id: int) -> str:
+        if self_id == 0:
+            return ""
+        idx = index.get(self_id)
+        return db.reconstruct_path(idx, index) if idx is not None else f"0x{self_id:016X}"
+
     return {
         "_type": "ModelPrototype",
-        "_layout": "korabli-raw (0x20B, 完整布局待逆向)",
-        "head_u64s": [B.read_u64(data, i * 8) for i in range(2)],
-        "scales": {
-            "a": _f(B.read_f32(data, 0x10)),
-            "b": _f(B.read_f32(data, 0x14)),
+        "model_resource_path": path_of(model_id),
+        "model_resource_id": f"0x{model_id:016X}",
+        "visual_resource_path": path_of(visual_id),
+        "visual_resource_id": f"0x{visual_id:016X}",
+        "params": {
+            "distance_a": _f(B.read_f32(data, 0x10)),
+            "distance_b": _f(B.read_f32(data, 0x14)),
         },
-        "count_0x18": B.read_u32(data, 0x18),
-        "tail_0x1C": B.read_u32(data, 0x1C),
+        "count": B.read_u32(data, 0x18),
+        "tail": B.read_u32(data, 0x1C),
         "raw_hex": data[:0x20].hex(),
     }
 
@@ -278,8 +386,8 @@ def decode_trail(data: bytes, db: PrototypeDatabase) -> dict:
         raise ParseError(f"TrailPrototype 数据过短: {len(data)}")
 
     # 8×纹理（每条 16B：flags u32 + pad u32 + relptr u32 + pad u32）
-    # 注意：Korabli 实测 relptr 指向 OOL 字符串时有截断偏差（待完整逆向），
-    # 这里做可读性保护，无法解析为合法路径的置空。
+    # 注意：Korabli relptr 指向 OOL 字符串时偶有截断偏差，已做可读性保护，
+    # 无法解析为合法路径的置空。
     textures: Dict[str, dict] = {}
     for i, name in enumerate(_TRAIL_TEXTURE_FIELDS):
         base = i * 0x10
@@ -354,8 +462,8 @@ def decode_vfx_material(data: bytes, db: PrototypeDatabase) -> dict:
     """解码 VfxMaterialPrototype（0x210B/条，blob 11）。
 
     2026-08-03 实测：三个路径为 packed string {size u64, relptr u64}，
-    基准 = packed string 结构起始。cpuProperties / Properties 块的精确
-    布局仍在逆向中，暂输出原始 hex。
+    基准 = packed string 结构起始。cpuProperties / Properties 块暂以原始
+    hex 输出（其布局未逐字段逆向）。
     """
     if len(data) < 0x210:
         raise ParseError(f"VfxMaterialPrototype 数据过短: {len(data)}")
@@ -377,13 +485,19 @@ def decode_vfx_material(data: bytes, db: PrototypeDatabase) -> dict:
 # ── MiscSettingsPrototype（Korabli 独有）──────────────────────────────────
 
 def decode_misc_settings(data: bytes, db: PrototypeDatabase) -> dict:
-    """解码 MiscSettingsPrototype（0x28B/条，blob 9）。"""
+    """解码 MiscSettingsPrototype（0x28B/条，blob 9）。
+
+    2026-08-03 实测（Korabli 正式服）：4 组 (count u16 @+0x00/0x02/0x04/0x06,
+    relptr u64 @+0x08/0x10/0x18/0x20，基准=记录起始)，四组一一对应且连续。
+    """
     if len(data) < 0x28:
         raise ParseError(f"MiscSettingsPrototype 数据过短: {len(data)}")
 
     def _name_ids(relptr_field: int, count: int) -> List[str]:
         if count <= 0 or relptr_field <= 0 or relptr_field >= len(data):
             return []
+        if relptr_field + count * 4 > len(data):
+            return []  # 越界防御
         return [
             db.strings.get_string_or_hex(n)
             for n in B.parse_u32_array(data, relptr_field, count)
@@ -397,10 +511,11 @@ def decode_misc_settings(data: bytes, db: PrototypeDatabase) -> dict:
             "redundant": B.read_u16(data, 0x04),
             "extra": B.read_u16(data, 0x06),
         },
+        # count 与 relptr 一一对应：0x00→0x08, 0x02→0x10, 0x04→0x18, 0x06→0x20
         "structural_name_ids": _name_ids(B.read_u64(data, 0x08), B.read_u16(data, 0x00)),
-        "necessary_name_ids": _name_ids(B.read_u64(data, 0x10), B.read_u16(data, 0x00)),
-        "optional_name_ids": _name_ids(B.read_u64(data, 0x18), B.read_u16(data, 0x02)),
-        "redundant_name_ids": _name_ids(B.read_u64(data, 0x20), B.read_u16(data, 0x04)),
+        "necessary_name_ids": _name_ids(B.read_u64(data, 0x10), B.read_u16(data, 0x02)),
+        "optional_name_ids": _name_ids(B.read_u64(data, 0x18), B.read_u16(data, 0x04)),
+        "redundant_name_ids": _name_ids(B.read_u64(data, 0x20), B.read_u16(data, 0x06)),
     }
 
 
@@ -438,14 +553,19 @@ def decode_generic(data: bytes, db: PrototypeDatabase, type_name: str, item_size
 
 # ── 分发入口 ─────────────────────────────────────────────────────────────
 
-def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[PrototypeType]) -> dict:
-    """按 PrototypeType 分发解码。"""
+def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[PrototypeType],
+                   record_base: int = 0) -> dict:
+    """按 PrototypeType 分发解码。
+
+    record_base: 记录在所属 blob 中的绝对偏移（相对 blob 起点），
+                 用于解析 Visual 等类型中基准=blob 起点的 relptr。
+    """
     name = proto_type.name if proto_type else "Unknown"
     item_size = proto_type.item_size if proto_type else 0x10
     if name == "MaterialPrototype":
         return decode_material(data, db)
     if name == "VisualPrototype":
-        return decode_visual(data, db)
+        return decode_visual(data, db, record_base)
     if name == "ModelPrototype":
         return decode_model(data, db)
     if name == "SkeletonPrototype":
@@ -465,10 +585,38 @@ def decode_record(db: PrototypeDatabase, location: PrototypeLocation) -> dict:
     db_entry = db.databases[location.blob_index]
     proto_type = type_from_magic(db_entry.prototype_magic)
     data = db.get_record(location)
-    return decode_by_type(data, db, proto_type)
+    record_base = 16 + location.record_index * db_entry.item_size
+    return decode_by_type(data, db, proto_type, record_base)
 
 
 def decode_prototype_to_json(data: bytes, db: PrototypeDatabase, proto_type: PrototypeType) -> str:
     """解码 prototype 记录为格式化 JSON 字符串。"""
     decoded = decode_by_type(data, db, proto_type)
     return json.dumps(decoded, ensure_ascii=False, indent=2, allow_nan=False)
+
+
+def parse_mfm_from_db(db: PrototypeDatabase, mfm_path_id: int) -> Optional[dict]:
+    """按 selfId 反查并解码 MFM 材质。
+
+    对齐 wows-toolkit `export/texture.rs::parse_mfm_from_db`：
+    查 r2p → 定位 → 若属 MaterialPrototype blob → 读取记录并解码为属性表。
+    找不到 / 类型不符 / 解码失败时返回 None。
+    """
+    if not mfm_path_id:
+        return None
+    value = db.lookup_r2p(mfm_path_id)
+    if value is None:
+        return None
+    try:
+        location = db.decode_r2p_value(value)
+    except ParseError:
+        return None
+    entry = db.databases[location.blob_index]
+    t = type_from_magic(entry.prototype_magic)
+    if t is None or t.name != "MaterialPrototype":
+        return None
+    data = db.get_record(location)
+    try:
+        return decode_material(data, db)
+    except ParseError:
+        return None

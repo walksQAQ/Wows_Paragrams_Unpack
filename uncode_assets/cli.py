@@ -36,6 +36,7 @@ from pathlib import Path
 
 from .errors import AssetsBinError
 from .service import AssetsBinService
+from .types import can_decode, list_types
 
 
 def _make_service(source: str) -> AssetsBinService:
@@ -132,6 +133,34 @@ def cmd_decode(args: argparse.Namespace) -> None:
         svc.close()
 
 
+def cmd_types(args: argparse.Namespace) -> None:
+    """列出全部 prototype 类型（对齐 wows-toolkit `PrototypeType` 枚举）。"""
+    print(f"{'blob':>4}  {'类型名':<26} {'magic':<12} {'item':>5}  扩展名                  可解码")
+    for t in list_types():
+        ext = ",".join(t.extensions) if t.extensions else "-"
+        flag = "✅" if can_decode(t) else "—"
+        print(f"  {t.blob_index:>2}  {t.name:<26} 0x{t.magic:08X}  0x{t.item_size:02X}  {ext:<22} {flag}")
+
+
+def cmd_mfm(args: argparse.Namespace) -> None:
+    """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material`）。"""
+    svc = _make_service(args.source)
+    try:
+        if args.self_id:
+            mat = svc.decode_mfm_by_self_id(int(args.self_id, 0))
+            if mat is None:
+                print("❌ 未找到该 selfId 对应的 MFM 材质", file=sys.stderr)
+                sys.exit(1)
+        else:
+            mat = svc.decode_material_by_path(args.path)
+        print(__import__("json").dumps(mat, ensure_ascii=False, indent=2, allow_nan=False))
+    except AssetsBinError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        svc.close()
+
+
 def cmd_dump(args: argparse.Namespace) -> None:
     svc = _make_service(args.source)
     try:
@@ -191,6 +220,10 @@ def main() -> None:
             (["path"], {"help": "路径后缀"}))
     add_cmd("decode", "解码单条 prototype 为 JSON", (["source"], {"help": "游戏目录或 assets.bin 文件"}),
             (["path"], {"help": "路径后缀"}))
+    add_cmd("types", "列出全部 prototype 类型表", (["source"], {"help": "游戏目录或 assets.bin 文件"}))
+    add_cmd("mfm", "按路径/selfId 解码 MFM 材质", (["source"], {"help": "游戏目录或 assets.bin 文件"}),
+            (["path"], {"nargs": "?", "default": None, "help": "MFM 路径（与 --self-id 二选一）"}),
+            (["--self-id"], {"default": None, "help": "按 selfId 反查（如 0x1234 或 4660）"}))
     add_cmd("dump", "批量解码导出 JSON", (["source"], {"help": "游戏目录或 assets.bin 文件"}),
             (["output"], {"help": "输出目录"}),
             (["--type"], {"default": None, "help": "仅导出该类型（如 Visual）"}),
@@ -201,8 +234,8 @@ def main() -> None:
     args = parser.parse_args()
     cmd_map = {
         "info": cmd_info, "stats": cmd_stats, "list": cmd_list, "ls": cmd_ls,
-        "resolve": cmd_resolve, "decode": cmd_decode, "dump": cmd_dump,
-        "extract": cmd_extract,
+        "resolve": cmd_resolve, "decode": cmd_decode, "types": cmd_types,
+        "mfm": cmd_mfm, "dump": cmd_dump, "extract": cmd_extract,
     }
     cmd_map[args.command](args)
 

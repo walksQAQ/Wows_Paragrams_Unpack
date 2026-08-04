@@ -18,6 +18,9 @@ from .decoders import decode_by_type
 from .parser import PrototypeDatabase, PrototypeLocation
 from .types import PrototypeType, type_from_magic
 
+#: VFS 索引缓存版本号：目录树/索引构建逻辑变更时 +1，使旧缓存自动失效
+CACHE_VERSION = 2
+
 
 @dataclass
 class VirtualFile:
@@ -110,21 +113,44 @@ class AssetsBinVfs:
             )
             self._register_dirs(dirs, full_path)
 
+        # 第二遍：无 prototype 的路径条目（如 .geometry 等存在 PKG 里的资源）
+        # **只注册父目录、不注册叶子**，避免遮蔽 PKG 同名文件——
+        # 对齐 wows-toolkit build_index 的行为，目录结构更完整。
+        for i, entry in enumerate(paths):
+            if db.lookup_r2p(entry.self_id) is not None:
+                continue
+            raw_path = full_paths[i]
+            if not raw_path:
+                continue
+            self._register_parent_dirs(dirs, "/" + raw_path)
+
         self._dirs = {k: sorted(v) for k, v in dirs.items()}
 
     @staticmethod
-    def _register_dirs(dirs: Dict[str, set], full_path: str) -> None:
-        """把路径的所有祖先目录与子项写入 set 累积结构。"""
+    def _register_parent_dirs(dirs: Dict[str, set], full_path: str) -> None:
+        """只注册路径的所有祖先目录（不含叶子本身），供无 prototype 的文件使用。"""
         pos = 1  # 跳过前导 '/'
         while True:
             idx = full_path.find('/', pos)
             if idx == -1:
                 break
-            parent = full_path[:pos] if pos > 1 else "/"
+            parent = full_path[:pos].rstrip('/') if pos > 1 else "/"
+            dirs.setdefault(parent, set()).add(full_path[pos:idx])
+            pos = idx + 1
+
+    @staticmethod
+    def _register_dirs(dirs: Dict[str, set], full_path: str) -> None:
+        """把路径的所有祖先目录与子项写入 set 累积结构（key 无尾斜杠）。"""
+        pos = 1  # 跳过前导 '/'
+        while True:
+            idx = full_path.find('/', pos)
+            if idx == -1:
+                break
+            parent = full_path[:pos].rstrip('/') if pos > 1 else "/"
             dirs.setdefault(parent, set()).add(full_path[pos:idx])
             pos = idx + 1
         # 叶子（文件或末级目录）
-        parent = full_path[:pos] if pos > 1 else "/"
+        parent = full_path[:pos].rstrip('/') if pos > 1 else "/"
         dirs.setdefault(parent, set()).add(full_path[pos:])
 
     # ── 索引持久化缓存 ─────────────────────────────────
@@ -142,13 +168,16 @@ class AssetsBinVfs:
         }
         tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
         with open(tmp, "wb") as fh:
-            pickle.dump({"files": files_index, "dirs": self._dirs}, fh,
-                        protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump({"version": CACHE_VERSION, "files": files_index, "dirs": self._dirs},
+                        fh, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(cache_path)
 
     @classmethod
     def from_index(cls, db: PrototypeDatabase, files_index: dict, dirs_index: dict) -> "AssetsBinVfs":
-        """从缓存索引恢复 VFS（跳过耗时的路径重建/目录构建）。"""
+        """从缓存索引恢复 VFS（跳过耗时的路径重建/目录构建）。
+
+        调用方需先校验 idx["version"] == CACHE_VERSION。
+        """
         vfs = cls.__new__(cls)
         vfs._db = db
         vfs._dirs = dirs_index
@@ -175,6 +204,14 @@ class AssetsBinVfs:
 
     def get_file(self, path: str) -> Optional[VirtualFile]:
         return self._files.get(self._normalize(path))
+
+    def prototype_type(self, path: str) -> Optional[PrototypeType]:
+        """返回路径对应的 prototype 类型（无则 None）。
+
+        对齐 wows-toolkit `AssetsBinVfs::prototype_type`。
+        """
+        f = self._files.get(self._normalize(path))
+        return f.prototype_type if f else None
 
     def list_dir(self, dir_path: str = "/") -> List[str]:
         key = self._normalize(dir_path)
@@ -226,7 +263,8 @@ class AssetsBinVfs:
         if f is None:
             raise KeyError(f"虚拟文件不存在: {path}")
         data = self.open_file(path)
-        return decode_by_type(data, self._db, f.prototype_type)
+        record_base = 16 + f.record_index * f.item_size
+        return decode_by_type(data, self._db, f.prototype_type, record_base)
 
     @staticmethod
     def _normalize(path: str) -> str:

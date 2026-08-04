@@ -1,22 +1,23 @@
 """
-数据提取服务 —— 通过解包工具从 .pkg 中提取 GameParams.data。
+数据提取服务 —— 通过 data_extractor（纯 Python 解包器）从 .pkg 中提取 GameParams.data。
 
-根据游戏版本自动选择对应的解包工具。
+原实现依赖外部 exe（wowsunpack / pfsunpack / pfsunpack2），现统一改为
+纯 Python 的 data_extractor 模块（见 data_extractor/extractor.py）。
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
-import subprocess
 
 from app.signals import bus
 from app.application import app as app_ctx
 from utils.threading_utils import run_async
-from utils.path_utils import get_tools_dir, get_data_dir, get_app_dir
+from utils.path_utils import get_data_dir, get_app_dir
 
 
-_DATA_FILE_NAMES = ["GameParams.data", "GameParams_py2.data"]
+_DATA_FILE_NAMES = ["GameParams_py3.data", "GameParams_py2.data", "GameParams.data"]
 
 
 def _get_latest_bin(game_path: str) -> str | None:
@@ -31,62 +32,52 @@ def _get_latest_bin(game_path: str) -> str | None:
     return folders[-1]
 
 
-def _pick_unpacker(game_path: str, latest_bin: str, wows_type: str) -> str:
-    """根据服务器类型和版本号选择对应的解包工具"""
-    import re
-    tools_dir = get_tools_dir()
-    if wows_type == "Wargaming":
-        return str(tools_dir / "wowsunpack.exe")
-    # Lesta: 判断版本选择 pfsunpack 或 pfsunpack2
-    exe_path = os.path.join(game_path, "bin", latest_bin, "bin64", "Korabli64.exe")
+def _read_exe_version(game_path: str, latest_bin: str, wows_type: str) -> str:
+    """读取游戏主程序版本号（用于设置 app_ctx 版本）。"""
+    exe_name = "WorldOfWarships64.exe" if wows_type == "Wargaming" else "Korabli64.exe"
+    exe_path = os.path.join(game_path, "bin", latest_bin, "bin64", exe_name)
     try:
-        import ctypes
         size = ctypes.windll.version.GetFileVersionInfoSizeW(exe_path, None)
         res = ctypes.create_string_buffer(size)
         ctypes.windll.version.GetFileVersionInfoW(exe_path, None, size, res)
         ptr, u_size = ctypes.c_void_p(), ctypes.c_uint()
-        current_ver = "Unknown"
         for lang in ['041904b0', '040904b0', '080404b0']:
             q = f"\\StringFileInfo\\{lang}\\FileVersion"
             if ctypes.windll.version.VerQueryValueW(res, q, ctypes.byref(ptr), ctypes.byref(u_size)):
-                current_ver = ctypes.wstring_at(ptr)
-                break
+                return ctypes.wstring_at(ptr)
     except Exception:
-        current_ver = "Unknown"
-    ver_digits = [int(x) for x in re.findall(r'\d+', current_ver)]
-    if ver_digits and tuple(ver_digits) >= (26, 6):
-        return str(tools_dir / "pfsunpack2.exe")
-    return str(tools_dir / "pfsunpack.exe")
+        pass
+    return "Unknown"
 
 
-def _extract_with_tool(target_dir, game_path, latest_bin, unpack_exe, app_dir):
-    """使用解包工具从 .pkg 中提取 .data 文件"""
-    idx_path = os.path.join(game_path, "bin", latest_bin, "idx")
-    bus.log_message.emit(f"🔧 正在使用解包工具提取数据...")
-    command = [unpack_exe, "-x", idx_path, "-p", "../../../res_packages",
-               "-I", "content/*.data"]
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            stdin=subprocess.DEVNULL,
-                            cwd=str(app_dir),
-                            creationflags=subprocess.CREATE_NO_WINDOW)
+def _extract_data_files(game_path: str, latest_bin: str, target_dir) -> list[str]:
+    """用 data_extractor（纯 Python 解包器）从 .pkg 中提取 GameParams 数据文件。
+
+    替代原外部 exe（wowsunpack / pfsunpack / pfsunpack2）方案，统一走
+    data_extractor.GameExtractor（Kraken 纯 Python 解压，低内存流式写盘）。
+    """
+    from data_extractor import GameExtractor
+
+    bus.log_message.emit("🔧 正在使用 data_extractor 提取数据...")
+    extractor = GameExtractor(game_path, bin_folder=latest_bin)
     try:
-        stdout, stderr = proc.communicate(timeout=180)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise Exception("解包工具执行超时（180秒）")
-    if proc.returncode != 0:
-        err_msg = stderr.decode('utf-8', errors='replace').strip() or f"退出码 {proc.returncode}"
-        raise Exception(f"解包失败: {err_msg}")
-    found = False
-    for fn in _DATA_FILE_NAMES:
-        src = app_dir / "content" / fn
-        if src.exists():
-            shutil.move(str(src), str(target_dir / fn))
-            found = True
-    shutil.rmtree(str(app_dir / "content"), ignore_errors=True)
-    if not found:
-        raise Exception(f"解包完成但未找到 {_DATA_FILE_NAMES}")
+        # 找到实际存在的 GameParams 数据文件（兼容 GameParams.data / _py2.data）
+        candidates = [
+            e for e in extractor.list_files(["content/GameParams*.data"])
+            if not e.is_directory
+        ]
+        if not candidates:
+            raise Exception(f"未在文件树中找到 {_DATA_FILE_NAMES}")
+        found: list[str] = []
+        for entry in candidates:
+            filename = entry.path.rsplit("/", 1)[-1]
+            out = target_dir / filename
+            extractor.extract_single(entry.path, out)
+            found.append(filename)
+            bus.log_message.emit(f"✅ 已提取 {entry.path}")
+        return found
+    finally:
+        extractor.close()
 
 
 def run_extract() -> None:
@@ -95,7 +86,6 @@ def run_extract() -> None:
     wows_type = ctx.wows_type
 
     def _extract():
-        import ctypes, re
         bus.task_progress.emit(5, "检测游戏版本")
         latest_bin = _get_latest_bin(game_path)
         if not latest_bin:
@@ -103,34 +93,14 @@ def run_extract() -> None:
         app_ctx.set_bin_folder(latest_bin)
 
         bus.task_progress.emit(10, "读取版本号")
-        # 读版本号
-        exe_name = "WorldOfWarships64.exe" if wows_type == "Wargaming" else "Korabli64.exe"
-        exe_path = os.path.join(game_path, "bin", latest_bin, "bin64", exe_name)
-        try:
-            size = ctypes.windll.version.GetFileVersionInfoSizeW(exe_path, None)
-            res = ctypes.create_string_buffer(size)
-            ctypes.windll.version.GetFileVersionInfoW(exe_path, None, size, res)
-            ptr, u_size = ctypes.c_void_p(), ctypes.c_uint()
-            current_ver = "Unknown"
-            for lang in ['041904b0', '040904b0', '080404b0']:
-                q = f"\\StringFileInfo\\{lang}\\FileVersion"
-                if ctypes.windll.version.VerQueryValueW(res, q, ctypes.byref(ptr), ctypes.byref(u_size)):
-                    current_ver = ctypes.wstring_at(ptr)
-                    break
-        except Exception:
-            current_ver = "Unknown"
+        current_ver = _read_exe_version(game_path, latest_bin, wows_type)
 
-        bus.task_progress.emit(15, "执行解包工具")  # noqa: F821
-        # 选择解包工具并执行
-        unpack_exe = _pick_unpacker(game_path, latest_bin, wows_type)
-        if not os.path.isfile(unpack_exe):
-            raise Exception(f"解包工具不存在: {unpack_exe}")
+        bus.task_progress.emit(15, "执行解包")
         target_path = get_data_dir()
-        app_dir = get_app_dir()
-        _extract_with_tool(target_path, game_path, latest_bin, unpack_exe, app_dir)
+        _extract_data_files(game_path, latest_bin, target_path)
 
-        # 清理可能残留的旧数据
-        old_content = app_dir / "content"
+        # 清理可能残留的旧数据（原外部工具遗留的 content/ 目录）
+        old_content = get_app_dir() / "content"
         if old_content.exists():
             shutil.rmtree(str(old_content), ignore_errors=True)
 
