@@ -1017,6 +1017,16 @@ class ShipPresenter(BasePresenter):
                             details.append({"name": "舰高", "value": f"{h['height']:.1f}", "unit": "m"})
                     items.append(self.make_item(label, f"{val:.0f}" if col == "health" else f"{val:.2f}", o, unit=unit, details=details or None))
                     o += 1
+            # 舰船三围（舰长/舰宽/舰高）作为独立行直接显示
+            for col, label, unit in [
+                ("length", "舰长", "m"),
+                ("width", "舰宽", "m"),
+                ("height", "舰高", "m"),
+                ("draft", "吃水深度", "m"),
+            ]:
+                v = h[col]
+                if v is not None:
+                    items.append(self.make_item(label, f"{v:.1f}", o, unit=unit)); o += 1
             # 引擎数据（引擎马力 + 航速修正）
             eng_row = None
             if engine_letter:
@@ -1206,12 +1216,12 @@ class ShipPresenter(BasePresenter):
                 items.append(self.make_item("180°回转时间", f"{rot_180:.1f}", o, unit="s")); o += 1
             if g.get('rotation_speed_v') is not None: items.append(self.make_item("垂直回转速度", f"{g['rotation_speed_v']:.1f}", o, unit="°/s")); o += 1
             if g.get('caliber') is not None: items.append(self.make_item("口径", f"{g['caliber']*1000:.0f}", o, unit="mm")); o += 1
-            # 弹药
-            ammo_ids = sorted(
+            # 弹药（按 HE→SAP→AP 顺序）
+            ammo_ids = self._sort_ammo_ids(conn, vc, [
                 r["ammo_id"] for r in conn.execute(
                     "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type=?",
                     (vc, ship_id, g['module_key'], 'artillery')).fetchall()
-            )
+            ])
             for aid in ammo_ids:
                 aname = ammo_map.get(aid.upper(), self.resolve_name('ammo', aid) or aid)
                 items.append(self.make_item("弹药", aname, o)); o += 1
@@ -1252,13 +1262,13 @@ class ShipPresenter(BasePresenter):
         groups: list[dict] = []
         for g_row in rows:
             g = dict(g_row)  # sqlite3.Row → dict
-            # 取该武器可用的弹药 ID 列表
-            ammo_ids = sorted(
+            # 取该武器可用的弹药 ID 列表（按 HE→SAP→AP 顺序）
+            ammo_ids = self._sort_ammo_ids(conn, vc, [
                 r["ammo_id"] for r in conn.execute(
                     "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
                     "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type=?",
                     (vc, ship_id, g['module_key'], slot_type)).fetchall()
-            )
+            ])
             # 取特殊机制数据（如果有）
             drum = None
             ext = conn.execute(
@@ -1369,7 +1379,7 @@ class ShipPresenter(BasePresenter):
             items.append(self.make_item("装填时间", display, o)); o += 1
 
         items, o = self._append_weapon_common(conn, vc, g0, items, o)
-        raw_ammo = self._collect_ammo_types(conn, vc, sorted(all_ammo_ids), ammo_map)
+        raw_ammo = self._collect_ammo_types(conn, vc, self._sort_ammo_ids(conn, vc, list(all_ammo_ids)), ammo_map)
         for a in raw_ammo:
             items.append(self.make_item("弹药", a["name"], o)); o += 1
 
@@ -1397,6 +1407,38 @@ class ShipPresenter(BasePresenter):
         if g.get('rotation_speed_v'): items.append(self.make_item("垂直回转速度", f"{g['rotation_speed_v']:.1f}", o, unit="°/s")); o += 1
         if g.get('caliber'): items.append(self.make_item("口径", f"{g['caliber']*1000:.0f}", o, unit="mm")); o += 1
         return items, o
+
+    def _sort_ammo_ids(self, conn, vc, ammo_ids):
+        """弹药显示顺序：HE → SAP(CS) → AP → 鱼雷 → 深弹；其余类型保持编号顺序"""
+        if not ammo_ids:
+            return list(ammo_ids)
+        key_map = {str(aid): (5, str(aid)) for aid in ammo_ids}
+        placeholders = ",".join("?" * len(ammo_ids))
+        try:
+            rows = conn.execute(
+                f"SELECT projectile_id, species, ammo_type FROM projectile_basic_info "
+                f"WHERE version_code=? AND projectile_id IN ({placeholders})",
+                (vc, *ammo_ids)).fetchall()
+            for r in rows:
+                sp = (r['species'] or "").lower()
+                at = (r['ammo_type'] or "").upper()
+                aid = str(r['projectile_id'])
+                if "depthcharge" in sp:
+                    key = 4
+                elif "torpedo" in sp:
+                    key = 3
+                elif at == "HE":
+                    key = 0
+                elif at in ("CS", "SAP"):
+                    key = 1
+                elif at == "AP":
+                    key = 2
+                else:
+                    key = 5
+                key_map[aid] = (key, aid)
+        except Exception:
+            pass
+        return sorted(ammo_ids, key=lambda aid: key_map.get(str(aid), (5, str(aid))))
 
     def _collect_ammo_types(self, conn, vc, ammo_ids, ammo_map):
         """收集弹药类型信息（已去重），用于按钮 + 详情卡片"""
@@ -1530,11 +1572,11 @@ class ShipPresenter(BasePresenter):
                 slope = (ir - mr) / (id_dist / 1000) if id_dist else 0
                 intercept = mr * 30
                 items.append(self.make_item("横向散步公式", f"{slope:.2f}R + {intercept:.0f}", o)); o += 1
-            ammo_ids = sorted(
+            ammo_ids = self._sort_ammo_ids(conn, vc, [
                 r["ammo_id"] for r in conn.execute(
                     "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='atba'",
                     (vc, ship_id, g['module_key'])).fetchall()
-            )
+            ])
             for aid in ammo_ids:
                 aname = ammo_map.get(aid.upper(), self.resolve_name('ammo', aid) or aid)
                 items.append(self.make_item("弹药", aname, o)); o += 1
@@ -1585,11 +1627,11 @@ class ShipPresenter(BasePresenter):
                 items.append(self.make_item("180°回转时间", f"{rot_180:.1f}", o, unit="s")); o += 1
             if g.get('rotation_speed_v'): items.append(self.make_item("垂直回转速度", f"{g['rotation_speed_v']:.1f}", o, unit="°/s")); o += 1
             if g.get('caliber'): items.append(self.make_item("口径", f"{g['caliber']*1000:.0f}", o, unit="mm")); o += 1
-            ammo_ids = sorted(
+            ammo_ids = self._sort_ammo_ids(conn, vc, [
                 r["ammo_id"] for r in conn.execute(
                     "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='secondary_artillery'",
                     (vc, ship_id, g['module_key'])).fetchall()
-            )
+            ])
             for aid in ammo_ids:
                 aname = ammo_map.get(aid.upper(), self.resolve_name('ammo', aid) or aid)
                 items.append(self.make_item("弹药", aname, o)); o += 1
@@ -1635,12 +1677,12 @@ class ShipPresenter(BasePresenter):
         # 按 (reload_time, ammo) 分组，同组鱼雷管合并显示（不同名称用 + 连接）
         group_map: dict[tuple, dict] = {}
         for t in rows:
-            ammo_ids = sorted(
+            ammo_ids = self._sort_ammo_ids(conn, vc, [
                 r["ammo_id"] for r in conn.execute(
                     "SELECT DISTINCT ammo_id FROM ship_weapon_projectiles "
                     "WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type='torpedo'",
                     (vc, ship_id, t['module_key'])).fetchall()
-            )
+            ])
             # 注意：key 包含 module_key，确保 A1/A2 等不同变体不合并
             key = (t['module_key'], t['reload_time'], tuple(ammo_ids))
             if key not in group_map:

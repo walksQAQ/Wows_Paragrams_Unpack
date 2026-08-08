@@ -216,21 +216,27 @@
 
 ### 步骤 4：解码各 prototype 类型 → JSON
 
-按类型实现 `decode_*_to_json`：
-- **MaterialPrototype**（blob 0，0x78B/条）：属性表
-  - `+0x00 u16 count, +0x02 u16 layer, +0x04 u32 shader, +0x10 names_ptr → u32[count] 属性名哈希, +0x18 tidx_ptr → u16[count](低4位类型/高12位索引), +0x20~+0x60 9 个类型指针(bool/int32/float/vec/tex...)`
+按类型实现 `decode_*_to_json`（✅ 已全部实现，`uncode_assets/decoders.py`，Korabli 正式服实测步长）：
+- **MaterialPrototype**（blob 0，**0x88B/条**）：属性表 ✅
+  - `+0x00 u16 count, +0x02 u16 flags, +0x08 u32 shader, +0x18 names_ptr → u32[count] 属性名哈希, +0x20 type_idx_ptr → u16[count](低4位类型/高12位索引), +0x28~+0x70 9 个类型指针(bool/int32/floatA/floatB/tex/vec2/vec3/vec4/mat4), +0x78 material_hash`
   - 用 strings 表把属性名哈希反查为名字（MurmurHash3_x86_32）
-- **VisualPrototype**（blob 1，0x70B/条）：渲染集合，含**粒子系统引用**（`rendersets`、`lod`、贴图路径、材质引用）
-- **ModelPrototype**（blob 3）：模型引用（geometry 路径、节点层级）
-- 其他类型按需扩展
+- **VisualPrototype**（blob 2，**0x80B/条**）：渲染集合，含 `render_sets/lods`（geometry/primitives/材质 mfm/节点）✅，并新增 `particle_refs`（扫描渲染集合 OOL 中可反查的粒子路径）✅
+- **ModelPrototype**（blob 3，**0x20B/条**）：模型引用（model/visual 资源路径）✅
+- **Skeleton/Trail/VfxMaterial/MiscSettings**（Korabli 独有）：✅ 已逆向结构化解码
+- **EffectPrototype**（blob 5，0x10B/条，粒子效果图）：✅ `decode_effect` 尽力解析（见步骤 5）
 
 **参考**：wows-toolkit `models/{material,visual,model}.rs` + `scripts/decode_mfm.py`（已有 Python 版 Material 解码参考）
 
 ### 步骤 5：粒子效果 XML 提取 / 解码
 
 - **明文粒子 XML**（`helpers/particles/sfx_fail.xml`、`postfx_animations.xml`）：stored 明文，直接提取 ✅（已验证）
-- **粒子定义在 VisualPrototype**：解析 blob 1 记录，提取其中引用的粒子系统/贴图路径（如 `particles/textures/particles.dd0`）
-- **组合输出**：把 VisualPrototype 引用的粒子系统 + 明文粒子 XML + 粒子图集纹理组合为可读的粒子描述（XML/JSON）
+- **EffectPrototype 解码**（✅ 2026-08-05 新增 `decode_effect`，数据驱动逆向）：
+  - 记录 0x10B：`+0x00 f32 scalar（常为 -1.0）+ 0x04 u32 count + 0x08 u32 relptr（基准=blob 起点）+ 0x0C pad`
+  - OOL 区域 = [relptr, 下一记录 relptr)，相邻记录首尾相接无间隙
+  - 输出 `embedded_strings`（内嵌原始粒子资源路径，实测如 `particles/animated/Smoke_2_8x8.dds`、`particles/textures/circle_02.tga`、`sparks`、`glow_0`）+ 16B 对齐候选节点头（启发式）
+  - ⚠️ 尽力解析（wows-toolkit 亦无结构化解码）；完整节点语义需 exe deserialize 逆向
+- **VisualPrototype 粒子引用**（✅ 2026-08-05）：`decode_visual` 新增 `particle_refs`，扫描 render_sets/lods OOL 中可反查的粒子路径
+- **组合输出**（❌ 未实现）：把 VisualPrototype 引用的粒子系统 + 明文粒子 XML + 粒子图集纹理组合为可读的粒子描述（XML/JSON）——如需可后续补充
 
 ### 步骤 6：UI / CLI 集成
 

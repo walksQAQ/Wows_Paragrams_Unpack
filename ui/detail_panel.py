@@ -265,7 +265,7 @@ class DetailPanel(QWidget):
 
     def _build_top_config_bar(self, config: dict) -> QWidget:
         """构建顶部配置栏：仿浩舰 4 列布局（配件/升级品/舰长/外观）"""
-        _ship_type = config.get("shiptype", "")
+        _ship_type = config.get("shiptype_en", "") or config.get("shiptype", "")
         bar = QWidget()
         bar.setStyleSheet("""
             QWidget#ConfigBar {
@@ -643,7 +643,7 @@ class DetailPanel(QWidget):
                     """格式化修饰符显示值"""
                     cn = _NM.MODIFIER_MAP.get(mk, mk)
                     if isinstance(mv, dict):
-                        _st = config.get("shiptype", "")
+                        _st = config.get("shiptype_en", "") or config.get("shiptype", "")
                         mv = mv.get(_st) or next((v for v in mv.values() if isinstance(v, (int, float))), 0)
                     if isinstance(mv, (int, float)):
                         ft = _NM.format_modifier(mk, mv, color=True)
@@ -838,7 +838,7 @@ class DetailPanel(QWidget):
                 def _trigger_signal_refresh():
                     """将信号旗修饰符合并到升级品修饰符中一起重算"""
                     all_mods = {}
-                    _st = config.get("shiptype", "")
+                    _st = config.get("shiptype_en", "") or config.get("shiptype", "")
                     if hasattr(self, '_selected_mods'):
                         for m in self._selected_mods.values():
                             mods = m.get("modifiers", {})
@@ -1370,7 +1370,7 @@ class DetailPanel(QWidget):
                     _cur_ship_type = ""
                     if hasattr(self, '_current_analyzed') and self._current_analyzed:
                         _cb = self._current_analyzed.get("config_bar", {})
-                        _cur_ship_type = _cb.get("shiptype", "") if isinstance(_cb, dict) else ""
+                        _cur_ship_type = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
                     all_mods: dict = {}
                     # 升级品修饰符
                     for m in getattr(self, '_selected_mods', {}).values():
@@ -3244,7 +3244,7 @@ class DetailPanel(QWidget):
         _cur_ship_type = ""
         if hasattr(self, '_current_analyzed') and self._current_analyzed:
             _cb = self._current_analyzed.get("config_bar", {})
-            _cur_ship_type = _cb.get("shiptype", "") if isinstance(_cb, dict) else ""
+            _cur_ship_type = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
         all_mods: dict[str, float | dict] = {}
         for m in self._selected_mods.values():
             mod_dict = m.get("modifiers", {})
@@ -3339,7 +3339,7 @@ class DetailPanel(QWidget):
                             _cur_st = ""
                             if hasattr(self, '_current_analyzed') and self._current_analyzed:
                                 _cb = self._current_analyzed.get("config_bar", {})
-                                _cur_st = _cb.get("shiptype", "") if isinstance(_cb, dict) else ""
+                                _cur_st = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
                             if isinstance(ev, dict):
                                 ev = ev.get(_cur_st) or next((x for x in ev.values() if isinstance(x, (int, float))), 1.0)
                             if isinstance(nv, dict):
