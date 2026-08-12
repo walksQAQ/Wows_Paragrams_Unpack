@@ -1,4 +1,5 @@
 # assets.bin（PrototypeDatabase）提取与解码功能规划
+注意：此条目前为半成品
 
 ## 概述
 
