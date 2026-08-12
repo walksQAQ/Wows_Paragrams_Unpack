@@ -3384,28 +3384,286 @@ class DetailPanel(QWidget):
             if _ammo_by_letter:
                 sec["raw_ammo_types"] = _ammo_by_letter.get(_letter, _ammo_by_letter.get(_letters[0], []))
 
-    # ── 全信息复制 ─────────────────────────────────────────
+    # ── 完整信息复制（覆盖信息面板所有内容）───────────────────
 
     def _copy_ship_info_to_clipboard(self) -> None:
-        """将当前舰船的全信息面板（ship_presenter 输出的 sections）以文本格式复制到剪贴板"""
-        if not self._is_ship_mode or not self._ship_sections:
-            bus.log_message.emit("ℹ️ 当前未选中舰船，无法复制")
+        """复制舰船数据（不含技能面板等界面内容）到剪贴板。
+
+        基于 presenter 输出的 sections + 子面板数据（数据驱动），
+        只包含舰船性能数据与弹药，天然排除技能面板/升级品/信号旗等界面内容。
+        """
+        if not self._current_filename:
+            bus.log_message.emit("ℹ️ 当前未选中实体，无法复制")
             return
         try:
             from PySide6.QtWidgets import QApplication
-            text = self._render_sections_to_text(self._ship_sections)
+            if self._is_ship_mode and self._ship_sections:
+                text = self._render_sections_to_text(self._ship_sections)
+                sub = self._render_sub_sections_to_text(self._ship_sub_sections)
+                if sub:
+                    text = (text + "\n\n" + sub).rstrip()
+            else:
+                text = self._render_default_pages_to_text("display")
             if not text.strip():
-                bus.log_message.emit("⚠️ 当前舰船无数据可复制")
+                bus.log_message.emit("⚠️ 当前无内容可复制")
                 return
             QApplication.clipboard().setText(text)
-            bus.log_message.emit(f"📋 已复制「{self._current_filename}」完整信息到剪贴板")
+            bus.log_message.emit(f"📋 已复制「{self._current_filename}」舰船数据到剪贴板")
         except Exception as e:
             import traceback
             bus.log_message.emit(f"⚠️ 复制失败: {e}\n{traceback.format_exc()}")
 
+    def _render_sub_sections_to_text(self, sub_sections: dict) -> str:
+        """渲染子面板（舰载机等）数据为文本（数据驱动）。"""
+        lines: list[str] = []
+        for label, sub_info in sub_sections.items():
+            if not isinstance(sub_info, dict):
+                continue
+            labels = sub_info.get("sub_labels") or []
+            contents = sub_info.get("sub_contents") or {}
+            if not labels:
+                continue
+            lines.append(f"【{label}】")
+            for sl in labels:
+                content = contents.get(sl) or {}
+                if not isinstance(content, dict):
+                    continue
+                lines.append(f"· {sl}")
+                lines.extend(self._render_items_to_text(content.get("items") or [], indent=2))
+                lines.extend(self._render_ammo_to_text(content.get("raw_ammo_types") or [], indent=2))
+                # 舰载机等嵌套 config_contents
+                config_contents = content.get("config_contents") or {}
+                if config_contents:
+                    for _ck, cv in config_contents.items():
+                        if not isinstance(cv, dict):
+                            continue
+                        lines.extend(self._render_items_to_text(cv.get("items") or [], indent=4))
+                        lines.extend(self._render_ammo_to_text(cv.get("raw_ammo_types") or [], indent=4))
+                        lines.extend(self._render_consumables_to_text(cv.get("raw_consumables") or [], indent=4))
+                lines.append("")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
     @staticmethod
-    def _render_sections_to_text(sections: list[dict]) -> str:
-        """将 ship_presenter 输出的 sections 结构渲染为纯文本（键值面板格式）"""
+    def _render_items_to_text(items: list[dict], indent: int = 0) -> list[str]:
+        """把 section/子面板的 items 渲染为键值文本行。"""
+        lines: list[str] = []
+        pad = " " * indent
+        for item in items:
+            rt = item.get("row_type", "kv")
+            name = item.get("name", "")
+            if rt == "header":
+                lines.append(f"{pad}【{name}】")
+            elif rt == "sub_header":
+                lines.append(f"{pad}· {name}")
+            elif rt == "separator":
+                lines.append("")
+            elif rt == "button_group":
+                raw = item.get("raw_value", {})
+                cur = raw.get("current", "") if isinstance(raw, dict) else ""
+                if name:
+                    lines.append(f"{pad}{name}: {cur}".rstrip(": ") if cur else f"{pad}{name}")
+                elif cur:
+                    lines.append(f"{pad}{cur}")
+            else:  # kv
+                value = item.get("value", "")
+                unit = item.get("unit", "")
+                disp = f"{value} {unit}".strip() if unit and value else (value or unit or "")
+                details = item.get("details", []) or []
+                if details:
+                    lines.append(f"{pad}{name}: {disp}" if name else f"{pad}{disp}")
+                    for d in details:
+                        dn = d.get("name", "")
+                        dv = d.get("value", "")
+                        du = d.get("unit", "")
+                        dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
+                        if dn:
+                            lines.append(f"{pad}    {dn}: {dd}")
+                        elif dd:
+                            lines.append(f"{pad}    {dd}")
+                else:
+                    lines.append(f"{pad}{name}: {disp}".rstrip(": ") if name else f"{pad}{disp}")
+        return lines
+
+    @staticmethod
+    def _render_ammo_to_text(raw_ammo: list[dict], indent: int = 0) -> list[str]:
+        """把 raw_ammo_types 渲染为文本（弹药名 + 明细）。"""
+        lines: list[str] = []
+        pad = " " * indent
+        if not raw_ammo:
+            return lines
+        lines.append(f"{pad}【弹药】")
+        for ai in raw_ammo:
+            an = ai.get("name", "")
+            if an:
+                lines.append(f"{pad}  ● {an}")
+            for d in (ai.get("detail_items") or []):
+                dn = d.get("name", "")
+                dv = d.get("value", "")
+                du = d.get("unit", "")
+                dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
+                if dn:
+                    lines.append(f"{pad}      {dn}: {dd}")
+                elif dd:
+                    lines.append(f"{pad}      {dd}")
+        return lines
+
+    @staticmethod
+    def _render_consumables_to_text(raw_consumables: list[dict], indent: int = 0) -> list[str]:
+        """把 raw_consumables 渲染为文本（消耗品名 + 明细）。"""
+        lines: list[str] = []
+        pad = " " * indent
+        if not raw_consumables:
+            return lines
+        lines.append(f"{pad}【消耗品】")
+        for rc in raw_consumables:
+            an = rc.get("display_name") or rc.get("name", "")
+            if an:
+                lines.append(f"{pad}  ● {an}")
+            for d in (rc.get("detail_items") or []):
+                dn = d.get("name", "")
+                dv = d.get("value", "")
+                du = d.get("unit", "")
+                dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
+                if dn:
+                    lines.append(f"{pad}      {dn}: {dd}")
+                elif dd:
+                    lines.append(f"{pad}      {dd}")
+        return lines
+
+    # ── 面板截图复制（展开折叠后整页截图）────────────────────
+
+    def _copy_panel_screenshot(self) -> None:
+        """展开信息面板所有折叠内容并整页截图复制到剪贴板。"""
+        if not self._current_filename:
+            bus.log_message.emit("ℹ️ 当前未选中实体，无法截图复制")
+            return
+        try:
+            self._expand_all_collapsible()
+            from PySide6.QtCore import QTimer
+            # 展开按钮后布局会变化，等下一轮事件循环再渲染
+            QTimer.singleShot(0, self._do_panel_screenshot)
+        except Exception as e:
+            bus.log_message.emit(f"⚠️ 截图准备失败: {e}")
+
+    def _do_panel_screenshot(self) -> None:
+        try:
+            from PySide6.QtWidgets import QApplication
+            pm = self._render_current_page_complete()
+            if pm is None or pm.isNull():
+                bus.log_message.emit("⚠️ 截图失败: 无法渲染当前面板")
+                return
+            QApplication.clipboard().setPixmap(pm)
+            bus.log_message.emit(
+                f"📸 已复制「{self._current_filename}」面板截图到剪贴板 ({pm.width()}×{pm.height()}px)")
+        except Exception as e:
+            import traceback
+            bus.log_message.emit(f"⚠️ 截图失败: {e}\n{traceback.format_exc()}")
+
+    def _expand_all_collapsible(self) -> None:
+        """点击信息面板内所有折叠/切换按钮展开详情。
+
+        跳过会弹模态框的"自定义"按钮与已展开（checkable 且 checked）的按钮，
+        避免收折已展开内容或卡住界面。
+        """
+        from PySide6.QtWidgets import QPushButton, QToolButton
+        page = self.stack.currentWidget()
+        if page is None:
+            return
+        for btn in page.findChildren(QPushButton) + page.findChildren(QToolButton):
+            try:
+                if not btn.isEnabled() or not btn.isVisible():
+                    continue
+                text = (btn.text() or "").strip()
+                if "自定义" in text or "复制" in text:
+                    continue
+                if btn.isCheckable() and btn.isChecked():
+                    continue
+                btn.click()
+            except RuntimeError:
+                continue  # 底层 C++ 对象已被重建删除
+            except Exception:
+                continue
+
+    def _render_current_page_complete(self):
+        """渲染当前信息面板为完整长图（含滚动区全部内容，不裁剪）。"""
+        from PySide6.QtCore import QRectF, QSizeF, Qt
+        from PySide6.QtGui import QPainter, QPixmap
+        from PySide6.QtWidgets import QScrollArea, QTextEdit
+        page = self.stack.currentWidget()
+        if page is None:
+            return None
+
+        # 舰船模式：由多个滚动区（顶部配置栏 + 下方卡片流）组成 → 内容拼接
+        scrollers = page.findChildren(QScrollArea)
+        if scrollers:
+            pms = []
+            width = 0
+            for sa in scrollers:
+                cw = sa.widget()
+                if cw is None:
+                    continue
+                p = cw.grab()
+                if not p.isNull():
+                    pms.append(p)
+                    width = max(width, p.width())
+            if pms:
+                gap = 8
+                total_h = sum(p.height() for p in pms) + gap * (len(pms) - 1)
+                canvas = QPixmap(width, total_h)
+                canvas.fill(Qt.GlobalColor.white)
+                pt = QPainter(canvas)
+                y = 0
+                for p in pms:
+                    pt.drawPixmap(0, y, p)
+                    y += p.height() + gap
+                pt.end()
+                return canvas
+            return page.grab()
+
+        # 通用模式：QTextEdit 整篇文档渲染为长图（含超出视口部分）
+        if isinstance(page, QTextEdit):
+            te = page
+            viewport = te.viewport()
+            doc = te.document()
+            old_page_size = doc.pageSize()
+            try:
+                doc.setPageSize(QSizeF(viewport.width(), -1))
+                h = int(doc.size().height())
+                w = viewport.width()
+                pm = QPixmap(max(w, 1), max(h, 1))
+                pm.fill(Qt.GlobalColor.white)
+                pt = QPainter(pm)
+                doc.drawContents(pt, QRectF(0, 0, w, h))
+                pt.end()
+                return pm
+            finally:
+                doc.setPageSize(old_page_size)
+
+        return page.grab()
+
+    def _render_default_pages_to_text(self, scope: str) -> str:
+        """渲染通用模式页面（详情/数据）为纯文本（不含原始 JSON）。"""
+        if scope == "all":
+            labels = ["【详情】", "【数据】"]
+            parts = []
+            for i in range(min(2, len(self._default_pages))):
+                t = self._default_pages[i].toPlainText().strip()
+                if not t or t.startswith("📋 使用说明") or "暂无" in t[:20]:
+                    continue
+                parts.append(f"{labels[i]}\n{t}")
+            return "\n\n".join(parts)
+        idx = self.stack.currentIndex()
+        if 0 <= idx < len(self._default_pages):
+            t = self._default_pages[idx].toPlainText()
+            if t.startswith("📋 使用说明"):
+                return ""
+            return t
+        return ""
+
+    @classmethod
+    def _render_sections_to_text(cls, sections: list[dict]) -> str:
+        """将 ship_presenter 输出的 sections 结构渲染为纯文本（键值面板格式）。"""
         lines: list[str] = []
         for sec in sections:
             label = sec.get("label", "")
@@ -3414,40 +3672,8 @@ class DetailPanel(QWidget):
             if title:
                 lines.append(title)
                 lines.append("─" * max(4, len(title) * 2))
-            for item in sec.get("items", []):
-                rt = item.get("row_type", "kv")
-                name = item.get("name", "")
-                if rt == "header":
-                    lines.append(f"【{name}】")
-                elif rt == "sub_header":
-                    lines.append(f"· {name}")
-                elif rt == "separator":
-                    lines.append("")
-                elif rt == "button_group":
-                    raw = item.get("raw_value", {})
-                    cur = raw.get("current", "") if isinstance(raw, dict) else ""
-                    if name:
-                        lines.append(f"{name}: {cur}".rstrip(": ") if cur else name)
-                    elif cur:
-                        lines.append(str(cur))
-                else:  # kv
-                    value = item.get("value", "")
-                    unit = item.get("unit", "")
-                    disp = f"{value} {unit}".strip() if unit and value else (value or unit or "")
-                    details = item.get("details", []) or []
-                    if details:
-                        lines.append(f"{name}: {disp}" if name else disp)
-                        for d in details:
-                            dn = d.get("name", "")
-                            dv = d.get("value", "")
-                            du = d.get("unit", "")
-                            dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
-                            if dn:
-                                lines.append(f"    {dn}: {dd}")
-                            elif dd:
-                                lines.append(f"    {dd}")
-                    else:
-                        lines.append(f"{name}: {disp}".rstrip(": ") if name else disp)
+            lines.extend(cls._render_items_to_text(sec.get("items", [])))
+            lines.extend(cls._render_ammo_to_text(sec.get("raw_ammo_types") or []))
             lines.append("")
         return "\n".join(lines).rstrip()
 
@@ -3889,13 +4115,6 @@ class DetailPanel(QWidget):
         self._active_sonar_key = ""
         self._active_hull_key = ""
         self._active_module_keys: dict[str, str] = {}
-        # 从 presenter 数据中获取基础配置字母
-        if self._current_analyzed:
-            _cb = self._current_analyzed.get("config_bar", {})
-            if _cb and isinstance(_cb, dict):
-                _stock_letter = _cb.get("_stock_config_letter", "")
-                if _stock_letter:
-                    self._active_config_letter = _stock_letter
 
         db = get_db()
         if db.exists:
@@ -3931,6 +4150,12 @@ class DetailPanel(QWidget):
         is_ship = len(sections) > 1
 
         if is_ship:
+            # 默认配置字母取 presenter 输出的 stock 配置（首次打开/切换船时）
+            _cb = (self._current_analyzed or {}).get("config_bar", {})
+            if isinstance(_cb, dict):
+                _stock = _cb.get("_stock_config_letter", "")
+                if _stock:
+                    self._active_config_letter = _stock
             extra = (self._current_analyzed or {}).get("extra")
             self._build_ship_pages(sections, extra)
             # 舰船模式合并为一页，隐藏 ModuleSelect

@@ -210,6 +210,23 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：创建 entity_snapshots 实体快照表（QRC 内嵌 SQL 过期时的兜底） ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS entity_snapshots (
+                version_code TEXT NOT NULL REFERENCES data_version_registry(version_code) ON DELETE CASCADE,
+                entity_id    TEXT NOT NULL,
+                entity_type  TEXT NOT NULL,
+                nation       TEXT,
+                data_json    TEXT NOT NULL,
+                json_len     INTEGER DEFAULT 0,
+                PRIMARY KEY (version_code, entity_id)
+            )""")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_snap_type ON entity_snapshots(version_code, entity_type)")
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：创建 consumable_buff 消耗品增益表（QRC 内嵌 SQL 过期时的兜底） ──
         try:
             self._conn.execute("""CREATE TABLE IF NOT EXISTS consumable_buff (
@@ -561,6 +578,25 @@ class DatabaseManager:
             "UPDATE data_version_registry SET entity_count=? WHERE version_code=?",
             (count, version_code))
         self._conn.commit()
+
+    def save_entity_snapshots(self, items: list[tuple[str, str, str, str]],
+                              version_code: str) -> int:
+        """批量写入实体快照到 entity_snapshots（版本级联删除）。
+
+        items 每项为 (entity_id, entity_type, nation, data_json)。
+        data_json 必须是规范化 JSON（sort_keys=True, ensure_ascii=False），
+        相同数据保证相同文本，供跨版本字符串比较判"未变"。
+        """
+        rows = [(version_code, eid, etype, nation or "", json_str, len(json_str or ""))
+                for eid, etype, nation, json_str in items]
+        if not rows:
+            return 0
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO entity_snapshots "
+            "(version_code, entity_id, entity_type, nation, data_json, json_len) "
+            "VALUES (?,?,?,?,?,?)", rows)
+        self._conn.commit()
+        return len(rows)
 
     # ── 查询 ───────────────────────────────────────────────
 

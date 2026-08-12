@@ -44,7 +44,7 @@ class SignalBus(QObject):
     can_process_data = Signal(bool)
 
     # ── 操作请求 ──────────────────────────────────────────
-    copy_ship_info = Signal()           # 请求将当前舰船全信息复制到剪贴板
+    copy_ship_info = Signal()           # 请求将当前信息面板完整内容复制到剪贴板（文本）
 
 
 # 全局单例 —— 整个应用共用这一个信号总线对象

@@ -149,6 +149,9 @@ class MainWindow(QMainWindow):
         assets_action = tools_menu.addAction("assets.bin 浏览器...")
         assets_action.triggered.connect(self._on_open_assets_viewer)
 
+        diff_action = tools_menu.addAction("版本数据比对...")
+        diff_action.triggered.connect(self._on_open_version_diff)
+
         settings_menu = menubar.addMenu("设置")
 
         adv_action = settings_menu.addAction("高级设置...")
@@ -172,6 +175,16 @@ class MainWindow(QMainWindow):
         self._assets_viewer.show()
         self._assets_viewer.raise_()
         self._assets_viewer.activateWindow()
+
+    def _on_open_version_diff(self) -> None:
+        """打开版本数据比对对话框（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
+        from ui.version_diff_dialog import VersionDiffDialog
+        if not hasattr(self, "_version_diff_dlg") or self._version_diff_dlg is None:
+            self._version_diff_dlg = VersionDiffDialog()
+            self._version_diff_dlg.center_on_screen(self)
+        self._version_diff_dlg.show()
+        self._version_diff_dlg.raise_()
+        self._version_diff_dlg.activateWindow()
 
     def _on_advanced_settings(self) -> None:
         from ui.advanced_settings import AdvancedSettingsDialog

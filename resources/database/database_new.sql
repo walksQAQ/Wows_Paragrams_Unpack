@@ -54,6 +54,25 @@ CREATE INDEX IF NOT EXISTS idx_registry_filter ON entity_registry(version_code, 
 
 
 -- ═════════════════════════════════════════════════════════════════════
+-- 2.5 实体快照层 (Entity Snapshots)
+--    导入时持久化每个实体的规范化 JSON，用于跨版本字段级比对。
+--    JSON 序列化规则与 processor_service._GPEncode 一致（剔除不可序列化
+--    字段 + sort_keys），相同数据必然得到相同文本，可直接字符串比较判"未变"。
+-- ═════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS entity_snapshots (
+    version_code TEXT NOT NULL REFERENCES data_version_registry(version_code) ON DELETE CASCADE,
+    entity_id    TEXT NOT NULL,
+    entity_type  TEXT NOT NULL,            -- 'ship','gun','projectile','plane','consumable','modernization','crew'
+    nation       TEXT,
+    data_json    TEXT NOT NULL,            -- json.dumps(规范化实体 dict, sort_keys=True, ensure_ascii=False)
+    json_len     INTEGER DEFAULT 0,        -- 便于统计/抽样
+    PRIMARY KEY (version_code, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_snap_type ON entity_snapshots(version_code, entity_type);
+
+
+-- ═════════════════════════════════════════════════════════════════════
 -- 3. 舰船基础信息层 (Ship Basic Info)
 -- ═════════════════════════════════════════════════════════════════════
 
