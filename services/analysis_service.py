@@ -668,7 +668,7 @@ class AnalysisStore:
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),
-                 _v(mod_data.get("rudderTime"), 0) * 0.77 if mod_data.get("rudderTime") else None,
+                 _v(mod_data.get("rudderTime"), 0) if mod_data.get("rudderTime") else None,
                  mod_data.get("visibilityFactor"), mod_data.get("visibilityFactorByPlane"),
                  mod_data.get("visibilityFactorByPlane"),
                  _bn(mod_data.get("Cit")),
@@ -705,7 +705,7 @@ class AnalysisStore:
                      hydro.get("updateFrequency"),
                      _json_dumps(hydro.get("workingBuoyancyStates")),
                      _json_dumps(hydro.get("detectableBuoyancyStates")),
-                     _v(mod_data.get("buoyancyRudderTime"), 0) * 0.77,
+                     _v(mod_data.get("buoyancyRudderTime"), 0),
                      mod_data.get("maxBuoyancySpeed")))
 
     def _write_hull_letter(self, ship_id: str, letter: str, raw_data: dict, version_code: str = ""):

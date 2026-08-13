@@ -19,3 +19,9 @@ app/_resources.py
 test_extract/
 uncode_assets/shaders.py
 todo_list/*.js
+
+_decompile/
+.venv38/
+docs/korabli-pyc-format.md
+docs/korabli-pyc-obfuscation-l2.md
+docs/shaders-format.md

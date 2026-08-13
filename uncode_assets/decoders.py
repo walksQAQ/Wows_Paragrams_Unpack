@@ -10,6 +10,7 @@ SkeletonPrototype / TrailPrototype / VfxMaterialPrototype / MiscSettingsPrototyp
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict, List, Optional
 
 from . import binary as B
@@ -37,6 +38,43 @@ def _f(v: float) -> float:
 
 def _arr(iterable) -> List:
     return list(iterable)
+
+
+_ASCII_RE = re.compile(rb"[\x20-\x7e]{3,}")
+
+
+def _extract_ascii_strings(data: bytes, limit: int = 50) -> List[str]:
+    """提取二进制区域中的内嵌可打印 ASCII 字符串（去重，限量）。"""
+    out: List[str] = []
+    seen = set()
+    for m in _ASCII_RE.finditer(data):
+        s = m.group().decode("ascii", "ignore")
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+            if len(out) >= limit:
+                break
+    return out
+
+
+_PARTICLE_HINTS = ("particle", ".effect", ".trail", ".vfx", "vfx", "fx/")
+
+
+def _is_particle_ref(s: str) -> bool:
+    low = s.lower()
+    return any(h in low for h in _PARTICLE_HINTS)
+
+
+def _particle_refs(data: bytes, db: PrototypeDatabase, pos: int, max_len: int) -> List[str]:
+    """扫描 OOL 区域中通过字符串表可反查的粒子相关引用路径。"""
+    refs: List[str] = []
+    end = min(pos + max_len, len(data))
+    for off in range(pos, end - 4, 4):
+        v = B.read_u32(data, off)
+        s = db.strings.get_string_by_id(v)
+        if s and _is_particle_ref(s) and s not in refs:
+            refs.append(s)
+    return refs
 
 
 # ── MaterialPrototype ─────────────────────────────────────────────────────
@@ -211,6 +249,14 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
                                           max_len=max(0, lod_end - lod_pos))
     else:
         result["lods_items"] = []
+
+    # 粒子相关引用（render_sets / lods 区域内可反查的粒子路径）
+    _p_refs: List[str] = []
+    for _rpos, _rlen in ((rs_pos, rs_end - rs_pos if rs_pos is not None else 0),
+                         (lod_pos, lod_end - lod_pos if lod_pos is not None else 0)):
+        if _rpos is not None and _rlen > 0:
+            _p_refs.extend(_particle_refs(data, db, _rpos, _rlen))
+    result["particle_refs"] = sorted(set(_p_refs))
     return result
 
 
@@ -519,7 +565,73 @@ def decode_misc_settings(data: bytes, db: PrototypeDatabase) -> dict:
     }
 
 
-# ── 通用解码（Effect / EffectPreset / EffectMetadata / AtlasContour / ModelFbx）─
+# ── EffectPrototype（粒子效果图）──────────────────────────────────────
+
+def decode_effect(data: bytes, db: PrototypeDatabase, record_base: int = 0,
+                  item_size: int = 0x10) -> dict:
+    """解码 EffectPrototype（0x10B/条，blob 5，粒子效果图，Korabli 实测）。
+
+    记录布局（2026-08-05 数据驱动逆向，relptr 基准=blob 起点）：
+      +0x00 f32  scalar（通常 -1.0 或正数，语义未知）
+      +0x04 u32  count（子节点/条目数）
+      +0x08 u32  relptr（本记录 OOL 区域起点）
+      +0x0C u32  pad
+    OOL 区域 = [relptr, 下一记录 relptr)，相邻记录 OOL 首尾相接无间隙。
+    OOL 内含内嵌原始字符串（如 "glow_0"）与重复的 -1.0f/1.0f/计数/偏移 节点模式。
+
+    本解码为尽力解析（wows-toolkit 亦无结构化解码）：
+      头部字段 + OOL 内嵌字符串 + 16B 对齐候选节点头（启发式）。
+    """
+    if len(data) < item_size:
+        raise ParseError(f"EffectPrototype 数据过短: {len(data)}")
+    scalar = B.read_f32(data, 0x00)
+    count = B.read_u32(data, 0x04)
+    rel = B.read_u32(data, 0x08)
+    pad = B.read_u32(data, 0x0C)
+
+    # OOL 区域（blob-absolute [rel, next_rel) → data 切片坐标）
+    ool_start = rel - record_base
+    ool_end = len(data)
+    if len(data) >= item_size + 8:
+        nrel = B.read_u32(data, item_size + 8)
+        if nrel > rel:
+            ool_end = nrel - record_base
+    region = b""
+    ool_len = 0
+    if 0 <= ool_start < len(data):
+        ool_len = max(0, min(ool_end, len(data)) - ool_start)
+        region = data[ool_start:ool_start + ool_len]
+
+    # 16B 对齐候选节点头（启发式：relptr 落在本记录可达范围内）
+    nodes: List[dict] = []
+    blob_end = len(data) + record_base
+    for p in range(0, len(region) - 15, 16):
+        r = B.read_u32(region, p + 8)
+        if 0 < r < blob_end:
+            nodes.append({
+                "offset": p,
+                "value": _f(B.read_f32(region, p)),
+                "count": B.read_u32(region, p + 4),
+                "relptr": r,
+                "pad": B.read_u32(region, p + 12),
+            })
+            if len(nodes) >= 32:
+                break
+
+    return {
+        "_type": "EffectPrototype",
+        "scalar": _f(scalar),
+        "count": count,
+        "relptr": rel,
+        "pad": pad,
+        "ool_size": ool_len,
+        "embedded_strings": _extract_ascii_strings(region, limit=40),
+        "candidate_nodes": nodes,
+        "ool_hex": region[:256].hex(),
+    }
+
+
+# ── 通用解码（EffectPreset / EffectMetadata / AtlasContour / ModelFbx / 未知）─
 
 def decode_generic(data: bytes, db: PrototypeDatabase, type_name: str, item_size: int) -> dict:
     """通用解码：输出原始字节 + 尽力解析 i64 相对指针字段。"""
@@ -576,7 +688,9 @@ def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[Prot
         return decode_vfx_material(data, db)
     if name == "MiscSettingsPrototype":
         return decode_misc_settings(data, db)
-    # ModelFbx / Effect / EffectPreset / EffectMetadata / AtlasContour / 未知
+    if name == "EffectPrototype":
+        return decode_effect(data, db, record_base)
+    # ModelFbx / EffectPreset / EffectMetadata / AtlasContour / 未知
     return decode_generic(data, db, name, item_size)
 
 

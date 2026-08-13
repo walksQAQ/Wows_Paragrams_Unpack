@@ -59,6 +59,7 @@ _NAME_INDEX = {t.name: t for t in KORABLI_TYPES}
 DECODABLE_TYPES = frozenset({
     "MaterialPrototype", "SkeletonPrototype", "VisualPrototype", "ModelPrototype",
     "MiscSettingsPrototype", "TrailPrototype", "VfxMaterialPrototype",
+    "EffectPrototype",
 })
 
 

@@ -51,8 +51,10 @@ class TopToolbar(QWidget):
         self.btn_load = QPushButton("📦  加载数据")
         self.btn_lang = QPushButton("🌐  加载文本")
         self.btn_refresh = QPushButton("🔄  刷新界面")
-        self.btn_copy = QPushButton("📋  复制当前舰船信息")
-        self.btn_copy.setToolTip("将当前选中舰船的完整信息面板以文本格式复制到剪贴板")
+        # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
+        self.btn_copy = QPushButton("📋  复制当前信息")
+        self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
+        self.btn_copy.setStyleSheet(self.BTN_STYLE)
 
         for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_copy):
             b.setStyleSheet(self.BTN_STYLE)

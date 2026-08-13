@@ -75,9 +75,11 @@ def run_process() -> None:
 
     db: DatabaseManager | None = None
 
-    def _finalize_import(db: DatabaseManager, db_batch: list, data_by_category: dict,
-                          data_dir, version_code: str) -> None:
+    def _finalize_import(db: DatabaseManager, db_batch: list, snapshots_batch: list,
+                          data_by_category: dict, data_dir, version_code: str) -> None:
         db.insert_entities_batch(db_batch, version_code=version_code)
+        # 同步写入实体快照（规范化 JSON），供跨版本字段级比对
+        db.save_entity_snapshots(snapshots_batch, version_code=version_code)
         bus.task_progress.emit(45, "步骤 2/3: 写入数据库实体")
         ms = db.import_name_mappings(str(data_dir))
         bus.task_progress.emit(60, "步骤 2/3: 导入名称映射")
@@ -95,12 +97,19 @@ def run_process() -> None:
     }
 
     def _collect_entity(k: str, v: dict, data_by_category: dict,
-                         db_batch: list, index) -> None:
+                         db_batch: list, snapshots_batch: list, index) -> None:
         t = v.get('typeinfo', {}).get('type', 'UnknownType')
         cat = TYPE_CATEGORY_MAP.get(t, None)
         if cat:
             data_by_category.setdefault(cat, {})[k] = v
         db_batch.append((str(t), k, v))
+        # 收集规范化快照 JSON（v 已通过 _GPEncode 清洗，可直接序列化）
+        snapshots_batch.append((
+            k,
+            DatabaseManager._entity_type(str(t)),
+            str(v.get('typeinfo', {}).get('nation', '')),
+            json.dumps(v, sort_keys=True, ensure_ascii=False),
+        ))
 
     def _process():
         nonlocal db
@@ -144,6 +153,7 @@ def run_process() -> None:
             bin_folder=app_ctx.ctx.bin_folder)
 
         db_batch: list[tuple[str, str, dict]] = []
+        snapshots_batch: list[tuple[str, str, str, str]] = []
         data_by_category: dict[str, dict[str, dict]] = {}
         sd = str(split_dir)
         do_write_json = app_ctx.config.keep_split_json
@@ -155,10 +165,10 @@ def run_process() -> None:
                 with ThreadPoolExecutor(max_workers=8) as tpe:
                     for k, v in ej.items():
                         tpe.submit(_write_one, k, v, None, sd)
-                        _collect_entity(k, v, data_by_category, db_batch, None)
+                        _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, None)
             else:
                 for k, v in ej.items():
-                    _collect_entity(k, v, data_by_category, db_batch, None)
+                    _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, None)
             msg = "Wargaming 拆分完成"
         else:
             for idx, elem in enumerate(data):
@@ -170,14 +180,14 @@ def run_process() -> None:
                     with ThreadPoolExecutor(max_workers=8) as tpe:
                         for k, v in ej.items():
                             tpe.submit(_write_one, k, v, ti, sd)
-                            _collect_entity(k, v, data_by_category, db_batch, ti)
+                            _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, ti)
                 else:
                     for k, v in ej.items():
-                        _collect_entity(k, v, data_by_category, db_batch, ti)
+                        _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, ti)
             msg = "Lesta 拆分完成"
 
         if db_batch:
-            _finalize_import(db, db_batch, data_by_category, data_dir, version_code)
+            _finalize_import(db, db_batch, snapshots_batch, data_by_category, data_dir, version_code)
         return True, msg
 
     def _ok(ret):
