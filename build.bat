@@ -43,7 +43,6 @@ echo [QRC] 资源编译完成。
     --output-dir="%OUTDIR%" ^
     --windows-console-mode=attach ^
     --enable-plugin=pyside6 ^
-    --include-data-file="tools/*.exe=tools/" ^
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-module=polib,requests ^

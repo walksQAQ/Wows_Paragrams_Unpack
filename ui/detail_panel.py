@@ -2057,7 +2057,7 @@ class DetailPanel(QWidget):
                 # 四列布局：主炮/副炮等武器位于舰载机列左侧
                 LABEL_TO_COL = {
                     "基础属性": 0, "消耗品数据": 0,
-                    "船体": 1, "支援": 1,
+                    "船体": 1, "引擎": 1, "支援": 1,
                     "主炮": 2, "副炮": 2, "次级主炮": 2,
                     "鱼雷": 2, "防空": 2, "深水炸弹": 3,
                     "舰载机": 3,
@@ -2067,7 +2067,7 @@ class DetailPanel(QWidget):
                 # 三列布局：深水炸弹移到第3列
                 LABEL_TO_COL = {
                     "基础属性": 0, "消耗品数据": 0,
-                    "船体": 1, "主炮": 1, "副炮": 1, "次级主炮": 1,
+                    "船体": 1, "引擎": 1, "主炮": 1, "副炮": 1, "次级主炮": 1,
                     "鱼雷": 1, "防空": 1, "深水炸弹": 2,
                     "舰载机": 2, "支援": 2,
                 }
@@ -3809,12 +3809,12 @@ class DetailPanel(QWidget):
                     if sp or lt:
                         kv("限制/扩散", f"速度 {sp}kts / {lt}s")
                 elif ct == "speedBoosters":
+                    # boostCoeff 已是小数加成（0.08 = +8%）；forwardEngineForsag/backwardEngineForsag 为倍率
                     bc = float(cfgd.get('boostCoeff', 0) or 0)
                     kv("最高航速", f"{bc*100:+.0f}%")
-                    fef = cfgd.get('forwardEngineForsag', 0)
-                    bef = cfgd.get('backwardEngineForsag', 0)
-                    if fef or bef:
-                        kv("推力", f"前进{fef*100:+.0f}% / 后退{bef*100:+.0f}%")
+                    fef = float(cfgd.get('forwardEngineForsag', 0) or 1)
+                    bef = float(cfgd.get('backwardEngineForsag', 0) or 1)
+                    kv("推力", f"前进 ×{fef:g} / 后退 ×{bef:g}")
                 elif ct == "sonar":
                     ds = float(cfgd.get('distShip', 0) or 0) * 0.03
                     dt = float(cfgd.get('distTorpedo', 0) or 0) * 0.03

@@ -598,12 +598,12 @@ class ShipPresenter(BasePresenter):
                     if sp or lt:
                         items.append(self.make_item(f"          速度限制: {sp}kts | 扩散: {lt}s", "", len(items)))
                 elif ct == "speedBoosters":
+                    # boostCoeff 已是小数加成（0.08 = +8%）；forwardEngineForsag/backwardEngineForsag 为倍率
                     bc = float(cfgd.get('boostCoeff', 0) or 0)
-                    items.append(self.make_item(f"          最高航速: {bc*100:+.2f}%", "", len(items)))
-                    fef = cfgd.get('forwardEngineForsag', 0)
-                    bef = cfgd.get('backwardEngineForsag', 0)
-                    if fef or bef:
-                        items.append(self.make_item(f"          推力: 前进{fef*100:+.0f}% / 后退{bef*100:+.0f}%", "", len(items)))
+                    items.append(self.make_item(f"          最高航速: {bc*100:+.0f}%", "", len(items)))
+                    fef = float(cfgd.get('forwardEngineForsag', 0) or 1)
+                    bef = float(cfgd.get('backwardEngineForsag', 0) or 1)
+                    items.append(self.make_item(f"          推力: 前进 ×{fef:g} / 后退 ×{bef:g}", "", len(items)))
                 elif ct == "sonar":
                     ds = float(cfgd.get('distShip', 0) or 0) * 0.03
                     dt = float(cfgd.get('distTorpedo', 0) or 0) * 0.03
@@ -883,6 +883,11 @@ class ShipPresenter(BasePresenter):
             self._build_air_support(conn, vc, ship_id, letter, asup_data)
             self._build_pinger(conn, vc, ship_id, letter, pinger_data, sonar_key)
 
+        # 先构建引擎卡片数据（用于插入船体卡片下方）
+        engine_data: dict[str, list[dict]] = {}
+        for letter in letters:
+            self._build_engine(conn, vc, ship_id, letter, engine_data, engine_letter)
+
         for label, data in [("船体", hull_data), ("主炮", arty_data),
                              ("次级主炮", secondary_arty_data), ("副炮", atba_data),
                              ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data),
@@ -917,6 +922,16 @@ class ShipPresenter(BasePresenter):
                 elif all_ammo:
                     section["raw_ammo_types"] = all_ammo
                 sections.append(section)
+                # 引擎卡片紧跟在船体卡片下方
+                if label == "船体" and engine_data:
+                    e_letters = sorted(engine_data.keys())
+                    e_items = {l: engine_data[l] for l in e_letters if engine_data.get(l)}
+                    e_all = e_items.get(e_letters[0], []) if e_letters else []
+                    e_sec = self.make_section("引擎", e_all)
+                    if len(e_letters) > 1:
+                        e_sec["_config_letters"] = e_letters
+                        e_sec["_items_by_letter"] = e_items
+                    sections.append(e_sec)
         # 舰载机独立处理：一个 section + 次级菜单
         plane_section = self._build_aircraft_panel(conn, vc, ship_id, letters, sections)
         if plane_section:
@@ -1027,37 +1042,6 @@ class ShipPresenter(BasePresenter):
                 v = h[col]
                 if v is not None:
                     items.append(self.make_item(label, f"{v:.1f}", o, unit=unit)); o += 1
-            # 引擎数据（引擎马力 + 航速修正）
-            eng_row = None
-            if engine_letter:
-                eng_row = conn.execute(
-                    "SELECT engine_power, speed_coef, forward_max_speed, forward_speed_on_flood, backward_speed_on_flood FROM ship_module_engine WHERE version_code=? AND ship_id=? AND module_key=?",
-                    (vc, ship_id, engine_letter)).fetchone()
-            if not eng_row:
-                eng_row = conn.execute(
-                    "SELECT engine_power, speed_coef, forward_max_speed, forward_speed_on_flood, backward_speed_on_flood FROM ship_module_engine WHERE version_code=? AND ship_id=? ORDER BY module_key LIMIT 1",
-                    (vc, ship_id)).fetchone()
-            if eng_row:
-                if eng_row['engine_power'] is not None:
-                    items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
-                # 航速：speedCoef != 0 时应用系数，否则用船体基础航速
-                base_speed = h['max_speed']
-                if base_speed is not None:
-                    sc = eng_row['speed_coef']
-                    if sc is not None and sc != 0:
-                        disp_speed = base_speed * (1 + sc)
-                        items.append(self.make_item("最大航速", f"{disp_speed:.2f}", o, unit="kts",
-                            details=[{"name": "基础航速", "value": f"{base_speed:.2f}", "unit": "kts"}])); o += 1
-                    else:
-                        items.append(self.make_item("最大航速", f"{base_speed:.2f}", o, unit="kts")); o += 1
-                # 进水时航速惩罚
-                fwd = eng_row['forward_speed_on_flood']
-                bwd = eng_row['backward_speed_on_flood']
-                if fwd is not None:
-                    items.append(self.make_item("进水前进速度", f"{fwd*100:+.0f}", o, unit="%")); o += 1
-                if bwd is not None:
-                    items.append(self.make_item("进水后退速度", f"{bwd*100:+.0f}", o, unit="%")); o += 1
-
             # 鱼雷防护 PTZ = (1 - 进水概率 × 3) × 100%
             if h['flood_prob'] is not None:
                 ptz = (1.0 - h['flood_prob'] * 3.0) * 100
@@ -1142,16 +1126,75 @@ class ShipPresenter(BasePresenter):
                     items.append(self.make_item("潜艇性能", "查看详情", o, details=sub_details))
                     o += 1
 
-        # 引擎数据（航速、引擎马力）从 ship_module_engine 按配置字母查询
-        _eng_letter = engine_letter or letter
-        eng_row = conn.execute(
-            "SELECT engine_power, forward_max_speed FROM ship_module_engine WHERE version_code=? AND ship_id=? AND config_group=?",
-            (vc, ship_id, _eng_letter)).fetchone()
-        if eng_row:
-            if eng_row['forward_max_speed'] is not None:
-                items.append(self.make_item("最大航速", f"{eng_row['forward_max_speed']:.2f}", o, unit="kts")); o += 1
-            if eng_row['engine_power'] is not None:
-                items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
+        if items:
+            result[letter] = items
+
+    def _build_engine(self, conn, vc, ship_id, letter, result, engine_letter=""):
+        """构建引擎独立卡片：马力、最大航速、弹射起步、全功率加速时间、进水惩罚"""
+        items: list[dict] = []
+        o = 0
+        eng_row = None
+        if engine_letter:
+            eng_row = conn.execute(
+                "SELECT * FROM ship_module_engine WHERE version_code=? AND ship_id=? AND module_key=?",
+                (vc, ship_id, engine_letter)).fetchone()
+        if not eng_row:
+            eng_row = conn.execute(
+                "SELECT * FROM ship_module_engine WHERE version_code=? AND ship_id=? ORDER BY module_key LIMIT 1",
+                (vc, ship_id)).fetchone()
+        if not eng_row:
+            return
+        # 船体基础航速（用于 speedCoef 修正显示）
+        base_speed = None
+        hrow = conn.execute(
+            "SELECT max_speed, tonnage FROM ship_module_hulls WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key LIMIT 1",
+            (vc, ship_id, f"{letter}%")).fetchone()
+        if hrow:
+            base_speed = hrow['max_speed']
+
+        if eng_row['engine_power'] is not None:
+            items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
+        # 推重比 = 引擎马力 / 排水量
+        tonnage = hrow['tonnage'] if hrow is not None else None
+        if eng_row['engine_power'] is not None and tonnage:
+            items.append(self.make_item("推重比", f"{eng_row['engine_power'] / tonnage:.2f}", o, unit="")); o += 1
+        # 最大航速：speedCoef != 0 时用船体基础航速×(1+speedCoef)，否则用船体基础航速
+        cur_max_speed = None
+        if base_speed is not None:
+            sc = eng_row['speed_coef']
+            if sc is not None and sc != 0:
+                cur_max_speed = base_speed * (1 + sc)
+                items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts",
+                    details=[{"name": "基础航速", "value": f"{base_speed:.2f}", "unit": "kts"}])); o += 1
+            else:
+                cur_max_speed = base_speed
+                items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts")); o += 1
+        elif eng_row['forward_max_speed'] is not None:
+            cur_max_speed = eng_row['forward_max_speed']
+            items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts")); o += 1
+        # 弹射起步航速（前进）：forwardEngineForsag == 1.75 时视为拥有弹射起步
+        ffp = eng_row['forward_forsage_power']
+        ffms = eng_row['forward_forsage_max_speed']
+        if ffp is not None and abs(float(ffp) - 1.75) < 1e-9 and ffms is not None:
+            items.append(self.make_item("弹射起步航速", f"{ffms:.1f}", o, unit="kts")); o += 1
+        # 弹射起步航速（后退）
+        bfms = eng_row['backward_forsage_max_speed']
+        if bfms is not None and bfms > 5:
+            items.append(self.make_item("弹射起步航速(后退)", f"{bfms:.1f}", o, unit="kts")); o += 1
+        # 全功率加速时间
+        fut = eng_row['forward_engine_up_time']
+        if fut is not None:
+            items.append(self.make_item("前进时达到引擎全功率所需加速时间", f"{fut:.1f}", o, unit="s")); o += 1
+        but_ = eng_row['backward_engine_up_time']
+        if but_ is not None:
+            items.append(self.make_item("后退时达到引擎全功率所需加速时间", f"{but_:.1f}", o, unit="s")); o += 1
+        # 进水时航速（计算后的实际航速 = 当前最大航速 × (1 + 惩罚系数)）
+        fwd = eng_row['forward_speed_on_flood']
+        bwd = eng_row['backward_speed_on_flood']
+        if fwd is not None and cur_max_speed is not None:
+            items.append(self.make_item("进水时前进速度", f"{cur_max_speed * (1 + fwd):.2f}", o, unit="kts")); o += 1
+        if bwd is not None and cur_max_speed is not None:
+            items.append(self.make_item("进水时后退速度", f"{cur_max_speed * (1 + bwd):.2f}", o, unit="kts")); o += 1
 
         if items:
             result[letter] = items
