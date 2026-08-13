@@ -1,5 +1,15 @@
 # 版本数据比对功能规划（GameParams 多版本 Diff + 比对界面）
 
+> **✅ 已完成（2026-08-13）** —— 本功能已完整实现并验证通过：
+>
+> - **快照存储**：新增 `entity_snapshots` 表（`resources/database/database_new.sql` 第 2.5 节 + `database_service.initialize()` 迁移兜底），导入时由 `processor_service._collect_entity` 写入规范化 JSON；`DatabaseManager.save_entity_snapshots` 批量写入（版本级联删除）
+> - **比对引擎**：`services/diff_service.py` —— `compare_entities`（实体级 added/removed/modified/unchanged + 按类型统计）、`diff_entity_fields`（字段级 path/base/target/kind）、`build_entity_tree`（完整字段树含差异标记，供信息面板展示）、`build_overview`
+> - **比对界面**：`ui/version_diff_dialog.py` 独立对话框（"工具 → 版本数据比对..."）—— 左=差异概览统计表 + 差异实体列表（筛选/搜索），右=信息面板式完整字段展示 + 三色高亮（新增绿/删除红/修改黄）+ 源/目标两列对照 + 分组差异徽标
+> - **菜单挂接**：`ui/main_window.py` `_on_open_version_diff`（懒创建单实例，复刻 assets 浏览器）
+> - **验证**：`_archive/scripts/test_diff_service.py`、`test_diff_dialog.py` 全部通过
+
+---
+
 > 需求：当**上一次导入的数据**与**这一次导入的数据**不同时，比对两个版本的数据有哪些不同之处，并新建一个界面，对**有变动的数据**进行比对显示。
 >
 > 基于现有软件代码设计。关联：`services/processor_service.py`、`services/database_service.py`、`services/analysis_service.py`、`ui/main_window.py`、`ui/detail_panel.py`。
