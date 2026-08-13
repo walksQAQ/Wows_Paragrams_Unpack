@@ -1247,6 +1247,7 @@ class AnalysisStore:
                "preparation_time, preparation_accel_increase, preparation_accel_decrease, "
                "aiming_time, aiming_accel_increase, aiming_accel_decrease, flight_height, "
                "attacker_size, num_planes_in_squadron, fuel_time, max_forsage_amount, "
+               "forsage_regeneration, forsage_regeneration_delay, "
                "hangar_max_value, hangar_start_value, hangar_restore_amount, hangar_time_to_restore, "
                "outer_salvo_size_x, outer_salvo_size_y, "
                "inner_salvo_size_x, inner_salvo_size_y, "
@@ -1260,7 +1261,7 @@ class AnalysisStore:
                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?,?,?,?)")
+               "?,?,?,?,?,?,?,?,?,?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
@@ -1288,6 +1289,8 @@ class AnalysisStore:
                       _i(raw_data.get("numPlanesInSquadron")),
                       _v(raw_data.get("fuelTime")),
                       _v(raw_data.get("maxForsageAmount")),
+                      _v(raw_data.get("forsageRegeneration")),
+                      _v(raw_data.get("forsageRegenerationDelay")),
                       _i(hs.get("maxValue")), _i(hs.get("startValue")),
                       _i(hs.get("restoreAmount")), _v(hs.get("timeToRestore")),
                       _unwrap_list(raw_data.get("outerSalvoSize"), 0),

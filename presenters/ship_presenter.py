@@ -66,6 +66,8 @@ class ShipPresenter(BasePresenter):
         "planeHangarRestoreAmount": "每次整备数量",
         "planeHangarTimeToRestore": "每次整备时间",
         "planeSpawnTime": "每次整备时间",
+        "planeForsageTimeCoeff": "引擎加速时间",
+        "planeHealthPerLevel": "单架飞机血量",
         "planeSpreadMultiplier": "最大散布",
         "planeSpeed": "航速",
         "planeTorpedoSpeedMultiplier": "航速",
@@ -203,6 +205,13 @@ class ShipPresenter(BasePresenter):
                 # planeAdditionalConsumables 影响"数量"（消耗品次数，加算）
                 elif mod_key in ("planeAdditionalConsumables", "additionalConsumables") and name == "数量":
                     field = name
+                # healForsageReloadCoeff：仅对引擎加力（healForsage）消耗品的"冷却时间"生效（精确匹配，避免误伤"引擎加速冷却时间"）
+                elif mod_key == "healForsageReloadCoeff":
+                    if not any(i.get("name") == "类型" and "healForsage" in str(i.get("value", "")) for i in items):
+                        continue
+                    field = "冷却时间"
+                    if field != name.strip():
+                        continue
                 else:
                     field = self.MODIFIER_MAP.get(mod_key)
                 if field and (field == name.strip() or name.strip().endswith(field)):
@@ -222,8 +231,8 @@ class ShipPresenter(BasePresenter):
                         # planeAdditionalConsumables 总是加算
                         if mod_key in ("planeAdditionalConsumables", "additionalConsumables", "crashCrewWorkTimeBonus"):
                             new_val = orig + mv
-                        # healthPerLevel：每个战舰等级提升的生命值（加算 × 等级）
-                        elif mod_key == "healthPerLevel":
+                        # healthPerLevel / planeHealthPerLevel：每个战舰等级提升的生命值（加算 × 等级）
+                        elif mod_key in ("healthPerLevel", "planeHealthPerLevel"):
                             _tier = getattr(self, '_current_tier', 0)
                             new_val = orig + mv * _tier
                         # 乘算系数 (0.5~1.5) vs 加算值
@@ -2184,7 +2193,12 @@ class ShipPresenter(BasePresenter):
                             if pid.get('max_speed'): items.append(self.make_item("航速", str(pid['max_speed']), o, unit="kts")); o += 1
                             if pid.get('cruising_speed'): items.append(self.make_item("巡航速度", str(pid['cruising_speed']), o, unit="kts")); o += 1
                         if pid.get('hp'): items.append(self.make_item("单架飞机血量", f"{pid['hp']:.0f}", o)); o += 1
-                        if pid.get('fuel_time'): items.append(self.make_item("加力条时长", f"{pid['fuel_time']:.0f}", o, unit="s")); o += 1
+                        _mfa = pid.get('max_forsage_amount')
+                        if _mfa:
+                            items.append(self.make_item("引擎加速时间", f"{_mfa:.0f}", o, unit="s")); o += 1
+                            _frg = pid.get('forsage_regeneration')
+                            if _frg:
+                                items.append(self.make_item("引擎加速冷却时间", f"{_mfa / _frg:.0f}", o, unit="s")); o += 1
                         _jato_dur = pid.get('jato_duration')
                         if _jato_dur:
                             items.append(self.make_item("喷气式助推器作用时间", f"{_jato_dur:.0f}", o, unit="s")); o += 1
@@ -2450,6 +2464,12 @@ class ShipPresenter(BasePresenter):
                             if ct == "crashCrew":
                                 con_detail.append(self.make_item("说明", "扑灭起火、清除进水、并修复受损配件。", cd2)); cd2 += 1
                             elif ct == "healForsage":
+                                _mfa = pid.get('max_forsage_amount')
+                                _frg = pid.get('forsage_regeneration')
+                                if _mfa:
+                                    con_detail.append(self.make_item("引擎加速时间", f"{_mfa:.0f}", cd2, unit="s")); cd2 += 1
+                                    if _frg:
+                                        con_detail.append(self.make_item("引擎加速冷却时间", f"{_mfa / _frg:.0f}", cd2, unit="s")); cd2 += 1
                                 bc = cd.get('boostCoeff', 0)
                                 if bc: con_detail.append(self.make_item("加速倍率", f"{bc}倍", cd2)); cd2 += 1
                             elif ct in ("callFighters", "fighter"):

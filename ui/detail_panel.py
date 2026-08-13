@@ -2363,6 +2363,7 @@ class DetailPanel(QWidget):
                     "中队规模", "中队飞机数量", "被侦测距离",
                     "最大可用数量", "开局可用数量", "每次整备数量", "每次整备时间",
                     "喷气式助推器作用时间", "喷气式助推器生效期间巡航速度",
+                    "引擎加速时间", "引擎加速冷却时间",
                 }
                 display_items = [it for it in items if it.get("name", "") in KEEP_NAMES]
                 tip_parts = []

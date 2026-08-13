@@ -226,6 +226,19 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 plane_basic_info 引擎加力回复列（用于计算加力冷却时间） ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            for col_name, col_type in [("forsage_regeneration", "REAL"), ("forsage_regeneration_delay", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：补齐 ship_module_hulls 排水量列（用于推重比计算） ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}

@@ -796,6 +796,8 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     num_planes_in_squadron INTEGER,
     fuel_time REAL,
     max_forsage_amount REAL,
+    forsage_regeneration REAL,
+    forsage_regeneration_delay REAL,
     -- 机库
     hangar_max_value INTEGER,
     hangar_start_value INTEGER,
