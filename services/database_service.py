@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 36
+DB_SCHEMA_VERSION = 38
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -207,6 +207,44 @@ class DatabaseManager:
                     except Exception:
                         pass
             self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_engine 引擎加力（弹射起步）/全功率加速时间列 ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_engine)").fetchall()}
+            for col_name, col_type in [("forward_forsage_max_speed", "REAL"),
+                                       ("backward_forsage_max_speed", "REAL"),
+                                       ("forward_engine_up_time", "REAL"),
+                                       ("backward_engine_up_time", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE ship_module_engine ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 plane_basic_info 引擎加力回复列（用于计算加力冷却时间） ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
+            for col_name, col_type in [("forsage_regeneration", "REAL"), ("forsage_regeneration_delay", "REAL")]:
+                if col_name not in existing:
+                    try:
+                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
+                    except Exception:
+                        pass
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：补齐 ship_module_hulls 排水量列（用于推重比计算） ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}
+            if "tonnage" not in existing:
+                self._conn.execute("ALTER TABLE ship_module_hulls ADD COLUMN tonnage REAL")
+                self._conn.commit()
         except Exception:
             pass
 

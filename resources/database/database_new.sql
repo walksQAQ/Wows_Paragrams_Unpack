@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS ship_module_hulls (
     hull_regen_part REAL,                -- 船体恢复比例
     citadel_regen_part REAL,             -- 核心恢复比例
     engine_power REAL,                   -- 引擎马力 (hp)
+    tonnage REAL,                        -- 排水量 (吨)
     length REAL,                         -- 舰长 (m)
     width REAL,                          -- 舰宽 (m)
     height REAL,                         -- 舰高 (m)
@@ -442,6 +443,10 @@ CREATE TABLE IF NOT EXISTS ship_module_engine (
     backward_max_speed REAL,
     forward_forsage_power REAL,
     backward_forsage_power REAL,
+    forward_forsage_max_speed REAL,    -- 前进引擎加力最大航速（弹射起步，节）
+    backward_forsage_max_speed REAL,   -- 后退引擎加力最大航速（节）
+    forward_engine_up_time REAL,       -- 前进加速到发动机全功率所需时间（s）
+    backward_engine_up_time REAL,      -- 后退加速到发动机全功率所需时间（s）
     forward_speed_on_flood REAL,       -- 进水时前进速度惩罚系数
     backward_speed_on_flood REAL,      -- 进水时后退速度惩罚系数
     speed_coef REAL,                   -- 航速修正系数：实际航速=船体基础航速×(1+speed_coef)
@@ -791,6 +796,8 @@ CREATE TABLE IF NOT EXISTS plane_basic_info (
     num_planes_in_squadron INTEGER,
     fuel_time REAL,
     max_forsage_amount REAL,
+    forsage_regeneration REAL,
+    forsage_regeneration_delay REAL,
     -- 机库
     hangar_max_value INTEGER,
     hangar_start_value INTEGER,

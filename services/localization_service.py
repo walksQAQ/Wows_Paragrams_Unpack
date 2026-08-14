@@ -265,6 +265,8 @@ def run_localization() -> None:
         return _extract_mappings(os.path.join(str(data_dir), "global.po"), str(data_dir))
 
     def _ok(stats):
+        # 由 threading_utils.run_async 投递到主线程执行：get_db() 写入与信号发射
+        # 都在主线程串行进行，避免与 __REFRESH__ 刷新并发访问同一 sqlite 连接导致崩溃。
         bus.task_progress.emit(45, "导入文本到数据库")
         bus.log_message.emit("✅ 语言文件加载完成")
         for k, v in stats.items():

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from presenters.base_presenter import BasePresenter, NM
 from models.name_mapping import Mapping
+from services.ballistics_service import BallisticsCalculator
 
 
 class ShipPresenter(BasePresenter):
@@ -66,6 +67,8 @@ class ShipPresenter(BasePresenter):
         "planeHangarRestoreAmount": "每次整备数量",
         "planeHangarTimeToRestore": "每次整备时间",
         "planeSpawnTime": "每次整备时间",
+        "planeForsageTimeCoeff": "引擎加速时间",
+        "planeHealthPerLevel": "单架飞机血量",
         "planeSpreadMultiplier": "最大散布",
         "planeSpeed": "航速",
         "planeTorpedoSpeedMultiplier": "航速",
@@ -203,6 +206,13 @@ class ShipPresenter(BasePresenter):
                 # planeAdditionalConsumables 影响"数量"（消耗品次数，加算）
                 elif mod_key in ("planeAdditionalConsumables", "additionalConsumables") and name == "数量":
                     field = name
+                # healForsageReloadCoeff：仅对引擎加力（healForsage）消耗品的"冷却时间"生效（精确匹配，避免误伤"引擎加速冷却时间"）
+                elif mod_key == "healForsageReloadCoeff":
+                    if not any(i.get("name") == "类型" and "healForsage" in str(i.get("value", "")) for i in items):
+                        continue
+                    field = "冷却时间"
+                    if field != name.strip():
+                        continue
                 else:
                     field = self.MODIFIER_MAP.get(mod_key)
                 if field and (field == name.strip() or name.strip().endswith(field)):
@@ -222,8 +232,8 @@ class ShipPresenter(BasePresenter):
                         # planeAdditionalConsumables 总是加算
                         if mod_key in ("planeAdditionalConsumables", "additionalConsumables", "crashCrewWorkTimeBonus"):
                             new_val = orig + mv
-                        # healthPerLevel：每个战舰等级提升的生命值（加算 × 等级）
-                        elif mod_key == "healthPerLevel":
+                        # healthPerLevel / planeHealthPerLevel：每个战舰等级提升的生命值（加算 × 等级）
+                        elif mod_key in ("healthPerLevel", "planeHealthPerLevel"):
                             _tier = getattr(self, '_current_tier', 0)
                             new_val = orig + mv * _tier
                         # 乘算系数 (0.5~1.5) vs 加算值
@@ -463,7 +473,7 @@ class ShipPresenter(BasePresenter):
                 if v: items.append(self.make_item("穿深", f"{v:.1f}", o, unit="mm")); o += 1
             elif ammo_type == "AP":
                 v = row['bullet_krupp']
-                if v: items.append(self.make_item("硬度", f"{v:.0f}", o)); o += 1
+                if v: items.append(self.make_item("弹头硬度", f"{v:.0f}", o)); o += 1
             else:
                 v = row['bullet_krupp']
                 if v: items.append(self.make_item("穿深", f"{v:.0f}", o)); o += 1
@@ -471,17 +481,20 @@ class ShipPresenter(BasePresenter):
             pass
         return o
 
-    def _append_ammo_extra(self, items: list, row, ammo_type: str, o: int) -> int:
-        """AP/CS/HE 专属属性：弹重、空气阻力系数、口径、跳弹角、引信等"""
+    def _append_ammo_extra(self, items: list, row, ammo_type: str, o: int, max_range_km: float | None = None) -> int:
+        """AP/CS/HE 专属属性：弹重、空气阻力系数、口径、跳弹角、引信等，并补充穿深摘要。
+
+        CS(SAP) 与 HE 穿深均为固定值，不显示参与弹道穿深计算的 AP 专属数据（引信、穿深摘要等）。
+        弹头硬度已由穿深/硬度行显示，不在此重复。AP 的穿深摘要固定显示在最后一条，
+        按出膛/10km/14km/18km 计算，主炮射程不足的预估值不显示。
+        """
         if ammo_type not in ("AP", "CS", "HE"):
             return o
-        
-        # ── 重点修复：如果 row 是 sqlite3.Row 或其他类字典对象，转为标准 dict ──
+
         if hasattr(row, 'keys'):
             row = dict(row)
 
         try:
-            # ── 通用基础属性 ──
             if row.get('bullet_mass'):
                 items.append(self.make_item("弹重", f"{row['bullet_mass']:.2f}", o, unit="kg")); o += 1
             if row.get('bullet_air_drag'):
@@ -489,7 +502,6 @@ class ShipPresenter(BasePresenter):
             if row.get('bullet_diameter'):
                 items.append(self.make_item("口径", f"{row['bullet_diameter']*1000:.2f}", o, unit="mm")); o += 1
 
-            # ── AP / CS 穿甲属性 ──
             if ammo_type in ("AP", "CS"):
                 if row.get('bullet_always_ricochet_at'):
                     items.append(self.make_item("强制跳弹角", f"{row['bullet_always_ricochet_at']:.1f}", o, unit="°")); o += 1
@@ -498,17 +510,57 @@ class ShipPresenter(BasePresenter):
                 if row.get('bullet_cap_normalize_max'):
                     items.append(self.make_item("弹头转正角", f"{row['bullet_cap_normalize_max']:.1f}", o, unit="°")); o += 1
 
-            # ── AP 专有属性 ──
+            # AP 专属：引信数据（弹头硬度已由穿深/硬度行显示，不重复）。
             if ammo_type == "AP":
                 if row.get('bullet_detonator'):
                     items.append(self.make_item("引信长度", f"{row['bullet_detonator']}", o, unit="s")); o += 1
                 if row.get('bullet_detonator_threshold'):
                     items.append(self.make_item("引信触发阈值", f"{row['bullet_detonator_threshold']:.0f}", o, unit="mm")); o += 1
 
-        except (KeyError, IndexError, TypeError):
+            if ammo_type == "HE":
+                he_value = row.get('alpha_piercing_he') or 0
+                if he_value:
+                    items.append(self.make_item("HE 固定穿深", f"{float(he_value):.0f}", o, unit="mm")); o += 1
+
+            # AP 穿深摘要：固定显示在最后一条
+            if ammo_type == "AP":
+                summary = self._build_ap_pen_summary(row, max_range_km)
+                if summary:
+                    items.append(self.make_item("穿深摘要", summary, o)); o += 1
+
+        except (KeyError, IndexError, TypeError, ValueError):
             pass
 
         return o
+
+    @staticmethod
+    def _build_ap_pen_summary(row, max_range_km: float | None = None) -> str:
+        """构建 AP 穿深摘要：出膛/10km/14km/18km（主炮射程不足的距离不显示）。
+
+        使用真实弹道模拟的着速计算绝对穿深，返回多行文本（\n 换行，渲染端支持自动换行）。
+        """
+        try:
+            if hasattr(row, 'keys'):
+                row = dict(row)
+            mass = float(row.get('bullet_mass') or 0.0)
+            caliber = float(row.get('bullet_diameter') or 0.0)
+            air_drag = float(row.get('bullet_air_drag') or 0.0)
+            velocity = float(row.get('bullet_speed') or 0.0)
+            krupp = float(row.get('bullet_krupp') or 0.0)
+            if mass <= 0 or caliber <= 0 or air_drag <= 0 or velocity <= 0 or krupp <= 0:
+                return ""
+            bc = BallisticsCalculator()
+            ballistics = bc.calculate_full_ballistics(mass, caliber, air_drag, velocity, krupp)
+            lines = []
+            for dist_km, label in ((0.0, "出膛"), (10.0, "10km"), (14.0, "14km"), (18.0, "18km")):
+                if max_range_km is not None and dist_km > float(max_range_km):
+                    continue
+                pt = bc.interpolate_at_distance(ballistics, dist_km)
+                pen = bc.calc_v3_penetration(krupp, mass, pt["velocity"], caliber)
+                lines.append(f"{label} ≈ {pen:.0f}mm")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _append_consumables(self, conn, vc, ship_id, sections):
         slots = conn.execute(
@@ -598,12 +650,12 @@ class ShipPresenter(BasePresenter):
                     if sp or lt:
                         items.append(self.make_item(f"          速度限制: {sp}kts | 扩散: {lt}s", "", len(items)))
                 elif ct == "speedBoosters":
+                    # boostCoeff 已是小数加成（0.08 = +8%）；forwardEngineForsag/backwardEngineForsag 为倍率
                     bc = float(cfgd.get('boostCoeff', 0) or 0)
-                    items.append(self.make_item(f"          最高航速: {bc*100:+.2f}%", "", len(items)))
-                    fef = cfgd.get('forwardEngineForsag', 0)
-                    bef = cfgd.get('backwardEngineForsag', 0)
-                    if fef or bef:
-                        items.append(self.make_item(f"          推力: 前进{fef*100:+.0f}% / 后退{bef*100:+.0f}%", "", len(items)))
+                    items.append(self.make_item(f"          最高航速: {bc*100:+.0f}%", "", len(items)))
+                    fef = float(cfgd.get('forwardEngineForsag', 0) or 1)
+                    bef = float(cfgd.get('backwardEngineForsag', 0) or 1)
+                    items.append(self.make_item(f"          推力: 前进 ×{fef:g} / 后退 ×{bef:g}", "", len(items)))
                 elif ct == "sonar":
                     ds = float(cfgd.get('distShip', 0) or 0) * 0.03
                     dt = float(cfgd.get('distTorpedo', 0) or 0) * 0.03
@@ -883,6 +935,11 @@ class ShipPresenter(BasePresenter):
             self._build_air_support(conn, vc, ship_id, letter, asup_data)
             self._build_pinger(conn, vc, ship_id, letter, pinger_data, sonar_key)
 
+        # 先构建引擎卡片数据（用于插入船体卡片下方）
+        engine_data: dict[str, list[dict]] = {}
+        for letter in letters:
+            self._build_engine(conn, vc, ship_id, letter, engine_data, engine_letter)
+
         for label, data in [("船体", hull_data), ("主炮", arty_data),
                              ("次级主炮", secondary_arty_data), ("副炮", atba_data),
                              ("鱼雷", torp_data), ("防空", aa_data), ("深水炸弹", dc_data),
@@ -917,6 +974,16 @@ class ShipPresenter(BasePresenter):
                 elif all_ammo:
                     section["raw_ammo_types"] = all_ammo
                 sections.append(section)
+                # 引擎卡片紧跟在船体卡片下方
+                if label == "船体" and engine_data:
+                    e_letters = sorted(engine_data.keys())
+                    e_items = {l: engine_data[l] for l in e_letters if engine_data.get(l)}
+                    e_all = e_items.get(e_letters[0], []) if e_letters else []
+                    e_sec = self.make_section("引擎", e_all)
+                    if len(e_letters) > 1:
+                        e_sec["_config_letters"] = e_letters
+                        e_sec["_items_by_letter"] = e_items
+                    sections.append(e_sec)
         # 舰载机独立处理：一个 section + 次级菜单
         plane_section = self._build_aircraft_panel(conn, vc, ship_id, letters, sections)
         if plane_section:
@@ -1027,37 +1094,6 @@ class ShipPresenter(BasePresenter):
                 v = h[col]
                 if v is not None:
                     items.append(self.make_item(label, f"{v:.1f}", o, unit=unit)); o += 1
-            # 引擎数据（引擎马力 + 航速修正）
-            eng_row = None
-            if engine_letter:
-                eng_row = conn.execute(
-                    "SELECT engine_power, speed_coef, forward_max_speed, forward_speed_on_flood, backward_speed_on_flood FROM ship_module_engine WHERE version_code=? AND ship_id=? AND module_key=?",
-                    (vc, ship_id, engine_letter)).fetchone()
-            if not eng_row:
-                eng_row = conn.execute(
-                    "SELECT engine_power, speed_coef, forward_max_speed, forward_speed_on_flood, backward_speed_on_flood FROM ship_module_engine WHERE version_code=? AND ship_id=? ORDER BY module_key LIMIT 1",
-                    (vc, ship_id)).fetchone()
-            if eng_row:
-                if eng_row['engine_power'] is not None:
-                    items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
-                # 航速：speedCoef != 0 时应用系数，否则用船体基础航速
-                base_speed = h['max_speed']
-                if base_speed is not None:
-                    sc = eng_row['speed_coef']
-                    if sc is not None and sc != 0:
-                        disp_speed = base_speed * (1 + sc)
-                        items.append(self.make_item("最大航速", f"{disp_speed:.2f}", o, unit="kts",
-                            details=[{"name": "基础航速", "value": f"{base_speed:.2f}", "unit": "kts"}])); o += 1
-                    else:
-                        items.append(self.make_item("最大航速", f"{base_speed:.2f}", o, unit="kts")); o += 1
-                # 进水时航速惩罚
-                fwd = eng_row['forward_speed_on_flood']
-                bwd = eng_row['backward_speed_on_flood']
-                if fwd is not None:
-                    items.append(self.make_item("进水前进速度", f"{fwd*100:+.0f}", o, unit="%")); o += 1
-                if bwd is not None:
-                    items.append(self.make_item("进水后退速度", f"{bwd*100:+.0f}", o, unit="%")); o += 1
-
             # 鱼雷防护 PTZ = (1 - 进水概率 × 3) × 100%
             if h['flood_prob'] is not None:
                 ptz = (1.0 - h['flood_prob'] * 3.0) * 100
@@ -1142,16 +1178,75 @@ class ShipPresenter(BasePresenter):
                     items.append(self.make_item("潜艇性能", "查看详情", o, details=sub_details))
                     o += 1
 
-        # 引擎数据（航速、引擎马力）从 ship_module_engine 按配置字母查询
-        _eng_letter = engine_letter or letter
-        eng_row = conn.execute(
-            "SELECT engine_power, forward_max_speed FROM ship_module_engine WHERE version_code=? AND ship_id=? AND config_group=?",
-            (vc, ship_id, _eng_letter)).fetchone()
-        if eng_row:
-            if eng_row['forward_max_speed'] is not None:
-                items.append(self.make_item("最大航速", f"{eng_row['forward_max_speed']:.2f}", o, unit="kts")); o += 1
-            if eng_row['engine_power'] is not None:
-                items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
+        if items:
+            result[letter] = items
+
+    def _build_engine(self, conn, vc, ship_id, letter, result, engine_letter=""):
+        """构建引擎独立卡片：马力、最大航速、弹射起步、全功率加速时间、进水惩罚"""
+        items: list[dict] = []
+        o = 0
+        eng_row = None
+        if engine_letter:
+            eng_row = conn.execute(
+                "SELECT * FROM ship_module_engine WHERE version_code=? AND ship_id=? AND module_key=?",
+                (vc, ship_id, engine_letter)).fetchone()
+        if not eng_row:
+            eng_row = conn.execute(
+                "SELECT * FROM ship_module_engine WHERE version_code=? AND ship_id=? ORDER BY module_key LIMIT 1",
+                (vc, ship_id)).fetchone()
+        if not eng_row:
+            return
+        # 船体基础航速（用于 speedCoef 修正显示）
+        base_speed = None
+        hrow = conn.execute(
+            "SELECT max_speed, tonnage FROM ship_module_hulls WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key LIMIT 1",
+            (vc, ship_id, f"{letter}%")).fetchone()
+        if hrow:
+            base_speed = hrow['max_speed']
+
+        if eng_row['engine_power'] is not None:
+            items.append(self.make_item("引擎马力", f"{eng_row['engine_power']:.0f}", o, unit="HP")); o += 1
+        # 推重比 = 引擎马力 / 排水量
+        tonnage = hrow['tonnage'] if hrow is not None else None
+        if eng_row['engine_power'] is not None and tonnage:
+            items.append(self.make_item("推重比", f"{eng_row['engine_power'] / tonnage:.2f}", o, unit="")); o += 1
+        # 最大航速：speedCoef != 0 时用船体基础航速×(1+speedCoef)，否则用船体基础航速
+        cur_max_speed = None
+        if base_speed is not None:
+            sc = eng_row['speed_coef']
+            if sc is not None and sc != 0:
+                cur_max_speed = base_speed * (1 + sc)
+                items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts",
+                    details=[{"name": "基础航速", "value": f"{base_speed:.2f}", "unit": "kts"}])); o += 1
+            else:
+                cur_max_speed = base_speed
+                items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts")); o += 1
+        elif eng_row['forward_max_speed'] is not None:
+            cur_max_speed = eng_row['forward_max_speed']
+            items.append(self.make_item("最大航速", f"{cur_max_speed:.2f}", o, unit="kts")); o += 1
+        # 弹射起步航速（前进）：forwardEngineForsag == 1.75 时视为拥有弹射起步
+        ffp = eng_row['forward_forsage_power']
+        ffms = eng_row['forward_forsage_max_speed']
+        if ffp is not None and abs(float(ffp) - 1.75) < 1e-9 and ffms is not None:
+            items.append(self.make_item("弹射起步航速", f"{ffms:.1f}", o, unit="kts")); o += 1
+        # 弹射起步航速（后退）
+        bfms = eng_row['backward_forsage_max_speed']
+        if bfms is not None and bfms > 5:
+            items.append(self.make_item("弹射起步航速(后退)", f"{bfms:.1f}", o, unit="kts")); o += 1
+        # 全功率加速时间
+        fut = eng_row['forward_engine_up_time']
+        if fut is not None:
+            items.append(self.make_item("前进时达到引擎全功率所需加速时间", f"{fut:.1f}", o, unit="s")); o += 1
+        but_ = eng_row['backward_engine_up_time']
+        if but_ is not None:
+            items.append(self.make_item("后退时达到引擎全功率所需加速时间", f"{but_:.1f}", o, unit="s")); o += 1
+        # 进水时航速（计算后的实际航速 = 当前最大航速 × (1 + 惩罚系数)）
+        fwd = eng_row['forward_speed_on_flood']
+        bwd = eng_row['backward_speed_on_flood']
+        if fwd is not None and cur_max_speed is not None:
+            items.append(self.make_item("进水时前进速度", f"{cur_max_speed * (1 + fwd):.2f}", o, unit="kts")); o += 1
+        if bwd is not None and cur_max_speed is not None:
+            items.append(self.make_item("进水时后退速度", f"{cur_max_speed * (1 + bwd):.2f}", o, unit="kts")); o += 1
 
         if items:
             result[letter] = items
@@ -1182,8 +1277,8 @@ class ShipPresenter(BasePresenter):
             if g['reload_time']: items.append(self.make_item("装填时间", str(g['reload_time']), o, unit="s")); o += 1
             # 射程 × maxDistCoef
             base_range = g['max_range']
+            disp_range = base_range
             if base_range:
-                disp_range = base_range
                 if fc and fc['max_dist_coef'] is not None and fc['max_dist_coef'] != 1.0:
                     disp_range = base_range * fc['max_dist_coef']
                     items.append(self.make_item("最大射程", f"{disp_range:.2f}", o, unit="km",
@@ -1239,7 +1334,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=disp_range or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
             # 特殊机制
             ext = conn.execute(
@@ -1593,7 +1688,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
             result[letter] = (items, raw_ammo_types)
@@ -1648,7 +1743,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
             result[letter] = (items, raw_ammo_types)
@@ -2141,7 +2236,12 @@ class ShipPresenter(BasePresenter):
                             if pid.get('max_speed'): items.append(self.make_item("航速", str(pid['max_speed']), o, unit="kts")); o += 1
                             if pid.get('cruising_speed'): items.append(self.make_item("巡航速度", str(pid['cruising_speed']), o, unit="kts")); o += 1
                         if pid.get('hp'): items.append(self.make_item("单架飞机血量", f"{pid['hp']:.0f}", o)); o += 1
-                        if pid.get('fuel_time'): items.append(self.make_item("加力条时长", f"{pid['fuel_time']:.0f}", o, unit="s")); o += 1
+                        _mfa = pid.get('max_forsage_amount')
+                        if _mfa:
+                            items.append(self.make_item("引擎加速时间", f"{_mfa:.0f}", o, unit="s")); o += 1
+                            _frg = pid.get('forsage_regeneration')
+                            if _frg:
+                                items.append(self.make_item("引擎加速冷却时间", f"{_mfa / _frg:.0f}", o, unit="s")); o += 1
                         _jato_dur = pid.get('jato_duration')
                         if _jato_dur:
                             items.append(self.make_item("喷气式助推器作用时间", f"{_jato_dur:.0f}", o, unit="s")); o += 1
@@ -2407,6 +2507,12 @@ class ShipPresenter(BasePresenter):
                             if ct == "crashCrew":
                                 con_detail.append(self.make_item("说明", "扑灭起火、清除进水、并修复受损配件。", cd2)); cd2 += 1
                             elif ct == "healForsage":
+                                _mfa = pid.get('max_forsage_amount')
+                                _frg = pid.get('forsage_regeneration')
+                                if _mfa:
+                                    con_detail.append(self.make_item("引擎加速时间", f"{_mfa:.0f}", cd2, unit="s")); cd2 += 1
+                                    if _frg:
+                                        con_detail.append(self.make_item("引擎加速冷却时间", f"{_mfa / _frg:.0f}", cd2, unit="s")); cd2 += 1
                                 bc = cd.get('boostCoeff', 0)
                                 if bc: con_detail.append(self.make_item("加速倍率", f"{bc}倍", cd2)); cd2 += 1
                             elif ct in ("callFighters", "fighter"):
@@ -2581,7 +2687,7 @@ class ShipPresenter(BasePresenter):
                                     elif atype == "CS":
                                         if ext['alpha_piercing_cs']: detail_items.append(self.make_item("穿深", f"{ext['alpha_piercing_cs']:.1f}", di, unit="mm")); di += 1
                                     else:
-                                        if ext['bullet_krupp']: detail_items.append(self.make_item("硬度", f"{ext['bullet_krupp']:.0f}", di)); di += 1
+                                        if ext['bullet_krupp']: detail_items.append(self.make_item("弹头硬度", f"{ext['bullet_krupp']:.0f}", di)); di += 1
                                     if ext['bullet_speed']: detail_items.append(self.make_item("弹速", f"{ext['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                                     if ext['burn_prob'] is not None and atype == "HE": detail_items.append(self.make_item("起火概率", f"{ext['burn_prob']*100:.2f}", di, unit="%")); di += 1
                                     if atype in ("AP", "CS"):

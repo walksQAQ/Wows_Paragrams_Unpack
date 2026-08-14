@@ -660,11 +660,11 @@ class AnalysisStore:
                 (version_code, ship_id, config_group, module_key, health, max_speed,
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  visibility_factor_by_plane, has_citadel,
-                 hull_regen_part, citadel_regen_part, engine_power,
+                 hull_regen_part, citadel_regen_part, engine_power, tonnage,
                  length, width, height,
                  draft, torpedo_protection, fire_duration, flood_duration,
                  fire_prob, flood_prob, fire_dps, flood_dps)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),
@@ -674,6 +674,7 @@ class AnalysisStore:
                  _bn(mod_data.get("Cit")),
                  hull.get("regeneratedHPPart"), cit.get("regeneratedHPPart"),
                  mod_data.get("enginePower"),
+                 _v(mod_data.get("tonnage")),
                  _v((mod_data.get("size") or [None])[0]) if mod_data.get("size") and len(mod_data["size"]) > 0 else None,
                  _v((mod_data.get("size") or [None])[1]) if mod_data.get("size") and len(mod_data["size"]) > 1 else None,
                  _v((mod_data.get("size") or [None])[2]) if mod_data.get("size") and len(mod_data["size"]) > 2 else None,
@@ -776,12 +777,18 @@ class AnalysisStore:
                    (version_code, ship_id, config_group, module_key,
                     engine_type, engine_power, forward_max_speed, backward_max_speed,
                     forward_forsage_power, backward_forsage_power,
+                    forward_forsage_max_speed, backward_forsage_max_speed,
+                    forward_engine_up_time, backward_engine_up_time,
                     forward_speed_on_flood, backward_speed_on_flood, speed_coef)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, ek,
                  engine_type, engine_power, fwd_speed, bwd_speed,
-                 eng.get("forwardEngineForsag") or eng.get("forwardEngineForsagMaxSpeed"),
-                 eng.get("backwardEngineForsag") or eng.get("backwardEngineForsagMaxSpeed"),
+                 eng.get("forwardEngineForsag"),
+                 eng.get("backwardEngineForsag"),
+                 _v(eng.get("forwardEngineForsagMaxSpeed")),
+                 _v(eng.get("backwardEngineForsagMaxSpeed")),
+                 _v(eng.get("forwardEngineUpTime")),
+                 _v(eng.get("backwardEngineUpTime")),
                  _v(eng.get("forwardSpeedOnFlood")),
                  _v(eng.get("backwardSpeedOnFlood")),
                  speed_coef))
@@ -1240,6 +1247,7 @@ class AnalysisStore:
                "preparation_time, preparation_accel_increase, preparation_accel_decrease, "
                "aiming_time, aiming_accel_increase, aiming_accel_decrease, flight_height, "
                "attacker_size, num_planes_in_squadron, fuel_time, max_forsage_amount, "
+               "forsage_regeneration, forsage_regeneration_delay, "
                "hangar_max_value, hangar_start_value, hangar_restore_amount, hangar_time_to_restore, "
                "outer_salvo_size_x, outer_salvo_size_y, "
                "inner_salvo_size_x, inner_salvo_size_y, "
@@ -1253,7 +1261,7 @@ class AnalysisStore:
                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-               "?,?,?,?,?,?,?,?,?,?,?)")
+               "?,?,?,?,?,?,?,?,?,?,?,?,?)")
         conn.execute(sql,
                      (version_code, plane_id,
                       raw_data.get("index", plane_id), _i(raw_data.get("id")),
@@ -1281,6 +1289,8 @@ class AnalysisStore:
                       _i(raw_data.get("numPlanesInSquadron")),
                       _v(raw_data.get("fuelTime")),
                       _v(raw_data.get("maxForsageAmount")),
+                      _v(raw_data.get("forsageRegeneration")),
+                      _v(raw_data.get("forsageRegenerationDelay")),
                       _i(hs.get("maxValue")), _i(hs.get("startValue")),
                       _i(hs.get("restoreAmount")), _v(hs.get("timeToRestore")),
                       _unwrap_list(raw_data.get("outerSalvoSize"), 0),

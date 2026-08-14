@@ -191,6 +191,10 @@ def run_process() -> None:
         return True, msg
 
     def _ok(ret):
+        # 由 threading_utils.run_async 投递到主线程执行：所有 UI 信号发射与
+        # 数据库收尾（reset_db 关闭连接）都在主线程串行进行，避免后台线程
+        # 关闭主线程正在使用的 sqlite 连接，引发"进度到最后时莫名崩溃"
+        # （sqlite C 扩展段错误，无 traceback，打包后更易触发）。
         ok, msg = ret
         if ok:
             try:
@@ -223,6 +227,7 @@ def run_process() -> None:
             bus.data_processed.emit(False)
 
     def _err(msg: str):
+        # 由 run_async 在主线程执行，保证信号只在主线程发射
         bus.log_message.emit(f"❌ 解析失败: {msg}")
         bus.data_processed.emit(False)
 

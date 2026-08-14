@@ -1,6 +1,39 @@
-All Rights Reserved
+双授权声明（Dual Licensing）
+============================
 
-Copyright © 2024 walker
+本仓库包含两种授权：
+
+1. **All Rights Reserved (ARR)**：除特别声明外，其余全部代码与文档
+   保留所有权利，未经版权所有者明确书面许可，不得以任何形式复制、
+   分发或修改。
+
+2. **GNU General Public License v3.0（或更高版本）**：`data_extractor/kraken.py`
+   是基于 domdfcoding/kraken-decompressor (GPLv3) 的移植代码，按 GPLv3 授权，
+   全文见 LICENSE.GPLv3 与该文件头部的许可证声明。
+
+Copyright © 2026 walksQAQ
+
+---
+
+English Version / 英文版本
+=========================
+
+This repository is offered under two licensing arrangements:
+
+1. **All Rights Reserved (ARR)**: Except where expressly stated otherwise,
+   all code and documentation in this repository are retained under all rights.
+   Without the explicit prior written permission of the copyright holder,
+   no copying, distribution, modification, or derivative use is permitted in any form.
+
+2. **GNU General Public License v3.0 or later**: `data_extractor/kraken.py`
+   is a port based on domdfcoding/kraken-decompressor (GPLv3), and is distributed
+   under the GPLv3 terms. See LICENSE.GPLv3 and the license notice in the file header.
+
+Copyright © 2026 walksQAQ
+
+---
+
+All Rights Reserved
 
 Permission is NOT granted to any person or entity to copy, modify,
 merge, publish, distribute, sublicense, or sell copies of this software
@@ -14,3 +47,20 @@ authors or copyright holders be liable for any claim, damages or other
 liability, whether in an action of contract, tort or otherwise, arising
 from, out of or in connection with the Software or the use or other
 dealings in the Software.
+
+---
+
+中文：第三方组件与许可声明
+------------------------
+
+- 本软件为独立实现；`data_extractor/kraken.py` 为 GPLv3 移植代码，其余部分不含 GPL/LGPL 衍生代码。
+- 所引用的第三方项目、格式规范与游戏数据均归其各自版权所有者所有，
+  详见 README.md「引用与技术来源」章节。
+
+English: Third-Party Components and Licensing Notice
+----------------------------------------------------
+
+- This software is independently implemented; `data_extractor/kraken.py` is GPLv3-licensed ported code,
+  and the remaining portions do not contain GPL/LGPL-derived code.
+- The referenced third-party projects, format specifications, and game data remain the property of their
+  respective copyright holders, as described in the README.md section "References and Technical Sources".
