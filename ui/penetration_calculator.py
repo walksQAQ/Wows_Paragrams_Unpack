@@ -466,6 +466,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.chart_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.chart_label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
         self.chart_layout.addWidget(self.chart_label)
+        self.chart_label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
         self.chart_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.chart_container.setMinimumHeight(180)
         self.chart_container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
@@ -557,6 +558,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.flytime_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.flytime_label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
         self.flytime_layout.addWidget(self.flytime_label)
+        self.flytime_label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
         self.flytime_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.flytime_container.setMinimumHeight(180)
         self.flytime_container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
@@ -574,6 +576,7 @@ class PenetrationCalculatorDialog(QDialog):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
             layout.addWidget(label)
+            label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
             container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             container.setMinimumHeight(180)
             container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
@@ -605,7 +608,7 @@ class PenetrationCalculatorDialog(QDialog):
         # 双保险：completer popup 的点击/回车也直接选中（QCompleter 内部转发可能不完全）
         self._ship_completer.popup().activated.connect(self._on_completer_index)
         self._ship_completer.popup().clicked.connect(self._on_completer_index)
-        self.gun_cb.currentIndexChanged.connect(self._reload_ammo)
+        self.gun_cb.currentIndexChanged.connect(self._on_gun_changed)
         self.add_cmp_btn.clicked.connect(self._add_custom_series)
         self.custom_btn.clicked.connect(self._open_custom_weapon_dialog)
         self.side_clear_btn.clicked.connect(self._clear_side)
@@ -799,12 +802,19 @@ class PenetrationCalculatorDialog(QDialog):
                 """
                 SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier, er.nation
                 FROM ship_basic_info sb
-                INNER JOIN ship_module_artillery g
+                LEFT JOIN ship_module_artillery g
                     ON g.version_code = sb.version_code
                     AND g.ship_id = sb.ship_id
+                LEFT JOIN ship_module_atba a
+                    ON a.version_code = sb.version_code
+                    AND a.ship_id = sb.ship_id
+                LEFT JOIN ship_module_secondary_artillery s
+                    ON s.version_code = sb.version_code
+                    AND s.ship_id = sb.ship_id
                 LEFT JOIN entity_registry er
                     ON er.version_code = sb.version_code
                     AND er.entity_id = sb.ship_id
+                WHERE g.ship_id IS NOT NULL OR a.ship_id IS NOT NULL OR s.ship_id IS NOT NULL
                 ORDER BY sb.ship_id
                 """
             ).fetchall()
@@ -892,7 +902,10 @@ class PenetrationCalculatorDialog(QDialog):
             from services.database_service import get_db
             db = get_db()
             rows = db._conn.execute(
-                "SELECT DISTINCT ship_id FROM ship_module_artillery ORDER BY ship_id"
+                "SELECT ship_id FROM ship_module_artillery "
+                "UNION SELECT ship_id FROM ship_module_atba "
+                "UNION SELECT ship_id FROM ship_module_secondary_artillery "
+                "ORDER BY ship_id"
             ).fetchall()
             view = self.ship_cb.view()
             for row in rows:
@@ -951,12 +964,11 @@ class PenetrationCalculatorDialog(QDialog):
         return row, kind
 
     def _reload_guns(self):
-        self._load_mod_bonuses()
         self.gun_cb.blockSignals(True)
         self.gun_cb.clear()
         ship_id = self.ship_cb.currentData()
         if not ship_id:
-            self.gun_cb.addItem("无可用主炮")
+            self.gun_cb.addItem("无可用火炮")
             self.gun_cb.blockSignals(False)
             return
         try:
@@ -987,9 +999,12 @@ class PenetrationCalculatorDialog(QDialog):
                 label = self._resolve_name("gun", row["module_key"]) or row["launcher_name"] or row["module_key"]
                 self.gun_cb.addItem(f"次级主炮 · {label}", f"sec:{row['module_key']}")
             if self.gun_cb.count() == 0:
-                self.gun_cb.addItem("无可用主炮")
+                self.gun_cb.addItem("无可用火炮")
         except Exception:
-            self.gun_cb.addItem("无可用主炮")
+            self.gun_cb.addItem("无可用火炮")
+        # clear+addItem 会自动选中第 0 项且被 blockSignals 屏蔽；先复位 -1，
+        # 确保下面 setCurrentIndex 一定改变索引并触发 currentIndexChanged → 重载加成面板
+        self.gun_cb.setCurrentIndex(-1)
         self.gun_cb.blockSignals(False)
 
         valid_index = self._find_first_valid_gun_index()
@@ -1033,6 +1048,11 @@ class PenetrationCalculatorDialog(QDialog):
         except Exception:
             pass
         return None
+
+    def _on_gun_changed(self, index: int):
+        """切换火炮类型（主炮/副炮/次级主炮）时：按当前炮种重载加成按钮并刷新弹药。"""
+        self._load_mod_bonuses()
+        self._reload_ammo()
 
     def _reload_ammo(self):
         self.ammo_cb.blockSignals(True)
@@ -1351,6 +1371,10 @@ class PenetrationCalculatorDialog(QDialog):
         self._mod_buttons = []
         self._mod_items = []
         ship_id = self.ship_cb.currentData()
+        gun_key = self.gun_cb.currentData()
+        # 当前火炮类型 → 加成键（主炮 GM / 副炮 GS / 次级主炮 GMS）
+        kind, _ = self._split_gun_key(gun_key) if gun_key else ("main", "")
+        range_key, acc_key = self._mod_keys_for_kind(kind)
         if ship_id:
             try:
                 from services.database_service import get_db
@@ -1366,24 +1390,35 @@ class PenetrationCalculatorDialog(QDialog):
                 ).fetchone()
                 ship_nation = nat_row["nation"] or "" if nat_row else ""
                 for r in db._conn.execute(
-                    "SELECT mod_id, name, modifiers_json, ships_json, excludes_json, nations_json, shiptype_json, shiplevel_json, groups_json FROM modernization_basic_info WHERE slot>=0"
+                    "SELECT mod_id, name, slot, modifiers_json, ships_json, excludes_json, nations_json, shiptype_json, shiplevel_json, groups_json FROM modernization_basic_info WHERE slot>=0"
                 ).fetchall():
                     mods = json.loads(r["modifiers_json"] or "{}")
-                    if not ("GMMaxDist" in mods or "GMIdealRadius" in mods):
+                    if range_key not in mods and acc_key not in mods:
                         continue
                     if not self._mod_matches(r, ship_type, ship_tier, ship_nation, ship_group, ship_id):
                         continue
-                    gmmd, gm = self._resolve_mod_bonus(mods, ship_type)
+                    gmmd, gm = self._resolve_mod_bonus(mods, ship_type, range_key, acc_key)
                     if gmmd == 1.0 and gm == 1.0:
                         continue
-                    self._mod_items.append({"mod_id": r["mod_id"], "gmmd": gmmd, "gm": gm})
-                    self._add_mod_button(r["mod_id"], gmmd, gm)
-                # 消耗品（侦察机）与战斗指令（含主/副炮射程、精度加成）
-                self._load_special_bonuses(ship_id, db._conn, ship_type)
+                    self._mod_items.append({"mod_id": r["mod_id"], "slot": r["slot"], "gmmd": gmmd, "gm": gm})
+                    self._add_mod_button(r["mod_id"], gmmd, gm, keys=(range_key, acc_key), slot=r["slot"])
+                # 消耗品（侦察机）与战斗指令（含对应炮种射程、精度加成）
+                self._load_special_bonuses(ship_id, db._conn, ship_type, kind)
+                # 舰种技能中含射程/精度加成的技能
+                self._load_skill_bonuses(ship_id, db._conn, ship_type, kind)
                 self._ensure_mods_stretch()
             except Exception:
                 pass
         self.mods_frame.setVisible(len(self._mod_buttons) > 0)
+
+    @staticmethod
+    def _mod_keys_for_kind(kind: str) -> tuple[str, str]:
+        """按火炮类型返回 (射程加成键, 精度加成键)：主炮 GM / 副炮 GS / 次级主炮 GMS。"""
+        if kind == "atba":
+            return ("GSMaxDist", "GSIdealRadius")
+        if kind == "sec":
+            return ("GMSMaxDist", "GMSIdealRadius")
+        return ("GMMaxDist", "GMIdealRadius")
 
     def _ensure_mods_stretch(self):
         """按钮全部添加后，在布局末尾放一个伸缩项：宽窗口按钮靠左，窄窗口出现横向滚动条。"""
@@ -1393,10 +1428,12 @@ class PenetrationCalculatorDialog(QDialog):
 
     def _add_mod_button(self, mod_id: str, gmmd: float, gm: float, kind: str = "modernization",
                         name: str = "", bonus_lines: list[str] | None = None,
-                        icon_path: str = ""):
-        """主界面升级品按钮样式的加成按钮：图标 + 加成文字。
-        kind: modernization=升级品 / consumable=消耗品 / rage_mode=战斗指令。
-        name / bonus_lines / icon_path 供消耗品与战斗指令使用（升级品保持纯加成文字）。"""
+                        icon_path: str = "", keys: tuple[str, str] | None = None,
+                        slot: int | None = None):
+        """主界面升级品按钮样式的加成按钮：图标 + 名称 + 加成文字。
+        kind: modernization=升级品 / consumable=消耗品 / rage_mode=战斗指令 / skill=技能。
+        keys: (射程键, 精度键)，用于生成升级品加成文字；消耗品/战斗指令自带 bonus_lines。
+        名称统一显示在按钮上（升级品同消耗品/战斗指令），不再使用悬浮窗。"""
         from models.name_mapping import Mapping as NMM
         btn = QPushButton()
         btn.setCheckable(True)
@@ -1414,32 +1451,35 @@ class PenetrationCalculatorDialog(QDialog):
                 btn.setIconSize(QSize(26, 26))
         if bonus_lines is None:
             bonus_lines = []
-            for key, val in (("GMMaxDist", gmmd), ("GMIdealRadius", gm)):
+            range_key, acc_key = keys or ("GMMaxDist", "GMIdealRadius")
+            for key, val in ((range_key, gmmd), (acc_key, gm)):
                 if val is None or abs(float(val) - 1.0) < 1e-9:
                     continue
                 label = NMM.MODIFIER_MAP.get(key, key)
                 fmt = NMM.format_modifier(key, float(val))
                 if fmt:
                     bonus_lines.append(f"{label}: {fmt}")
-        if kind == "modernization":
-            # 升级品：保持原有纯加成文字（多行）
-            title = "\n".join(bonus_lines) if bonus_lines else (self._resolve_name("modernization", mod_id) or mod_id[:6])
-            tip = self._resolve_name("modernization", mod_id) or mod_id
-        else:
-            # 消耗品 / 战斗指令：名称 + 加成
-            title = name or mod_id
-            if bonus_lines:
-                title += "\n" + "\n".join(bonus_lines)
-            tip = name or mod_id
+        # 名称显示在按钮上（升级品/消耗品/战斗指令/技能一致）
+        disp_name = (self._resolve_name("modernization", mod_id) or mod_id[:6]) if kind == "modernization" else (name or mod_id)
+        title = disp_name
+        if bonus_lines:
+            title += "\n" + "\n".join(bonus_lines)
         btn.setText(title)
-        # 悬浮窗仅保留本地化名称（不含加成信息）
-        btn.setToolTip(tip)
+        # 名称已在按钮上，悬浮窗全部去掉
         # 最小宽度 = 内容完整宽度：图标与文字永不压缩截断，超出时由横向滚动条查看
         btn.setMinimumWidth(btn.sizeHint().width())
-        btn.clicked.connect(lambda checked=False: self._calculate_current())
-        idx = len(self._mod_buttons)
+        btn.clicked.connect(lambda checked=False, _btn=btn, _slot=slot: self._on_mod_toggled(_btn, _slot))
         self.mods_grid.addWidget(btn)  # 单行排列，超宽时横向滚动
-        self._mod_buttons.append({"btn": btn, "mod_id": mod_id, "gmmd": gmmd, "gm": gm, "kind": kind, "name": tip})
+        self._mod_buttons.append({"btn": btn, "mod_id": mod_id, "gmmd": gmmd, "gm": gm,
+                                  "kind": kind, "name": disp_name, "slot": slot})
+
+    def _on_mod_toggled(self, btn, slot):
+        """加成按钮勾选：升级品同一槽位互斥（只能勾选一个），随后重算。消耗品/战斗指令/技能无槽位不受限制。"""
+        if slot is not None and btn.isChecked():
+            for b in getattr(self, "_mod_buttons", []):
+                if b["btn"] is not btn and b.get("slot") == slot and b["btn"].isChecked():
+                    b["btn"].setChecked(False)
+        self._calculate_current()
 
     def _resolve_mod_value(self, v, ship_type: str) -> float:
         """解析加成倍率：数值直接返回；dict 按舰船类型（缺省用 Battleship）。"""
@@ -1458,48 +1498,50 @@ class PenetrationCalculatorDialog(QDialog):
         tag = m.group(1).lower() if m else ""
         return f":/resources/pictures/ragemode/rageMode_{tag}_preview_0.png" if tag else ""
 
-    def _load_special_bonuses(self, ship_id: str, conn, ship_type: str):
-        """加载该船提供射程/精度加成的消耗品（侦察机 scout）与战斗指令（rage_mode）。"""
+    def _load_special_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
+        """加载该船提供对应炮种射程/精度加成的消耗品（侦察机，仅主炮）与战斗指令（rage_mode）。"""
         from models.name_mapping import Mapping as NMM
-        # ── 侦察机消耗品：主炮射程 ×artilleryDistCoeff、主炮精度 ×GMIdealRadius ──
-        seen: set = set()
-        for s in conn.execute(
-            "SELECT consumable_id, config_key FROM ship_consumable_slots WHERE ship_id=? ORDER BY slot_index, item_index",
-            (ship_id,)).fetchall():
-            cid = s["consumable_id"]
-            if not cid or cid in seen:
-                continue
-            seen.add(cid)
-            cfg = conn.execute(
-                "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
-                (cid, s["config_key"])).fetchone()
-            if not cfg:
+        range_key, acc_key = self._mod_keys_for_kind(kind)
+        # ── 侦察机消耗品：仅主炮显示（主炮射程 ×artilleryDistCoeff、主炮精度 ×GMIdealRadius）──
+        if kind == "main":
+            seen: set = set()
+            for s in conn.execute(
+                "SELECT consumable_id, config_key FROM ship_consumable_slots WHERE ship_id=? ORDER BY slot_index, item_index",
+                (ship_id,)).fetchall():
+                cid = s["consumable_id"]
+                if not cid or cid in seen:
+                    continue
+                seen.add(cid)
                 cfg = conn.execute(
-                    "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
-                    (cid,)).fetchone()
-            if not cfg:
-                continue
-            try:
-                ej = json.loads(cfg["extra_json"] or "{}")
-            except Exception:
-                continue
-            ct = ej.get("consumableType") or cfg["consumable_type"] or ""
-            if ct != "scout":
-                continue
-            adc = self._resolve_mod_value(ej.get("artilleryDistCoeff"), ship_type)
-            mods = ej.get("modifiers") or {}
-            gm = self._resolve_mod_value(mods.get("GMIdealRadius"), ship_type) if isinstance(mods, dict) else 1.0
-            if abs(adc - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9:
-                continue
-            lines = []
-            if abs(adc - 1.0) >= 1e-9:
-                lines.append(f"主炮射程: {NMM.format_modifier('GMMaxDist', adc)}")
-            if abs(gm - 1.0) >= 1e-9:
-                lines.append(f"主炮炮弹的最大误差: {NMM.format_modifier('GMIdealRadius', gm)}")
-            self._mod_items.append({"mod_id": cid, "gmmd": adc, "gm": gm, "kind": "consumable"})
-            self._add_mod_button(cid, adc, gm, kind="consumable", name="侦察机", bonus_lines=lines,
-                                 icon_path=f":/resources/pictures/consumables/consumable_{cid}_0.png")
-        # ── 战斗指令（rage_mode）：主/副炮射程、精度 ──
+                    "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key=?",
+                    (cid, s["config_key"])).fetchone()
+                if not cfg:
+                    cfg = conn.execute(
+                        "SELECT * FROM consumable_configs WHERE consumable_id=? AND config_key='Default'",
+                        (cid,)).fetchone()
+                if not cfg:
+                    continue
+                try:
+                    ej = json.loads(cfg["extra_json"] or "{}")
+                except Exception:
+                    continue
+                ct = ej.get("consumableType") or cfg["consumable_type"] or ""
+                if ct != "scout":
+                    continue
+                adc = self._resolve_mod_value(ej.get("artilleryDistCoeff"), ship_type)
+                mods = ej.get("modifiers") or {}
+                gm = self._resolve_mod_value(mods.get("GMIdealRadius"), ship_type) if isinstance(mods, dict) else 1.0
+                if abs(adc - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9:
+                    continue
+                lines = []
+                if abs(adc - 1.0) >= 1e-9:
+                    lines.append(f"主炮射程: {NMM.format_modifier('GMMaxDist', adc)}")
+                if abs(gm - 1.0) >= 1e-9:
+                    lines.append(f"主炮炮弹的最大误差: {NMM.format_modifier('GMIdealRadius', gm)}")
+                self._mod_items.append({"mod_id": cid, "gmmd": adc, "gm": gm, "kind": "consumable"})
+                self._add_mod_button(cid, adc, gm, kind="consumable", name="侦察机", bonus_lines=lines,
+                                     icon_path=f":/resources/pictures/consumables/consumable_{cid}_0.png")
+        # ── 战斗指令（rage_mode）：对应炮种射程、精度 ──
         for rm in conn.execute(
             "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=?",
             (ship_id,)).fetchall():
@@ -1507,15 +1549,13 @@ class PenetrationCalculatorDialog(QDialog):
                 mods = json.loads(rm["modifiers_json"] or "{}")
             except Exception:
                 continue
-            gmmd_key = "GMMaxDist" if mods.get("GMMaxDist") is not None else ("GSMaxDist" if mods.get("GSMaxDist") is not None else None)
-            gm_key = "GMIdealRadius" if mods.get("GMIdealRadius") is not None else ("GSIdealRadius" if mods.get("GSIdealRadius") is not None else None)
-            gmmd = self._resolve_mod_value(mods.get(gmmd_key), ship_type) if gmmd_key else 1.0
-            gm = self._resolve_mod_value(mods.get(gm_key), ship_type) if gm_key else 1.0
+            gmmd = self._resolve_mod_value(mods.get(range_key), ship_type) if mods.get(range_key) is not None else 1.0
+            gm = self._resolve_mod_value(mods.get(acc_key), ship_type) if mods.get(acc_key) is not None else 1.0
             if abs(gmmd - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9:
                 continue
             lines = []
-            for key, val in ((gmmd_key, gmmd), (gm_key, gm)):
-                if key and abs(float(val) - 1.0) >= 1e-9:
+            for key, val in ((range_key, gmmd), (acc_key, gm)):
+                if mods.get(key) is not None and abs(float(val) - 1.0) >= 1e-9:
                     fmt = NMM.format_modifier(key, float(val))
                     if fmt:
                         lines.append(f"{NMM.MODIFIER_MAP.get(key, key)}: {fmt}")
@@ -1524,6 +1564,66 @@ class PenetrationCalculatorDialog(QDialog):
             self._add_mod_button(rm["rage_mode_name"] or f"rage_{ship_id}", gmmd, gm,
                                  kind="rage_mode", name=rname, bonus_lines=lines,
                                  icon_path=self._rage_icon_path(rm["rage_mode_name"]))
+
+    def _load_skill_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
+        """加载该船舰种的「舰种技能」中影响当前炮种射程/精度的技能加成。"""
+        from services.skill_service import SkillService
+        from models.name_mapping import Mapping as NMM
+        range_key, acc_key = self._mod_keys_for_kind(kind)
+        svc = SkillService()
+        ship_cn = svc.get_ship_type_cn(ship_type)
+        if not ship_cn:
+            return
+        grid = svc.get_grid_skills(ship_cn, container_id="PCOL001_CommonCrewSkills", ship_type_en=ship_type)
+        seen: set = set()
+        for row in grid or []:
+            for skill in row or []:
+                if not skill:
+                    continue
+                sk = skill.get("skill_key") or ""
+                if not sk or sk in seen:
+                    continue
+                seen.add(sk)
+                mods = skill.get("modifiers") or {}
+                if not isinstance(mods, dict):
+                    mods = {}
+                # 触发式技能（trigger_json.modifiers，如「敌众我寡」）同样提供精度/射程加成，
+                # 合并后判断是否影响当前炮种
+                trig = skill.get("trigger") or {}
+                if isinstance(trig, dict):
+                    tmods = trig.get("modifiers") or {}
+                    if isinstance(tmods, dict):
+                        merged = dict(tmods)
+                        merged.update(mods)  # 直接 modifiers 优先
+                        mods = merged
+                if range_key not in mods and acc_key not in mods:
+                    continue
+                gmmd = self._resolve_mod_value(mods.get(range_key), ship_type) if range_key in mods else 1.0
+                gm = self._resolve_mod_value(mods.get(acc_key), ship_type) if acc_key in mods else 1.0
+                if abs(gmmd - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9:
+                    continue
+                icon_name = skill.get("icon_name") or ""
+                sname = ""
+                if icon_name:
+                    try:
+                        r2 = conn.execute(
+                            "SELECT lang_zh FROM name_mappings WHERE category='skill_title' AND key_name=? LIMIT 1",
+                            (icon_name.lower(),)).fetchone()
+                        if r2:
+                            sname = r2["lang_zh"]
+                    except Exception:
+                        pass
+                if not sname:
+                    sname = sk
+                lines = []
+                for key, val in ((range_key, gmmd), (acc_key, gm)):
+                    if mods.get(key) is not None and abs(float(val) - 1.0) >= 1e-9:
+                        fmt = NMM.format_modifier(key, float(val))
+                        if fmt:
+                            lines.append(f"{NMM.MODIFIER_MAP.get(key, key)}: {fmt}")
+                self._mod_items.append({"mod_id": sk, "gmmd": gmmd, "gm": gm, "kind": "skill"})
+                self._add_mod_button(sk, gmmd, gm, kind="skill", name=sname, bonus_lines=lines,
+                                     icon_path=f":/resources/pictures/skills/{icon_name}.png" if icon_name else "")
 
     def _mod_matches(self, mod_row, ship_type, ship_tier, ship_nation, ship_group, ship_id):
         try:
@@ -1557,7 +1657,7 @@ class PenetrationCalculatorDialog(QDialog):
             return False
         return True
 
-    def _resolve_mod_bonus(self, modifiers, ship_type):
+    def _resolve_mod_bonus(self, modifiers, ship_type, range_key="GMMaxDist", acc_key="GMIdealRadius"):
         def _resolve(v):
             if isinstance(v, dict):
                 return float(v.get(ship_type, v.get("Battleship", 1.0)))
@@ -1565,7 +1665,7 @@ class PenetrationCalculatorDialog(QDialog):
                 return float(v) if v is not None else 1.0
             except Exception:
                 return 1.0
-        return _resolve(modifiers.get("GMMaxDist")), _resolve(modifiers.get("GMIdealRadius"))
+        return _resolve(modifiers.get(range_key)), _resolve(modifiers.get(acc_key))
 
     def _reset_mods(self):
         for _b in getattr(self, "_mod_buttons", []):
@@ -1573,9 +1673,9 @@ class PenetrationCalculatorDialog(QDialog):
         self._calculate_current()
 
     def _compute_distances(self, max_range_km: float):
-        """固定从 0 km 到火炮最大射程，按 0.2 km 步长采样。"""
+        """固定从 0 km 到火炮最大射程，按 0.01 km 步长采样（高精度曲线）。"""
         end = max_range_km if max_range_km > 0 else 20.0
-        step = 0.2
+        step = 0.01
         points = []
         cur = 0.0
         while cur <= end + 1e-9:
@@ -1584,6 +1684,15 @@ class PenetrationCalculatorDialog(QDialog):
         if not points:
             points = [round(0.0, 3)]
         return points
+
+    @staticmethod
+    def _effective_max_range(gun_row, mods=None) -> float:
+        """计算火炮有效最大射程（km）= 基础射程 × 各加成倍率（含勾选的升级品/技能等）。"""
+        g = dict(gun_row) if hasattr(gun_row, "keys") else (gun_row or {})
+        mr = float(g.get("max_range") or 0.0)
+        for _mod in (mods or []):
+            mr *= float(_mod[0])
+        return mr
 
     def _update_ellipse_slider_range(self, max_range_km):
         """散布射程滑条上限 = 火炮最大射程。"""
@@ -1599,7 +1708,7 @@ class PenetrationCalculatorDialog(QDialog):
             self._on_ellipse_slider()
 
     def _current_mods(self):
-        """返回当前勾选加成（升级品/消耗品/战斗指令）的 [(gmmd, gm, 来源名)] 列表（添加炮弹时固化用）。"""
+        """返回当前勾选加成（升级品/消耗品/战斗指令/技能）的 [(gmmd, gm, 来源名)] 列表（添加炮弹时固化用）。"""
         return [(float(b["gmmd"]), float(b["gm"]), b.get("name") or "")
                 for b in getattr(self, "_mod_buttons", []) if b["btn"].isChecked()]
 
@@ -1695,7 +1804,9 @@ class PenetrationCalculatorDialog(QDialog):
             else:
                 _vc = radius_delim + (radius_max - radius_delim) * ((distance - _delim_km) / (max_range_km - _delim_km)) if (max_range_km - _delim_km) else radius_delim
             formula = f"横={h_expr}；纵=横×{_vc:.3f}"
-            rows.append((distance, horiz, vert, area, round(fly, 1), round(pen, 1), round(impact, 1), formula))
+            # 存全精度（悬浮提示已自行格式化为 2 位小数）；不再对 fly/impact 四舍五入，
+            # 否则曲线被量化为 0.1s/0.1° 的阶梯状（锐角）
+            rows.append((distance, horiz, vert, area, fly, pen, impact, formula))
         return rows
 
     def _build_curve_chart(self, rows, compare_series=None):
@@ -1953,16 +2064,23 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             # 显示内容 = 左侧已添加的炮弹（不再默认显示筛选器当前选中的炮弹）
             compare_series = []
+            max_range_global = 0.0
             for i, item in enumerate(self._custom_series):
                 sigma = 1.0
                 if "custom" in item:
                     srows = self._compute_rows_for_weapon(item["custom"]["gun"], item["custom"]["ammo"], item.get("mods"))
                     sigma = float(item["custom"]["gun"].get("sigma") or 1.0)
+                    mr = self._effective_max_range(item["custom"]["gun"], item.get("mods"))
                 else:
                     gun_row, _, srows = self._load_weapon_for(item["ship_id"], item["gun_key"], item["ammo_id"], item.get("mods"))
                     if gun_row:
                         sigma = float(dict(gun_row).get("sigma") or 1.0)
+                        mr = self._effective_max_range(gun_row, item.get("mods"))
+                    else:
+                        mr = 0.0
                 if srows:
+                    if mr > max_range_global:
+                        max_range_global = mr
                     compare_series.append({
                         "label": item["label"],
                         "rows": srows,
@@ -1980,6 +2098,10 @@ class PenetrationCalculatorDialog(QDialog):
                 for spec in self._metric_tabs:
                     spec["label"].setText(f"{spec['title']}曲线：暂无已添加炮弹")
                 return
+
+            # 散布椭圆最大可设定射程 = 当前显示炮弹中射程最远者（含加成）
+            if max_range_global > 0:
+                self._update_ellipse_slider_range(max_range_global)
 
             self._build_curve_chart(rows, compare_series)
             self._build_flytime_chart(rows, compare_series)

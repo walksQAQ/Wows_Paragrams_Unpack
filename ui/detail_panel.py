@@ -1493,7 +1493,11 @@ class DetailPanel(QWidget):
                                 _skip_mod_skills = {"detection_alert", "detection_aiming", "planes_forsage_renewal", "maneuverability", "detection_direction", "depth_charge_bomber_alert", "submarine_danger_alert"}
                                 if mods and icon_name not in _skip_mod_skills:
                                     tip_lines.append('<hr style="border-color:#444; margin:4px 0;">')
-                                    mod_lines = _format_skill_mod(mods, cur_shiptype)
+                                    combined_mods = {}
+                                    for src in (mods, trigger.get("modifiers", {}) if trigger else {}):
+                                        for k, v in src.items():
+                                            combined_mods[k] = v
+                                    mod_lines = _format_skill_mod(combined_mods, cur_shiptype)
                                     for _ml in mod_lines:
                                         tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
                                 # 触发条件与触发段加成
@@ -1544,8 +1548,6 @@ class DetailPanel(QWidget):
                                                 _depth_names = getattr(_NM, 'DEPTH_MAP', {})
                                                 _labels = [_depth_names.get(s, s) for s in _states]
                                                 tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">当战舰位于{"或".join(_labels)}时</div>')
-                                        for _ml in _format_skill_mod(tmods, cur_shiptype):
-                                            tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
                                 tip_lines.append('</div>')
                                 btn.setToolTip("".join(tip_lines))
                                 btn.setToolTipDuration(10000)

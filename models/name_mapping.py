@@ -422,7 +422,7 @@ class Mapping:
         "visionXRayTorpedoDist": "coeff",
         # ── 生存性 ──
         "healthHullCoeff": "coeff",
-        "healthPerLevel": "coeff",
+        "healthPerLevel": "raw_int",
         "healthRegen": "coeff",
         "regenerationHPSpeed": "coeff",
         "vulnerabilityBurn": "coeff",
