@@ -1406,6 +1406,8 @@ class PenetrationCalculatorDialog(QDialog):
                 self._load_special_bonuses(ship_id, db._conn, ship_type, kind)
                 # 舰种技能中含射程/精度加成的技能
                 self._load_skill_bonuses(ship_id, db._conn, ship_type, kind)
+                # 辅助机组（友军提供的支援侦察机 scout）：无条件显示
+                self._load_ally_support_bonus(ship_id, db._conn, ship_type, kind)
                 self._ensure_mods_stretch()
             except Exception:
                 pass
@@ -1565,11 +1567,17 @@ class PenetrationCalculatorDialog(QDialog):
                                  kind="rage_mode", name=rname, bonus_lines=lines,
                                  icon_path=self._rage_icon_path(rm["rage_mode_name"]))
 
+    # 敌方散布类键：为敌方战舰增加炮弹散布/误差（如「眼花缭乱」shootShift）。
+    # 与当前炮种（主炮/副炮/中口径炮）无关，无论选择何种舰船/炮种均应正常显示词条。
+    ENEMY_SPREAD_KEYS = ("shootShift", "shootShiftBatteryLastChanceCoeff")
+
     def _load_skill_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
-        """加载该船舰种的「舰种技能」中影响当前炮种射程/精度的技能加成。"""
+        """加载该船舰种的「舰种技能」中影响当前炮种射程/精度的技能加成，
+        以及为敌方战舰增加散布的词条（如「眼花缭乱」）。"""
         from services.skill_service import SkillService
         from models.name_mapping import Mapping as NMM
         range_key, acc_key = self._mod_keys_for_kind(kind)
+        spread_keys = list(self.ENEMY_SPREAD_KEYS)
         svc = SkillService()
         ship_cn = svc.get_ship_type_cn(ship_type)
         if not ship_cn:
@@ -1587,8 +1595,8 @@ class PenetrationCalculatorDialog(QDialog):
                 mods = skill.get("modifiers") or {}
                 if not isinstance(mods, dict):
                     mods = {}
-                # 触发式技能（trigger_json.modifiers，如「敌众我寡」）同样提供精度/射程加成，
-                # 合并后判断是否影响当前炮种
+                # 触发式技能（trigger_json.modifiers，如「敌众我寡」「眼花缭乱」）同样提供加成，
+                # 合并后判断是否影响当前炮种或敌方散布
                 trig = skill.get("trigger") or {}
                 if isinstance(trig, dict):
                     tmods = trig.get("modifiers") or {}
@@ -1596,11 +1604,12 @@ class PenetrationCalculatorDialog(QDialog):
                         merged = dict(tmods)
                         merged.update(mods)  # 直接 modifiers 优先
                         mods = merged
-                if range_key not in mods and acc_key not in mods:
+                has_spread = any(k in mods for k in spread_keys)
+                if range_key not in mods and acc_key not in mods and not has_spread:
                     continue
                 gmmd = self._resolve_mod_value(mods.get(range_key), ship_type) if range_key in mods else 1.0
                 gm = self._resolve_mod_value(mods.get(acc_key), ship_type) if acc_key in mods else 1.0
-                if abs(gmmd - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9:
+                if abs(gmmd - 1.0) < 1e-9 and abs(gm - 1.0) < 1e-9 and not has_spread:
                     continue
                 icon_name = skill.get("icon_name") or ""
                 sname = ""
@@ -1621,9 +1630,81 @@ class PenetrationCalculatorDialog(QDialog):
                         fmt = NMM.format_modifier(key, float(val))
                         if fmt:
                             lines.append(f"{NMM.MODIFIER_MAP.get(key, key)}: {fmt}")
+                # 敌方散布词条：与炮种无关，始终显示其加成（数值按当前舰船解析，dict 类型不因选船丢失）
+                for k in spread_keys:
+                    if mods.get(k) is not None:
+                        v = self._resolve_mod_value(mods.get(k), ship_type)
+                        if abs(float(v) - 1.0) >= 1e-9:
+                            fmt = NMM.format_modifier(k, float(v))
+                            if fmt:
+                                lines.append(f"{NMM.MODIFIER_MAP.get(k, k)}: {fmt}")
                 self._mod_items.append({"mod_id": sk, "gmmd": gmmd, "gm": gm, "kind": "skill"})
                 self._add_mod_button(sk, gmmd, gm, kind="skill", name=sname, bonus_lines=lines,
                                      icon_path=f":/resources/pictures/skills/{icon_name}.png" if icon_name else "")
+
+    def _load_ally_support_bonus(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
+        """辅助机组（友军提供的支援侦察机 scout）射程/精度加成，无条件显示。
+
+        按当前舰船实际携带的支援侦察机（ship_module_air_support.support_type='scout'）
+        显示，按钮名直接采用该侦察机的飞机名（如 Curtiss SC-1）。
+        由友军提供而非自身携带，因此不随当前所选舰船/炮种变化，始终显示为可勾选加成。
+        多艘携带支援机组的船的支援型侦察机之间不能互相叠加 → 该 buff 固定只取一份。
+        """
+        from models.name_mapping import Mapping as NMM
+        # 所属战舰状态为被禁用（group_status_key='disabled'）时不显示辅助机组
+        st = conn.execute(
+            "SELECT group_status_key FROM ship_basic_info WHERE ship_id=? LIMIT 1",
+            (ship_id,)).fetchone()
+        if st and (st["group_status_key"] or "") == "disabled":
+            return
+        # 该船携带的支援侦察机（可能有多个配置，去重）
+        srows = conn.execute(
+            "SELECT DISTINCT plane_name FROM ship_module_air_support "
+            "WHERE ship_id=? AND support_type='scout'", (ship_id,)).fetchall()
+        if not srows:
+            return
+        plane_id = srows[0]["plane_name"] or ""
+        # 飞机显示名：name_mappings.plane（如 Curtiss SC-1），无则退回 plane_id
+        sname = plane_id
+        if plane_id:
+            nm = conn.execute(
+                "SELECT lang_zh FROM name_mappings WHERE category='plane' AND key_name=? LIMIT 1",
+                (plane_id,)).fetchone()
+            if nm and nm["lang_zh"]:
+                sname = nm["lang_zh"]
+        range_key, acc_key = self._mod_keys_for_kind(kind)
+        row = conn.execute(
+            "SELECT buff_json FROM consumable_buff WHERE buff_id='PCOM061_AirSupport_Scout' "
+            "ORDER BY buff_level DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return
+        try:
+            mods = json.loads(row["buff_json"] or "{}")
+        except Exception:
+            return
+        # 取当前炮种对应的射程/精度键（主炮 GM、副炮 GS、次级主炮 GMS）
+        gmmd = self._resolve_mod_value(mods.get(range_key), ship_type) if range_key in mods else 1.0
+        gm = self._resolve_mod_value(mods.get(acc_key), ship_type) if acc_key in mods else 1.0
+        # 词条：显示该 buff 提供的全部有效加成（主炮/中口径），不论当前炮种
+        lines = []
+        for key in ("GMMaxDist", "GMIdealRadius", "GMSMaxDist", "GMSIdealRadius"):
+            if mods.get(key) is None:
+                continue
+            val = self._resolve_mod_value(mods.get(key), ship_type)
+            if abs(float(val) - 1.0) < 1e-9:
+                continue
+            fmt = NMM.format_modifier(key, float(val))
+            if fmt:
+                lines.append(f"{NMM.MODIFIER_MAP.get(key, key)}: {fmt}")
+        if not lines:
+            return
+        # 固定 mod_id：多艘支援航母的侦察机 buff 不叠加，只此一份
+        self._mod_items.append({"mod_id": f"ally_{plane_id}", "gmmd": gmmd, "gm": gm,
+                                "kind": "ally_support"})
+        self._add_mod_button(f"ally_{plane_id}", gmmd, gm, kind="ally_support",
+                             name=sname or "支援侦察机", bonus_lines=lines,
+                             icon_path=":/resources/pictures/ammo_types/ammo_airsupport_scout_scout_0.png")
 
     def _mod_matches(self, mod_row, ship_type, ship_tier, ship_nation, ship_group, ship_id):
         try:
