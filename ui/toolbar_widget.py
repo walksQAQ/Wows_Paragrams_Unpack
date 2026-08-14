@@ -51,12 +51,13 @@ class TopToolbar(QWidget):
         self.btn_load = QPushButton("📦  加载数据")
         self.btn_lang = QPushButton("🌐  加载文本")
         self.btn_refresh = QPushButton("🔄  刷新界面")
+        self.btn_ballistics = QPushButton("📊  穿深计算器")
         # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
         self.btn_copy = QPushButton("📋  复制当前信息")
         self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
         self.btn_copy.setStyleSheet(self.BTN_STYLE)
 
-        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_copy):
+        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_copy):
             b.setStyleSheet(self.BTN_STYLE)
             layout.addWidget(b)
 
@@ -110,6 +111,7 @@ class TopToolbar(QWidget):
         self.btn_load.clicked.connect(self._on_load)
         self.btn_lang.clicked.connect(self._on_lang)
         self.btn_refresh.clicked.connect(self._on_refresh)
+        self.btn_ballistics.clicked.connect(self._on_ballistics)
         self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
         bus.task_progress.connect(self._on_progress)
         bus.localization_ready.connect(self._enable_all)
@@ -173,6 +175,20 @@ class TopToolbar(QWidget):
             self._enable_all()
         ))
 
+    def _on_ballistics(self):
+        """打开穿深/散布计算器（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
+        try:
+            from ui.penetration_calculator import PenetrationCalculatorDialog
+            if not hasattr(self, "_ballistics_dialog") or self._ballistics_dialog is None:
+                self._ballistics_dialog = PenetrationCalculatorDialog()
+                if not getattr(self._ballistics_dialog, "_restored_geometry", False):
+                    self._ballistics_dialog.center_on_screen(self.window())
+            self._ballistics_dialog.show()
+            self._ballistics_dialog.raise_()
+            self._ballistics_dialog.activateWindow()
+        except Exception as exc:
+            bus.log_message.emit(f"❌ 打开穿深计算器失败: {exc}")
+
     def _on_server(self, btn):
         server = btn.text()
         if server == app_ctx.ctx.wows_type:
@@ -202,10 +218,12 @@ class TopToolbar(QWidget):
     def _disable_all(self):
         self.btn_load.setEnabled(False)
         self.btn_lang.setEnabled(False)
+        self.btn_ballistics.setEnabled(False)
 
     def _enable_all(self):
         self.btn_load.setEnabled(True)
         self.btn_lang.setEnabled(True)
+        self.btn_ballistics.setEnabled(True)
         # 不隐藏进度条，由下个任务覆盖
 
     def _sync_server(self):

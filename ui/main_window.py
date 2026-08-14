@@ -253,6 +253,26 @@ class MainWindow(QMainWindow):
 
     # ── 窗口管理 ──────────────────────────────────────────
 
+    def closeEvent(self, event) -> None:
+        """主窗口关闭时，一并关闭所有独立子窗口，避免残留。"""
+        # 主界面直接打开的独立子窗口
+        for _w in (getattr(self, "_assets_viewer", None), getattr(self, "_version_diff_dlg", None)):
+            if _w is not None:
+                try:
+                    _w.close()
+                except Exception:
+                    pass
+        # 工具栏的穿深计算器
+        _tb = getattr(self, "toolbar", None)
+        if _tb is not None:
+            _bd = getattr(_tb, "_ballistics_dialog", None)
+            if _bd is not None:
+                try:
+                    _bd.close()
+                except Exception:
+                    pass
+        super().closeEvent(event)
+
     def _center_window(self) -> None:
         screen = self.screen()
         if screen is None:

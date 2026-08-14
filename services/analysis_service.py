@@ -660,11 +660,11 @@ class AnalysisStore:
                 (version_code, ship_id, config_group, module_key, health, max_speed,
                  turning_radius, rudder_time, conceal_sea, conceal_air,
                  visibility_factor_by_plane, has_citadel,
-                 hull_regen_part, citadel_regen_part, engine_power,
+                 hull_regen_part, citadel_regen_part, engine_power, tonnage,
                  length, width, height,
                  draft, torpedo_protection, fire_duration, flood_duration,
                  fire_prob, flood_prob, fire_dps, flood_dps)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, mod_key,
                  mod_data.get("health"), mod_data.get("maxSpeed"),
                  _v(mod_data.get("turningRadius")),

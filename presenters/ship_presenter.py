@@ -11,6 +11,7 @@ from pathlib import Path
 
 from presenters.base_presenter import BasePresenter, NM
 from models.name_mapping import Mapping
+from services.ballistics_service import BallisticsCalculator
 
 
 class ShipPresenter(BasePresenter):
@@ -472,7 +473,7 @@ class ShipPresenter(BasePresenter):
                 if v: items.append(self.make_item("穿深", f"{v:.1f}", o, unit="mm")); o += 1
             elif ammo_type == "AP":
                 v = row['bullet_krupp']
-                if v: items.append(self.make_item("硬度", f"{v:.0f}", o)); o += 1
+                if v: items.append(self.make_item("弹头硬度", f"{v:.0f}", o)); o += 1
             else:
                 v = row['bullet_krupp']
                 if v: items.append(self.make_item("穿深", f"{v:.0f}", o)); o += 1
@@ -480,17 +481,20 @@ class ShipPresenter(BasePresenter):
             pass
         return o
 
-    def _append_ammo_extra(self, items: list, row, ammo_type: str, o: int) -> int:
-        """AP/CS/HE 专属属性：弹重、空气阻力系数、口径、跳弹角、引信等"""
+    def _append_ammo_extra(self, items: list, row, ammo_type: str, o: int, max_range_km: float | None = None) -> int:
+        """AP/CS/HE 专属属性：弹重、空气阻力系数、口径、跳弹角、引信等，并补充穿深摘要。
+
+        CS(SAP) 与 HE 穿深均为固定值，不显示参与弹道穿深计算的 AP 专属数据（引信、穿深摘要等）。
+        弹头硬度已由穿深/硬度行显示，不在此重复。AP 的穿深摘要固定显示在最后一条，
+        按出膛/10km/14km/18km 计算，主炮射程不足的预估值不显示。
+        """
         if ammo_type not in ("AP", "CS", "HE"):
             return o
-        
-        # ── 重点修复：如果 row 是 sqlite3.Row 或其他类字典对象，转为标准 dict ──
+
         if hasattr(row, 'keys'):
             row = dict(row)
 
         try:
-            # ── 通用基础属性 ──
             if row.get('bullet_mass'):
                 items.append(self.make_item("弹重", f"{row['bullet_mass']:.2f}", o, unit="kg")); o += 1
             if row.get('bullet_air_drag'):
@@ -498,7 +502,6 @@ class ShipPresenter(BasePresenter):
             if row.get('bullet_diameter'):
                 items.append(self.make_item("口径", f"{row['bullet_diameter']*1000:.2f}", o, unit="mm")); o += 1
 
-            # ── AP / CS 穿甲属性 ──
             if ammo_type in ("AP", "CS"):
                 if row.get('bullet_always_ricochet_at'):
                     items.append(self.make_item("强制跳弹角", f"{row['bullet_always_ricochet_at']:.1f}", o, unit="°")); o += 1
@@ -507,17 +510,57 @@ class ShipPresenter(BasePresenter):
                 if row.get('bullet_cap_normalize_max'):
                     items.append(self.make_item("弹头转正角", f"{row['bullet_cap_normalize_max']:.1f}", o, unit="°")); o += 1
 
-            # ── AP 专有属性 ──
+            # AP 专属：引信数据（弹头硬度已由穿深/硬度行显示，不重复）。
             if ammo_type == "AP":
                 if row.get('bullet_detonator'):
                     items.append(self.make_item("引信长度", f"{row['bullet_detonator']}", o, unit="s")); o += 1
                 if row.get('bullet_detonator_threshold'):
                     items.append(self.make_item("引信触发阈值", f"{row['bullet_detonator_threshold']:.0f}", o, unit="mm")); o += 1
 
-        except (KeyError, IndexError, TypeError):
+            if ammo_type == "HE":
+                he_value = row.get('alpha_piercing_he') or 0
+                if he_value:
+                    items.append(self.make_item("HE 固定穿深", f"{float(he_value):.0f}", o, unit="mm")); o += 1
+
+            # AP 穿深摘要：固定显示在最后一条
+            if ammo_type == "AP":
+                summary = self._build_ap_pen_summary(row, max_range_km)
+                if summary:
+                    items.append(self.make_item("穿深摘要", summary, o)); o += 1
+
+        except (KeyError, IndexError, TypeError, ValueError):
             pass
 
         return o
+
+    @staticmethod
+    def _build_ap_pen_summary(row, max_range_km: float | None = None) -> str:
+        """构建 AP 穿深摘要：出膛/10km/14km/18km（主炮射程不足的距离不显示）。
+
+        使用真实弹道模拟的着速计算绝对穿深，返回多行文本（\n 换行，渲染端支持自动换行）。
+        """
+        try:
+            if hasattr(row, 'keys'):
+                row = dict(row)
+            mass = float(row.get('bullet_mass') or 0.0)
+            caliber = float(row.get('bullet_diameter') or 0.0)
+            air_drag = float(row.get('bullet_air_drag') or 0.0)
+            velocity = float(row.get('bullet_speed') or 0.0)
+            krupp = float(row.get('bullet_krupp') or 0.0)
+            if mass <= 0 or caliber <= 0 or air_drag <= 0 or velocity <= 0 or krupp <= 0:
+                return ""
+            bc = BallisticsCalculator()
+            ballistics = bc.calculate_full_ballistics(mass, caliber, air_drag, velocity, krupp)
+            lines = []
+            for dist_km, label in ((0.0, "出膛"), (10.0, "10km"), (14.0, "14km"), (18.0, "18km")):
+                if max_range_km is not None and dist_km > float(max_range_km):
+                    continue
+                pt = bc.interpolate_at_distance(ballistics, dist_km)
+                pen = bc.calc_v3_penetration(krupp, mass, pt["velocity"], caliber)
+                lines.append(f"{label} ≈ {pen:.0f}mm")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _append_consumables(self, conn, vc, ship_id, sections):
         slots = conn.execute(
@@ -1234,8 +1277,8 @@ class ShipPresenter(BasePresenter):
             if g['reload_time']: items.append(self.make_item("装填时间", str(g['reload_time']), o, unit="s")); o += 1
             # 射程 × maxDistCoef
             base_range = g['max_range']
+            disp_range = base_range
             if base_range:
-                disp_range = base_range
                 if fc and fc['max_dist_coef'] is not None and fc['max_dist_coef'] != 1.0:
                     disp_range = base_range * fc['max_dist_coef']
                     items.append(self.make_item("最大射程", f"{disp_range:.2f}", o, unit="km",
@@ -1291,7 +1334,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=disp_range or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
             # 特殊机制
             ext = conn.execute(
@@ -1645,7 +1688,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
             result[letter] = (items, raw_ammo_types)
@@ -1700,7 +1743,7 @@ class ShipPresenter(BasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di)
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
             result[letter] = (items, raw_ammo_types)
@@ -2644,7 +2687,7 @@ class ShipPresenter(BasePresenter):
                                     elif atype == "CS":
                                         if ext['alpha_piercing_cs']: detail_items.append(self.make_item("穿深", f"{ext['alpha_piercing_cs']:.1f}", di, unit="mm")); di += 1
                                     else:
-                                        if ext['bullet_krupp']: detail_items.append(self.make_item("硬度", f"{ext['bullet_krupp']:.0f}", di)); di += 1
+                                        if ext['bullet_krupp']: detail_items.append(self.make_item("弹头硬度", f"{ext['bullet_krupp']:.0f}", di)); di += 1
                                     if ext['bullet_speed']: detail_items.append(self.make_item("弹速", f"{ext['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                                     if ext['burn_prob'] is not None and atype == "HE": detail_items.append(self.make_item("起火概率", f"{ext['burn_prob']*100:.2f}", di, unit="%")); di += 1
                                     if atype in ("AP", "CS"):

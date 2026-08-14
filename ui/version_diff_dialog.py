@@ -584,10 +584,13 @@ class VersionDiffDialog(QDialog):
             else:
                 title = label
             item = QTreeWidgetItem([title, "", ""])
-            font = QFont()
+            font = QFont(self.font())
             font.setBold(True)
             if is_top:
-                font.setPointSize(font.pointSize() + 1)
+                _ps = font.pointSize()
+                if _ps <= 0:
+                    _ps = 9  # QFont() 默认 pointSize=-1，+1 会导致 setPointSize(-1) 警告
+                font.setPointSize(_ps + 1)
                 item.setBackground(0, QColor("#f2f2f2"))
                 item.setForeground(0, QColor("#333333"))
             item.setFont(0, font)

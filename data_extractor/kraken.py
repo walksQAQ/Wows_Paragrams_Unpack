@@ -1,3 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# 本文件是 Wows Paragrams Unpack 的一部分。
+# 基于 domdfcoding/kraken-decompressor (GPLv3) C++ 源码移植，
+# 依照 GNU General Public License v3.0（或更高版本）授权。
+#
+# 本程序是自由软件：你可以依据自由软件基金会发布的 GNU 通用公共许可证
+# 第三版（或你选择的任何更高版本）的条款重新分发和/或修改它。
+#
+# 本程序按"原样"分发，不附带任何保证；甚至没有适销性或特定用途
+# 适用性的默示保证。详情见 GNU 通用公共许可证。
+#
+# 你应已收到本程序的 GNU 通用公共许可证副本；若没有，
+# 请访问 <https://www.gnu.org/licenses/>。
+#
 """
 纯 Python Oodle Kraken 解压器
 
