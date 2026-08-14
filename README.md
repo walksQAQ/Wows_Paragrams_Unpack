@@ -4,6 +4,8 @@
 
 ## 当前版本
 
+[![Pre-release](https://img.shields.io/github/v/release/walksQAQ/Wows_Paragrams_Unpack?include_prereleases&label=pre-release)](https://github.com/walksQAQ/Wows_Paragrams_Unpack/releases)
+
 [![Latest](https://img.shields.io/github/v/release/walksQAQ/Wows_Paragrams_Unpack)](https://github.com/walksQAQ/Wows_Paragrams_Unpack/releases/latest)
 
 ---
