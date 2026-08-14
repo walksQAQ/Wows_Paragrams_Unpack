@@ -2652,6 +2652,58 @@ class ShipPresenter(BasePresenter):
                     if pid.get('visibility_factor') is not None: items.append(self.make_item("被侦测距离", str(pid['visibility_factor']), o, unit="km")); o += 1
                     if not arm and pid.get('bomb_name'): arm = pid['bomb_name']
                     if arm and pid.get('attack_count'): items.append(self.make_item("载弹量", str(pid['attack_count']), o)); o += 1
+                # ── 支援机效果：伴航校射侦察机提供的友军加成 / 烟幕释放机布设的烟幕 ──
+                # 作为子属性行直接并入当前支援机组卡片（不用 header，避免单独开卡片）
+                if st == "scout":
+                    bf = conn.execute(
+                        "SELECT buff_json FROM consumable_buff WHERE buff_id='PCOM061_AirSupport_Scout' "
+                        "ORDER BY buff_level DESC LIMIT 1").fetchone()
+                    if bf:
+                        try:
+                            bmods = json.loads(bf['buff_json'] or '{}')
+                        except Exception:
+                            bmods = {}
+                        if bmods:
+                            for bk, bv in sorted(bmods.items()):
+                                label = Mapping.MODIFIER_MAP.get(bk, bk)
+                                if isinstance(bv, (int, float)):
+                                    # 用词条方向规则上色：负方向词条（如误差减小=增益）显绿
+                                    _clr = Mapping.get_modifier_color(bk, bv)
+                                    items.append(self.make_item(label, f"{(bv-1)*100:+.1f}", o,
+                                                                unit="%", color=_clr)); o += 1
+                elif st == "smoke":
+                    # 从飞机 ability_slot 找烟幕生成器消耗品配置
+                    sg_id = ""
+                    sg_cfg = None
+                    for si in range(5):
+                        sv = pid.get(f'ability_slot_{si}')
+                        if not sv:
+                            continue
+                        parts = str(sv).split('|', 1)
+                        if 'SmokeGenerator' in parts[0]:
+                            sg_id = parts[0]
+                            variant = parts[1] if len(parts) > 1 else ""
+                            sg_cfg = conn.execute(
+                                "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
+                                (vc, sg_id, variant)).fetchone()
+                            break
+                    if sg_cfg:
+                        try:
+                            scd = json.loads(sg_cfg['extra_json'] or '{}')
+                        except Exception:
+                            scd = {}
+                        r = float(scd.get('radius', 0) or 0)
+                        if r: items.append(self.make_item("烟幕半径", f"{r*3:.2f}", o, unit="m")); o += 1
+                        h = scd.get('height', 0)
+                        if h: items.append(self.make_item("烟幕高度", str(h), o, unit="m")); o += 1
+                        lt = scd.get('lifeTime', 0)
+                        if lt: items.append(self.make_item("烟幕持续时间", str(lt), o, unit="s")); o += 1
+                        wt = scd.get('workTime', 0)
+                        if wt: items.append(self.make_item("生效时间", str(wt), o, unit="s")); o += 1
+                        ad = scd.get('activationDelay', 0)
+                        if ad: items.append(self.make_item("生效延迟", str(ad), o, unit="s")); o += 1
+                        num = scd.get('numConsumables')
+                        if num is not None: items.append(self.make_item("数量", '无限' if num == -1 else str(num), o)); o += 1
                 # ── 弹药数据 ──
                 if arm:
                     pbi = conn.execute(

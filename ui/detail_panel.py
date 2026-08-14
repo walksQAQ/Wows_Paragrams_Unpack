@@ -1197,7 +1197,7 @@ class DetailPanel(QWidget):
                         if mk in ("burnChanceFactorHighLevel", "burnChanceFactorLowLevel"):
                             if not _burn_chance_shown:
                                 _burn_chance_shown = True
-                                _add_mod_line(lines, "应用加成前，造成起火的几率", mv)
+                                _add_mod_line(lines, "应用加成前，造成起火的几率", mv, _neg=True)
                             continue
                         # 按截击机/巡逻战斗机动态调整标签
                         if mk in ("callFightersWorkTimeCoeff", "callFightersAdditionalConsumables"):
@@ -1236,17 +1236,21 @@ class DetailPanel(QWidget):
                                 ]
                             for i, _w in enumerate(_weapons):
                                 _sign = "+" if i == len(_weapons) - 1 else "-"
-                                lines.append(f'{_w}  {_sign}{_pct}')
+                                # 装填时间降低/防空持续伤害提升均视为增益 → 绿色
+                                _clr = "#4caf50"
+                                lines.append(f'{_w}  <span style="color:{_clr};">{_sign}{_pct}</span>')
                             continue
                         elif mk == "shootShiftBatteryLastChanceCoeff":
                             # 每消耗1%下潜能力的变化
                             _pct = f"+{mv:.2f}%"
-                            lines.append(f'被敌方炮弹攻击的误差  {_pct}')
+                            # 敌方对我炮击误差增大 → 增益 → 绿色
+                            lines.append(f'被敌方炮弹攻击的误差  <span style="color:#4caf50;">{_pct}</span>')
                             continue
                         elif mk == "batteryRegenBatteryLastChanceCoeff":
                             # 每消耗1%下潜能力的变化
                             _pct = f"+{mv:.2f}%"
-                            lines.append(f'每秒下潜能力恢复  {_pct}')
+                            # 下潜能力恢复提升 → 增益 → 绿色
+                            lines.append(f'每秒下潜能力恢复  <span style="color:#4caf50;">{_pct}</span>')
                             continue
                         elif mk in ("GMHECSDamageCoeff", "GMSHECSDamageCoeff"):
                             # 高爆和半穿甲弹分开显示
@@ -1279,8 +1283,12 @@ class DetailPanel(QWidget):
                             _add_mod_line(lines, zh, mv, _force_pct=(mk in _pct_keys), mod_key=mk)
                     return lines
 
-                def _add_mod_line(lines, label, v, _force_pct=False, mod_key=""):
-                    """添加一行修饰符描述（自动判断类型）"""
+                def _add_mod_line(lines, label, v, _force_pct=False, mod_key="", _neg=False):
+                    """添加一行修饰符描述（统一：标签 + 带颜色数值，增益绿/减益红）
+                    _neg=True 时方向取反（负值=增益，如起火率降低）。"""
+                    def _c(text, gain):
+                        clr = "#4caf50" if gain else "#f44336"
+                        return f'<span style="color:{clr};">{text}</span>'
                     if isinstance(v, bool):
                         lines.append(f"启用 {label}" if v else label)
                     elif isinstance(v, (int, float)):
@@ -1288,17 +1296,18 @@ class DetailPanel(QWidget):
                             from models.name_mapping import Mapping as _NMAP_FMT2
                             ft = _NMAP_FMT2.format_modifier(mod_key, v, color=True)
                             if ft:
-                                lines.append(ft + " " + label)
+                                lines.append(f"{label} {ft}")
                         elif _force_pct:
-                            lines.append(f"{label} +{v:.2f}%" if v >= 0 else f"{label} {v:.2f}%")
+                            text = f"+{v:.2f}%" if v >= 0 else f"{v:.2f}%"
+                            lines.append(f"{label} {_c(text, (v >= 0) != _neg)}")
                         elif isinstance(v, float) and v < 2.0:
                             pct = (v - 1.0) * 100
-                            lines.append(f"{label} {pct:+.2f}%")
+                            lines.append(f"{label} {_c(f'{pct:+.2f}%', (pct >= 0) != _neg)}")
                         elif isinstance(v, int) or (isinstance(v, float) and v == int(v)):
                             _iv = int(v)
-                            lines.append(f"{label} {_iv:+.0f}" if _iv >= 0 else f"{label} {_iv:.0f}")
+                            lines.append(f"{label} {_c(f'{_iv:+.0f}', (_iv >= 0) != _neg)}")
                         else:
-                            lines.append(f"{label} {v:+.2f}" if v >= 0 else f"{label} {v:.2f}")
+                            lines.append(f"{label} {_c(f'{v:+.2f}', (v >= 0) != _neg)}")
                     return lines
                     return "\n".join(lines)
 
@@ -1491,10 +1500,10 @@ class DetailPanel(QWidget):
                                     tip_lines.append(f'<div style="color:#ccc; margin-top:2px;">{skill_desc}</div>')
                                 # 特定技能不做加成词条显示
                                 _skip_mod_skills = {"detection_alert", "detection_aiming", "planes_forsage_renewal", "maneuverability", "detection_direction", "depth_charge_bomber_alert", "submarine_danger_alert"}
+                                _trig_mods = (trigger or {}).get("modifiers", {}) or {}
                                 if mods and icon_name not in _skip_mod_skills:
                                     tip_lines.append('<hr style="border-color:#444; margin:4px 0;">')
-                                    mod_lines = _format_skill_mod(mods, cur_shiptype)
-                                    for _ml in mod_lines:
+                                    for _ml in _format_skill_mod(mods, cur_shiptype):
                                         tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
                                 # 触发条件与触发段加成
                                 if trigger and trigger.get("triggerType"):
@@ -1504,6 +1513,8 @@ class DetailPanel(QWidget):
                                     if tmods:
                                         cond_text = _format_trigger_cond(ttype, divider)
                                         tip_lines.append(f'<div style="color:#ffa; margin-top:2px; font-style:italic;">◇ {cond_text}</div>')
+                                        for _tl in _format_skill_mod(tmods, cur_shiptype):
+                                            tip_lines.append(f'<div style="color:#aaa; margin-top:1px; padding-left:10px;">{_tl}</div>')
                                         # atbaHeat：显示升温/冷却详细描述
                                         if ttype == "atbaHeat":
                                             heat = trigger.get("heatInterpolator", [])
@@ -1544,8 +1555,6 @@ class DetailPanel(QWidget):
                                                 _depth_names = getattr(_NM, 'DEPTH_MAP', {})
                                                 _labels = [_depth_names.get(s, s) for s in _states]
                                                 tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">当战舰位于{"或".join(_labels)}时</div>')
-                                        for _ml in _format_skill_mod(tmods, cur_shiptype):
-                                            tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
                                 tip_lines.append('</div>')
                                 btn.setToolTip("".join(tip_lines))
                                 btn.setToolTipDuration(10000)
@@ -2170,7 +2179,9 @@ class DetailPanel(QWidget):
                     # 支援机组：按 header 拆分为多个机组，各自独立 tooltip
                     KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间",
                                  "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药",
-                                 "巡航速度", "最大速度", "最小速度", "中队飞机数量"}
+                                 "巡航速度", "最大速度", "最小速度", "中队飞机数量",
+                                 "烟幕半径", "烟幕高度", "烟幕持续时间", "生效时间", "生效延迟",
+                                 "主炮射程", "主炮炮弹的最大误差", "中口径炮射程", "中口径炮炮弹的最大误差"}
                     groups: list[list[dict]] = []
                     cur_grp: list[dict] = []
                     for it in items:
@@ -2570,9 +2581,11 @@ class DetailPanel(QWidget):
         items = section.get("items", [])
         raw_ammo = section.get("raw_ammo_types", [])
 
-        KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间", "攻击编组数量", "最远到位时间", "巡航速度", 
+        KEEP_ASUP = {"飞机型号", "最大充能次数", "装填时间", "持续时间", "攻击编组数量", "最远到位时间", "巡航速度",
                      "最大距离", "最小距离", "单架飞机血量", "载弹量", "弹药",
-                     "最大速度", "最小速度"}
+                     "最大速度", "最小速度", "中队飞机数量",
+                     "烟幕半径", "烟幕高度", "烟幕持续时间", "生效时间", "生效延迟",
+                     "主炮射程", "主炮炮弹的最大误差", "中口径炮射程", "中口径炮炮弹的最大误差"}
 
         # 按 header 拆分为多个机组
         groups: list[list[dict]] = []

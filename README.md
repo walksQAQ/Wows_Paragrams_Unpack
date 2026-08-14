@@ -4,6 +4,8 @@
 
 ## 当前版本
 
+[![Pre-release](https://img.shields.io/github/v/release/walksQAQ/Wows_Paragrams_Unpack?include_prereleases&label=pre-release)](https://github.com/walksQAQ/Wows_Paragrams_Unpack/releases)
+
 [![Latest](https://img.shields.io/github/v/release/walksQAQ/Wows_Paragrams_Unpack)](https://github.com/walksQAQ/Wows_Paragrams_Unpack/releases/latest)
 
 ---
@@ -84,7 +86,7 @@
 
 本工具为纯 Python 实现，绝大多数二进制格式分析参考了以下开源项目与官方格式规范，并结合 Ghidra 对游戏客户端的逆向验证。完整格式文档见仓库内 `docs/` 目录。
 
-### 开源项目参考
+### 本项目参考
 
 | 项目 | 用途 |
 |------|------|

@@ -22,6 +22,8 @@ class BallisticsCalculator:
     KORABLI_DT_MIN = 0.100099996
     KORABLI_DT_MAX = 0.8125
     KORABLI_DT_COEF = 0.00064999994
+    # 飞行时间除数：游戏/浩舰显示飞行时间 = 原始模拟时间 ÷ 3.1（用户确认，2026-08-14）
+    FLY_TIME_DIVISOR = 3.1
 
     @staticmethod
     def get_normalization_angle(caliber_m: float) -> float:
@@ -82,7 +84,10 @@ class BallisticsCalculator:
         # k = 0.5*c_D*A/mass，A = pi/4*d^2（与 0.5*c_D*(d/2)^2*pi/mass 等价）
         k = 0.5 * float(air_drag) * (float(caliber_m) / 2.0) ** 2 * math.pi / max(float(mass), 1e-9)
 
+        # 记录上一步，用于落地插值（对齐客户端落点处理末尾的线性插值到 y=0）
+        prev_x, prev_y, prev_vx, prev_vy, prev_t = 0.0, 0.0, v_x, v_y, 0.0
         while y >= 0.0:
+            prev_x, prev_y, prev_vx, prev_vy, prev_t = x, y, v_x, v_y, t
             dt = BallisticsCalculator._korabli_dt(y)
             rho = BallisticsCalculator._air_density(y)
             v = math.hypot(v_x, v_y)
@@ -96,6 +101,16 @@ class BallisticsCalculator:
             t += dt
             if t > 5000:
                 break
+
+        # 游戏落点修正：最后一段由正转负时，线性插值到 y=0（客户端落点处理末尾，
+        # fVar14 = y_{n-1}/(y_{n-1} - y_n)，对落点位置/速度/落弹角/时间加权）
+        if prev_y > 0.0 > y:
+            frac = prev_y / (prev_y - y)
+            x = prev_x + (x - prev_x) * frac
+            v_x = prev_vx + (v_x - prev_vx) * frac
+            v_y = prev_vy + (v_y - prev_vy) * frac
+            t = prev_t + (t - prev_t) * frac
+            y = 0.0
 
         v_imp = math.hypot(v_x, v_y)
         impact_angle_deg = math.degrees(math.atan2(abs(v_y), abs(v_x))) if v_imp > 0 else 0.0
@@ -234,7 +249,9 @@ class BallisticsCalculator:
         uniform_durations = []
         uniform_velocity = []
 
-        step_m = 100.0
+        # 统一表步长：10m（0.01km），与计算器曲线 0.01km 采样对齐，
+        # 消除 0.1km 边界处的斜率突变（曲线折痕），显著提升平滑度
+        step_m = 10.0
         max_point = int(math.ceil(max_dist / step_m))
         for idx in range(max_point + 1):
             target_dist = idx * step_m
@@ -266,7 +283,7 @@ class BallisticsCalculator:
                     dur = fly_times[v_idx] + (fly_times[v_idx + 1] - fly_times[v_idx]) * ((target_dist - left_d) / (right_d - left_d)) if right_d != left_d else fly_times[v_idx]
                     val = self.calc_ap_penetration(krupp, mass, vel, caliber_m)
                 uniform_impact_angles.append(ang)
-                uniform_durations.append(dur)
+                uniform_durations.append(dur / BallisticsCalculator.FLY_TIME_DIVISOR)
                 uniform_velocity.append(vel)
             pen_abs = val
             vert_pen, hori_pen = self.calc_equivalent_penetration(pen_abs, math.radians(ang), norm_angle_rad)
