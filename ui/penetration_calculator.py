@@ -528,6 +528,11 @@ class PenetrationCalculatorDialog(QDialog):
         self.ellipse_unlocked_cb.setToolTip("未捕获目标时射击，散布椭圆增大 2 倍（莱斯塔 wiki）")
         self.ellipse_unlocked_cb.setStyleSheet("QCheckBox { color:#333; font-size:11px; }")
         ellipse_ctl.addWidget(self.ellipse_unlocked_cb)
+        # 隐藏散点：多炮弹对比时散点密集可读性差，可临时隐藏仅显示椭圆轮廓
+        self.ellipse_hide_scatter_cb = QCheckBox("隐藏散点")
+        self.ellipse_hide_scatter_cb.setToolTip("隐藏高斯模拟散点，仅显示散布椭圆轮廓，便于多炮弹对比")
+        self.ellipse_hide_scatter_cb.setStyleSheet("QCheckBox { color:#333; font-size:11px; }")
+        ellipse_ctl.addWidget(self.ellipse_hide_scatter_cb)
         ellipse_ctl.addStretch()
         self.ellipse_layout.addLayout(ellipse_ctl)
         # 散布信息区：左侧“当前设定射程” + 右侧炮弹信息（每炮弹一行、左对齐），垂直居中
@@ -618,6 +623,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.scatter_btn_down.clicked.connect(lambda: self._scatter_step(-1))
         self.scatter_edit.editingFinished.connect(self._scatter_apply)
         self.ellipse_unlocked_cb.toggled.connect(self._update_dispersion_ellipse)
+        self.ellipse_hide_scatter_cb.toggled.connect(self._update_dispersion_ellipse)
 
         self._ship_catalog = []
         self._ship_keyword = ""
@@ -1427,6 +1433,26 @@ class PenetrationCalculatorDialog(QDialog):
         n = self.mods_grid.count()
         if n == 0 or self.mods_grid.itemAt(n - 1).spacerItem() is None:
             self.mods_grid.addStretch(1)
+        # 容器最小高度 = 最高按钮高度 + 边距，保证多行文本（名称+加成）不被 QScrollArea 压缩
+        _max_h = 28
+        for _b in getattr(self, "_mod_buttons", []):
+            try:
+                _max_h = max(_max_h, _b["btn"].sizeHint().height())
+            except Exception:
+                pass
+        # QScrollArea 视口高度 = 最高按钮高度 + 横向滚动条(10)，确保 3 行按钮完整可见不被滚动条遮住
+        _viewport_h = _max_h + 10
+        self.mods_container.setMinimumHeight(_viewport_h)
+        # 直接约束 viewport 高度（含余量）：QScrollArea 自身高度含边框，viewport 才真正容纳内容
+        try:
+            self.mods_scroll.viewport().setMinimumHeight(_max_h + 4)
+        except Exception:
+            pass
+        self.mods_scroll.setMinimumHeight(_viewport_h + 6)
+        # 外层 mods_frame 固定高度：标题行(~26) + 视口高度 + 边距。
+        # 用 setFixedHeight 而非 setMinimumHeight：防止下方 chart_tabs(Expanding)
+        # 布局波动（如拖动散布射程滑条重建画布）时重新分配 mods_frame 高度，导致上面 UI 抖动
+        self.mods_frame.setFixedHeight(26 + _viewport_h + 8)
 
     def _add_mod_button(self, mod_id: str, gmmd: float, gm: float, kind: str = "modernization",
                         name: str = "", bonus_lines: list[str] | None = None,
@@ -1470,6 +1496,9 @@ class PenetrationCalculatorDialog(QDialog):
         # 名称已在按钮上，悬浮窗全部去掉
         # 最小宽度 = 内容完整宽度：图标与文字永不压缩截断，超出时由横向滚动条查看
         btn.setMinimumWidth(btn.sizeHint().width())
+        # 高度按内容完整显示：多行文本（名称+加成）行数越多越高，防被外层布局压缩截断
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        btn.setMinimumHeight(btn.sizeHint().height())
         btn.clicked.connect(lambda checked=False, _btn=btn, _slot=slot: self._on_mod_toggled(_btn, _slot))
         self.mods_grid.addWidget(btn)  # 单行排列，超宽时横向滚动
         self._mod_buttons.append({"btn": btn, "mod_id": mod_id, "gmmd": gmmd, "gm": gm,
@@ -1645,10 +1674,10 @@ class PenetrationCalculatorDialog(QDialog):
     def _load_ally_support_bonus(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """辅助机组（友军提供的支援侦察机 scout）射程/精度加成，无条件显示。
 
-        按当前舰船实际携带的支援侦察机（ship_module_air_support.support_type='scout'）
-        显示，按钮名直接采用该侦察机的飞机名（如 Curtiss SC-1）。
-        由友军提供而非自身携带，因此不随当前所选舰船/炮种变化，始终显示为可勾选加成。
-        多艘携带支援机组的船的支援型侦察机之间不能互相叠加 → 该 buff 固定只取一份。
+        由友军提供而非自身携带：无论当前选中哪艘舰船、哪个炮种，均显示为可勾选加成
+        （模拟队伍中有友军支援航母放出侦察机的场景）。按钮名直接采用支援侦察机的飞机名
+        （如 Curtiss SC-1），从数据库中任意 scout 支援机取（多艘支援航母的侦察机
+        buff 不叠加 → 固定只取一份）。
         """
         from models.name_mapping import Mapping as NMM
         # 所属战舰状态为被禁用（group_status_key='disabled'）时不显示辅助机组
@@ -1657,13 +1686,14 @@ class PenetrationCalculatorDialog(QDialog):
             (ship_id,)).fetchone()
         if st and (st["group_status_key"] or "") == "disabled":
             return
-        # 该船携带的支援侦察机（可能有多个配置，去重）
-        srows = conn.execute(
-            "SELECT DISTINCT plane_name FROM ship_module_air_support "
-            "WHERE ship_id=? AND support_type='scout'", (ship_id,)).fetchall()
-        if not srows:
+        # 任选一架 scout 支援机作为飞机名来源（友军提供的，与当前船无关）
+        srow = conn.execute(
+            "SELECT plane_name FROM ship_module_air_support "
+            "WHERE support_type='scout' AND plane_name <> '' LIMIT 1"
+        ).fetchone()
+        if not srow:
             return
-        plane_id = srows[0]["plane_name"] or ""
+        plane_id = srow["plane_name"] or ""
         # 飞机显示名：name_mappings.plane（如 Curtiss SC-1），无则退回 plane_id
         sname = plane_id
         if plane_id:
@@ -1686,12 +1716,11 @@ class PenetrationCalculatorDialog(QDialog):
         # 取当前炮种对应的射程/精度键（主炮 GM、副炮 GS、次级主炮 GMS）
         gmmd = self._resolve_mod_value(mods.get(range_key), ship_type) if range_key in mods else 1.0
         gm = self._resolve_mod_value(mods.get(acc_key), ship_type) if acc_key in mods else 1.0
-        # 词条：显示该 buff 提供的全部有效加成（主炮/中口径），不论当前炮种
+        # 词条：以当前选中炮塔类型为准，显示其对应射程/精度加成
         lines = []
-        for key in ("GMMaxDist", "GMIdealRadius", "GMSMaxDist", "GMSIdealRadius"):
+        for key, val in ((range_key, gmmd), (acc_key, gm)):
             if mods.get(key) is None:
                 continue
-            val = self._resolve_mod_value(mods.get(key), ship_type)
             if abs(float(val) - 1.0) < 1e-9:
                 continue
             fmt = NMM.format_modifier(key, float(val))
@@ -2272,9 +2301,11 @@ class PenetrationCalculatorDialog(QDialog):
                 (0, 0), width=lateral * 2, height=longitudinal * 2,
                 facecolor=color, alpha=0.10, edgecolor=color, linewidth=2, label=label,
             ))
-            xs = [p[1] * lateral for p in points]
-            ys = [p[0] * longitudinal for p in points]
-            ax.scatter(xs, ys, s=7, alpha=0.4, color=color, linewidths=0)
+            # 隐藏散点：勾选时仅绘制椭圆轮廓，不绘制高斯模拟散点（多炮弹对比可读性更高）
+            if not getattr(self, "ellipse_hide_scatter_cb", None) or not self.ellipse_hide_scatter_cb.isChecked():
+                xs = [p[1] * lateral for p in points]
+                ys = [p[0] * longitudinal for p in points]
+                ax.scatter(xs, ys, s=7, alpha=0.4, color=color, linewidths=0)
             max_lateral = max(max_lateral, lateral)
             max_long = max(max_long, longitudinal)
             info_parts.append(
