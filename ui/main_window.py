@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.log_panel.setStyleSheet(_log_style())
         # 主题切换时同步日志面板配色
         bus.theme_changed.connect(lambda _mode: self.log_panel.setStyleSheet(_log_style()))
+        bottom_layout.addWidget(self.log_panel)
 
         main_layout.addWidget(bottom_widget)
 
