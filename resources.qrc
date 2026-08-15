@@ -444,6 +444,9 @@
     <file>resources/pictures/talents/PZW426_ACHIEVEMENT_2.png</file>
     <file>resources/pictures/talents/PZW426_DAMAGE_17.png</file>
     <file>resources/pictures/talents/PZW426_RIBBONS_18_19.png</file>
+    <file>resources/pictures/ui/check_checked.png</file>
+    <file>resources/pictures/ui/check_indeterminate.png</file>
+    <file>resources/pictures/ui/combo_arrow.png</file>
     <file>resources/pictures_data.py</file>
     <file>resources/styles/main.qss</file>
     <file>resources/ui/main_window.ui</file>

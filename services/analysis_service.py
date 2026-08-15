@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -275,11 +277,168 @@ class AnalysisStore:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.conn = db._conn
+        # assets.bin 惰性加载（跨船复用，仅首次访问时加载一次）
+        self._assets_svc = None
+        self._assets_tried = False
+        self._assets_skeleton_paths: list = []
+        #: 炮位朝向按 hull model stem 缓存（姊妹舰/共享船体复用，避免重复解码）
+        self._stem_mount_cache: dict = {}
 
     def _gf(self, raw_data: dict, field_spec, default=None):
         if callable(field_spec):
             return field_spec(raw_data)
         return raw_data.get(field_spec, default)
+
+    # ── assets.bin 炮位朝向 ──────────────────────────────
+
+    def _get_assets_svc(self):
+        """惰性加载 assets.bin 服务（一次，跨船复用）。找不到则返回 None。
+
+        数据源：**extractor_service 提取阶段已现场落盘的 assets.bin**
+        （data/ 目录，与 GameParams.data 同放，同一提取流程产物）。
+        本阶段只读取落盘文件，不再自行现场 pkg 提取——提取统一在提取
+        流程完成，写入阶段按各自逻辑处理。
+        """
+        if self._assets_tried:
+            return self._assets_svc
+        self._assets_tried = True
+        try:
+            from uncode_assets.service import AssetsBinService
+            from utils.path_utils import get_data_dir
+            cache = str(get_data_dir() / "assets.bin")
+            if os.path.exists(cache):
+                self._assets_svc = AssetsBinService(assets_path=cache)
+            if self._assets_svc is not None:
+                # 预收集所有骨架文件路径，避免每艘船全表扫描
+                self._assets_skeleton_paths = [
+                    f.path for f in self._assets_svc.vfs.all_files()
+                    if f.prototype_type is not None
+                    and f.prototype_type.name == "SkeletonPrototype"
+                ]
+        except Exception:
+            self._assets_svc = None
+        return self._assets_svc
+
+    @staticmethod
+    def _yaw_from_matrix(m: list) -> float:
+        """从 16 元旋转矩阵（列主序）提取绕 Y 轴方位角（0-360，0=船首顺时针）。"""
+        if not m or len(m) < 11:
+            return 0.0
+        return math.degrees(math.atan2(m[8], m[10])) % 360.0
+
+    def _ship_mount_map(self, ship_id: str, raw_data: dict) -> dict:
+        """从 assets.bin 舰体骨架提取该船炮位安装朝向：{hp_key: (yaw, [x,y,z])}。
+
+        数据源：ship 实体 A_Hull.model → assets.bin 骨架分段（SkeletonPrototype）
+        中每个 HP_* 节点的旋转矩阵与位移。
+
+        性能：实测炮位节点（HP_*GM/*GS/*GT 等）**100% 位于 *_ports 分段**
+        （*_battle / *_dock / 无后缀分段均为 FX 特效/挂点）。故只解码匹配的
+        *_ports 分段（约 4-5 段/船），跳过其余分段，解码耗时降低约 60%。
+        若某船无 *_ports 分段（罕见），回退到全量匹配避免漏掉。
+        """
+        if self._get_assets_svc() is None:
+            return {}
+        try:
+            hull_model = (raw_data.get("A_Hull") or {}).get("model") or ""
+        except Exception:
+            return {}
+        if not hull_model:
+            return {}
+        stem = os.path.basename(hull_model)
+        if stem.endswith(".model"):
+            stem = stem[:-6]
+        if not stem:
+            return {}
+
+        # 匹配该船的骨架分段；炮位节点 100% 位于 *_ports 分段
+        matched = [p for p in self._assets_skeleton_paths if stem in p]
+        if not matched:
+            return {}
+        # 姊妹舰/共享船体的 hull model 相同 → 复用已解码结果
+        cached = self._stem_mount_cache.get(stem)
+        if cached is not None:
+            return cached
+        ports_paths = [p for p in matched if "_ports" in p]
+        # 解码所有 *_ports 分段（炮位分散于 Bow/MidFront/MidBack/Stern 各段）；
+        # 非 *_ports 分段（*_battle / *_dock / 无后缀）为 FX/挂点，仅当无任何
+        # ports 分段时才回退解码（极罕见），确保不遗漏炮位。
+        order = ports_paths if ports_paths else matched
+
+        nodes: dict = {}
+        for path in order:
+            try:
+                skel = self._assets_svc.decode_skeleton_path(path)
+            except Exception:
+                continue
+            names = skel.get("name_ids", []) or []
+            mats = skel.get("matrices", []) or []
+            for i, n in enumerate(names):
+                if n.startswith("HP_") and i < len(mats):
+                    m = mats[i]
+                    nodes[n] = (round(self._yaw_from_matrix(m), 1),
+                                [round(m[12], 4), round(m[13], 4), round(m[14], 4)])
+        self._stem_mount_cache[stem] = nodes
+        return nodes
+
+    def _ship_mount_map_from_db(self, ship_id: str) -> dict:
+        """从数据库 entity_snapshots 取 ship 实体，再提取炮位朝向。"""
+        try:
+            row = self.conn.execute(
+                "SELECT data_json FROM entity_snapshots "
+                "WHERE entity_id=? AND entity_type='ship' LIMIT 1", (ship_id,)).fetchone()
+            if not row:
+                return {}
+            return self._ship_mount_map(ship_id, json.loads(row[0]))
+        except Exception:
+            return {}
+
+    #: 需要从 assets.bin 骨架补齐炮位朝向的武器槽位
+    _ARC_MOUNT_SLOTS = ("artillery", "secondary_artillery", "torpedoes", "atba")
+
+    def backfill_all_mount_yaw(self, version_code: str = "") -> int:
+        """从 assets.bin 补齐**所有舰船**的炮位安装朝向（mount_yaw/mount_pos）。
+
+        覆盖主炮 / 次级主炮 / 鱼雷 / 副炮（artillery / secondary_artillery /
+        torpedoes / atba）：对每艘船从 entity_snapshots 取 A_Hull.model →
+        assets.bin 骨架节点提取安装朝向，按 hp_key 匹配对应槽位的行 UPDATE。
+        返回更新行数。
+        """
+        if self._get_assets_svc() is None:
+            return 0
+        ph = ",".join("?" * len(self._ARC_MOUNT_SLOTS))
+        ships = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT ship_id FROM ship_turret_arcs "
+            "WHERE slot_type IN (%s)" % ph, self._ARC_MOUNT_SLOTS).fetchall()]
+        n_ships = len(ships)
+        if n_ships == 0:
+            return 0
+        # 日志区详细进度：约每 5% 一条（小数据量则逐艘）
+        log_step = max(1, n_ships // 20)
+        bus.log_message.emit(f"⏳ 回填炮位朝向: 共 {n_ships} 艘船")
+        total = 0
+        for idx, ship_id in enumerate(ships, 1):
+            nodes = self._ship_mount_map_from_db(ship_id)
+            if not nodes:
+                continue
+            for hp_key, (yaw, mpos) in nodes.items():
+                try:
+                    cur = self.conn.execute(
+                        "UPDATE ship_turret_arcs SET mount_yaw=?, mount_pos_json=? "
+                        "WHERE ship_id=? AND hp_key=? AND slot_type IN (%s)" % ph,
+                        (yaw, _json_dumps(mpos), ship_id, hp_key) + tuple(self._ARC_MOUNT_SLOTS))
+                    total += cur.rowcount
+                except Exception:
+                    continue
+            self.conn.commit()
+            # 进度条：96 → 98 区间，每 5 艘刷新一次
+            if idx % 5 == 0 or idx == n_ships:
+                pct = 96 + int(2 * idx / n_ships)
+                bus.task_progress.emit(pct, f"步骤 3/3: 回填炮位朝向 {idx}/{n_ships} 艘")
+            # 日志区：约每 5% 一条
+            if idx % log_step == 0 or idx == n_ships:
+                bus.log_message.emit(f"⏳ 回填炮位朝向 {idx}/{n_ships} 艘（累计 {total} 行）")
+        return total
 
     # ── 1. Ship ──────────────────────────────────────────
 
@@ -581,7 +740,79 @@ class AnalysisStore:
         # 解析 ShipUpgradeInfo
         self._write_upgrade_info(ship_id, raw_data, version_code=version_code)
 
+        # 炮塔射界（主炮/副炮/鱼雷/防空每门炮的水平·垂直射界与死区）
+        self._write_turret_arcs(ship_id, raw_data, version_code=version_code)
+
     # ── Ship 子写入器 ─────────────────────────────────────
+
+    # 组件类型 → 射界表 slot_type 映射
+    _ARC_SLOT_TYPES = {
+        "_Artillery": "artillery",
+        "_SecondaryArtillery": "secondary_artillery",
+        "_ATBA": "atba",
+        "_Torpedoes": "torpedoes",
+        "_AirDefense": "air_defense",
+    }
+    _ARC_FIELDS = ("horizSector", "vertSector", "deadZone", "pitchDeadZones", "position")
+
+    def _write_turret_arcs(self, ship_id: str, raw_data: dict, version_code: str = ""):
+        """将每门炮塔的射界单独存入 ship_turret_arcs 表。
+
+        数据源：ship 实体的顶层武器组件（A_Artillery / A_Torpedoes / A_ATBA / A_AirDefense …），
+        每个组件下的 HP_xxx 炮对象内含射界字段。
+
+        ⚠️ 炮位安装朝向（mount_yaw/mount_pos）**不在此处提取**：从 assets.bin
+        舰体骨架解码极慢（每次 store_ship 全量遍历骨架），已改为 precompute_all
+        末尾的 backfill_all_mount_yaw 统一回填（只解码一次），此处 mount_yaw 留空。
+        """
+        rows = []
+        for comp_key, comp in raw_data.items():
+            if not isinstance(comp, dict):
+                continue
+            slot_type = None
+            for suffix, st in self._ARC_SLOT_TYPES.items():
+                if comp_key.endswith(suffix):
+                    slot_type = st
+                    break
+            if not slot_type:
+                continue
+            letter = _extract_letter(comp_key)
+            for hp_key, gun in comp.items():
+                if not isinstance(gun, dict):
+                    continue
+                if not any(f in gun for f in self._ARC_FIELDS):
+                    continue
+                rs = gun.get("rotationSpeed") or [None, None]
+                rows.append((
+                    version_code, ship_id, letter, slot_type, hp_key,
+                    str(gun.get("index", "") or ""),
+                    str(gun.get("name", "") or ""),
+                    comp_key,
+                    _json_dumps(gun.get("horizSector")),
+                    _json_dumps(gun.get("vertSector")),
+                    _json_dumps(gun.get("deadZone")),
+                    _json_dumps(gun.get("pitchDeadZones")),
+                    _json_dumps(gun.get("position")),
+                    None,          # mount_yaw — 由 backfill_all_mount_yaw 统一回填
+                    None,          # mount_pos_json — 同上
+                    _v(rs[0]), _v(rs[1]),
+                    _i(gun.get("numBarrels")),
+                    _v(gun.get("barrelDiameter")),
+                    _v(gun.get("shotDelay")),
+                ))
+        if not rows:
+            return
+        try:
+            # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
+            self.conn.executemany(
+                """INSERT OR REPLACE INTO ship_turret_arcs
+                   (version_code, ship_id, config_group, slot_type, hp_key, gun_index, gun_name, module_key,
+                    horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json,
+                    mount_yaw, mount_pos_json,
+                    rotation_speed_h, rotation_speed_v, num_barrels, barrel_diameter, shot_delay)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+        except Exception:
+            pass
 
     def _write_upgrade_info(self, ship_id: str, raw_data: dict, version_code: str = ""):
         """解析 ShipUpgradeInfo 并存入库，同时提取模块名称映射"""
@@ -636,10 +867,10 @@ class AnalysisStore:
                     name_items.append(("module_upgrade", mid.upper(), display_name))
         if name_items:
             try:
+                # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
                 self.conn.executemany(
                     "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                     name_items)
-                self.conn.commit()
             except Exception:
                 pass
 
@@ -1414,10 +1645,10 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
         # 写入 name_mappings：key = IDS_{personName 全大写}
         name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
         try:
+            # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
             conn.execute(
                 "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                 ("crew", name_key, person_name or crew_id))
-            conn.commit()
         except Exception:
             pass
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
@@ -1603,9 +1834,12 @@ class AnalysisService:
         total_processed = 0
         split_dir = get_split_dir()
         categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew", "Exterior", "Other"]
+        cat_labels = {"Projectile": "弹药", "Aircraft": "飞机", "Ability": "消耗品",
+                      "Ship": "舰船", "Modernization": "配件", "Crew": "舰长",
+                      "Exterior": "信号旗", "Other": "其他"}
         raw_conn = db._conn
 
-        def _process_batch(items):
+        def _process_batch(items, cat_label=""):
             nonlocal total_processed
             try:
                 raw_conn.execute("COMMIT")
@@ -1613,11 +1847,25 @@ class AnalysisService:
                 pass
             raw_conn.execute("BEGIN TRANSACTION")
             success = 0
-            for entity_id, raw_data in items:
+            n = len(items)
+            bus.log_message.emit(f"数据入库: 开始 [{cat_label}]（{n} 条）")
+            # 日志区详细进度：约每 5% 更新一条（小类别则逐条显示）
+            log_step = max(1, n // 20)
+            for i, (entity_id, raw_data) in enumerate(items, 1):
                 self.analyze_one(cat_name, raw_data, entity_id, db, version_code=version_code)
                 success += 1
                 total_processed += 1
+                # 每 25 条刷新一次进度条（显示当前类别 + 进度）
+                if i % 25 == 0 or i == n:
+                    pct = 80 + int(15 * total_processed / max(1, total_entities))
+                    bus.task_progress.emit(pct, f"步骤 3/3: 数据入库 [{cat_label}] {i}/{n}")
+                # 日志区按约 5% 粒度更新详细进度
+                if i % log_step == 0 or i == n:
+                    cat_pct = int(100 * i / n)
+                    bus.log_message.emit(
+                        f"⏳ 数据入库 [{cat_label}] {i}/{n}（{cat_pct}%）｜累计 {total_processed}")
             raw_conn.commit()
+            bus.log_message.emit(f"数据入库: 完成 [{cat_label}] {success} 条")
             return success
 
         use_memory = data_by_category is not None
@@ -1626,14 +1874,14 @@ class AnalysisService:
             total_entities = sum(len(v) for v in data_by_category.values())
             if total_entities == 0:
                 return results
-            bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
+            bus.task_progress.emit(80, "步骤 3/3: 数据入库")
             for cat_name in categories:
                 cd = data_by_category.get(cat_name)
                 if not cd:
                     results[cat_name] = 0
                     continue
                 items = sorted(cd.items())
-                results[cat_name] = _process_batch(items)
+                results[cat_name] = _process_batch(items, cat_labels.get(cat_name, cat_name))
 
             # ── 额外处理 PCOK/PCOL 技能数据 ──
             try:
@@ -1667,7 +1915,7 @@ class AnalysisService:
             except Exception as e:
                 bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
 
-            bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
+            bus.task_progress.emit(95, f"步骤 3/3: 数据入库完成: {total_processed} 实体")
         else:
             if not split_dir.exists():
                 bus.log_message.emit("⏳ split 目录不存在，跳过预分析")
@@ -1675,7 +1923,7 @@ class AnalysisService:
             total_entities = sum(len(list((split_dir / c).glob("*.json"))) for c in categories if (split_dir / c).exists())
             if total_entities == 0:
                 return results
-            bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
+            bus.task_progress.emit(80, "步骤 3/3: 数据入库")
             for cat_name in categories:
                 cat_dir = split_dir / cat_name
                 if not cat_dir.exists():
@@ -1691,7 +1939,7 @@ class AnalysisService:
                         items.append((fp.stem, json.loads(fp.read_text(encoding="utf-8"))))
                     except Exception:
                         continue
-                results[cat_name] = _process_batch(items)
+                results[cat_name] = _process_batch(items, cat_labels.get(cat_name, cat_name))
 
             # ── 额外处理 PCOK/PCOL 技能数据 ──
             try:
@@ -1725,6 +1973,19 @@ class AnalysisService:
             except Exception as e:
                 bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
 
-            bus.task_progress.emit(95, f"步骤 3/3: 分析完成: {total_processed} 实体")
+            bus.task_progress.emit(95, f"步骤 3/3: 数据入库完成: {total_processed} 实体")
+
+        # ── 全量补齐：从 assets.bin 提取所有舰船副炮炮位朝向 ──
+        # （assets.bin 提取的目的是副炮射界，故预分析后统一回填全部舰船，
+        #   确保 ship_turret_arcs 的 mount_yaw/mount_pos 完整）
+        bus.task_progress.emit(96, "步骤 3/3: 回填炮位朝向")
+        try:
+            store = AnalysisStore(db)
+            n = store.backfill_all_mount_yaw(version_code=version_code)
+            if n:
+                bus.log_message.emit(f"🎯 副炮炮位朝向回填: {n} 行")
+        except Exception as e:
+            bus.log_message.emit(f"⚠️ 副炮朝向回填失败: {e}")
+        bus.task_progress.emit(98, "步骤 3/3: 完成")
 
         return results

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton
 from PySide6.QtCore import Qt, Signal
 
 from app.signals import bus
+from utils.theme import theme
 
 
 class CategoryBar(QWidget):
@@ -27,18 +28,18 @@ class CategoryBar(QWidget):
     BTN_STYLE = """
         QPushButton {
             background-color: transparent;
-            color: #000000;
+            color: @text_muted@;
             border: none;
             border-radius: 8px;
             padding: 10px 4px;
         }
         QPushButton:hover {
-            background-color: #3a3a3a;
-            color: #ffffff;
+            background-color: @hover_bg@;
+            color: @text@;
         }
         QPushButton:checked {
-            background-color: #0078d4;
-            color: #ffffff;
+            background-color: @selected_bg@;
+            color: @selected_fg@;
         }
     """
 
@@ -46,10 +47,10 @@ class CategoryBar(QWidget):
         super().__init__(parent)
         self.setObjectName("CategoryBar")
         self.setFixedWidth(80)
-        self.setStyleSheet("""
+        theme.bind(self, """
             #CategoryBar {
-                background-color: #252526;
-                border-right: 1px solid #3c3c3c;
+                background-color: @panel_alt@;
+                border-right: 1px solid @border@;
             }
         """)
 
@@ -65,7 +66,7 @@ class CategoryBar(QWidget):
             btn = QPushButton(f"{icon}\n{label}")
             btn.setToolTip(label)
             btn.setCheckable(True)
-            btn.setStyleSheet(self.BTN_STYLE)
+            theme.bind(btn, self.BTN_STYLE)
             # 图标大号，文字小号
             btn.setFont(self.font())
             btn.clicked.connect(lambda checked, f=folder: self._on_category(f))

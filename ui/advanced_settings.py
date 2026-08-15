@@ -11,13 +11,14 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QLineEdit, QPushButton, QCheckBox,
+    QLabel, QLineEdit, QPushButton, QCheckBox, QComboBox,
     QGroupBox, QDialogButtonBox,
 )
 from PySide6.QtCore import Qt
 
 from app.application import app as app_ctx
 from app.signals import bus
+from utils.theme import theme
 
 
 class AdvancedSettingsDialog(QDialog):
@@ -44,7 +45,7 @@ class AdvancedSettingsDialog(QDialog):
         self._path_edit = QLineEdit()
         self._path_edit.setPlaceholderText("请选择游戏安装目录...")
         self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet("padding: 4px 8px; color: #1a1a1a; background-color: #ffffff;")
+        self._path_edit.setStyleSheet(theme.qss("padding: 4px 8px; color: @text@; background-color: @input_bg@;"))
         btn_browse = QPushButton("浏览...")
         btn_browse.clicked.connect(self._on_browse)
         path_row.addWidget(self._path_edit, stretch=1)
@@ -52,7 +53,7 @@ class AdvancedSettingsDialog(QDialog):
         glay.addLayout(path_row)
 
         lbl_hint = QLabel("提示：选择 World_of_Warships 或 Korabli 的安装根目录")
-        lbl_hint.setStyleSheet("color: #888; font-size: 11px;")
+        lbl_hint.setStyleSheet(theme.qss("color: @text_hint@; font-size: 11px;"))
         glay.addWidget(lbl_hint)
         layout.addWidget(grp_path)
 
@@ -64,16 +65,34 @@ class AdvancedSettingsDialog(QDialog):
         dlay.addWidget(self._keep_split_cb)
         dlay.addWidget(QLabel("勾选：解析完成后保留 data/split/ 目录下的 JSON 文件\n"
                               "取消勾选：解析完成后自动删除中间 JSON 文件以节省空间",
-                              styleSheet="color: #888; font-size: 11px;"))
+                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_data)
+
+        # ── 外观（主题模式） ──────────────────────────
+        grp_theme = QGroupBox("外观")
+        tlay = QVBoxLayout(grp_theme)
+        trow = QHBoxLayout()
+        trow.setSpacing(8)
+        trow.addWidget(QLabel("主题模式："))
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItem("跟随系统", "auto")
+        self._theme_combo.addItem("浅色", "light")
+        self._theme_combo.addItem("深色", "dark")
+        self._theme_combo.setMinimumWidth(140)
+        trow.addWidget(self._theme_combo)
+        trow.addStretch()
+        tlay.addLayout(trow)
+        tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
+                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
+        layout.addWidget(grp_theme)
 
         # ── 游戏信息（只读） ──────────────────────────
         grp_info = QGroupBox("游戏信息")
         ilay = QFormLayout(grp_info)
         self._version_label = QLabel("未知")
-        self._version_label.setStyleSheet("color: #555;")
+        self._version_label.setStyleSheet(theme.qss("color: @text_muted@;"))
         self._data_state_label = QLabel("否")
-        self._data_state_label.setStyleSheet("color: #555;")
+        self._data_state_label.setStyleSheet(theme.qss("color: @text_muted@;"))
         ilay.addRow("当前游戏版本：", self._version_label)
         ilay.addRow("数据已加载：", self._data_state_label)
         layout.addWidget(grp_info)
@@ -92,6 +111,10 @@ class AdvancedSettingsDialog(QDialog):
         ctx = app_ctx.ctx
         self._path_edit.setText(ctx.game_path)
         self._keep_split_cb.setChecked(app_ctx.config.keep_split_json)
+        # 主题模式
+        _mode = app_ctx.config.theme_mode or "auto"
+        _idx = self._theme_combo.findData(_mode)
+        self._theme_combo.setCurrentIndex(_idx if _idx >= 0 else 0)
         self._version_label.setText(ctx.game_version or "未知")
         self._data_state_label.setText("是" if ctx.game_data_state else "否")
 
@@ -111,4 +134,8 @@ class AdvancedSettingsDialog(QDialog):
             app_ctx.set_game_path(path)
         # 保留 split JSON
         app_ctx.config.keep_split_json = self._keep_split_cb.isChecked()
+        # 主题模式（变更时立即刷新全局样式并广播信号）
+        _new_mode = self._theme_combo.currentData() or "auto"
+        if _new_mode != (app_ctx.config.theme_mode or "auto"):
+            app_ctx.set_theme_mode(_new_mode)
         self.accept()

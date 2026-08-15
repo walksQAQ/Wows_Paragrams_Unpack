@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from utils.threading_utils import run_async
 from services.diff_service import _fmt_value, KIND_LABELS
+from utils.theme import theme
 
 
 # ── 三色高亮（与实体列表一致）──────────────────────────────
@@ -63,26 +64,27 @@ class VersionDiffDialog(QDialog):
         self.setWindowTitle("版本数据比对")
         self.setMinimumSize(900, 600)
         self.resize(1220, 780)
-        self.setStyleSheet("""
-            QDialog { background:#ffffff; color:#222; }
-            QLabel { color:#222; font-size:12px; }
-            QPushButton { background:#f2f2f2; border:1px solid #b9b9b9; border-radius:3px;
-                          padding:4px 14px; color:#222; font-size:12px; }
-            QPushButton:hover { background:#e4e4e4; }
-            QPushButton:disabled { color:#999; background:#f7f7f7; }
-            QComboBox, QLineEdit { background:#fff; border:1px solid #bbb; border-radius:3px;
-                                   padding:3px 6px; color:#222; font-size:12px; }
-            QTableWidget { background:#fff; border:1px solid #d0d0d0; gridline-color:#ececec;
-                           color:#222; font-size:12px; }
-            QHeaderView::section { background:#f4f4f4; color:#333; font-size:12px;
-                                   border:1px solid #d8d8d8; padding:4px; }
-            QTreeWidget { background:#fff; border:1px solid #d0d0d0; color:#222; font-size:12px; }
-            QSplitter::handle { background:#e6e6e6; }
-            #noteBanner { background:#fff7e0; color:#7a5c00; border:1px solid #e8cf8a;
+        # 对话框级样式：theme.bind 注册后，主题切换时自动整体重设（含所有 #id 子控件）
+        theme.bind(self, """
+            QDialog { background:@window_bg@; color:@text@; }
+            QLabel { color:@text@; font-size:12px; }
+            QPushButton { background:@panel_alt@; border:1px solid @border@; border-radius:3px;
+                          padding:4px 14px; color:@text@; font-size:12px; }
+            QPushButton:hover { background:@hover_bg@; }
+            QPushButton:disabled { color:@text_hint@; background:@panel_bg@; }
+            QComboBox, QLineEdit { background:@input_bg@; border:1px solid @border@; border-radius:3px;
+                                   padding:3px 6px; color:@text@; font-size:12px; }
+            QTableWidget { background:@input_bg@; border:1px solid @border@; gridline-color:@border_soft@;
+                           color:@text@; font-size:12px; }
+            QHeaderView::section { background:@panel_alt@; color:@text@; font-size:12px;
+                                   border:1px solid @border@; padding:4px; }
+            QTreeWidget { background:@input_bg@; border:1px solid @border@; color:@text@; font-size:12px; }
+            QSplitter::handle { background:@border@; }
+            #noteBanner { background:#3a3a00; color:#ffd75e; border:1px solid #7a5c00;
                           border-radius:3px; padding:4px 8px; }
             #fieldHeader { font-size:13px; font-weight:bold; color:#c60; padding:4px 2px; }
-            #footer { color:#666; font-size:11px; }
-            #sectionTitle { font-size:12px; font-weight:bold; color:#444; }
+            #footer { color:@text_hint@; font-size:11px; }
+            #sectionTitle { font-size:12px; font-weight:bold; color:@text_muted@; }
         """)
         self._build_ui()
         self._load_versions()
@@ -118,7 +120,7 @@ class VersionDiffDialog(QDialog):
         top.addWidget(self.btn_copy)
         top.addStretch(1)
         self.status_label = QLabel("就绪")
-        self.status_label.setStyleSheet("color:#555;")
+        theme.bind(self.status_label, "color:@text_muted@;")
         top.addWidget(self.status_label)
         layout.addLayout(top)
 
@@ -591,8 +593,8 @@ class VersionDiffDialog(QDialog):
                 if _ps <= 0:
                     _ps = 9  # QFont() 默认 pointSize=-1，+1 会导致 setPointSize(-1) 警告
                 font.setPointSize(_ps + 1)
-                item.setBackground(0, QColor("#f2f2f2"))
-                item.setForeground(0, QColor("#333333"))
+                item.setBackground(0, QColor(theme["panel_alt"]))
+                item.setForeground(0, QColor(theme["text"]))
             item.setFont(0, font)
             if kind == "branch":
                 item.setForeground(0, _COLOR_MODIFIED)
@@ -615,6 +617,6 @@ class VersionDiffDialog(QDialog):
             for c in range(3):
                 item.setForeground(c, color)
         else:  # unchanged
-            item.setForeground(0, QColor("#222222"))
+            item.setForeground(0, QColor(theme["text"]))
             item.setForeground(2, _COLOR_UNCHANGED)
         parent.addChild(item)

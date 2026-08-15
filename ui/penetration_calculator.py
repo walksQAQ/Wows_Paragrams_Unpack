@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QGridLayout, QCheckBox, QCompleter,
 )
 
+from utils.theme import theme
+
 
 class CustomWeaponDialog(QDialog):
     """自定义炮弹输入对话框：所有计算值均允许手动填写。
@@ -148,10 +150,10 @@ class SideAmmoLabel(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(
-            "QWidget { background:#ffffff; border:1px solid #d8d8d8; border-radius:4px; }"
-            "QWidget:hover { background:#ffeaea; border-color:#e91e63; }"
-        )
+        self.setStyleSheet(theme.qss(
+            "QWidget { background:@panel_bg@; border:1px solid @border@; border-radius:4px; }"
+            "QWidget:hover { background:@hover_bg@; border-color:#e91e63; }"
+        ))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 5, 8, 5)
         lay.setSpacing(1)
@@ -161,7 +163,7 @@ class SideAmmoLabel(QWidget):
         lay.addWidget(main_lb)
         for name in mod_names:
             sub = QLabel(str(name))
-            sub.setStyleSheet("font-size:9px; color:#999999; background:transparent; border:none;")
+            sub.setStyleSheet(theme.qss("font-size:9px; color:@text_muted@; background:transparent; border:none;"))
             sub.setWordWrap(True)
             lay.addWidget(sub)
 
@@ -215,81 +217,99 @@ class PenetrationCalculatorDialog(QDialog):
         self._build_ui()
         self._load_data()
         self._restored_geometry = self._restore_geometry()
+        # 主题切换：面板背景等由 theme.bind 自动更新；插件加成按钮动态重建以应用新主题
+        from app.signals import bus as _bus
+        _bus.theme_changed.connect(self._on_theme_changed_pen)
+
+    def _on_theme_changed_pen(self, _mode: str) -> None:
+        """主题切换后：重建插件加成按钮，确保其跟随新主题"""
+        try:
+            if getattr(self, "mods_frame", None) is not None and self.mods_frame.isVisible():
+                self._load_mod_bonuses()
+        except Exception:
+            pass
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        self.setStyleSheet("""
+        theme.bind(self, """
             QDialog {
-                background: #f5f5f5;
-                color: #222222;
+                background: @window_bg@;
+                color: @text@;
             }
             QLabel {
-                color: #333333;
+                color: @text@;
                 font-size: 12px;
             }
             QComboBox {
-                background: #ffffff;
-                color: #222222;
-                border: 1px solid #b8b8b8;
-                border-radius: 4px;
-                padding: 4px 8px;
+                background: @input_bg@;
+                color: @text@;
+                border: 1px solid @border@;
+                border-radius: 3px;
+                padding: 3px 6px;
                 min-height: 28px;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 20px;
-                border-left: 1px solid #c3c3c3;
-                background: #f0f0f0;
+                width: 18px;
+                border-left: 1px solid @border@;
+                border-top-right-radius: 3px;
+                border-bottom-right-radius: 3px;
+                background: @panel_alt@;
+            }
+            QComboBox::down-arrow {
+                image: url(:/resources/pictures/ui/combo_arrow.png);
+                width: 10px;
+                height: 10px;
             }
             QComboBox QAbstractItemView {
-                background: #ffffff;
-                color: #222222;
-                border: 1px solid #b8b8b8;
-                selection-background-color: #0078d4;
-                selection-color: #ffffff;
+                background: @panel_bg@;
+                color: @text@;
+                border: 1px solid @border@;
+                selection-background-color: @selected_bg@;
+                selection-color: @selected_fg@;
             }
             QPushButton {
-                background: #f2f2f2;
-                color: #222222;
-                border: 1px solid #b5b5b5;
+                background: @panel_alt@;
+                color: @text@;
+                border: 1px solid @border@;
                 border-radius: 4px;
                 padding: 6px 12px;
                 min-height: 28px;
             }
             QPushButton:hover {
-                background: #e8f3ff;
+                background: @hover_bg@;
                 border-color: #0078d4;
             }
             QPushButton:pressed {
-                background: #dcecff;
+                background: @selected_bg@;
             }
             QPushButton:disabled {
-                background: #f7f7f7;
-                color: #999999;
-                border-color: #d2d2d2;
+                background: @panel_bg@;
+                color: @text_hint@;
+                border-color: @border@;
             }
             QTableWidget {
-                background: #ffffff;
-                color: #222222;
-                border: 1px solid #d0d0d0;
-                gridline-color: #e6e6e6;
-                alternate-background-color: #f8fbff;
+                background: @input_bg@;
+                color: @text@;
+                border: 1px solid @border@;
+                gridline-color: @border_soft@;
+                alternate-background-color: @panel_alt@;
             }
             QHeaderView::section {
-                background: #efefef;
-                color: #222222;
+                background: @panel_alt@;
+                color: @text@;
                 padding: 6px 8px;
-                border: 1px solid #d0d0d0;
+                border: 1px solid @border@;
                 font-weight: bold;
             }
             QTableWidget::item {
-                background: #ffffff;
-                color: #222222;
-                border: 1px solid #ececec;
+                background: @input_bg@;
+                color: @text@;
+                border: 1px solid @border_soft@;
                 padding: 4px;
             }
             QTableWidget::item:selected {
@@ -297,7 +317,7 @@ class PenetrationCalculatorDialog(QDialog):
                 color: #ffffff;
             }
             QWidget {
-                color: #222222;
+                color: @text@;
             }
         """)
 
@@ -310,10 +330,10 @@ class PenetrationCalculatorDialog(QDialog):
         self.side_panel = QWidget(self)
         self.side_panel.setObjectName("CalculatorSidePanel")
         self.side_panel.setFixedWidth(250)
-        self.side_panel.setStyleSheet("""
+        theme.bind(self.side_panel, """
             QWidget#CalculatorSidePanel {
-                background: #ffffff;
-                border: 1px solid #d8d8d8;
+                background: @panel_bg@;
+                border: 1px solid @border@;
                 border-radius: 6px;
             }
         """)
@@ -335,7 +355,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.side_clear_btn = QPushButton("清空")
         sp.addWidget(self.side_clear_btn)
         self.side_hint = QLabel("从顶部筛选器选择炮弹后\n点击 \"➕ 添加此弹药\"\n\n点击炮弹按钮即可将其移出显示")
-        self.side_hint.setStyleSheet("color:#999; font-size:11px;")
+        theme.bind(self.side_hint, "color:@text_hint@; font-size:11px;")
         self.side_hint.setWordWrap(True)
         sp.addWidget(self.side_hint)
         body.addWidget(self.side_panel)
@@ -348,10 +368,10 @@ class PenetrationCalculatorDialog(QDialog):
 
         filters = QWidget(self)
         filters.setObjectName("CalculatorFilterBar")
-        filters.setStyleSheet("""
+        theme.bind(filters, """
             QWidget#CalculatorFilterBar {
-                background: #ffffff;
-                border: 1px solid #d8d8d8;
+                background: @panel_bg@;
+                border: 1px solid @border@;
                 border-radius: 6px;
             }
         """)
@@ -417,15 +437,15 @@ class PenetrationCalculatorDialog(QDialog):
         # 插件加成卡片（射程 / 精度）—— 主界面升级品按钮样式
         self.mods_frame = QFrame(self)
         self.mods_frame.setObjectName("CalculatorModsBar")
-        self.mods_frame.setStyleSheet(
-            "QFrame#CalculatorModsBar { background:#ffffff; border:1px solid #d8d8d8; border-radius:6px; }"
+        theme.bind(self.mods_frame,
+            "QFrame#CalculatorModsBar { background:@panel_bg@; border:1px solid @border@; border-radius:6px; }"
         )
         mvl = QVBoxLayout(self.mods_frame)
         mvl.setContentsMargins(8, 4, 8, 4)
         mvl.setSpacing(4)
         mh = QHBoxLayout()
         _mods_title = QLabel("射程 / 精度加成（插件 · 消耗品 · 战斗指令）：")
-        _mods_title.setStyleSheet("font-size:12px; color:#555;")
+        _mods_title.setStyleSheet(theme.qss("font-size:12px; color:@text_muted@;"))
         mh.addWidget(_mods_title)
         mh.addStretch()
         self.mods_reset_btn = QPushButton("清空选择")
@@ -439,11 +459,11 @@ class PenetrationCalculatorDialog(QDialog):
         self.mods_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.mods_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.mods_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.mods_scroll.setStyleSheet(
+        theme.bind(self.mods_scroll,
             "QScrollArea { background: transparent; border: none; }"
-            "QScrollBar:horizontal { height:10px; background:#f0f0f0; border-radius:5px; }"
-            "QScrollBar::handle:horizontal { background:#b0b0b0; border-radius:5px; min-width:30px; }"
-            "QScrollBar::handle:horizontal:hover { background:#909090; }"
+            "QScrollBar:horizontal { height:10px; background:@scroll_bg@; border-radius:5px; }"
+            "QScrollBar::handle:horizontal { background:@scroll_handle@; border-radius:5px; min-width:30px; }"
+            "QScrollBar::handle:horizontal:hover { background:@scroll_handle_hover@; }"
             "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; background:none; border:none; }"
             "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background:none; }"
         )
@@ -457,19 +477,19 @@ class PenetrationCalculatorDialog(QDialog):
         self.mods_frame.setVisible(False)
 
         self.chart_tabs = QTabWidget(self)
-        self.chart_tabs.setStyleSheet("QTabWidget::pane { border: 1px solid #d8d8d8; border-radius: 6px; background:#ffffff; }")
+        theme.bind(self.chart_tabs, "QTabWidget::pane { border: 1px solid @border@; border-radius: 6px; background:@panel_bg@; }")
 
         self.chart_container = QWidget(self)
         self.chart_layout = QVBoxLayout(self.chart_container)
         self.chart_layout.setContentsMargins(0, 0, 0, 0)
         self.chart_label = QLabel("穿深曲线：等待计算…")
         self.chart_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.chart_label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
+        theme.bind(self.chart_label, "color: @text_muted@; border: 1px solid @border@; background: @panel_bg@; border-radius: 6px; padding: 10px 12px;")
         self.chart_layout.addWidget(self.chart_label)
         self.chart_label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
         self.chart_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.chart_container.setMinimumHeight(180)
-        self.chart_container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
+        theme.bind(self.chart_container, "QWidget { background: @panel_bg@; border-radius: 6px; }")
         self.chart_tabs.addTab(self.chart_container, "穿深曲线")
 
         self.ellipse_container = QWidget(self)
@@ -498,12 +518,12 @@ class PenetrationCalculatorDialog(QDialog):
         self.scatter_edit.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.scatter_edit.setValidator(QIntValidator(50, 3000, self))
         self.scatter_edit.setText("600")
-        _btn_style = (
-            "QPushButton { background:#f0f0f0; color:#222; border:1px solid #b8b8b8;"
+        _btn_style = theme.qss(
+            "QPushButton { background:@panel_alt@; color:@text@; border:1px solid @border@;"
             " border-radius:2px; padding:0px; font-size:9px;"
             " min-height:0px; max-height:14px; }"
-            "QPushButton:hover { background:#e8f3ff; border-color:#0078d4; }"
-            "QPushButton:pressed { background:#dcecff; }"
+            "QPushButton:hover { background:@hover_bg@; border-color:#0078d4; }"
+            "QPushButton:pressed { background:@selected_bg@; }"
         )
         self.scatter_btn_up = QPushButton("▲", self)
         self.scatter_btn_down = QPushButton("▼", self)
@@ -526,34 +546,34 @@ class PenetrationCalculatorDialog(QDialog):
         # 莱斯塔 wiki：未锁定目标射击 → 散布椭圆 ×2
         self.ellipse_unlocked_cb = QCheckBox("未锁定目标 ×2")
         self.ellipse_unlocked_cb.setToolTip("未捕获目标时射击，散布椭圆增大 2 倍（莱斯塔 wiki）")
-        self.ellipse_unlocked_cb.setStyleSheet("QCheckBox { color:#333; font-size:11px; }")
+        theme.bind(self.ellipse_unlocked_cb, "QCheckBox { color:@text@; font-size:11px; }")
         ellipse_ctl.addWidget(self.ellipse_unlocked_cb)
         # 隐藏散点：多炮弹对比时散点密集可读性差，可临时隐藏仅显示椭圆轮廓
         self.ellipse_hide_scatter_cb = QCheckBox("隐藏散点")
         self.ellipse_hide_scatter_cb.setToolTip("隐藏高斯模拟散点，仅显示散布椭圆轮廓，便于多炮弹对比")
-        self.ellipse_hide_scatter_cb.setStyleSheet("QCheckBox { color:#333; font-size:11px; }")
+        theme.bind(self.ellipse_hide_scatter_cb, "QCheckBox { color:@text@; font-size:11px; }")
         ellipse_ctl.addWidget(self.ellipse_hide_scatter_cb)
         ellipse_ctl.addStretch()
         self.ellipse_layout.addLayout(ellipse_ctl)
         # 散布信息区：左侧“当前设定射程” + 右侧炮弹信息（每炮弹一行、左对齐），垂直居中
         self.ellipse_label = QWidget(self)
-        self.ellipse_label.setStyleSheet("QWidget { background:#ffffff; border:1px solid #d0d0d0; border-radius:6px; }")
+        theme.bind(self.ellipse_label, "QWidget { background:@panel_bg@; border:1px solid @border@; border-radius:6px; }")
         _ell_lay = QHBoxLayout(self.ellipse_label)
         _ell_lay.setContentsMargins(10, 8, 10, 8)
         _ell_lay.setSpacing(12)
         self.ellipse_range_label = QLabel("当前设定射程：—")
-        self.ellipse_range_label.setStyleSheet("color:#333333; font-weight:bold; background:transparent; border:none;")
+        theme.bind(self.ellipse_range_label, "color:@text@; font-weight:bold; background:transparent; border:none;")
         self.ellipse_range_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         _ell_lay.addWidget(self.ellipse_range_label)
         self.ellipse_info_label = QLabel("等待计算…")
         self.ellipse_info_label.setWordWrap(True)
         self.ellipse_info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.ellipse_info_label.setStyleSheet("color:#444444; background:transparent; border:none;")
+        theme.bind(self.ellipse_info_label, "color:@text_muted@; background:transparent; border:none;")
         _ell_lay.addWidget(self.ellipse_info_label, 1)
         self.ellipse_layout.addWidget(self.ellipse_label)
         self.ellipse_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.ellipse_container.setMinimumHeight(180)
-        self.ellipse_container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
+        theme.bind(self.ellipse_container, "QWidget { background: @panel_bg@; border-radius: 6px; }")
         self.chart_tabs.addTab(self.ellipse_container, "散布椭圆")
 
         self.flytime_container = QWidget(self)
@@ -561,12 +581,12 @@ class PenetrationCalculatorDialog(QDialog):
         self.flytime_layout.setContentsMargins(0, 0, 0, 0)
         self.flytime_label = QLabel("飞行时间曲线：等待计算…")
         self.flytime_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.flytime_label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
+        theme.bind(self.flytime_label, "color: @text_muted@; border: 1px solid @border@; background: @panel_bg@; border-radius: 6px; padding: 10px 12px;")
         self.flytime_layout.addWidget(self.flytime_label)
         self.flytime_label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
         self.flytime_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.flytime_container.setMinimumHeight(180)
-        self.flytime_container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
+        theme.bind(self.flytime_container, "QWidget { background: @panel_bg@; border-radius: 6px; }")
         self.chart_tabs.addTab(self.flytime_container, "飞行时间")
 
         self._metric_tabs = []
@@ -579,12 +599,12 @@ class PenetrationCalculatorDialog(QDialog):
             layout.setContentsMargins(0, 0, 0, 0)
             label = QLabel(f"{title}：等待计算…")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("color: #444444; border: 1px solid #d0d0d0; background: #ffffff; border-radius: 6px; padding: 10px 12px;")
+            theme.bind(label, "color: @text_muted@; border: 1px solid @border@; background: @panel_bg@; border-radius: 6px; padding: 10px 12px;")
             layout.addWidget(label)
             label.setVisible(False)  # 样本点提示显示区域已删除（用户要求）
             container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             container.setMinimumHeight(180)
-            container.setStyleSheet("QWidget { background: #ffffff; border-radius: 6px; }")
+            theme.bind(container, "QWidget { background: @panel_bg@; border-radius: 6px; }")
             self.chart_tabs.addTab(container, title)
             spec = {"key": key, "title": title, "ylabel": ylabel, "idx": idx, "layout": layout, "label": label}
             self._metric_tabs.append(spec)
@@ -1353,15 +1373,17 @@ class PenetrationCalculatorDialog(QDialog):
         self._refresh_side_panel()
         self._calculate_current()
 
-    # ── 插件加成（射程 / 精度） ─────────────────────────
-    MOD_BTN_STYLE = """
-        QPushButton {
-            background:#f7f7f7; border:1px solid #d0d0d0; border-radius:4px;
-            padding:4px 7px; font-size:12px; color:#1a1a1a;
-        }
-        QPushButton:hover { background:#eef4fc; border-color:#0078d4; }
-        QPushButton:checked { background:#dce9f7; border-color:#0078d4; color:#004578; }
-    """
+    # 插件加成（射程 / 精度） ─────────────────────────
+    @staticmethod
+    def _mod_btn_style() -> str:
+        return theme.qss("""
+            QPushButton {
+                background:@panel_alt@; border:1px solid @border@; border-radius:4px;
+                padding:4px 7px; font-size:12px; color:@text@;
+            }
+            QPushButton:hover { background:@hover_bg@; border-color:#0078d4; }
+            QPushButton:checked { background:@selected_bg@; border-color:#0078d4; color:#ffffff; }
+        """)
 
     def _load_mod_bonuses(self):
         # 清空旧按钮
@@ -1465,7 +1487,7 @@ class PenetrationCalculatorDialog(QDialog):
         from models.name_mapping import Mapping as NMM
         btn = QPushButton()
         btn.setCheckable(True)
-        btn.setStyleSheet(self.MOD_BTN_STYLE)
+        btn.setStyleSheet(self._mod_btn_style())
         if kind == "modernization":
             img = f":/resources/pictures/modernization/icon_modernization_{mod_id}.png"
             pix = QPixmap(img)
@@ -1948,6 +1970,7 @@ class PenetrationCalculatorDialog(QDialog):
 
         figure = Figure(figsize=(7, 3.6), dpi=100)
         ax = figure.add_subplot(111)
+        self._style_matplotlib_figure(figure, ax)
         color_pool = self.COLOR_POOL
 
         meta = []
@@ -2011,6 +2034,7 @@ class PenetrationCalculatorDialog(QDialog):
 
         figure = Figure(figsize=(7, 3.6), dpi=100)
         ax = figure.add_subplot(111)
+        self._style_matplotlib_figure(figure, ax)
         color_pool = self.COLOR_POOL
         meta = []
         if compare_series:
@@ -2076,6 +2100,7 @@ class PenetrationCalculatorDialog(QDialog):
 
         figure = Figure(figsize=(7, 3.6), dpi=100)
         ax = figure.add_subplot(111)
+        self._style_matplotlib_figure(figure, ax)
         color_pool = self.COLOR_POOL
         meta = []
         if compare_series:
@@ -2108,6 +2133,39 @@ class PenetrationCalculatorDialog(QDialog):
         self._attach_hover_legend(ax, figure, canvas, meta, _units.get(metric_key, ""))
         label_w.setText(f"{title}曲线：{len(rows) if rows else 0} 个样本点")
 
+    def _style_matplotlib_figure(self, figure, ax) -> None:
+        """根据当前主题设置 matplotlib 图表背景/文字颜色。"""
+        try:
+            dark = theme.dark
+            if dark:
+                bg = "#1e1e1e"
+                fg = "#d4d4d4"
+                grid = "#3c3c3c"
+            else:
+                bg = "#ffffff"
+                fg = "#222222"
+                grid = "#d0d0d0"
+            figure.patch.set_facecolor(bg)
+            ax.set_facecolor(bg)
+            ax.tick_params(colors=fg)
+            ax.xaxis.label.set_color(fg)
+            ax.yaxis.label.set_color(fg)
+            ax.title.set_color(fg)
+            for _sp in ax.spines.values():
+                _sp.set_color(grid)
+            ax.grid(True, alpha=0.25, color=grid)
+            try:
+                _lg = ax.get_legend()
+                if _lg is not None:
+                    _lg.get_frame().set_facecolor(bg)
+                    _lg.get_frame().set_edgecolor(grid)
+                    for _t in _lg.get_texts():
+                        _t.set_color(fg)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
     def _attach_hover_legend(self, ax, figure, canvas, series_meta, unit=""):
         """浩舰式悬浮：鼠标移到曲线上时，显示当前射程及各炮弹在该射程的对应值。
 
@@ -2117,7 +2175,7 @@ class PenetrationCalculatorDialog(QDialog):
         """
         annot = ax.annotate(
             "", xy=(0, 0), xytext=(12, 12), textcoords="offset points",
-            bbox=dict(boxstyle="round,pad=0.3", fc="#ffffff", ec="#999999", alpha=0.92),
+            bbox=dict(boxstyle="round,pad=0.3", fc=theme["panel_bg"], ec=theme["border"], alpha=0.92),
             fontsize=8, zorder=10,
         )
         annot.set_visible(False)
@@ -2270,6 +2328,7 @@ class PenetrationCalculatorDialog(QDialog):
 
         figure = Figure(figsize=(5.5, 4.4), dpi=100)
         ax = figure.add_subplot(111)
+        self._style_matplotlib_figure(figure, ax)
         ax.set_aspect("equal")
         max_lateral = 0.0
         max_long = 0.0

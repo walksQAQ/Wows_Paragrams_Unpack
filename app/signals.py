@@ -38,6 +38,7 @@ class SignalBus(QObject):
     # ── 配置变更 ──────────────────────────────────────────
     wows_type_changed = Signal(str)     # 参数: "Wargaming" | "Lesta"
     game_path_changed = Signal(str)     # 参数: 新路径
+    theme_changed = Signal(str)         # 参数: "auto" | "light" | "dark"
 
     # ── 按钮状态 ──────────────────────────────────────────
     # 用于统一控制 sidebar 按钮的启用/禁用
