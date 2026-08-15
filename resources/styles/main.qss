@@ -1,10 +1,183 @@
 /* ==========================================================
    Wows Paragrams Unpack — 全局样式表（Modern App Style）
+   ==========================================================
+   说明：本文件使用 @颜色名@ 占位符（如 @panel_bg@、@text@），
+   由 utils/theme.py 在加载时替换为当前主题（浅色/深色）对应颜色。
    ========================================================== */
 
 /* ── 主窗口 ───────────────────────────────────────────── */
 QMainWindow {
-    background-color: #f5f5f5;
+    background-color: @window_bg@;
+}
+
+/* ── 通用控件默认颜色与圆角（内联样式优先级更高，不会被覆盖）── */
+QLabel {
+    color: @text@;
+}
+QGroupBox {
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+}
+QLineEdit, QPlainTextEdit, QTextEdit {
+    background-color: @input_bg@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 4px;
+    selection-background-color: @selected_bg@;
+    selection-color: @selected_fg@;
+}
+/* 下拉框：老版本基准样式（圆角3px、细边框）+ 主题色 + 可见圆角下拉箭头 */
+QComboBox {
+    background-color: @input_bg@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 3px;
+    padding: 3px 6px;
+    selection-background-color: @selected_bg@;
+    selection-color: @selected_fg@;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid @border@;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 3px;
+    background: @panel_alt@;
+}
+QComboBox::down-arrow {
+    image: url(:/resources/pictures/ui/combo_arrow.png);
+    width: 10px;
+    height: 10px;
+}
+QComboBox QAbstractItemView {
+    background-color: @panel_bg@;
+    color: @text@;
+    border: 1px solid @border@;
+    selection-background-color: @selected_bg@;
+    selection-color: @selected_fg@;
+}
+QPushButton {
+    background-color: @panel_alt@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 4px;
+    padding: 4px 12px;
+}
+QPushButton:hover {
+    background-color: @hover_bg@;
+}
+QPushButton:disabled {
+    color: @text_hint@;
+    background-color: @panel_bg@;
+}
+/* 复选框/单选按钮：自定义指示器 —— 选中态使用主题高亮底色 + 白色勾/圆点 PNG，
+   勾色锁定为白色，深浅色下均清晰可读；未选中态跟随主题的描边/底色。 */
+QCheckBox, QRadioButton {
+    color: @text@;
+}
+/* 复选框：自定义指示器，勾锁定白色；单选按钮：保持原生圆框圆点渲染 */
+QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+    border: 1px solid @border@;
+    background-color: @input_bg@;
+    border-radius: 3px;
+    image: none;
+}
+QCheckBox::indicator:hover {
+    border-color: #0078d4;
+}
+QCheckBox::indicator:checked {
+    background-color: @selected_bg@;
+    border-color: @selected_bg@;
+    image: url(:/resources/pictures/ui/check_checked.png);
+}
+QCheckBox::indicator:indeterminate {
+    background-color: @selected_bg@;
+    border-color: @selected_bg@;
+    image: url(:/resources/pictures/ui/check_indeterminate.png);
+}
+QTextEdit,
+QPlainTextEdit,
+QTextBrowser {
+    selection-background-color: @selected_bg@;
+    selection-color: @selected_fg@;
+}
+QMenuBar {
+    background-color: @panel_bg@;
+    color: @text@;
+}
+QMenuBar::item {
+    background: @panel_alt@;
+    color: @text@;
+    padding: 4px 12px;
+    margin: 3px 2px;
+    border-radius: 6px;
+}
+QMenuBar::item:selected {
+    background-color: @selected_bg@;
+    color: @selected_fg@;
+    border-radius: 6px;
+}
+QMenuBar::item:pressed {
+    background-color: @selected_bg@;
+    color: @selected_fg@;
+    border-radius: 6px;
+}
+QMenu {
+    background-color: @panel_bg@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background-color: @selected_bg@;
+    color: @selected_fg@;
+}
+QStatusBar {
+    background-color: @panel_bg@;
+    color: @text@;
+}
+QTableWidget, QTreeWidget, QListView, QListWidget {
+    background-color: @panel_bg@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 4px;
+}
+QHeaderView::section {
+    background-color: @panel_alt@;
+    color: @text@;
+    border: 1px solid @border@;
+    padding: 4px;
+}
+QTabWidget::pane {
+    border: 1px solid @border@;
+    border-radius: 4px;
+    background: @panel_bg@;
+}
+QTabBar::tab {
+    background: @panel_alt@;
+    color: @text@;
+    padding: 5px 12px;
+    border: 1px solid @border@;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background: @selected_bg@;
+    color: @selected_fg@;
+}
+QSplitter::handle {
+    background: @border@;
 }
 
 /* ── Tooltip 毛玻璃风格 ───────────────────────────────── */
@@ -31,26 +204,26 @@ QTextEdit#LogArea {
 
 /* ── QListWidget (浏览器面板) ────────────────────────── */
 QListWidget {
-    background-color: #ffffff;
-    border: 1px solid #d0d0d0;
+    background-color: @panel_bg@;
+    border: 1px solid @border@;
     border-radius: 6px;
     font-size: 12px;
-    color: #000000;
+    color: @text@;
 }
 
 QListWidget::item {
     padding: 4px 8px;
-    color: #000000;
+    color: @text@;
 }
 
 QListWidget::item:selected {
-    background-color: #0078d4;
-    color: #ffffff;
+    background-color: @selected_bg@;
+    color: @selected_fg@;
 }
 
 QListWidget::item:hover {
-    background-color: #e5f1fb;
-    color: #000000;
+    background-color: @hover_bg@;
+    color: @text@;
 }
 
 /* ── QScrollArea ─────────────────────────────────────── */
@@ -61,36 +234,36 @@ QScrollArea {
 
 /* ── QScrollBar ──────────────────────────────────────── */
 QScrollBar:vertical {
-    background: rgba(0,0,0,0.05);
+    background: @scroll_bg@;
     width: 8px;
     border-radius: 4px;
     margin: 0;
 }
 QScrollBar::handle:vertical {
-    background: rgba(0,0,0,0.15);
+    background: @scroll_handle@;
     border-radius: 4px;
     min-height: 30px;
 }
 QScrollBar::handle:vertical:hover {
-    background: rgba(0,0,0,0.25);
+    background: @scroll_handle_hover@;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 
 QScrollBar:horizontal {
-    background: rgba(0,0,0,0.05);
+    background: @scroll_bg@;
     height: 8px;
     border-radius: 4px;
     margin: 0;
 }
 QScrollBar::handle:horizontal {
-    background: rgba(0,0,0,0.15);
+    background: @scroll_handle@;
     border-radius: 4px;
     min-width: 30px;
 }
 QScrollBar::handle:horizontal:hover {
-    background: rgba(0,0,0,0.25);
+    background: @scroll_handle_hover@;
 }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;

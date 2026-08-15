@@ -122,6 +122,19 @@ class Application(QObject):
         self._config_manager.bin_folder = value
         self._refresh_ctx()
 
+    def set_theme_mode(self, value: str) -> None:
+        """切换主题模式（auto/light/dark）并保存，通知全局刷新样式。
+
+        先刷新 theme 单例（更新 colors/dark），再广播 theme_changed，
+        确保所有监听主题切换的控件在重设样式时读到的是新主题颜色，
+        而不是旧主题（否则会出现“切换后仍停留在上一主题”的问题）。
+        """
+        self._config_manager.theme_mode = value
+        self._refresh_ctx()
+        from utils.theme import theme
+        theme.refresh(value)
+        bus.theme_changed.emit(value)
+
     def reset_all(self) -> None:
         """重置所有配置"""
         self._config_manager.reset()

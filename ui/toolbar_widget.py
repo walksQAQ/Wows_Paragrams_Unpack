@@ -15,28 +15,63 @@ from PySide6.QtCore import Qt
 
 from app.signals import bus
 from app.application import app as app_ctx
+from utils.theme import theme
 
 
 class TopToolbar(QWidget):
     """顶部工具栏"""
 
-    BTN_STYLE = """
-        QPushButton {
-            background-color: #3a3a3a; color: #ffffff;
-            border: 1px solid #555555; border-radius: 4px;
-            padding: 6px 14px; font-size: 12px;
-        }
-        QPushButton:hover { background-color: #4a4a4a; border-color: #0078d4; }
-        QPushButton:disabled { background-color: #2a2a2a; color: #666666; }
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("TopToolbar")
-        self.setStyleSheet("""
+        # 工具栏整体样式：背景/按钮/进度条/服务器文字全部跟随主题（浅色主题=浅色工具栏）
+        theme.bind(self, """
             #TopToolbar {
-                background-color: #2b2b2b;
-                border-bottom: 1px solid #3c3c3c;
+                background-color: @toolbar_bg@;
+                border-bottom: 1px solid @border@;
+            }
+            #TopToolbar QPushButton {
+                background-color: @toolbar_btn_bg@;
+                color: @toolbar_btn_text@;
+                border: 1px solid @toolbar_btn_border@;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-size: 12px;
+            }
+            #TopToolbar QPushButton:hover {
+                background-color: @toolbar_btn_hover@;
+                border-color: #0078d4;
+            }
+            #TopToolbar QPushButton:disabled {
+                background-color: @toolbar_btn_disabled@;
+                color: @toolbar_text_muted@;
+                border-color: @toolbar_btn_border@;
+            }
+            #TopToolbar QLabel {
+                color: @toolbar_text@;
+                font-size: 12px;
+            }
+            /* 服务器单选按钮：对齐 v3.2.2-test1 —— 不自定义 ::indicator，
+               圆点使用 Qt 原生渲染（灰环 + 选中蓝色内点），只控制文字颜色/间距 */
+            #TopToolbar QRadioButton {
+                color: @toolbar_text@;
+                font-size: 12px;
+                spacing: 4px;
+            }
+            #TopToolbar QRadioButton:disabled {
+                color: @toolbar_text_muted@;
+            }
+            #TopToolbar QProgressBar {
+                border: 1px solid #0078d4; border-radius: 4px;
+                background: @toolbar_bg@; color: @toolbar_btn_text@;
+                font-size: 11px; font-weight: bold;
+                text-align: center;
+                padding: 0 4px;
+            }
+            #TopToolbar QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #0078d4, stop:1 #00a0ff);
+                border-radius: 3px;
             }
         """)
 
@@ -55,10 +90,8 @@ class TopToolbar(QWidget):
         # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
         self.btn_copy = QPushButton("📋  复制当前信息")
         self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
-        self.btn_copy.setStyleSheet(self.BTN_STYLE)
 
         for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_copy):
-            b.setStyleSheet(self.BTN_STYLE)
             layout.addWidget(b)
 
         layout.addStretch()
@@ -69,34 +102,17 @@ class TopToolbar(QWidget):
         self.progress.setFixedWidth(200)
         self.progress.setFixedHeight(22)
         self.progress.setTextVisible(True)
-        self.progress.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #0078d4; border-radius: 4px;
-                background: #1a1a1a; color: #ffffff;
-                font-size: 11px; font-weight: bold;
-                text-align: center;
-                padding: 0 4px;
-            }
-            QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #0078d4, stop:1 #00a0ff);
-                border-radius: 3px;
-            }
-        """)
         layout.addWidget(self.progress)
 
         # ── 服务器选择 ─
         lbl_server = QLabel("服务器选项：")
-        lbl_server.setStyleSheet("color: #444444; font-size: 12px;")
         layout.addWidget(lbl_server)
 
         sg = QButtonGroup(self)
         self.rb_lesta = QRadioButton("Lesta")
         self.rb_wg = QRadioButton("Wargaming")
-        self.rb_lesta.setStyleSheet("color: #000000; font-size: 12px; spacing: 4px;")
         # Wargaming 暂时禁用
         self.rb_wg.setEnabled(False)
-        self.rb_wg.setStyleSheet("color: #cccccc; font-size: 12px; spacing: 4px;")
         sg.addButton(self.rb_lesta)
         sg.addButton(self.rb_wg)
         layout.addWidget(self.rb_lesta)

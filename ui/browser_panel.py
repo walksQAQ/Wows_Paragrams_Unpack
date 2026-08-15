@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QAction
 
 from app.signals import bus
+from utils.theme import theme
 from utils.path_utils import get_split_dir
 from services.database_service import get_db
 
@@ -30,11 +31,11 @@ class MultiSelectCombo(QPushButton):
         self._selected: set[str] = set()
         self._menu = QMenu(self)
         self.setMenu(self._menu)
-        self.setStyleSheet("""
+        theme.bind(self, """
             QPushButton {
-                padding: 3px 4px; border: 1px solid #c0c0c0;
+                padding: 3px 4px; border: 1px solid @border@;
                 border-radius: 3px; font-size: 11px;
-                background-color: #ffffff; color: #1a1a1a; min-width: 70px;
+                background-color: @panel_bg@; color: @text@; min-width: 70px;
                 text-align: left;
             }
             QPushButton:focus { border-color: #0078d4; }
@@ -110,10 +111,10 @@ class BrowserPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("BrowserPanel")
         self.setFixedWidth(250)
-        self.setStyleSheet("""
+        theme.bind(self, """
             #BrowserPanel {
-                background-color: #f0f0f0;
-                border-right: 1px solid #d0d0d0;
+                background-color: @panel_alt@;
+                border-right: 1px solid @border@;
             }
         """)
 
@@ -124,14 +125,14 @@ class BrowserPanel(QWidget):
         # ── 搜索框 ─
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("🔍 搜索舰名或编号...")
-        self.search_box.setStyleSheet("""
+        theme.bind(self.search_box, """
             QLineEdit {
                 padding: 4px 6px;
-                border: 1px solid #c0c0c0;
+                border: 1px solid @border@;
                 border-radius: 3px;
                 font-size: 11px;
-                background-color: #ffffff;
-                color: #1a1a1a;
+                background-color: @input_bg@;
+                color: @text@;
             }
             QLineEdit:focus { border-color: #0078d4; }
         """)
@@ -145,13 +146,13 @@ class BrowserPanel(QWidget):
         self.btn_reset = QPushButton("↺")
         self.btn_reset.setToolTip("重置筛选条件")
         self.btn_reset.setFixedWidth(26)
-        self.btn_reset.setStyleSheet("""
+        theme.bind(self.btn_reset, """
             QPushButton {
-                background: #e0e0e0; border: 1px solid #c0c0c0;
+                background: @panel_alt@; border: 1px solid @border@;
                 border-radius: 3px; font-size: 13px; font-weight: bold;
-                padding: 0; color: #1a1a1a;
+                padding: 0; color: @text@;
             }
-            QPushButton:hover { background: #d0d0d0; border-color: #0078d4; color: #1a1a1a; }
+            QPushButton:hover { background: @hover_bg@; border-color: #0078d4; color: @text@; }
         """)
 
         filter_row1 = QHBoxLayout()
@@ -173,25 +174,25 @@ class BrowserPanel(QWidget):
         _fnt.setFamilies(["Microsoft YaHei", "Segoe UI", "sans-serif"])
         _fnt.setPointSize(10)
         self.file_list.setFont(_fnt)
-        self.file_list.setStyleSheet("""
+        theme.bind(self.file_list, """
             QListWidget {
-                background-color: #ffffff;
-                border: 1px solid #d0d0d0;
+                background-color: @panel_bg@;
+                border: 1px solid @border@;
                 border-radius: 4px;
-                color: #1a1a1a;
+                color: @text@;
             }
             QListWidget::item {
                 padding: 3px 6px;
                 font-size: 12px;
-                color: #1a1a1a;
+                color: @text@;
             }
             QListWidget::item:selected {
-                background-color: #0078d4;
-                color: #ffffff;
+                background-color: @selected_bg@;
+                color: @selected_fg@;
             }
             QListWidget::item:hover {
-                background-color: #e5f1fb;
-                color: #1a1a1a;
+                background-color: @hover_bg@;
+                color: @text@;
             }
         """)
         layout.addWidget(self.file_list, stretch=1)

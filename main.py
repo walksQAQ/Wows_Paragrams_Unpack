@@ -33,23 +33,71 @@ if str(_app_dir) not in sys.path:
     sys.path.insert(0, str(_app_dir))
 
 
-def load_stylesheet(app: QApplication) -> None:
-    """加载 QSS 样式表（优先 QRC，回退到文件系统）"""
+def _apply_palette(app: QApplication, theme) -> None:
+    """按主题设置应用级调色板（未显式设置 color 的控件也跟随主题）。"""
+    from PySide6.QtGui import QColor, QPalette
+
+    pal = QPalette()
+    window = QColor(theme["window_bg"])
+    panel = QColor(theme["panel_bg"])
+    text = QColor(theme["text"])
+    muted = QColor(theme["text_muted"])
+    pal.setColor(QPalette.ColorRole.Window, window)
+    pal.setColor(QPalette.ColorRole.WindowText, text)
+    pal.setColor(QPalette.ColorRole.Base, panel)
+    pal.setColor(QPalette.ColorRole.AlternateBase, QColor(theme["panel_alt"]))
+    pal.setColor(QPalette.ColorRole.Text, text)
+    pal.setColor(QPalette.ColorRole.Button, panel)
+    pal.setColor(QPalette.ColorRole.ButtonText, text)
+    pal.setColor(QPalette.ColorRole.PlaceholderText, muted)
+    pal.setColor(QPalette.ColorRole.Highlight, QColor(theme["selected_bg"]))
+    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(theme["selected_fg"]))
+    if theme.dark:
+        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#2d2d2d"))
+        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#e8e8e8"))
+        pal.setColor(QPalette.ColorRole.Link, QColor("#4da3ff"))
+        for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
+            pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
+    app.setPalette(pal)
+
+
+def _load_qss_text() -> str | None:
+    """读取 QSS 原文（优先 QRC，回退到文件系统）。"""
     from PySide6.QtCore import QFile, QIODevice
     qf = QFile(":/resources/styles/main.qss")
     if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
-        app.setStyleSheet(str(qf.readAll(), encoding="utf-8"))
+        text = str(qf.readAll(), encoding="utf-8")
         qf.close()
-        print("[main] QSS loaded from QRC")
-        return
-    # QRC 不可用时回退到文件系统
+        return text
     style_path = get_bundled_dir() / "resources" / "styles" / "main.qss"
     if style_path.exists():
         with open(style_path, "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
-        print(f"[main] QSS loaded from filesystem: {style_path}")
-    else:
-        print(f"[main] WARNING: QSS not found (QRC failed, filesystem missing: {style_path})")
+            return f.read()
+    return None
+
+
+def apply_theme(app: QApplication, mode: str = "auto") -> None:
+    """按主题模式刷新主题状态、调色板与全局样式表。
+
+    mode: "auto"(跟随系统) | "light" | "dark"
+    """
+    from utils.theme import theme
+    theme.refresh(mode)
+    _apply_palette(app, theme)
+    qss = _load_qss_text()
+    if qss is not None:
+        app.setStyleSheet(theme.qss(qss))
+    print(f"[main] Theme applied: mode={mode} -> {'dark' if theme.dark else 'light'}")
+
+
+def load_stylesheet(app: QApplication, mode: str = "auto") -> None:
+    """加载 QSS 样式表（兼容旧调用签名，按给定主题模式应用）。
+
+    样式表内使用 @var@ 占位符，由 utils.theme 按当前主题
+    （浅色/深色）替换为对应颜色。同时按主题设置应用级调色板，
+    确保未显式设置 color 的 QLabel 等控件文字颜色也跟随主题。
+    """
+    apply_theme(app, mode)
 
 
 def _patch_tooltip() -> None:
@@ -70,6 +118,37 @@ def _patch_tooltip() -> None:
     QWidget.setToolTip = _patched_set_tooltip
 
 
+def _refresh_all_widgets_theme() -> None:
+    """强制所有已存在控件重新应用当前样式，避免主题切换后部分页面停留在旧配色。"""
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QWidget
+
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    for widget in list(app.topLevelWidgets()):
+        try:
+            for child in widget.findChildren(QWidget):
+                try:
+                    stylesheet = child.styleSheet()
+                    if stylesheet:
+                        child.setStyleSheet(stylesheet)
+                    child.style().unpolish(child)
+                    child.style().polish(child)
+                    child.update()
+                except Exception:
+                    pass
+            stylesheet = widget.styleSheet()
+            if stylesheet:
+                widget.setStyleSheet(stylesheet)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+        except Exception:
+            pass
+
+
 def main() -> None:
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
@@ -82,19 +161,38 @@ def main() -> None:
     # 全局修补：所有 QWidget.setToolTip 自动处理 HTML 富文本
     _patch_tooltip()
 
-    # 2. 加载样式
-    load_stylesheet(app)
-
-    # 3. 初始化全局上下文（Application 单例会自动初始化）
+    # 初始化全局上下文（Application 单例会自动初始化）
     #    导入即触发初始化 —— Application() 在模块级别实例化
     from app.application import app as app_ctx
     from app.signals import bus
+
+    # 2. 加载样式（按配置的主题模式：auto/light/dark）
+    theme_mode = app_ctx.config.theme_mode
+    load_stylesheet(app, theme_mode)
 
     # 4. 延迟导入主窗口，避免循环依赖
     from ui.main_window import MainWindow
 
     window = MainWindow()
     window.show()
+
+    # 运行时切换主题：监听 theme_changed 信号，动态刷新样式
+    from PySide6.QtCore import QTimer
+
+    def _on_theme_changed(mode: str) -> None:
+        apply_theme(app, mode)
+        # 通知所有已绑定内联样式的控件重新应用新主题颜色
+        from utils.theme import theme as _theme
+        _theme.apply_bindings()
+        # 强制刷新所有现存窗口/控件，避免说明页等已创建页面停留在旧配色
+        _refresh_all_widgets_theme()
+        # 通知所有顶层窗口重绘
+        for _w in QApplication.topLevelWidgets():
+            try:
+                _w.update()
+            except Exception:
+                pass
+    bus.theme_changed.connect(_on_theme_changed)
 
     # 5. 启动时写入一条日志
     bus.log_message.emit(f"应用启动 | 应用版本: {app.applicationVersion()}")
