@@ -110,7 +110,9 @@ SECTION_ICONS: dict[str, str] = {
 class ShipCardWidget(QGroupBox):
     """单张数据卡片，包含标题和键值表格"""
 
-    def __init__(self, section: dict, parent=None):
+    firing_arc_clicked = Signal(dict)
+
+    def __init__(self, section: dict, parent=None, firing_arc: dict | None = None):
         """
         Args:
             section: 数据分区，格式：
@@ -119,6 +121,8 @@ class ShipCardWidget(QGroupBox):
                      "row_type": "kv", "details": [...]},
                     ...
                 ]}
+            firing_arc: 射界入口信息（{"ship_id", "slot_type", "summary"}），
+                        非空时在卡片底部追加可点击的射界按钮行
         """
         super().__init__(parent)
         self.setProperty("class", "ShipCardWidget")
@@ -162,6 +166,10 @@ class ShipCardWidget(QGroupBox):
 
         self._populate_items(section.get("items", []))
 
+        # 射界入口：卡片底部追加可点击按钮（不显示炮塔数量）
+        if firing_arc and firing_arc.get("mode") == "front_back":
+            self._add_firing_arc_row(firing_arc)
+
         # 左列宽度按内容，右列填满剩余；通过 ResizeToContents 保持紧凑
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         # 避免左列太宽，设最大宽度为表格预计宽度的 30%
@@ -172,6 +180,39 @@ class ShipCardWidget(QGroupBox):
         # 延迟自适应高度，等布局完成后再计算
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._adjust_height)
+
+    def _add_firing_arc_row(self, fa: dict) -> None:
+        """在卡片底部添加射界行：左列标签 + 右列可点击的值按钮（齐射角）"""
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        wep_name = "鱼雷发射器" if fa.get("slot_type") == "torpedoes" else "炮塔"
+        # 左列：标签
+        name_item = QTableWidgetItem(f"{wep_name} 射界")
+        name_item.setForeground(QColor(label_color()))
+        name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(row, 0, name_item)
+        # 右列：值按钮（可点击弹出射界弹窗）
+        # 齐射角：前向/后向（主炮为全炮塔，鱼雷/副炮分两侧时取对应一侧）
+        value_text = f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+        btn = QPushButton()
+        btn.setText(value_text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip("点击查看该武器系统的射界图（总览 + 单炮塔详情）")
+        btn.setStyleSheet(theme.qss("""
+            QPushButton {
+                background: @panel_alt@; color: @text@;
+                border: 1px solid @border@; border-radius: 4px;
+                padding: 4px 8px; font-size: 12px; text-align: center;
+            }
+            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+        """))
+        btn.clicked.connect(lambda _=False: self.firing_arc_clicked.emit(fa))
+        self._table.setCellWidget(row, 1, btn)
+
+    def set_firing_arc(self, fa: dict) -> None:
+        """动态为已渲染的卡片追加射界按钮行（供 weapon widget 在最后一座炮卡片上调用）"""
+        if fa and fa.get("mode") == "front_back":
+            self._add_firing_arc_row(fa)
 
     def resizeEvent(self, event):
         """窗口缩放时重新调整高度"""

@@ -257,6 +257,14 @@ class AssetsBinVfs:
         loc = PrototypeLocation(f.blob_index, f.record_index)
         return self._db.get_prototype_data(loc, f.item_size)
 
+    def open_file_len(self, path: str, length: int) -> bytes:
+        """返回虚拟文件记录起始起的 length 字节（有界切片，避免整 blob 尾部拷贝）。"""
+        f = self.get_file(path)
+        if f is None:
+            raise KeyError(f"虚拟文件不存在: {path}")
+        loc = PrototypeLocation(f.blob_index, f.record_index)
+        return self._db.get_prototype_data_len(loc, f.item_size, length)
+
     def decode_file(self, path: str) -> dict:
         """解码虚拟文件为结构化 dict。"""
         f = self.get_file(path)

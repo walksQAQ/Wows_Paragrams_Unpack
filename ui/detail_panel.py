@@ -2253,13 +2253,28 @@ class DetailPanel(QWidget):
                     elif label == "支援":
                         widget = self._build_support_widget(sec)
                     else:
-                        widget = ShipCardWidget(sec)
+                        widget = ShipCardWidget(sec, firing_arc=sec.get("_firing_arc"))
+                        widget.firing_arc_clicked.connect(self._open_firing_arc)
 
                     col_layout.addWidget(widget)
 
         finally:
             self._ship_rebuilding = False
         self.stack.setCurrentIndex(0)
+
+    def _open_firing_arc(self, fa: dict):
+        """打开炮塔射界查看窗口并定位到指定舰船/武器槽位。"""
+        try:
+            from ui.firing_arc_dialog import FiringArcDialog
+            if not hasattr(self, "_arcs_dialog") or self._arcs_dialog is None:
+                self._arcs_dialog = FiringArcDialog()
+                self._arcs_dialog.center_on_screen(self.window())
+            self._arcs_dialog.open_for(fa.get("ship_id", ""), fa.get("slot_type", ""))
+            self._arcs_dialog.show()
+            self._arcs_dialog.raise_()
+            self._arcs_dialog.activateWindow()
+        except Exception as exc:
+            bus.log_message.emit(f"❌ 打开射界查看器失败: {exc}")
 
     def _build_sub_widget(self, title: str, sub_info: dict) -> QWidget:
         """构建无标签栏的子分类面板，仅显示默认配置内容，顶栏按钮控制切换"""
@@ -3106,6 +3121,7 @@ class DetailPanel(QWidget):
         layout.setSpacing(6)
 
         ammo_dir = ":/resources/pictures/ammo_types"
+        last_card = None
 
         BTN_STYLE = theme.qss("""
             QPushButton {
@@ -3170,6 +3186,7 @@ class DetailPanel(QWidget):
             if valid_items:
                 grp_section = {"label": "", "items": display_items}
                 card = ShipCardWidget(grp_section)
+                last_card = card
 
                 # 提取 Tooltip
                 tip_parts = []
@@ -3261,6 +3278,35 @@ class DetailPanel(QWidget):
                 bl.addStretch()
                 layout.addWidget(btn_row)
                 layout.addWidget(ammo_stack)
+
+        # 射界入口：追加到整个武器面板最下方（所有炮卡片与弹药区域之后），
+        # 值按钮显示齐射角，点击打开射界弹窗
+        fa = section.get("_firing_arc")
+        if fa and fa.get("mode") == "front_back":
+            wep_name = "鱼雷发射器" if fa.get("slot_type") == "torpedoes" else "炮塔"
+            value_text = f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+            arc_row = QWidget()
+            hb = QHBoxLayout(arc_row)
+            hb.setContentsMargins(10, 2, 10, 2)
+            hb.setSpacing(10)
+            lbl = QLabel(f"{wep_name} 射界")
+            lbl.setStyleSheet(theme.qss("color: @text@; font-size: 12px;"))
+            btn = QPushButton(value_text)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip("点击查看该武器系统的射界图（总览 + 单炮塔详情）")
+            btn.setStyleSheet(theme.qss("""
+                QPushButton {
+                    background: @panel_alt@; color: @text@;
+                    border: 1px solid @border@; border-radius: 4px;
+                    padding: 4px 10px; font-size: 12px; text-align: center;
+                }
+                QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+            """))
+            btn.clicked.connect(lambda _=False, f=fa: self._open_firing_arc(f))
+            hb.addWidget(lbl)
+            hb.addStretch(1)
+            hb.addWidget(btn)
+            layout.addWidget(arc_row)
 
         return container
 

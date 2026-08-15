@@ -60,11 +60,11 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
         svc.initialize()
         if not svc.is_ready:
             return
-        bus.task_progress.emit(80, "预分析数据")
+        bus.task_progress.emit(80, "数据入库")
         if not version_code:
             version_code = db.get_latest_version_code() or ""
         svc.precompute_all(db, data_by_category=data_by_category, version_code=version_code)
-        bus.task_progress.emit(100, "步骤 3/3: 预分析完成")
+        bus.task_progress.emit(100, "步骤 3/3: 数据入库完成")
     except Exception as e:
         bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
 
@@ -83,10 +83,10 @@ def run_process() -> None:
         bus.task_progress.emit(45, "步骤 2/3: 写入数据库实体")
         ms = db.import_name_mappings(str(data_dir))
         bus.task_progress.emit(60, "步骤 2/3: 导入名称映射")
-        bus.task_progress.emit(80, "步骤 3/3: 预分析数据")
-        bus.log_message.emit("🧠 步骤 3/3: 正在预分析数据（内存模式）...")
+        bus.task_progress.emit(80, "步骤 3/3: 数据入库")
+        bus.log_message.emit("🧠 步骤 3/3: 正在数据入库（内存模式）...")
         _run_analysis(db, data_by_category, version_code=version_code)
-        bus.log_message.emit(f"📦 步骤 3/3: 数据库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
+        bus.log_message.emit(f"📦 步骤 3/3: 数据入库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
         bus.task_progress.emit(100, "步骤 3/3: 完成")
 
     TYPE_CATEGORY_MAP = {
@@ -206,6 +206,16 @@ def run_process() -> None:
                     if p.exists():
                         p.unlink()
                         bus.log_message.emit(f"🧹 已删除原始数据文件: {n}")
+                # assets.bin 与 GameParams 同放 data/，入库完成后一并删除
+                assets_p = data_dir / "assets.bin"
+                if assets_p.exists():
+                    assets_p.unlink()
+                    bus.log_message.emit("🧹 已删除 assets.bin（提取产物）")
+                # 连同 assets.bin 的 VFS 索引缓存（.uncode_cache/）一并清理，避免残留堆积
+                arc_cache = data_dir / ".uncode_cache"
+                if arc_cache.exists():
+                    shutil.rmtree(str(arc_cache), ignore_errors=True)
+                    bus.log_message.emit("🧹 已删除 .uncode_cache（解析索引缓存）")
                 # 只保留最新 2 个版本，滚动删除更旧的
                 deleted = db.purge_old_versions(keep_count=2)
                 if deleted:

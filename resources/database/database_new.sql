@@ -375,6 +375,32 @@ CREATE TABLE IF NOT EXISTS ship_module_aa (
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );
 
+-- 5b. 炮塔射界表（从 ship 实体各武器组件提取每门炮的水平/垂直射界与死区）
+CREATE TABLE IF NOT EXISTS ship_turret_arcs (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    config_group TEXT NOT NULL,
+    slot_type TEXT NOT NULL,          -- artillery / secondary_artillery / atba / torpedoes / air_defense
+    hp_key TEXT NOT NULL,             -- 如 HP_GGM_1
+    gun_index TEXT,                   -- 如 PGGM126
+    gun_name TEXT,
+    module_key TEXT,                  -- 顶层模块 key（如 A1_Artillery）
+    horiz_sector_json TEXT,           -- [-147.0, 147.0] 水平射界（±180°制）
+    vert_sector_json TEXT,            -- [-2.0, 30.0] 垂直射界（仰/俯角）
+    dead_zone_json TEXT,              -- [[146.0, -146.0]] 水平死区
+    pitch_dead_zones_json TEXT,       -- [[153.0, -153.0, 13.5, 30.0]] 俯仰受限区
+    position_json TEXT,               -- [3.8, 1.0] 炮塔在舰体上的位置
+    mount_yaw REAL,                   -- 炮位安装朝向（绝对 0-360°，0=船首顺时针，取自 assets.bin 舰体骨架节点矩阵）
+    mount_pos_json TEXT,              -- [x, y, z] 炮位 3D 安装位置（assets.bin 舰体骨架节点位移）
+    rotation_speed_h REAL,
+    rotation_speed_v REAL,
+    num_barrels INTEGER,
+    barrel_diameter REAL,
+    shot_delay REAL,
+    PRIMARY KEY (version_code, ship_id, config_group, slot_type, hp_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+
 -- 6. 深弹组件属性表
 CREATE TABLE IF NOT EXISTS ship_module_depth_charge (
     version_code TEXT NOT NULL,
