@@ -1,5 +1,7 @@
 # 穿深/散布计算器 — 功能规划文档
 
+> ✅ **状态：已完成（2026-08-16）**。核心功能（弹道模拟、穿深、散布计算、独立计算器窗口、详情面板集成）已全部实现。尚未完成：Phase 1 单元测试、Phase 4 可选项（本地化/性能缓存/CSV导出）。
+
 > 目标：为现有软件添加一个"穿深/散布计算器"按钮，弹出独立计算界面，基本复刻浩舰 (iwarship.net/wowsdb/dap) 的散布、穿深、落弹时间等计算逻辑。同时让原有详细信息面板可以调用部分计算公式显示穿深、散布等数据。
 
 ---
@@ -857,38 +859,38 @@ class BallisticsCalculator:
 ## 五、实施任务分解
 
 ### Phase 1: 核心计算引擎
-- [ ] 创建 `services/ballistics_service.py`
-  - [ ] 实现 `simulate_trajectory()` — 弹道步进模拟
-  - [ ] 实现 `calc_ap_penetration()` — 德马尔公式
-  - [ ] 实现 `calc_he_penetration()` — HE 固定穿深
-  - [ ] 实现散布相关计算（水平/垂直/面积/Sigma落点）
-  - [ ] 实现跳弹/引信判断逻辑
-  - [ ] 实现 `generate_full_table()` — 生成完整数据表
-- [ ] 编写单元测试验证弹道/穿深/散布计算
+- [x] 创建 `services/ballistics_service.py`
+  - [x] 实现 `simulate_trajectory()` — 弹道步进模拟（含 Korabli 自适应 dt 修正）
+  - [x] 实现 `calc_ap_penetration()` — 德马尔公式
+  - [x] 实现 `calc_he_penetration()` — HE 固定穿深
+  - [x] 实现散布相关计算（水平/垂直/面积/Sigma落点/纵向半径）
+  - [x] 实现跳弹/引信判断逻辑（详情面板显示强制/概率跳弹角、引信长度/阈值）
+  - [x] 实现 `generate_full_table()` — 生成完整数据表
+- [ ] 编写单元测试验证弹道/穿深/散布计算（未做）
 
 ### Phase 2: 计算器 UI
-- [ ] 创建 `ui/penetration_calculator.py` — 独立对话框
-  - [ ] 舰船/火炮/弹药四级联动选择器
-  - [ ] 技能开关（敌众我寡/副炮专员/眼花缭乱）
-  - [ ] 数据表格（6 列可选，距离行）
-  - [ ] 穿深曲线图（matplotlib 嵌入）
-  - [ ] 飞行时间曲线图
-  - [ ] 散布密度散点图
-  - [ ] 添加自定义对比功能
-- [ ] 修改 `ui/toolbar_widget.py` — 添加入口按钮
-- [ ] 修改 `ui/main_window.py` — 连接按钮信号与弹窗
+- [x] 创建 `ui/penetration_calculator.py` — 独立对话框
+  - [x] 舰船/火炮/弹药四级联动选择器（含搜索补全）
+  - [x] 技能开关（敌众我寡/副炮专员/眼花缭乱，含插件加成表）
+  - [x] 数据表格（6 列可选，距离行）
+  - [x] 穿深曲线图（matplotlib 嵌入）
+  - [x] 飞行时间曲线图
+  - [x] 散布密度散点图（散布椭圆 + 高斯散点 + 隐藏散点开关）
+  - [x] 添加自定义对比功能（含自定义弹药弹窗）
+- [x] 修改 `ui/toolbar_widget.py` — 添加入口按钮
+- [x] 修改 `ui/main_window.py` — 连接按钮信号与弹窗（toolbar 懒创建单实例，等价实现）
 
 ### Phase 3: 详情面板集成
-- [ ] 修改 `presenters/ship_presenter.py`
-  - [ ] 在 `_append_ammo_extra` 中增加各距离穿深显示
-  - [ ] 在主炮 section 增加散布公式和 Sigma 显示
-- [ ] 修改 `ui/detail_panel.py`（如需）— 支持迷你图
+- [x] 修改 `presenters/ship_presenter.py`
+  - [x] 在 `_append_ammo_extra` 中增加各距离穿深显示（出膛/10/14/18km 穿深摘要）
+  - [x] 在主炮 section 增加散布公式和 Sigma 显示（弹着群系数，含 sigmaCountCoef 修正）
+- [x] 修改 `ui/detail_panel.py`（如需）— 支持迷你图（无需，穿深摘要直接多行文本展示）
 
 ### Phase 4: 打磨与优化
-- [ ] 图表样式与现有主题保持一致
-- [ ] 本地化支持
-- [ ] 性能优化（弹道模拟缓存）
-- [ ] 多舰对比的 CSV 导出功能（可选）
+- [x] 图表样式与现有主题保持一致（theme.bind 全面接入，含主题切换动态重建）
+- [ ] 本地化支持（项目无 i18n 框架，未做）
+- [ ] 性能优化（弹道模拟缓存）（未做，当前计算已足够快）
+- [ ] 多舰对比的 CSV 导出功能（可选）（未做）
 
 ---
 

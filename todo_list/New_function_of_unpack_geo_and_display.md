@@ -1,5 +1,7 @@
 # 舰船 3D 模型解包与显示功能规划
 
+> 📌 **状态：规划中（2026-08-16 更新）**。数据层解包（IDX/PKG/Kraken/bc7prep）已就绪可复用；`.geometry` 解析、装甲厚度数据、3D 渲染均未实现。详见新增「〇、现状审计与实施建议」一节。
+
 ## 概述
 
 在当前 PySide6 数据分析工具中新增**3D 模型查看器**模块，实现从游戏客户端解包并显示舰船 3D 模型、装甲模型、碰撞模型的能力。
@@ -7,6 +9,58 @@
 参考项目：
 - [landaire/wows-toolkit](https://github.com/landaire/wows-toolkit) — Rust 编写的完整 WoWS 工具包，含 `.geometry` 解析、GLB 导出、装甲查看器（wgpu 3D 渲染）
 - gmConverter3D — Electron + Three.js 实现的 BigWorld 模型查看器，支持 `.primitives`/`.object` 格式读取和 `.obj` 导出
+
+---
+
+## 〇、现状审计与实施建议（2026-08-16）
+
+> 本节为对本文档规划的落地评估：现有代码已具备哪些、还缺哪些、按什么顺序和方式实现更稳妥。
+
+### 0.1 现状盘点
+
+| 层面 | 现状 | 说明 |
+|------|------|------|
+| 数据层解包（IDX/PKG/Kraken/bc7prep） | ✅ 已就绪 | `data_extractor.GameExtractor`（`list_files`/`extract`/`extract_single`）已按 glob 匹配 VFS 文件，docstring 示例即 `D:/World_of_Warships_RU/Korabli_ST`，`content/**/*.geometry` 可直接提取，无需新写解包器 |
+| `.geometry` 格式解析 | ❌ 0% | `models/geometry_parser.py` 等全部不存在 |
+| 装甲厚度数据源 | ❌ 缺失 | `services/GameParams.py` 只是 pickle 桩类（仅为反序列化旧 .data）；SQLite 也无 armor 表 → 装甲按厚度着色无数据来源 |
+| 3D 渲染依赖 | ❌ 缺失 | `requirements.txt` 无 OpenGL / numpy / trimesh 等任何 3D 库 |
+| UI 集成点 | ✅ 结构清晰 | `DetailPanel` 有 `QStackedWidget`；`CategoryBar` 有 `CATEGORIES`；可照穿深计算器（`PenetrationCalculatorDialog`）的独立顶层窗口 + 懒创建单实例模式接入 |
+
+### 0.2 缺口清单（按依赖顺序）
+
+1. **P0 前置 — 格式实证**：先用 `GameExtractor.list_files(["content/**/*.geometry"])` 确认客户端实际含 `.geometry`，并 dump 一个真实文件的头部字节 / 顶点格式名，验证与 wows-toolkit 格式一致（Korabli 可能有自有顶点格式或压缩变体）。**未实证前不写完整解析器，避免返工。**
+2. **P0 阻塞 — ENCD 压缩解码**：顶点/索引可能带 `ENCD` magic（`0x44434E45`），需 meshoptimizer 解码，是最大技术风险。
+3. **P0 — `models/geometry_parser.py`**：72 字节头、relptr 指针、PackedString、Vertices/Indices、Collision 三角网格、Armor BVH 遍历（详见步骤 3）。
+4. **P0 — 装甲厚度数据源**：增强 `GameParams` 解析（ArmorGroup / armor 节点），否则装甲只能看几何、不能按厚度着色。
+5. **P1 — `services/geometry_service.py` + `.splash` 分类 + 碰撞材质表**：提取、磁盘缓存、AABB 命中分类、材质 ID→名称。
+6. **P1 最大工程 — 渲染引擎**：`QOpenGLWidget` + ModernGL，OrbitControls + GLSL（flat shading + 半透明 + 线框）。
+7. **P1 — `ui/geometry_viewer.py`**：独立顶层窗口 + 控制面板 + 碰撞模型显隐列表。
+8. **P2 — OBJ 导出 + 解析器自测**（`_archive/scripts`）。
+
+### 0.3 实施建议（怎么实现更好）
+
+- **先实证、再解析**：20 行 dump 脚本验证格式后再写完整解析器，避免按假设空写。
+- **ENCD 分级降级**：先支持未压缩顶点跑通全链路，再补 ENCD。ENCD 优先查 `trimesh`/`meshoptimizer` 的 wheel 是否可装；不可装则 `ctypes` 调 meshoptimizer DLL；最后才考虑纯 Python 重写。
+- **渲染方案收敛**：单一 `QOpenGLWidget` + ModernGL，先 flat shading + 线框 + 半透明，不上 PBR/阴影，比「方案 A/B 二选一 + pygltf」更聚焦。
+- **numpy 化解析**：顶点/索引用 `numpy.frombuffer` 批量读，禁止逐顶点 Python 循环。大模型百万顶点必须流式处理、及时释放原始 bytes（遵守 **2GB 内存红线**，解析后立刻释放 CPU 缓冲，VBO 上传后释放）。
+- **集成模式复刻穿深计算器**：独立顶层窗口 + 懒创建单实例 + `bus.log_message` + `theme.bind` + 后台线程提取；不硬塞进 CategoryBar（3D 查看不是数据分析分类）。
+- **先离线验证几何正确性**：渲染投入前用 trimesh + matplotlib 三视图截图，几何对了再碰 OpenGL。
+- **装甲厚度惰性加载 + 缓存**：GameParams 可能很大，按舰船惰性加载，避免启动全量解析。
+
+### 0.4 任务分解（对应第四节清单）
+
+- [ ] P0-1 实证脚本 `_archive/scripts/probe_geometry.py`（列文件 + dump 头部）
+- [ ] P0-2 `models/geometry_parser.py`（骨架 + 头部/指针/PackedString → 顶点/索引 → 碰撞 → 装甲 BVH）
+- [ ] P0-3 ENCD 解码方案验证（wheel / ctypes / 纯 Python 分级降级）
+- [ ] P0-4 增强 `GameParams` 装甲厚度解析
+- [ ] P1-1 `services/geometry_service.py`（提取 + 缓存 + splash 分类）
+- [ ] P1-2 `models/collision_materials.py` 材质名表 + `services/armor_service.py`
+- [ ] P1-3 `ui/geometry_viewer.py` + `ui/geometry_renderer.py`（独立窗口 + ModernGL）
+- [ ] P1-4 `models/camera.py` + `models/shader.py`
+- [ ] P1-5 工具栏入口 + `main_window` 懒创建连接
+- [ ] P2-1 `services/export_service.py` OBJ 导出
+- [ ] P2-2 解析器自测脚本（`_archive/scripts`，trimesh + matplotlib 三视图离线验证）
+- [ ] 依赖：`requirements.txt` 新增 `numpy`、`moderngl`、`PyGLM`、`trimesh`（可选）
 
 ---
 
@@ -495,18 +549,22 @@ class DetailPanel(QWidget):
 
 | 优先级 | 文件 | 说明 |
 |--------|------|------|
+| P0 | `_archive/scripts/probe_geometry.py` | 格式实证脚本（列文件 + dump 头部，先于一切） |
 | P0 | `models/geometry_parser.py` | `.geometry` 文件格式解析（最核心，含碰撞/装甲模型）|
-| P0 | `services/geometry_service.py` | 几何数据提取服务 |
-| P1 | `ui/geometry_viewer.py` | 3D 查看器 UI 页面（含 QOpenGLWidget） |
+| P0 | 增强 `services/GameParams.py` | 解析装甲厚度（ArmorGroup），装甲着色数据源 |
+| P0 | ENCD 解码模块（并入 parser 或独立 `utils/encd.py`） | meshoptimizer 解码（wheel / ctypes / 纯 Python 分级） |
+| P1 | `services/geometry_service.py` | 几何数据提取服务（封装 GameExtractor + 磁盘缓存 + splash 分类） |
+| P1 | `ui/geometry_viewer.py` | 3D 查看器独立窗口（含 QOpenGLWidget） |
 | P1 | `ui/geometry_renderer.py` | OpenGL 渲染引擎（ModernGL 实现） |
-| P2 | `models/collision_materials.py` | 碰撞材质名称表与厚度数据 |
-| P2 | `services/armor_service.py` | 装甲数据处理服务 |
-| P2 | `models/collision_parser.py` | 碰撞模型数据解析（从 raw blob 提取三角网格）|
-| P3 | `services/export_service.py` | OBJ/GLB 导出功能（含碰撞模型导出） |
-| P3 | 修改 `detail_panel.py` | 注册几何查看器页面 |
-| P3 | 修改 `category_bar.py` / `toolbar_widget.py` | 添加 3D 查看按钮 |
-| P4 | `models/camera.py` | 轨道摄像头控制 |
-| P4 | `models/shader.py` | GLSL 着色器程序（碰撞模型线框/实体两种）|
+| P1 | `models/camera.py` | 轨道摄像头控制 |
+| P1 | `models/shader.py` | GLSL 着色器程序（flat / 线框 / 半透明） |
+| P1 | `models/collision_materials.py` | 碰撞材质名称表与厚度数据 |
+| P1 | `services/armor_service.py` | 装甲数据处理服务（厚度→颜色、分层） |
+| P1 | `models/collision_parser.py` | 碰撞模型数据解析（从 raw blob 提取三角网格）|
+| P1 | 修改 `toolbar_widget.py` / `main_window.py` | 添加 3D 查看按钮 + 懒创建单实例 |
+| P2 | `services/export_service.py` | OBJ/GLB 导出功能（含碰撞模型导出） |
+| P2 | 解析器自测脚本 | `_archive/scripts`，trimesh + matplotlib 三视图离线验证 |
+| P3 | 修改 `detail_panel.py` / `category_bar.py` | （备选）注册内嵌页面 |
 
 ---
 
@@ -524,8 +582,9 @@ class DetailPanel(QWidget):
 - gmConverter3D WavefrontSaver.js — OBJ 导出（JavaScript）
 
 ### Python 3D 库
-- [ModernGL](https://github.com/moderngl/moderngl) — 轻量 Python OpenGL 绑定
+- [numpy](https://numpy.org) — 顶点/索引批量解析必备（`frombuffer`，禁止逐顶点循环）
+- [ModernGL](https://github.com/moderngl/moderngl) — 轻量 Python OpenGL 绑定（与 PySide6 QOpenGLWidget 组合，推荐单一 context 方案）
 - [PyGLM](https://github.com/Zuzu-Typ/PyGLM) — OpenGL 数学库
-- [meshoptimizer](https://pypi.org/project/meshoptimizer/) — 网格优化/解码（需 C++ 扩展编译）
-- [trimesh](https://github.com/mikedh/trimesh) — 三角形网格处理库
+- [meshoptimizer](https://pypi.org/project/meshoptimizer/) — 网格优化/解码（ENCD 用；wheel 可用性待验证 2026-08-16，不可用则 `ctypes` 调 DLL）
+- [trimesh](https://github.com/mikedh/trimesh) — 三角形网格处理库（离线验证 + 导出）
 - [pygltflib](https://github.com/teknotus/pygltflib) — GLTF/GLB 读写
