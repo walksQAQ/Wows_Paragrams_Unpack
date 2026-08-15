@@ -15,6 +15,8 @@ from PySide6.QtCore import Qt, Signal
 
 import re
 
+from utils.theme import theme
+
 # 舰船专用模块图标（key=section标签, value=(图标, 简短显示名)）
 SHIP_MODULE_MAP: dict[str, tuple[str, str]] = {
     "基础属性":    ("📋", "基础"),
@@ -58,18 +60,18 @@ class ModuleSelect(QWidget):
     BTN_STYLE = """
         QPushButton {
             background-color: transparent;
-            color: #000000;
+            color: @text_muted@;
             border: none;
             border-radius: 8px;
             padding: 8px 2px;
         }
         QPushButton:hover {
-            background-color: #3a3a3a;
-            color: #cccccc;
+            background-color: @hover_bg@;
+            color: @text@;
         }
         QPushButton:checked {
-            background-color: #0078d4;
-            color: #ffffff;
+            background-color: @selected_bg@;
+            color: @selected_fg@;
         }
     """
 
@@ -77,11 +79,11 @@ class ModuleSelect(QWidget):
         super().__init__(parent)
         self.setObjectName("ModuleSelect")
         self.setFixedWidth(90)
-        self.setStyleSheet("""
+        theme.bind(self, """
             #ModuleSelect {
-                background-color: #2d2d2d;
-                border-left: 1px solid #3c3c3c;
-                border-right: 1px solid #3c3c3c;
+                background-color: @panel_alt@;
+                border-left: 1px solid @border@;
+                border-right: 1px solid @border@;
             }
         """)
 
@@ -97,7 +99,7 @@ class ModuleSelect(QWidget):
         # 占位提示（无模块时显示）
         self._placeholder = QLabel("选择\n文件\n后\n显示")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setStyleSheet("color: #555; font-size: 11px; padding: 8px;")
+        theme.bind(self._placeholder, "color: @text_hint@; font-size: 11px; padding: 8px;")
         self._layout.addWidget(self._placeholder)
 
         # 启动时不显示任何模块按钮，等选中文件后由 modules_available 信号驱动
@@ -110,7 +112,7 @@ class ModuleSelect(QWidget):
         btn = QPushButton(f"{icon}\n{label}")
         btn.setToolTip(label)
         btn.setCheckable(True)
-        btn.setStyleSheet(self.BTN_STYLE)
+        theme.bind(btn, self.BTN_STYLE)
         btn.clicked.connect(lambda checked, m=mod_id: self._on_module(m))
         return btn
 

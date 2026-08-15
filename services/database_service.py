@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 38
+DB_SCHEMA_VERSION = 40
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -501,6 +501,52 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：创建 ship_turret_arcs 炮塔射界表（旧库补建） ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_turret_arcs (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                slot_type TEXT NOT NULL,
+                hp_key TEXT NOT NULL,
+                gun_index TEXT,
+                gun_name TEXT,
+                module_key TEXT,
+                horiz_sector_json TEXT,
+                vert_sector_json TEXT,
+                dead_zone_json TEXT,
+                pitch_dead_zones_json TEXT,
+                position_json TEXT,
+                mount_yaw REAL,
+                mount_pos_json TEXT,
+                rotation_speed_h REAL,
+                rotation_speed_v REAL,
+                num_barrels INTEGER,
+                barrel_diameter REAL,
+                shot_delay REAL,
+                PRIMARY KEY (version_code, ship_id, config_group, slot_type, hp_key),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_turret_arcs_ship "
+                "ON ship_turret_arcs(version_code, ship_id)")
+            # ── 迁移：为已有库补充炮位安装朝向列（mount_yaw / mount_pos_json）──
+            self._ensure_arc_columns()
+            self._conn.commit()
+        except Exception:
+            pass
+
+    def _ensure_arc_columns(self) -> None:
+        """幂等补齐 ship_turret_arcs 的 mount_yaw / mount_pos_json 列（旧库 ALTER）。"""
+        try:
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_turret_arcs)").fetchall()}
+            for col, typ in [("mount_yaw", "REAL"), ("mount_pos_json", "TEXT")]:
+                if col not in cols:
+                    self._conn.execute(f"ALTER TABLE ship_turret_arcs ADD COLUMN {col} {typ}")
+            self._conn.commit()
+        except Exception:
+            pass
+
     def _init_core_tables(self) -> None:
         """内联兜底（正式环境走 database_new.sql）"""
         c = self._conn
@@ -521,6 +567,34 @@ class DatabaseManager:
         c.execute("""CREATE TABLE IF NOT EXISTS meta_schema_version (
             version INTEGER PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now','localtime')))""")
+        # 兜底：炮塔射界表（正式环境由 database_new.sql 创建）
+        c.execute("""CREATE TABLE IF NOT EXISTS ship_turret_arcs (
+            version_code TEXT NOT NULL,
+            ship_id TEXT NOT NULL,
+            config_group TEXT NOT NULL,
+            slot_type TEXT NOT NULL,
+            hp_key TEXT NOT NULL,
+            gun_index TEXT,
+            gun_name TEXT,
+            module_key TEXT,
+            horiz_sector_json TEXT,
+            vert_sector_json TEXT,
+            dead_zone_json TEXT,
+            pitch_dead_zones_json TEXT,
+            position_json TEXT,
+            mount_yaw REAL,
+            mount_pos_json TEXT,
+            rotation_speed_h REAL,
+            rotation_speed_v REAL,
+            num_barrels INTEGER,
+            barrel_diameter REAL,
+            shot_delay REAL,
+            PRIMARY KEY (version_code, ship_id, config_group, slot_type, hp_key),
+            FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+        )""")
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_turret_arcs_ship "
+            "ON ship_turret_arcs(version_code, ship_id)")
 
     def get_current_version(self) -> int:
         try:
@@ -656,6 +730,41 @@ class DatabaseManager:
             return dict(row)
         except sqlite3.OperationalError:
             return None
+
+    def get_turret_arcs(self, ship_id: str, version_code: str = "") -> list[dict]:
+        """查询一艘舰船所有炮塔的射界数据（ship_turret_arcs 表）。
+
+        每行含 slot_type(artillery/atba/torpedoes/...)、hp_key、gun_index、
+        horiz_sector_json / vert_sector_json / dead_zone_json / pitch_dead_zones_json 等。
+        """
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return []
+            version_code = vc
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM ship_turret_arcs "
+                "WHERE version_code=? AND ship_id=? ORDER BY slot_type, hp_key",
+                (version_code, ship_id))
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    def has_turret_arcs(self, ship_id: str, version_code: str = "") -> bool:
+        """射界表是否有该舰船数据（用于判断是否需要从快照回填）"""
+        if not version_code:
+            vc = self.get_latest_version_code()
+            if not vc:
+                return False
+            version_code = vc
+        try:
+            r = self._conn.execute(
+                "SELECT 1 FROM ship_turret_arcs WHERE version_code=? AND ship_id=? LIMIT 1",
+                (version_code, ship_id)).fetchone()
+            return r is not None
+        except sqlite3.OperationalError:
+            return False
 
     def list_entities(self, category: str, keyword: str = "",
                       limit: int = 0, offset: int = 0,

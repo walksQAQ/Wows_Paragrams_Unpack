@@ -96,18 +96,26 @@ class MainWindow(QMainWindow):
         _fnt.setPointSize(9)
         self.log_panel.setFont(_fnt)
         self.log_panel.setFixedHeight(100)
-        self.log_panel.setStyleSheet("""
-            QTextBrowser {
-                background-color: #1e1e1e;
-                color: #cccccc;
-                border: none;
-                border-top: 1px solid #3c3c3c;
-                padding: 4px 8px;
-                font-family: "Consolas", "Courier New", monospace;
-                font-size: 11px;
-            }
-        """)
-        bottom_layout.addWidget(self.log_panel, stretch=1)
+
+        from utils.theme import theme as _theme
+
+        def _log_style() -> str:
+            return _theme.qss("""
+                QTextBrowser {
+                    background-color: @input_bg@;
+                    color: @text@;
+                    border: none;
+                    border-top: 1px solid @border@;
+                    padding: 4px 8px;
+                    font-family: "Consolas", "Courier New", monospace;
+                    font-size: 11px;
+                }
+            """)
+
+        self.log_panel.setStyleSheet(_log_style())
+        # 主题切换时同步日志面板配色
+        bus.theme_changed.connect(lambda _mode: self.log_panel.setStyleSheet(_log_style()))
+        bottom_layout.addWidget(self.log_panel)
 
         main_layout.addWidget(bottom_widget)
 

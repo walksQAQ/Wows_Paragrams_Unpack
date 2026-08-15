@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap, QFont
 
+from utils.theme import theme
+
 
 class CrewCustomizeDialog(QDialog):
     """自定义舰长配置对话框"""
@@ -35,17 +37,18 @@ class CrewCustomizeDialog(QDialog):
         self.setWindowTitle("自定义舰长配置")
         self.setMinimumSize(420, 400)
         self._max_epic = 3
-        self.setStyleSheet("""
-            QDialog { background:#ffffff; color:#222; }
-            QLabel { color:#000; font-size:12px; }
-            QGroupBox { border:1px solid #ccc; border-radius:4px; margin-top:12px;
+        # 对话框级样式：theme.bind 注册，主题切换时自动重设背景/文字等
+        theme.bind(self, """
+            QDialog { background:@window_bg@; color:@text@; }
+            QLabel { color:@text@; font-size:12px; }
+            QGroupBox { border:1px solid @border@; border-radius:4px; margin-top:12px;
                         font-size:12px; color:#c60; padding-top:12px; }
             QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px; }
-            QComboBox { background:#fff; border:1px solid #bbb; border-radius:3px;
-                        padding:3px 6px; color:#000; font-size:11px; }
-            QPushButton { background:#f0f0f0; border:1px solid #bbb; border-radius:3px;
-                          padding:4px 12px; color:#000; font-size:11px; }
-            QPushButton:hover { background:#e0e0e0; }
+            QComboBox { background:@input_bg@; border:1px solid @border@; border-radius:3px;
+                        padding:3px 6px; color:@text@; font-size:11px; }
+            QPushButton { background:@panel_alt@; border:1px solid @border@; border-radius:3px;
+                          padding:4px 12px; color:@text@; font-size:11px; }
+            QPushButton:hover { background:@hover_bg@; }
         """)
         self._init_ui()
 
@@ -264,13 +267,14 @@ class CrewCustomizeDialog(QDialog):
                             # 复选框（类似强化技能，上限为1）
                             cb = QCheckBox()
                             cb.setChecked(False)
-                            cb.setStyleSheet("""
+                            # v3.2.2-test1 风格：未选中=主题色描边框，选中=橙色填充（深浅色均可读）
+                            cb.setStyleSheet(theme.qss("""
                                 QCheckBox { border:none; background:transparent; padding:0px; }
                                 QCheckBox::indicator {
                                     width: 18px; height: 18px;
-                                    border: 2px solid #666;
+                                    border: 2px solid @border@;
                                     border-radius: 3px;
-                                    background: #3a3a3a;
+                                    background: @panel_alt@;
                                 }
                                 QCheckBox::indicator:checked {
                                     background: #ff8800;
@@ -279,7 +283,7 @@ class CrewCustomizeDialog(QDialog):
                                 QCheckBox::indicator:hover {
                                     border-color: #ff8800;
                                 }
-                            """)
+                            """))
                             hl.addWidget(cb)
                             # 图标
                             if icon_path:
@@ -289,30 +293,30 @@ class CrewCustomizeDialog(QDialog):
                                     icon_label.setPixmap(pix.scaled(36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                                     icon_label.setFixedSize(36, 36)
                                     icon_label.setAttribute(Qt.WA_TransparentForMouseEvents)
-                                    icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
+                                    icon_label.setStyleSheet(theme.qss("background:@panel_alt@; border-radius:4px;"))
                                     hl.addWidget(icon_label)
                             # 右侧文本：触发条件 + 效果
                             right_layout = QVBoxLayout()
                             right_layout.setContentsMargins(0,0,0,0)
                             right_layout.setSpacing(1)
                             # 触发条件
-                            trig_label = QLabel(f"<span style='color:#ffc107; font-size:10px;'>触发：</span><span style='color:#ccc; font-size:10px;'>{trig_text}</span>")
+                            trig_label = QLabel(f"<span style='color:#ffc107; font-size:10px;'>触发：</span><span style='color:{theme['text_muted']}; font-size:10px;'>{trig_text}</span>")
                             trig_label.setWordWrap(True)
                             trig_label.setAttribute(Qt.WA_TransparentForMouseEvents)
                             right_layout.addWidget(trig_label)
                             # 效果
                             if eff_desc_lines:
-                                eff_header = QLabel("<span style='color:#4fc3f7; font-size:10px;'>效果：</span>")
+                                eff_header = QLabel(f"<span style='color:{theme['selected_bg']}; font-size:10px;'>效果：</span>")
                                 eff_header.setAttribute(Qt.WA_TransparentForMouseEvents)
                                 right_layout.addWidget(eff_header)
                                 for _el in eff_desc_lines:
-                                    _el_label = QLabel(f"<span style='color:#ddd; font-size:10px;'>{_el}</span>")
+                                    _el_label = QLabel(f"<span style='color:{theme['text']}; font-size:10px;'>{_el}</span>")
                                     _el_label.setWordWrap(True)
                                     _el_label.setAttribute(Qt.WA_TransparentForMouseEvents)
                                     right_layout.addWidget(_el_label)
                             # 触发次数
                             if t.get('max_trigger_num'):
-                                cnt_label = QLabel(f"<span style='color:#888; font-size:9px;'>每场最多触发 {t['max_trigger_num']} 次</span>")
+                                cnt_label = QLabel(f"<span style='color:{theme['text_hint']}; font-size:9px;'>每场最多触发 {t['max_trigger_num']} 次</span>")
                                 cnt_label.setAttribute(Qt.WA_TransparentForMouseEvents)
                                 right_layout.addWidget(cnt_label)
                             hl.addLayout(right_layout, 1)
@@ -334,7 +338,7 @@ class CrewCustomizeDialog(QDialog):
                             def _row_click(e, _cb=cb):
                                 _cb.setChecked(not _cb.isChecked())
                             row.mousePressEvent = _row_click
-                            row.setStyleSheet("background:#2a2a2a; border:1px solid #444; border-radius:4px;")
+                            row.setStyleSheet(theme.qss("background:@panel_bg@; border:1px solid @border@; border-radius:4px;"))
                             # Tooltip
                             row.setToolTip(_build_talent_tooltip(t))
                             sc_layout.addWidget(row)
@@ -367,7 +371,7 @@ class CrewCustomizeDialog(QDialog):
 
         if not talents_found:
             note = QLabel("（当前国籍没有可学习的传奇天赋）")
-            note.setStyleSheet("color:#888; font-size:11px; padding:4px 0;")
+            note.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:4px 0;"))
             layout.addWidget(note)
 
     def _build_legendary_section(self, layout: QVBoxLayout):
@@ -465,13 +469,13 @@ class CrewCustomizeDialog(QDialog):
                 for sk in cur.fetchall():
                     icon_path = sk['icon_path'] or ""
                     btn = QPushButton()
-                    btn.setStyleSheet("""
-                        QPushButton { background:#f0f0f0; border:2px solid #ccc;
+                    btn.setStyleSheet(theme.qss("""
+                        QPushButton { background:@panel_alt@; border:2px solid @border@;
                                       border-radius:6px; min-width:52px; min-height:52px;
                                       max-width:52px; max-height:52px; font-size:9px;
-                                      color:#000; padding:0px; }
-                        QPushButton:hover { background:#e0e0e0; border-color:#999; }
-                    """)
+                                      color:@text@; padding:0px; }
+                        QPushButton:hover { background:@hover_bg@; border-color:@text_hint@; }
+                    """))
                     btn.setCheckable(False)
                     btn.setToolTip(_build_tip(sk))
                     if icon_path:
@@ -489,7 +493,7 @@ class CrewCustomizeDialog(QDialog):
         layout.addWidget(self._talent_preview)
         note = QLabel("传奇舰长拥有独特的国家天赋，可在战斗中触发。")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#888; font-size:11px; padding:4px 0;")
+        note.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:4px 0;"))
         layout.addWidget(note)
 
     def _build_viewonly_section(self, layout: QVBoxLayout):
@@ -499,7 +503,7 @@ class CrewCustomizeDialog(QDialog):
         layout.addWidget(lbl)
         note = QLabel("（此类型舰长无法自定义强化技能或国家天赋）")
         note.setWordWrap(True)
-        note.setStyleSheet("color:#888; font-size:11px; padding:4px 0;")
+        note.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:4px 0;"))
         layout.addWidget(note)
 
     def _build_epic_skill_section(self, layout: QVBoxLayout):
@@ -513,7 +517,7 @@ class CrewCustomizeDialog(QDialog):
 
         if not self._ship_type_cn or not self._ship_type_en:
             lbl = QLabel("（请先选择舰船以查看可用技能）")
-            lbl.setStyleSheet("color:#888; font-size:11px; padding:4px 0;")
+            lbl.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:4px 0;"))
             layout.addWidget(lbl)
             return
 
@@ -524,10 +528,10 @@ class CrewCustomizeDialog(QDialog):
         gl.setSpacing(4)
 
         lbl = QLabel("勾选需要切换为强化版本的技能：")
-        lbl.setStyleSheet("color:#000; font-size:11px;")
+        lbl.setStyleSheet(theme.qss("color:@text@; font-size:11px;"))
         gl.addWidget(lbl)
         limit_hint = QLabel(f"（最多可选 {self._max_epic} 个强化技能）")
-        limit_hint.setStyleSheet("color:#888; font-size:10px;")
+        limit_hint.setStyleSheet(theme.qss("color:@text_hint@; font-size:10px;"))
         gl.addWidget(limit_hint)
 
         db = get_db()
@@ -590,20 +594,21 @@ class CrewCustomizeDialog(QDialog):
                 pass
             # ── 行容器 ──
             row = QWidget()
-            row.setStyleSheet("background:#f7f7f7; border:1px solid #ddd; border-radius:4px;")
+            row.setStyleSheet(theme.qss("background:@panel_bg@; border:1px solid @border@; border-radius:4px;"))
             hl = QHBoxLayout(row)
             hl.setContentsMargins(6, 2, 6, 2)
             hl.setSpacing(8)
             # 勾选框
             cb = QCheckBox()
             cb.setChecked(sk in self.epic_skills)
-            cb.setStyleSheet("""
+            # v3.2.2-test1 风格：未选中=主题色描边框，选中=橙色填充（深浅色均可读）
+            cb.setStyleSheet(theme.qss("""
                 QCheckBox { border:none; background:transparent; padding:0px; }
                 QCheckBox::indicator {
                     width: 18px; height: 18px;
-                    border: 2px solid #666;
+                    border: 2px solid @border@;
                     border-radius: 3px;
-                    background: #3a3a3a;
+                    background: @panel_alt@;
                 }
                 QCheckBox::indicator:checked {
                     background: #ff8800;
@@ -612,7 +617,7 @@ class CrewCustomizeDialog(QDialog):
                 QCheckBox::indicator:hover {
                     border-color: #ff8800;
                 }
-            """)
+            """))
             cb.stateChanged.connect(lambda checked, k=sk, c=cb: self._on_epic_toggle(k, checked, c))
             self._epic_checkboxes[sk] = cb
             hl.addWidget(cb)
@@ -623,11 +628,11 @@ class CrewCustomizeDialog(QDialog):
                 icon_label = QLabel()
                 icon_label.setPixmap(pix.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 icon_label.setFixedSize(28, 28)
-                icon_label.setStyleSheet("background:#2a2a2a; border-radius:4px;")
+                icon_label.setStyleSheet(theme.qss("background:@panel_alt@; border-radius:4px;"))
                 hl.addWidget(icon_label)
             # 技能名称
             name_label = QLabel(sname)
-            name_label.setStyleSheet("color:#000; font-size:11px; font-weight:bold; min-width:80px;")
+            name_label.setStyleSheet(theme.qss("color:@text@; font-size:11px; font-weight:bold; min-width:80px;"))
             hl.addWidget(name_label)
             # 加成对比
             diff_text = ""
@@ -649,7 +654,7 @@ class CrewCustomizeDialog(QDialog):
                     ep_str = NMAP_FMT.format_modifier(mk, v_epic, color=True)
                     if not reg_str and not ep_str:
                         continue
-                    diff_text += f"<span style='color:#888;'>{zh}</span> "
+                    diff_text += f"<span style='color:{theme['text_hint']};'>{zh}</span> "
                     diff_text += f"<span style='color:#aaa;'>{reg_str}</span>"
                     if reg_str != ep_str:
                         diff_text += f" <span style='color:#ff6600;'>→ {ep_str}</span>"

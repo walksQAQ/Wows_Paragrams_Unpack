@@ -95,9 +95,13 @@ WoWS 有而 Korabli 缺：SkeletonExtender(0x1AE023FF)、PointLight(0x0D3665A4)�
 
 ## VFS 索引缓存
 
-- 以（文件大小, mtime）sha1 作 key，存到 assets.bin 旁 `.uncode_cache/idx_<hash>.pkl`
+- 以（文件大小, mtime）sha1 作 key，存到 `data/.uncode_cache/idx_<hash>.pkl`
+  （`_cache_path_for` 生成在 assets.bin 所在目录旁；主流程 assets.bin 固定放 data/，
+  故缓存统一落在 data/ 下；根目录如有历史遗留 `.uncode_cache` 为旧路径残留，可删）
 - 缓存版本 `CACHE_VERSION`（目录 key 修复后加版本使旧缓存失效）
 - 二次打开约 1.6s（首次约 8.5s）
+- **自动清理**：`processor_service._ok` 删除 assets.bin 时连带删除 `data/.uncode_cache`，
+  避免每次解包（mtime 变化 → 新 key）累积 44MB 级残留
 
 ## 记录布局
 

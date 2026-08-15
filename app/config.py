@@ -26,6 +26,7 @@ class AppConfig:
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 3859335）
+    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark"
 
     @classmethod
     def default(cls) -> AppConfig:
@@ -93,6 +94,17 @@ class ConfigManager:
     @bin_folder.setter
     def bin_folder(self, value: str) -> None:
         self._config.bin_folder = value
+        self.save()
+
+    @property
+    def theme_mode(self) -> str:
+        return self._config.theme_mode
+
+    @theme_mode.setter
+    def theme_mode(self, value: str) -> None:
+        if value not in ("auto", "light", "dark"):
+            value = "auto"
+        self._config.theme_mode = value
         self.save()
 
     # ── 供 Application 内部使用 ─────────────────────────

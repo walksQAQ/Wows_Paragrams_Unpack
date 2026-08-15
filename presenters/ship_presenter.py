@@ -12,6 +12,7 @@ from pathlib import Path
 from presenters.base_presenter import BasePresenter, NM
 from models.name_mapping import Mapping
 from services.ballistics_service import BallisticsCalculator
+from utils.path_utils import get_data_dir
 
 
 class ShipPresenter(BasePresenter):
@@ -973,6 +974,16 @@ class ShipPresenter(BasePresenter):
                     section["_ammo_by_letter"] = ammo_by_letter
                 elif all_ammo:
                     section["raw_ammo_types"] = all_ammo
+                # 附加炮塔射界入口（在卡片上方显示可点击的射界按钮）
+                _slot = {"主炮": "artillery", "副炮": "atba",
+                         "次级主炮": "secondary_artillery", "鱼雷": "torpedoes"}.get(label)
+                if _slot:
+                    _arc_rows = conn.execute(
+                        "SELECT hp_key, horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json, mount_yaw, mount_pos_json "
+                        "FROM ship_turret_arcs WHERE version_code=? AND ship_id=? AND slot_type=? "
+                        "ORDER BY hp_key", (vc, ship_id, _slot)).fetchall()
+                    if _arc_rows:
+                        section["_firing_arc"] = self._firing_arc_info(_arc_rows, ship_id, _slot)
                 sections.append(section)
                 # 引擎卡片紧跟在船体卡片下方
                 if label == "船体" and engine_data:
@@ -1013,6 +1024,33 @@ class ShipPresenter(BasePresenter):
                 elif ammo_by_letter:
                     section["raw_ammo_types"] = ammo_by_letter.get(section_letters[0], [])
                 sections.append(section)
+
+    def _firing_arc_info(self, rows, ship_id: str, slot_type: str) -> dict:
+        """从 ship_turret_arcs 行生成射界信息（供详情面板按钮显示）。
+
+        含齐射角：全炮塔能齐射时为前/后（X°（前）/Y°（后））；
+        炮塔分列左右舷、无法全炮塔齐射时为左舷/右舷（X°（左舷）/Y°（右舷））。
+        """
+        import json as _json
+        from utils.firing_arc import firing_arc_angles
+
+        guns = []
+        for r in rows:
+            try:
+                guns.append({
+                    "horiz_sector": _json.loads(r["horiz_sector_json"]) if r["horiz_sector_json"] else None,
+                    "vert_sector": _json.loads(r["vert_sector_json"]) if r["vert_sector_json"] else None,
+                    "dead_zones": _json.loads(r["dead_zone_json"]) if r["dead_zone_json"] else [],
+                    "pitch_dead_zones": _json.loads(r["pitch_dead_zones_json"]) if r["pitch_dead_zones_json"] else [],
+                    "position": _json.loads(r["position_json"]) if r["position_json"] else None,
+                    "mount_yaw": r["mount_yaw"],
+                    "mount_pos": _json.loads(r["mount_pos_json"]) if r["mount_pos_json"] else None,
+                })
+            except Exception:
+                continue
+        result = firing_arc_angles(guns)
+        result.update({"ship_id": ship_id, "slot_type": slot_type, "count": len(rows)})
+        return result
 
     # ── 模块构建子方法 ─────────────────────────────────────
 
@@ -2967,7 +3005,7 @@ class ShipPresenter(BasePresenter):
         # 如果数据库为空，直接从 JSON 文件读取（兼容旧数据库）
         if not all_flags:
             import glob as _glob
-            exterior_dir = Path(__file__).resolve().parent.parent / "data" / "split" / "Exterior"
+            exterior_dir = get_data_dir() / "split" / "Exterior"
             for fp in sorted(exterior_dir.glob("PCEF*.json")) if exterior_dir.exists() else []:
                 try:
                     with open(fp, "r", encoding="utf-8") as fh:

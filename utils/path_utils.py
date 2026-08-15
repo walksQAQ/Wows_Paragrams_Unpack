@@ -6,12 +6,20 @@
   ┌─────────────────────────────────────────────────────────┐
   │  get_app_dir()     用户数据目录（exe 同级）              │
   │  用途: config.json, data/, data/split/                 │
-  │  源码 → 项目根 | standalone → exe 同级 | onefile → CWD │
+  │  源码 → 项目根 | standalone → exe 同级 | onefile → exe  │
+  │                    同级（sys.argv[0] 原始 exe 路径）    │
   ├─────────────────────────────────────────────────────────┤
   │  get_bundled_dir() 打包资源目录（onefile 解压目录）      │
   │  用途: resources/, tools/                              │
   │  源码 → 项目根 | standalone → exe 同级 | onefile → 临时 │
+  │                    解压目录（sys.executable）           │
   └─────────────────────────────────────────────────────────┘
+
+注：Nuitka 编译模式用 "__compiled__" in globals() 判定。
+  - get_app_dir → Path(sys.argv[0]).resolve().parent：onefile 下 sys.argv[0]
+    仍是用户启动的原始 exe 路径 → 用户数据（config.json / data/）落在 exe 同级
+  - get_bundled_dir → Path(sys.executable).resolve().parent：onefile 下
+    sys.executable 指向自解压出的临时 exe → 内置资源在解压目录
 """
 
 from __future__ import annotations

@@ -25,28 +25,34 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
 
+from utils.theme import theme
 
-# ── 样式常量 ──────────────────────────────────────────────
 
-CARD_STYLE = """
-    ShipCardWidget QGroupBox {
-        background: rgba(255, 255, 255, 0.85);
-        border: 1px solid rgba(200, 200, 200, 0.3);
-        border-radius: 8px;
-        margin-top: 8px;
-        padding: 8px 0px 2px 0px;
-        font-size: 12px;
-        font-weight: bold;
-        color: #000000;
-    }
-    ShipCardWidget QGroupBox::title {
-        subcontrol-origin: margin;
-        subcontrol-position: top left;
-        left: 10px;
-        padding: 0 4px;
-        color: #222222;
-    }
-"""
+# ── 样式常量（动态求值，主题切换后生效） ─────────────────
+
+def card_style() -> str:
+    return theme.qss("""
+        ShipCardWidget QGroupBox {
+            background: @panel_bg@;
+            border: 1px solid @border@;
+            border-radius: 8px;
+            margin-top: 8px;
+            padding: 8px 0px 2px 0px;
+            font-size: 12px;
+            font-weight: bold;
+            color: @text@;
+        }
+        ShipCardWidget QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 10px;
+            padding: 0 4px;
+            color: @text@;
+        }
+    """)
+
+
+CARD_STYLE = card_style()
 
 TABLE_STYLE = """
     QTableWidget {
@@ -66,10 +72,18 @@ TABLE_STYLE = """
     }
 """
 
-# 左列（标签）字体颜色
-LABEL_COLOR = "#444444"
-# 右列（数值）字体颜色
-VALUE_COLOR = "#000000"
+# 左列（标签）/右列（数值）字体颜色 —— 跟随主题（函数动态求值）
+def label_color() -> str:
+    return theme["text_muted"]
+
+
+def value_color() -> str:
+    return theme["text"]
+
+
+# 兼容旧引用（导入时求值，供不重建的场景回退）
+LABEL_COLOR = label_color()
+VALUE_COLOR = value_color()
 
 # ── 图标映射 ──────────────────────────────────────────────
 
@@ -96,7 +110,9 @@ SECTION_ICONS: dict[str, str] = {
 class ShipCardWidget(QGroupBox):
     """单张数据卡片，包含标题和键值表格"""
 
-    def __init__(self, section: dict, parent=None):
+    firing_arc_clicked = Signal(dict)
+
+    def __init__(self, section: dict, parent=None, firing_arc: dict | None = None):
         """
         Args:
             section: 数据分区，格式：
@@ -105,6 +121,8 @@ class ShipCardWidget(QGroupBox):
                      "row_type": "kv", "details": [...]},
                     ...
                 ]}
+            firing_arc: 射界入口信息（{"ship_id", "slot_type", "summary"}），
+                        非空时在卡片底部追加可点击的射界按钮行
         """
         super().__init__(parent)
         self.setProperty("class", "ShipCardWidget")
@@ -115,7 +133,7 @@ class ShipCardWidget(QGroupBox):
         icon = section.get("icon", "") or SECTION_ICONS.get(label, "")
         title = f"  {icon} {label}" if icon else f"  {label}"
         self.setTitle(title)
-        self.setStyleSheet(CARD_STYLE)
+        self.setStyleSheet(card_style())
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         layout = QVBoxLayout(self)
@@ -148,6 +166,10 @@ class ShipCardWidget(QGroupBox):
 
         self._populate_items(section.get("items", []))
 
+        # 射界入口：卡片底部追加可点击按钮（不显示炮塔数量）
+        if firing_arc and firing_arc.get("mode") == "front_back":
+            self._add_firing_arc_row(firing_arc)
+
         # 左列宽度按内容，右列填满剩余；通过 ResizeToContents 保持紧凑
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         # 避免左列太宽，设最大宽度为表格预计宽度的 30%
@@ -158,6 +180,39 @@ class ShipCardWidget(QGroupBox):
         # 延迟自适应高度，等布局完成后再计算
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._adjust_height)
+
+    def _add_firing_arc_row(self, fa: dict) -> None:
+        """在卡片底部添加射界行：左列标签 + 右列可点击的值按钮（齐射角）"""
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        wep_name = "鱼雷发射器" if fa.get("slot_type") == "torpedoes" else "炮塔"
+        # 左列：标签
+        name_item = QTableWidgetItem(f"{wep_name} 射界")
+        name_item.setForeground(QColor(label_color()))
+        name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(row, 0, name_item)
+        # 右列：值按钮（可点击弹出射界弹窗）
+        # 齐射角：前向/后向（主炮为全炮塔，鱼雷/副炮分两侧时取对应一侧）
+        value_text = f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+        btn = QPushButton()
+        btn.setText(value_text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip("点击查看该武器系统的射界图（总览 + 单炮塔详情）")
+        btn.setStyleSheet(theme.qss("""
+            QPushButton {
+                background: @panel_alt@; color: @text@;
+                border: 1px solid @border@; border-radius: 4px;
+                padding: 4px 8px; font-size: 12px; text-align: center;
+            }
+            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+        """))
+        btn.clicked.connect(lambda _=False: self.firing_arc_clicked.emit(fa))
+        self._table.setCellWidget(row, 1, btn)
+
+    def set_firing_arc(self, fa: dict) -> None:
+        """动态为已渲染的卡片追加射界按钮行（供 weapon widget 在最后一座炮卡片上调用）"""
+        if fa and fa.get("mode") == "front_back":
+            self._add_firing_arc_row(fa)
 
     def resizeEvent(self, event):
         """窗口缩放时重新调整高度"""
@@ -195,7 +250,7 @@ class ShipCardWidget(QGroupBox):
 
         # 左列：名称
         name_item = QTableWidgetItem(name)
-        name_item.setForeground(QColor(LABEL_COLOR))
+        name_item.setForeground(QColor(label_color()))
         name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 0, name_item)
 
@@ -217,7 +272,7 @@ class ShipCardWidget(QGroupBox):
                 else:
                     value_item.setForeground(QColor("#d32f2f"))
             else:
-                value_item.setForeground(QColor(VALUE_COLOR))
+                value_item.setForeground(QColor(value_color()))
         value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._table.setItem(row, 1, value_item)
@@ -242,7 +297,7 @@ class ShipCardWidget(QGroupBox):
 
         name = item.get("name", "")
         cell = QTableWidgetItem(name)
-        cell.setForeground(QColor("#555555"))
+        cell.setForeground(QColor(theme["text_muted"]))
         bold_font = QFont()
         bold_font.setBold(True)
         bold_font.setPointSize(10)
@@ -262,7 +317,7 @@ class ShipCardWidget(QGroupBox):
 
         name = item.get("name", "")
         cell = QTableWidgetItem(name)
-        cell.setForeground(QColor("#666666"))
+        cell.setForeground(QColor(theme["text_muted"]))
         bold_font = QFont()
         bold_font.setBold(True)
         bold_font.setPointSize(10)
@@ -280,7 +335,7 @@ class ShipCardWidget(QGroupBox):
         self._table.insertRow(row)
 
         sep = QTableWidgetItem("─" * 30)
-        sep.setForeground(QColor("#e0e0e0"))
+        sep.setForeground(QColor(theme["border_soft"]))
         sep.setFlags(sep.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 0, sep)
 
@@ -295,7 +350,7 @@ class ShipCardWidget(QGroupBox):
 
         name = item.get("name", "")
         name_item = QTableWidgetItem(name)
-        name_item.setForeground(QColor(LABEL_COLOR))
+        name_item.setForeground(QColor(label_color()))
         name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 0, name_item)
 
@@ -316,16 +371,16 @@ class ShipCardWidget(QGroupBox):
                 btn = QPushButton(str(v))
                 btn.setFixedSize(22, 20)
                 btn.setCheckable(True)
-                btn.setStyleSheet("""
+                btn.setStyleSheet(theme.qss("""
                     QPushButton {
-                        background: #f5f5f5; border: 1px solid #ddd;
-                        border-radius: 3px; font-size: 9px; color: #555;
+                        background: @panel_alt@; border: 1px solid @border@;
+                        border-radius: 3px; font-size: 9px; color: @text@;
                     }
-                    QPushButton:hover { background: #e0e0e0; border-color: #aaa; }
+                    QPushButton:hover { background: @hover_bg@; border-color: #aaa; }
                     QPushButton:checked {
                         background: #0078d4; color: #fff; border-color: #0078d4;
                     }
-                """)
+                """))
                 group.addButton(btn, v)
                 btn_layout.addWidget(btn)
                 if v == current:
@@ -371,12 +426,12 @@ class ShipDetailGrid(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setStyleSheet("""
+        self.setStyleSheet(theme.qss("""
             ShipDetailGrid {
                 border: none;
-                background-color: #f5f5f5;
+                background-color: @window_bg@;
             }
-        """)
+        """))
 
         self._container = QWidget()
         self._grid = QGridLayout(self._container)

@@ -193,6 +193,25 @@ class PrototypeDatabase:
             raise OutOfBoundsError(record_offset, item_size, len(db.data), "record")
         return db.data[record_offset:]
 
+    def get_prototype_data_len(self, location: PrototypeLocation, item_size: int,
+                               length: int) -> memoryview:
+        """返回从记录起始起的 length 字节（**有界 memoryview 切片，零拷贝**）。
+
+        与 get_prototype_data 的区别：返回 memoryview 而非 bytes 拷贝，
+        批量解码骨架等类型时避免复制数十 MB 的 blob 尾部（Skeleton blob
+        达 73MB），大幅降低内存拷贝开销。length 需覆盖记录头 + 引用的 OOL 区。
+        """
+        db = self.databases[location.blob_index]
+        if location.record_index >= db.record_count:
+            raise PrototypeOutOfRangeError(location.record_index, location.blob_index, db.record_count)
+        record_offset = BLOB_HEADER_SIZE + location.record_index * item_size
+        if record_offset >= len(db.data):
+            return memoryview(b"")
+        end = record_offset + length
+        if end > len(db.data):
+            end = len(db.data)
+        return memoryview(db.data)[record_offset:end]
+
     def get_record(self, location: PrototypeLocation) -> bytes:
         """按该 blob 的 item_size 取记录数据。"""
         db = self.databases[location.blob_index]

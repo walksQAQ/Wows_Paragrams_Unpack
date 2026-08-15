@@ -18,10 +18,12 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from . import binary as _B
 from .decoders import (
     decode_material,
     decode_prototype_to_json,
     decode_record,
+    decode_skeleton,
     parse_mfm_from_db,
 )
 from .errors import AssetsBinError
@@ -228,6 +230,45 @@ class AssetsBinService:
     def decode_path(self, path: str) -> dict:
         """解码指定路径的 prototype 记录。"""
         return self.vfs.decode_file(path)
+
+    def decode_skeleton_path(self, path: str) -> dict:
+        """快速解码骨架：只读取记录头 + 所需 OOL 区，避免复制整段 blob 尾部。
+
+        背景：Skeleton blob 达 73MB，原 decode_path 每次解码都返回
+        「记录起始 → blob 末尾」的整段尾部切片，批量解码（如回填炮位朝向）
+        会复制数十 MB × 数千次。此处按骨架记录头（64B）里的 relptr 计算
+        所需 OOL 长度，做有界切片后解码；异常时回退到完整解码保证正确。
+        """
+        try:
+            f = self.vfs.get_file(path)
+            if f is None:
+                raise AssetsBinError(f"虚拟文件不存在: {path}")
+            hdr = self.vfs.open_file_len(path, 0x40)
+            if len(hdr) < 0x40:
+                raise AssetsBinError(f"骨架数据过短: {path}")
+            count = _B.read_u32(hdr, 0x00)
+            rot_count = _B.read_u32(hdr, 0x04)
+            need = 0x40
+            # (relptr 字段偏移, 元素字节数, 元素个数)
+            arrays = [
+                (0x08, 4, count),   # name_map_name_ids u32
+                (0x10, 2, count),   # name_map_node_ids u16
+                (0x18, 4, count),   # name_ids u32
+                (0x20, 16, count),  # matrices float4x4
+                (0x38, 2, count),   # parent_ids u16
+                (0x30, 2, count),   # rotation_limits_ids u16
+            ]
+            for off, esize, c in arrays:
+                if c > 0:
+                    rel = _B.read_u32(hdr, off)
+                    need = max(need, rel + esize * c)
+            if rot_count > 0:
+                rel = _B.read_u32(hdr, 0x28)  # rotation_limits Vec4×2，32B/条
+                need = max(need, rel + 32 * rot_count)
+            data = self.vfs.open_file_len(path, need + 16)  # 留安全余量
+            return decode_skeleton(data, self.db)
+        except Exception:
+            return self.decode_path(path)
 
     def decode_path_json(self, path: str) -> str:
         """解码指定路径为 JSON 字符串。"""
