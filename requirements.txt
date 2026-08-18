@@ -12,6 +12,11 @@
 PySide6>=6.5
 matplotlib>=3.8
 
+# 3D 模型查看器（.geometry 解析 + OpenGL 渲染）
+numpy>=1.24
+PyOpenGL>=3.1
+meshoptimizer>=0.2
+
 # 网络下载相关依赖
 requests>=2.28
 

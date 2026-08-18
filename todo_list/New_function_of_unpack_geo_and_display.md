@@ -1,6 +1,36 @@
 # 舰船 3D 模型解包与显示功能规划
 
-> 📌 **状态：规划中（2026-08-16 更新）**。数据层解包（IDX/PKG/Kraken/bc7prep）已就绪可复用；`.geometry` 解析、装甲厚度数据、3D 渲染均未实现。详见新增「〇、现状审计与实施建议」一节。
+> 📌 **状态：已实现首版（2026-08-18 更新）**
+>
+> ✅ 已实现：数据层 .geometry 解析（含 ENCD 解码）、舰船 3D 渲染、装甲模型渲染（厚度着色）、装甲厚度图例。数据层（IDX/PKG/Kraken/bc7prep）与 .geometry 解析、装甲厚度、3D 渲染均已落地；碰撞模型渲染、OBJ 导出等仍待续。详见「实施记录（2026-08-18）」与「〇、现状审计与实施建议」。
+
+## 实施记录（2026-08-18）
+
+> 本次实现范围：3D 模型渲染 + 装甲模型渲染（暂时跳过穿深计算器）
+
+| 层面 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| P0 实证 | `_archive/scripts/probe_geometry.py` / `probe_geometry_detail.py` | ✅ | 26653 个 .geometry 文件，格式与 wows-toolkit 一致 |
+| P0 解析 | `models/geometry_parser.py` | ✅ | 72B 头 + relptr + ENCD 解码 + 顶点/索引/碰撞/装甲 BVH |
+| P0 ENCD | `meshoptimizer` wheel + 解码适配 | ✅ | 注意 dtype 和 u16 指数包装 |
+| P0 装甲厚度 | `services/geometry_service.py` 读 `A_Hull.armor` | ✅ | 大和装甲命中 85.7% |
+| P1 渲染 | `ui/geometry_renderer.py` + `models/camera.py` | ✅ | PyOpenGL（跳过 ModernGL上下文不稳定问题） |
+| P1 UI | `ui/geometry_viewer.py` + 工具栏“3D 查看” | ✅ | 独立窗口 + 装甲图例 |
+| P1 多部件 | services/geometry_service.py 挂载枚举+骨架定位 | ✅ | 109 挂载/20 唯一模型，HP_ 挂点矩阵定位（negate_z） |
+| P1 贴图 | .mfm 识别 diffuseMap + .dd0/.dd1/.dd2/.dds 分级 | ✅ | 基于 .mfm（舰体 Hull.mfm / 挂载 *_skinned.mfm），回退文件名约定 |
+| P1 装甲归属 | models/collision_materials.py get_armor_types | ✅ | 反编译 ArmorConstants.pyc 的 ARMOR_TYPES（核心区/炮塔/舷侧/艏艉/上层/内部） |
+| P1 渲染 | ui/geometry_renderer.py 挂载矩阵+独立贴图+装甲过滤 | ✅ | per-mesh model_matrix/normal_mat + 归属/类型过滤 |
+| P1 UI | ui/geometry_viewer.py 归属+类型筛选 | ✅ | 组件 checkbox + 装甲类型 checkbox + 挂载统计 |
+| P1 性能 | 目录索引 + file_tree O(1) + 跨船缓存 | ✅ | 加载 100s → 23s |
+| P1 材质贴图 | _section_render_sets+_split_primitives_by_material | ✅ | 逆向 Korabli VisualPrototype 布局；舰体按材质拆分 Hull/DeckHouse 独立贴图 |
+| P1 LOD | _geometry_folder_index 排除 lods | ✅ | 仅显示高模（LOD0），排除 _lodN 与 crack/patch 变体 |
+| P1 逆向 | Korabli visual r2p 偏移 5510 定位 | ✅ | 扫描式记录发现 + murmur3(shape.vertices)==mapping_id 连接 |
+| P2 导出 OBJ / 解析器自测 | 未实现 | ○ | 待续 |
+
+重要备注：
+- 工具栏“⛵ 3D 查看”按钮开启；框中可搜索 1056 艘舰船。
+- 默认侧舷视角；左键旋转 / 滚轮缩放 / 右键平移。
+- 后续：OBJ 导出、碰撞模型渲染、厚度差值图例可选色等。
 
 ## 概述
 

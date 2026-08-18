@@ -1216,8 +1216,8 @@ class DetailPanel(QWidget):
                 _MM = _MODIFIER_MAP
                 _RIBBON_NAMES = getattr(_NM, 'RIBBON_MAP_CREW', {})
 
-                def _format_trigger_cond(ttype: str, divider: float) -> str:
-                    """格式化触发条件描述"""
+                def _format_trigger_cond(ttype: str, divider: float, trigger: dict | None = None) -> str:
+                    """格式化触发条件描述（trigger 可选，用于补充具体细节，避免重复显示）"""
                     cond_map = {
                         "potentialDamageRatio": f"每积累 {divider:.0f} 潜在伤害时触发1次",
                         "entityIsInvisibleTrigger": "当战舰未被敌方发现时",
@@ -1238,14 +1238,34 @@ class DetailPanel(QWidget):
                         "floodChance": "当进水时触发",
                     }
                     if ttype == "activationOnRibbons":
+                        # 合并勋带类型/次数/持续时间到同一行，避免重复显示
+                        _tr = trigger or {}
+                        _rib_types = _tr.get("triggerRibbonsTypes", [])
+                        _rib_num = _tr.get("triggerRibbonsNum", 1)
+                        _dur = _tr.get("duration", 0)
+                        _rib_labels = [_RIBBON_NAMES.get(str(t), f"勋带{t}") for t in _rib_types]
+                        if _rib_labels:
+                            _cond = "获得" + "、".join(_rib_labels)
+                            if _rib_num > 1:
+                                _cond += f" {_rib_num}次"
+                            if _dur > 0:
+                                _cond += f"后 {_dur:.0f} 秒内"
+                            return _cond
                         return "获得特定勋带时触发"
                     if ttype == "activationOnPingTargetsCount":
                         return "每用声呐标记一艘敌舰时"
                     if ttype == "activationOnEntityVisibilityFlags":
-                        return "当被被敌人发现或被敌方潜艇的被动声呐探测时"
+                        return "当被敌人发现或被敌方潜艇的被动声呐探测时"
                     if ttype == "submarineHydrophone":
                         return "当战舰位于潜望镜深度或工作深度时"
                     if ttype == "activationOnBuoyancyState":
+                        # 合并具体深度状态到同一行，避免重复显示
+                        _tr = trigger or {}
+                        _states = _tr.get("buoyancyStates", [])
+                        if _states:
+                            _depth_names = getattr(_NM, 'DEPTH_MAP', {})
+                            _labels = [_depth_names.get(s, s) for s in _states]
+                            return f"当战舰位于{'或'.join(_labels)}时"
                         return "处于特定深度状态时"
                     return cond_map.get(ttype, f"触发条件: {ttype} ({divider})")
 
@@ -1604,7 +1624,9 @@ class DetailPanel(QWidget):
                                     title = f'{title} <span style="color:#ff6600; font-weight:normal;">{_tag}</span>'
                                 tip_lines = [f'<div style="font-size:11px; line-height:1.4;"><b>{title}</b>']
                                 if skill_desc:
-                                    tip_lines.append(f'<div style="color:#ccc; margin-top:2px;">{skill_desc}</div>')
+                                    # 字面 \n（未解析转义）与真实换行符 → 富文本换行
+                                    _desc = skill_desc.replace("\\n", "<br/>").replace("\n", "<br/>")
+                                    tip_lines.append(f'<div style="color:#ccc; margin-top:2px;">{_desc}</div>')
                                 # 特定技能不做加成词条显示
                                 _skip_mod_skills = {"detection_alert", "detection_aiming", "planes_forsage_renewal", "maneuverability", "detection_direction", "depth_charge_bomber_alert", "submarine_danger_alert"}
                                 _trig_mods = (trigger or {}).get("modifiers", {}) or {}
@@ -1618,7 +1640,7 @@ class DetailPanel(QWidget):
                                     divider = trigger.get("dividerValue", 1.0)
                                     tmods = trigger.get("modifiers", {})
                                     if tmods:
-                                        cond_text = _format_trigger_cond(ttype, divider)
+                                        cond_text = _format_trigger_cond(ttype, divider, trigger)
                                         tip_lines.append(f'<div style="color:#ffa; margin-top:2px; font-style:italic;">◇ {cond_text}</div>')
                                         for _tl in _format_skill_mod(tmods, cur_shiptype):
                                             tip_lines.append(f'<div style="color:#aaa; margin-top:1px; padding-left:10px;">{_tl}</div>')
@@ -1642,26 +1664,8 @@ class DetailPanel(QWidget):
                                             _dur = trigger.get("duration", 0)
                                             if _dur > 0:
                                                 tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">被发现后 {_dur:.0f} 秒内，降低敌人对您的射击准度</div>')
-                                        # activationOnRibbons：显示勋带要求与持续时间
-                                        if ttype == "activationOnRibbons":
-                                            _rib_types = trigger.get("triggerRibbonsTypes", [])
-                                            _rib_num = trigger.get("triggerRibbonsNum", 1)
-                                            _dur = trigger.get("duration", 0)
-                                            _rib_labels = [_RIBBON_NAMES.get(str(t), f"勋带{t}") for t in _rib_types]
-                                            _cond_parts = []
-                                            if _rib_labels:
-                                                _cond_parts.append("获得" + "、".join(_rib_labels))
-                                            if _rib_num > 1:
-                                                _cond_parts[-1] += f" {_rib_num}次"
-                                            if _dur > 0:
-                                                tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">{"、".join(_cond_parts)}后 {_dur:.0f} 秒内</div>')
-                                        # activationOnBuoyancyState：显示深度状态
-                                        if ttype == "activationOnBuoyancyState":
-                                            _states = trigger.get("buoyancyStates", [])
-                                            if _states:
-                                                _depth_names = getattr(_NM, 'DEPTH_MAP', {})
-                                                _labels = [_depth_names.get(s, s) for s in _states]
-                                                tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">当战舰位于{"或".join(_labels)}时</div>')
+                                        # activationOnRibbons / activationOnBuoyancyState 的具体细节
+                                        # 已合并进 _format_trigger_cond 的触发条件行，避免重复显示
                                 tip_lines.append('</div>')
                                 btn.setToolTip("".join(tip_lines))
                                 btn.setToolTipDuration(10000)

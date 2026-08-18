@@ -390,8 +390,6 @@ CREATE TABLE IF NOT EXISTS ship_turret_arcs (
     dead_zone_json TEXT,              -- [[146.0, -146.0]] 水平死区
     pitch_dead_zones_json TEXT,       -- [[153.0, -153.0, 13.5, 30.0]] 俯仰受限区
     position_json TEXT,               -- [3.8, 1.0] 炮塔在舰体上的位置
-    mount_yaw REAL,                   -- 炮位安装朝向（绝对 0-360°，0=船首顺时针，取自 assets.bin 舰体骨架节点矩阵）
-    mount_pos_json TEXT,              -- [x, y, z] 炮位 3D 安装位置（assets.bin 舰体骨架节点位移）
     rotation_speed_h REAL,
     rotation_speed_v REAL,
     num_barrels INTEGER,

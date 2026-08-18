@@ -1,6 +1,7 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
   <qresource prefix="/">
+    <file>resources/database/assets_database.sql</file>
     <file>resources/database/database_new.sql</file>
     <file>resources/pictures/ammo_types/ammo_airsupport_depthcharge_0.png</file>
     <file>resources/pictures/ammo_types/ammo_airsupport_he_0.png</file>
