@@ -177,12 +177,14 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> dict:
     """解码 VisualPrototype（Korabli 实测 0x80B/条，blob 2）。
 
-    2026-08-03 真实数据逆向布局：
+    Korabli 布局（2026-08-18 实证，见 /memories/repo/korabli-visual-layout.md）：
       +0x00/+0x10 bbox1 min/max, +0x40/+0x50 bbox2 min/max
       +0x20 u64 geometry 资源ID（.geometry）, +0x28 u64 primitives 资源ID
-      +0x30 u64 render_sets_count, +0x38 u64 render_sets relptr（基准=blob 起点）
+      +0x30/+0x38 u64（Korabli 实测恒 0，勿用）
       +0x60 u64 geometry2, +0x68 u64 primitives2（第二组资源）
-      +0x70 u64 lods_count, +0x78 u64 lods relptr
+      +0x70 u64 render_sets_count, +0x78 u64 render_sets relptr（**record-relative**）
+    渲染集 OOL（步长 0x50）：+0x00 u32 shape.vertices 名 / +0x04 u32 indices 名 /
+    +0x08 u32 材质名 / +0x20 u64 material_mfm selfId。
     """
     if len(data) < 0x80:
         raise ParseError(f"VisualPrototype 数据过短: {len(data)}")
@@ -194,13 +196,11 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
             return ""
         if h == 0xFFFFFFFFFFFFFFFF:
             return "(none)"
-        idx = index.get(h)
-        return db.reconstruct_path(idx, index) if idx is not None else f"0x{h:016X}"
+        i = index.get(h)
+        return db.reconstruct_path(i, index) if i is not None else f"0x{h:016X}"
 
-    render_sets_count = B.read_u64(data, 0x30)
-    render_sets_rel = B.read_u64(data, 0x38)
-    lods_count = B.read_u64(data, 0x70)
-    lods_rel = B.read_u64(data, 0x78)
+    render_sets_count = B.read_u64(data, 0x70)
+    render_sets_rel = B.read_u64(data, 0x78)
 
     result = {
         "_type": "VisualPrototype",
@@ -219,84 +219,72 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
         "geometry_2_path": path_of(B.read_u64(data, 0x60)),
         "primitives_2_path": path_of(B.read_u64(data, 0x68)),
         "render_sets_count": render_sets_count,
-        "lods_count": lods_count,
     }
 
-    # render_sets / lods 指向的 OOL 数据：按 *.vertices 分组识别为结构项。
-    # render_sets 区 = [rs_pos, lod_pos)；lods 区 = [lod_pos, 下一记录 render_sets_rel)。
-    def _region(relptr: int) -> Optional[int]:
-        pos = relptr - record_base
-        return pos if 0 <= pos < len(data) else None
-
-    rs_pos = _region(render_sets_rel)
-    lod_pos = _region(lods_rel)
-
-    # 下一记录（data 中偏移 item_size=0x80 处）的 render_sets_rel 作为 lods 区结束
-    lod_end = len(data)
-    if len(data) >= 0x80 + 0x38 + 8:
-        nxt = B.read_u64(data, 0x80 + 0x38)
-        if nxt and nxt > lods_rel:
-            lod_end = min(nxt - record_base, len(data))
-
+    # 渲染集 OOL：relptr 为 **record-relative**（data 从记录起始切片 → 下标即 rel）。
+    # 区域边界 = 下一记录 +0x78 relptr（相邻记录渲染集区首尾相接），避免越界
+    # 扫到其他 visual 的渲染集。用字符串扫描解析，每项含 mfm 材质路径。
+    rs_pos = render_sets_rel if 0 < render_sets_rel < len(data) else None
+    rs_end = len(data)
+    if len(data) >= 0x80 + 0x78 + 8:
+        _nxt = B.read_u64(data, 0x80 + 0x78)
+        if _nxt and _nxt > render_sets_rel:
+            rs_end = 0x80 + _nxt
     if rs_pos is not None:
-        rs_end = lod_pos if (lod_pos is not None and lod_pos > rs_pos) else len(data)
-        result["render_sets_items"] = _ool_items(data, rs_pos, db, index,
-                                                 max_len=max(0, rs_end - rs_pos))
+        result["render_sets_items"] = _visual_render_sets(
+            data, rs_pos, db, index, end_pos=rs_end, max_items=render_sets_count)
     else:
         result["render_sets_items"] = []
-    if lod_pos is not None and lods_count:
-        result["lods_items"] = _ool_items(data, lod_pos, db, index,
-                                          max_len=max(0, lod_end - lod_pos))
-    else:
-        result["lods_items"] = []
 
-    # 粒子相关引用（render_sets / lods 区域内可反查的粒子路径）
-    _p_refs: List[str] = []
-    for _rpos, _rlen in ((rs_pos, rs_end - rs_pos if rs_pos is not None else 0),
-                         (lod_pos, lod_end - lod_pos if lod_pos is not None else 0)):
-        if _rpos is not None and _rlen > 0:
-            _p_refs.extend(_particle_refs(data, db, _rpos, _rlen))
-    result["particle_refs"] = sorted(set(_p_refs))
+    # 粒子相关引用（渲染集 OOL 区域内可反查的粒子路径）
+    if rs_pos is not None:
+        result["particle_refs"] = sorted(set(
+            _particle_refs(data, db, rs_pos, max(0, rs_end - rs_pos))))
+    else:
+        result["particle_refs"] = []
     return result
 
 
-def _ool_items(data: bytes, pos: int, db: PrototypeDatabase,
-               self_id_index: Dict[int, int], max_len: int = 0x300) -> List[dict]:
-    """把 render_sets / lods 的 OOL 数据解析为结构化项列表。
+def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
+                        self_id_index: Dict[int, int],
+                        end_pos: Optional[int] = None,
+                        max_items: int = 0) -> List[dict]:
+    """字符串扫描 OOL 渲染集区 → 结构化项列表。
 
-    每项以 '*.vertices' 标记起始，跟随 '*.indices'、'SHIPMAT*' 材质名、
-    '*_Jnt_BlendBone'/'Scene Root' 节点名；*.mfm 材质路径由 u64 selfId 反查。
-    （项边界依据 *.vertices 出现位置，节点归属可能跨项，为尽力解析。）
+    渲染集结构（Korabli 实测 0x50 步长）：+0x00 u32 shape.vertices 名 /
+    +0x04 u32 indices 名 / +0x08 u32 材质名 / +0x20 u64 material_mfm selfId。
+    扫描 '*.vertices' 即渲染集起点；只扫 [pos, end_pos)（下一记录 relptr 定界），
+    max_items（= +0x70 count，权威渲染集数）作为兜底截断，避免区域边界失效时
+    越界扫到其他记录。每个 shape 只保留首次出现。damage 标记：crack 损伤 /
+    低模 LOD 变体。
     """
     items: List[dict] = []
-    cur: Optional[dict] = None
-    end = min(pos + max_len, len(data))
-
-    for off in range(pos, end - 4, 4):
-        v = B.read_u32(data, off)
-        s = db.strings.get_string_by_id(v)
-        if not s:
+    seen: set = set()
+    end = min(end_pos or (pos + 0x4000), len(data))
+    for off in range(pos, end - 0x30, 4):
+        shape = db.strings.get_string_by_id(B.read_u32(data, off)) or ""
+        if not shape.endswith(".vertices"):
             continue
-        if s.endswith('.vertices'):
-            cur = {"shape_vertices": s, "shape_indices": "",
-                   "material": "", "material_mfm": "", "nodes": []}
-            items.append(cur)
-        elif cur is not None:
-            if s.endswith('.indices'):
-                cur["shape_indices"] = s
-            elif s.startswith('SHIPMAT'):
-                cur["material"] = s
-            elif s == 'Scene Root' or s.endswith('_Jnt_BlendBone'):
-                cur["nodes"].append(s)
-
-    # u64 → selfId 资源路径（材质 *.mfm）
-    for off in range(pos, end - 8, 8):
-        v = B.read_u64(data, off)
-        idx = self_id_index.get(v)
-        if idx is not None:
-            path = db.reconstruct_path(idx, self_id_index)
-            if path.endswith('.mfm') and items:
-                items[-1]["material_mfm"] = path
+        if shape in seen:
+            continue
+        seen.add(shape)
+        sind = db.strings.get_string_by_id(B.read_u32(data, off + 4)) or ""
+        mat = db.strings.get_string_by_id(B.read_u32(data, off + 8)) or ""
+        mfm_h = B.read_u64(data, off + 0x20)
+        smfm = ""
+        i = self_id_index.get(mfm_h)
+        if i is not None:
+            smfm = db.reconstruct_path(i, self_id_index)
+        damage = ("_crack_" in shape or "_lod" in shape or "Crack" in mat)
+        items.append({
+            "shape_vertices": shape,
+            "shape_indices": sind,
+            "material": mat,
+            "material_mfm": smfm,
+            "damage": damage,
+        })
+        if max_items and len(items) >= max_items:
+            break
     return items
 
 

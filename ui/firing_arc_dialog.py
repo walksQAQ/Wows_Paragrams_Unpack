@@ -301,7 +301,7 @@ class FiringArcCanvas(QWidget):
         """返回 {id(gun): (x, y)} 所有炮塔的显示位置。
 
         位置来源优先级：
-          1. mount_pos —— assets.bin 舰体骨架节点的 3D 安装位置 [x,y,z]
+          1. mount_pos —— assets_data.db skeleton_mounts 挂点解码的 3D 安装位置 [x,y,z]
              （x=左右舷，z=前后；副炮/主炮都有，最精确）；
           2. position —— 快照的 [col,row] 归一化坐标；
           3. 都没有（如未回填的副炮）按射界中心分左右舷、沿纵向均匀排布。
@@ -557,11 +557,51 @@ class FiringArcDialog(QDialog):
         wep_name = "鱼雷发射器" if slot_type == "torpedoes" else "炮塔"
         self.arc_text_lbl.setText(f"{wep_name} 射界: {front}°（前）/{back}°（后）")
 
+    def _ship_mount_yaw_map(self, ship_id: str) -> dict:
+        """直接从 assets_data.db 读该船炮位安装朝向：{hp_key: (yaw, [x,y,z])}。
+
+        数据源：assets_data.db 的 skeleton_mounts（HP_ 挂点解码值，加载数据时预提取），
+        经 ship_models.model_folder 定位舰体模型。按 ship_id 缓存。
+        无数据（未加载数据）返回 {}，射界回退默认朝向。
+        """
+        cache = getattr(self, "_mount_yaw_cache", None)
+        if cache is None:
+            cache = {}
+            self._mount_yaw_cache = cache
+        if ship_id in cache:
+            return cache[ship_id]
+        out: dict = {}
+        try:
+            from app.application import app as app_ctx
+            from services.assets_cache_service import AssetsCacheService
+            db = get_db()
+            row = db._conn.execute(
+                "SELECT model_folder FROM ship_models WHERE ship_id=? LIMIT 1",
+                (ship_id,)).fetchone()
+            stem = ""
+            if row:
+                try:
+                    stem = row["model_folder"] or ""
+                except (IndexError, TypeError, KeyError):
+                    stem = row[0] or ""
+            if stem:
+                c = AssetsCacheService()
+                mounts = c.get_skeleton_mounts(app_ctx.ctx.bin_folder or "", stem)
+                for hp, m in mounts.items():
+                    yaw = math.degrees(math.atan2(m[0, 2], m[2, 2])) % 360.0
+                    out[hp] = (round(yaw, 1),
+                               [round(m[0, 3], 4), round(m[1, 3], 4), round(m[2, 3], 4)])
+        except Exception:
+            out = {}
+        cache[ship_id] = out
+        return out
+
     def open_for(self, ship_id: str, slot_type: str = ""):
         """加载指定舰船与武器槽位的射界（供详情面板射界按钮调用）。
 
         弹窗直接绑定当前舰船，无需舰船筛选或武器类型切换；
         slot_type 指定时显示该武器，否则显示第一个有数据的武器。
+        炮位安装朝向/位置从 assets_data.db 直接读取（mount_yaw/mount_pos 不再回填）。
         """
         if not ship_id:
             return
@@ -573,15 +613,18 @@ class FiringArcDialog(QDialog):
             self.info.setText(f"读取射界失败: {exc}")
             return
         if not rows:
-            self.info.setText("该舰船暂无射界数据（重新加载游戏数据后会自动回填）")
+            self.info.setText("该舰船暂无射界数据（请先执行「加载数据」）")
             self.canvas.set_guns([])
             self.title_lbl.setText(f"{self._resolve_ship_name(ship_id)} · 无射界数据")
             return
         self._arcs_by_slot = {}
+        mount_map = self._ship_mount_yaw_map(ship_id)
         for r in rows:
             slot = r.get("slot_type", "")
+            hp_key = r.get("hp_key", "")
+            myaw, mpos = mount_map.get(hp_key, (None, None))
             self._arcs_by_slot.setdefault(slot, []).append({
-                "hp_key": r.get("hp_key", ""),
+                "hp_key": hp_key,
                 "gun_index": r.get("gun_index", ""),
                 "gun_name": r.get("gun_name", ""),
                 "horiz_sector": _parse_list(r.get("horiz_sector_json")),
@@ -589,8 +632,8 @@ class FiringArcDialog(QDialog):
                 "dead_zones": _parse_list(r.get("dead_zone_json"), []),
                 "pitch_dead_zones": _parse_list(r.get("pitch_dead_zones_json"), []),
                 "position": _parse_list(r.get("position_json")),
-                "mount_yaw": r.get("mount_yaw"),
-                "mount_pos": _parse_list(r.get("mount_pos_json")),
+                "mount_yaw": myaw,
+                "mount_pos": mpos,
                 "rotation_speed_h": r.get("rotation_speed_h"),
                 "rotation_speed_v": r.get("rotation_speed_v"),
                 "num_barrels": r.get("num_barrels"),

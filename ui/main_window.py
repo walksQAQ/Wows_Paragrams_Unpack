@@ -270,15 +270,16 @@ class MainWindow(QMainWindow):
                     _w.close()
                 except Exception:
                     pass
-        # 工具栏的穿深计算器
+        # 工具栏的穿深计算器 + 3D 模型查看器
         _tb = getattr(self, "toolbar", None)
         if _tb is not None:
-            _bd = getattr(_tb, "_ballistics_dialog", None)
-            if _bd is not None:
-                try:
-                    _bd.close()
-                except Exception:
-                    pass
+            for _attr in ("_ballistics_dialog", "_geometry_viewer"):
+                _w = getattr(_tb, _attr, None)
+                if _w is not None:
+                    try:
+                        _w.close()
+                    except Exception:
+                        pass
         super().closeEvent(event)
 
     def _center_window(self) -> None:
