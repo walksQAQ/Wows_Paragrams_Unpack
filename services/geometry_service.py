@@ -248,6 +248,9 @@ class GeometryService:
         self._global_rs_index: dict | None = None
         #: 字符串表 {hash: name} dict（加速渲染集扫描，避免逐次哈希查表）
         self._strings_dict_cache: dict | None = None
+        #: shape 名哈希表（**只从 assets_data.db 读取**）{hash: name} + 已尝试标记
+        self._shape_names_cache: dict | None = None
+        self._shape_names_tried = False
         #: assets_data.db 材质贴图映射缓存 {mfm_path: diffuse_base}（数据库优先，一次加载）
         self._mfm_textures_db: dict | None = None
     @classmethod
@@ -460,9 +463,11 @@ class GeometryService:
 
             # 合并该部件的全部 primitive → 按材质拆分的 HullMesh（不同模型不同贴图）
             if parsed.primitives:
-                # 渲染集已从数据库读取（ship_rs 含 LOD/crack 的 damage 标记），
-                # 不再从 assets.bin 读字符串表；sdict 兜底置 None
-                sdict = None
+                # ship_rs 含 LOD/crack 的 damage 标记，但部分船的 LOD/crack 渲染集
+                # 不在数据库（如 ST 服 Yamato MidFront 无 LOD1/LOD3 visual 记录）——
+                # 用 shape_names 表（populate 时写入 DB）按名兜底跳过 _lod/_crack_；
+                # ★ 只从数据库读取，绝不现场读 assets.bin
+                sdict = self._shape_names_sdict()
                 groups = self._split_primitives_by_material(parsed.primitives, ship_rs, sdict)
                 if groups:
                     for mat_key, g in groups.items():
@@ -1059,8 +1064,9 @@ class GeometryService:
         meshes: list = []
         # 挂载模型也按船体逻辑：渲染集（visual→mfm→贴图）+ LOD/低模/wire 兜底跳过
         mount_rs = self._ship_render_sets(folder)
-        # 渲染集已从数据库读取（mount_rs 含 damage 标记），不再从 assets.bin 读字符串表
-        sdict = None
+        # mount_rs 含 damage 标记，但部分 LOD/crack 渲染集不在数据库时用
+        # shape_names 表（DB）按名兜底跳过；★ 只从数据库读取，绝不现场读 assets.bin
+        sdict = self._shape_names_sdict()
         main_tex = ("", b"")
         first_geom_path = entries[0].path
         for e in entries:
@@ -1313,10 +1319,15 @@ class GeometryService:
         """
         mat_by_mid: dict = {}
         damage_mids: set = set()
+        norm_to_rs: dict = {}   # 归一化 shape stem → 渲染集（模糊兜底：处理视觉/几何笔误）
         for mid, rs in global_rs.items():
             mat_by_mid[mid] = (rs.get('material') or '', rs.get('mfm') or '')
             if rs.get('damage'):
                 damage_mids.add(mid)
+                continue
+            nk = GeometryService._norm_shape_stem(rs.get('shape') or '')
+            if nk and nk not in norm_to_rs:
+                norm_to_rs[nk] = rs
         groups: dict = {}
         for p in primitives:
             if p.mapping_id in damage_mids:
@@ -1328,12 +1339,41 @@ class GeometryService:
                     _name = sdict.get(p.mapping_id) or ''
                     if '_lod' in _name or '_crack_' in _name or 'Crack' in _name:
                         continue
+                    # 模糊兜底：归一化 shape 名匹配渲染集（游戏数据笔误，
+                    # 如 JGA180 视觉写 TurretShapeff.vertices、几何是 TurretShape.vertices）
+                    if _name:
+                        fuz = norm_to_rs.get(GeometryService._norm_shape_stem(_name))
+                        if fuz is not None:
+                            mat = fuz.get('material') or ''
+                            mfm = fuz.get('mfm') or ''
+                            g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
+                            g['prims'].append(p)
+                            continue
                 groups.setdefault(None, {'material': None, 'mfm': '', 'prims': []})['prims'].append(p)
             else:
                 mat, mfm = entry
                 g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
                 g['prims'].append(p)
         return groups
+
+    @staticmethod
+    def _norm_shape_stem(name: str) -> str:
+        """归一化 shape 名（去 .vertices 后缀 + 去尾部重复字母）。
+
+        处理游戏渲染集/几何 shape 名笔误差异（如 `TurretShapeff.vertices` 是
+        `TurretShape.vertices` 双 f 笔误）——去尾部连续重复字母后两者归一相同，
+        供 _split_primitives_by_material 模糊兜底匹配。
+        """
+        stem = name[:-len('.vertices')] if name.endswith('.vertices') else name
+        # 仅当尾部连续相同字符 >=2 时剥掉整个 run（TurretShapeff → TurretShape；
+        # 单个尾部字符如 Shape 的 e 不剥）
+        if len(stem) >= 2 and stem[-1] == stem[-2]:
+            ch = stem[-1]
+            i = len(stem)
+            while i > 0 and stem[i - 1] == ch:
+                i -= 1
+            return stem[:i]
+        return stem
 
     def _strings_dict(self, db) -> dict:
         """字符串表 → {hash: name} Python dict（一次构建，O(1) 查询）。
@@ -1373,6 +1413,26 @@ class GeometryService:
         except Exception:  # noqa: BLE001
             pass
         self._strings_dict_cache = out
+        return out
+
+    def _shape_names_sdict(self) -> dict:
+        """渲染 shape 名哈希表 {hash32: name}（**只从 assets_data.db 读取**）。
+
+        populate 时把 assets.bin 字符串表里 *.vertices 的名字哈希写入 shape_names 表；
+        显示时 _split_primitives_by_material 用它按名跳过缺失渲染集的 LOD/crack 低模。
+        数据库缺失/异常返回空 dict（= 不兜底），**绝不现场读 assets.bin**。
+        """
+        if self._shape_names_tried:
+            return self._shape_names_cache or {}
+        self._shape_names_tried = True
+        out: dict = {}
+        try:
+            from services.assets_cache_service import AssetsCacheService
+            c = AssetsCacheService()
+            out = c.get_shape_names(app_ctx.ctx.bin_folder or "") or {}
+        except Exception:  # noqa: BLE001
+            out = {}
+        self._shape_names_cache = out
         return out
 
     def _ensure_visual_geom_index(self):
