@@ -482,6 +482,43 @@ class GeometryViewport(QOpenGLWidget):
                             flip = np.array([-1.0, -1.0, 1.0], dtype=np.float32)
                 except Exception:  # noqa: BLE001
                     pass
+            # ── 逐三角形「质心向外」定向（修复甲板/水平面暗面） ─────────
+            # 上面的 mesh 级 flip 只翻 Z，Y 轴法线（甲板/船底等水平面）保持原朝向；
+            # Korabli 数据绕序不统一时甲板法线常朝下 → 只受环境光 → 看似"面缺失"。
+            # 这里对仍朝内的三角形（渲染法线·(三角形中心-质心)<0）复制顶点并翻转法线，
+            # 使每面朝外：甲板朝上、侧舷朝外，均被光源照亮。
+            try:
+                tri = idx.reshape(-1, 3)
+                v0 = pos0[tri[:, 0]]; v1 = pos0[tri[:, 1]]; v2 = pos0[tri[:, 2]]
+                ctr = (v0 + v1 + v2) / 3.0
+                centroid = pos0.mean(axis=0)
+                outward = ctr - centroid
+                on = np.linalg.norm(outward, axis=1); on[on < 1e-8] = 1.0
+                outward = outward / on[:, None]
+                ncur = n0[tri[:, 0]] * flip
+                inward = (ncur * outward).sum(1) < 0
+                if inward.any() and not inward.all():
+                    btri = tri[inward]
+                    nb = btri.shape[0]
+                    src = btri.ravel()
+                    extra_pos = pos0[src]
+                    extra_n = -n0[src]
+                    extra_idx = (np.arange(nb * 3).reshape(-1, 3)
+                                 + len(pos0)).astype(np.uint32)
+                    new_idx = idx.copy()
+                    bad_flat = np.flatnonzero(inward)
+                    for j, t in enumerate(bad_flat):
+                        new_idx[t * 3:(t + 1) * 3] = extra_idx[j]
+                    n_old = len(pos0)
+                    pos0 = np.vstack([pos0, extra_pos])
+                    n0 = np.vstack([n0, extra_n])
+                    if colors0 is not None and colors0.shape[0] == n_old:
+                        colors0 = np.vstack([colors0, colors0[src]])
+                    if uvs0 is not None and uvs0.shape[0] == n_old:
+                        uvs0 = np.vstack([uvs0, uvs0[src]])
+                    idx = new_idx
+            except Exception:  # noqa: BLE001
+                pass
             # ─────────────────────────────────────────────
             p = np.ascontiguousarray(pos0 * np.array([1.0, 1.0, -1.0], dtype=np.float32))
             n = np.ascontiguousarray(n0 * flip)

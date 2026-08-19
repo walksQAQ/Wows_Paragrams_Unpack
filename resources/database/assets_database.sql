@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS material_full (
     PRIMARY KEY(bin_folder, mfm_path)
 );
 
+-- *.vertices 名字哈希 → 名字（LOD/crack 兜底跳过用；populate 时从 assets.bin 字符串表
+-- 提取入库，显示时只从本库读取，绝不现场读 assets.bin）
+CREATE TABLE IF NOT EXISTS shape_names (
+    bin_folder TEXT NOT NULL,
+    hash INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY(bin_folder, hash)
+);
+CREATE INDEX IF NOT EXISTS idx_sn_bin ON shape_names(bin_folder);
+
 -- schema 版本记录（与 database_new.sql 的 meta_schema_version 规则一致：
 -- 低版本时 initialize 重建全表，随后记录当前版本号）
 CREATE TABLE IF NOT EXISTS meta_schema_version (

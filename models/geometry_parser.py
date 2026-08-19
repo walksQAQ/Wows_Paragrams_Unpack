@@ -466,11 +466,18 @@ def parse_geometry(data: bytes, file_path: str = "") -> ParsedGeometry:
 
 
 def _build_primitives(geom: ParsedGeometry):
-    """把 verticesMapping[i] 与 indicesMapping[i] 按数组索引配对成可渲染网格。"""
+    """把 verticesMapping 与 indicesMapping 配对成可渲染网格。
+
+    ⚠️ BigWorld(.object) 配对：顶点 block 与索引 block 按 **unknown 字段（=td）相等**
+    配对（参考 gmConverter3D BigWorldReader.object），**不能用数组下标**——block 顺序
+    不一致时（如 JGA180 前两个 16422/16411 交换）按下标会错配 → 顶点/索引串位 → 面全乱。
+    已用索引 block 不重复使用；找不到匹配时回退按下标（兼容旧文件）。
+    """
     vmaps = geom.vertices_mapping
     imaps = geom.indices_mapping
     vbufs = geom.vertex_buffers
     ibufs = geom.index_buffers
+    used_imaps: set = set()   # 已配对的索引 mapping 下标
 
     for i, vm in enumerate(vmaps):
         if vm.merged_buffer_index >= len(vbufs):
@@ -486,15 +493,24 @@ def _build_primitives(geom: ParsedGeometry):
         vraw = vb.data[v_start:v_start + v_count]
         positions, normals, uvs = unpack_vertices(vraw, vb.format_name)
 
-        indices: np.ndarray | None = None
-        if i < len(imaps):
+        # 索引 mapping：优先按 unknown(td) 字段配对（BigWorld 权威方式）
+        im = None
+        for j, imj in enumerate(imaps):
+            if j in used_imaps:
+                continue
+            if imj.packed_texel_density == vm.packed_texel_density:
+                im = imj
+                used_imaps.add(j)
+                break
+        if im is None and i < len(imaps):   # 兜底：按下标
             im = imaps[i]
-            if im.merged_buffer_index < len(ibufs):
-                ib = ibufs[im.merged_buffer_index]
-                i_start = im.items_offset
-                i_count = im.items_count
-                if i_start + i_count <= ib.data.size:
-                    indices = ib.data[i_start:i_start + i_count]
+        indices: np.ndarray | None = None
+        if im is not None and im.merged_buffer_index < len(ibufs):
+            ib = ibufs[im.merged_buffer_index]
+            i_start = im.items_offset
+            i_count = im.items_count
+            if i_start + i_count <= ib.data.size:
+                indices = ib.data[i_start:i_start + i_count]
 
         # 过滤含越界顶点的索引（部分 wire/损坏网格索引越界，直接渲染致错乱/扭曲；
         # 按整三角形丢弃，保留有效部分）
@@ -509,24 +525,9 @@ def _build_primitives(geom: ParsedGeometry):
                 else:
                     indices = indices[~bad]
 
-        # 过滤跨模型的长边三角形（面穿帮/顶点错位：正常网格三角形不会跨越
-        # 包围盒对角的一半，如 JGA180 TurretShape 坏面把模型两端顶点相连）
-        if indices is not None and indices.size and indices.size % 3 == 0 \
-                and positions is not None and positions.shape[0] > 0:
-            tri = indices.reshape(-1, 3)
-            if len(tri) >= 4:
-                v0 = positions[tri[:, 0]]
-                v1 = positions[tri[:, 1]]
-                v2 = positions[tri[:, 2]]
-                emax = np.maximum(np.maximum(
-                    np.linalg.norm(v1 - v0, axis=1),
-                    np.linalg.norm(v2 - v1, axis=1)),
-                    np.linalg.norm(v0 - v2, axis=1))
-                diag = np.linalg.norm(positions.max(0) - positions.min(0))
-                if diag > 1e-6:
-                    keep = emax <= diag * 0.5
-                    if not keep.all():
-                        indices = indices[keep.repeat(3)]
+        # ⚠️ 长边三角形过滤已移除（2026-08-19）：它按 边长<=包围盒对角线*0.5 删除三角形，
+        # 会误删「甲板主体大平面」这类跨度大的简单面（Yamato 甲板缺失根因）。
+        # 如后续需清理 JGA180 TurretShape 类飞线，请用「细长三角形」判据而非绝对边长。
 
         if indices is None or indices.size == 0:
             # 无索引：非索引渲染（GL_POINTS 等）留空，交由调用方处理

@@ -29,7 +29,9 @@ from utils.path_utils import get_data_dir
 #: assets_data.db schema 版本（与 database_new.sql 的 DB_SCHEMA_VERSION 规则一致：
 #: 库内 meta_schema_version 记录已应用版本，低于本值则 initialize 重建全表）
 #: v2（2026-08-19）：skeleton_bones 增加解码列（pos/四元数/scale）
-ASSETS_SCHEMA_VERSION = 3
+#: v4（2026-08-19）：渲染集按 count(+0x70) 精确解析（根治跨模型串用）；新增 shape_names 表
+#:    （*.vertices 名哈希→名，LOD/crack 兜底用；显示时只读 DB，绝不现场读 assets.bin）
+ASSETS_SCHEMA_VERSION = 4
 
 
 class AssetsCacheService:
@@ -185,6 +187,13 @@ class AssetsCacheService:
             indexed TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(bin_folder, mfm_path)
         );
+        CREATE TABLE IF NOT EXISTS shape_names (
+            bin_folder TEXT NOT NULL,
+            hash INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY(bin_folder, hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sn_bin ON shape_names(bin_folder);
         CREATE TABLE IF NOT EXISTS meta_schema_version (
             version INTEGER PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now','localtime'))
@@ -251,7 +260,7 @@ class AssetsCacheService:
 
         try:
             counts = {"skeleton": 0, "render_sets": 0, "mfm_textures": 0,
-                      "material_full": 0, "skeleton_bones": 0}
+                      "material_full": 0, "skeleton_bones": 0, "shape_names": 0}
             # 共用：字符串 dict + self_id 索引（渲染集/材质解析都要用）
             sdict = self._strings_dict(db)
             self_id_idx = db.build_self_id_index()
@@ -265,6 +274,8 @@ class AssetsCacheService:
                 "DELETE FROM mfm_textures WHERE bin_folder=?", (bin_folder,))
             self._conn.execute(
                 "DELETE FROM material_full WHERE bin_folder=?", (bin_folder,))
+            self._conn.execute(
+                "DELETE FROM shape_names WHERE bin_folder=?", (bin_folder,))
             self._conn.execute(
                 "DELETE FROM meta WHERE bin_folder=?", (bin_folder,))
             self._conn.execute(
@@ -382,8 +393,9 @@ class AssetsCacheService:
                         off = BLOB_HEADER_SIZE + ri * isize
                         if off + 0x80 > len(data):
                             break
+                        cnt = struct.unpack_from('<Q', data, off + 0x70)[0]
                         rel = struct.unpack_from('<Q', data, off + 0x78)[0]
-                        if not rel:
+                        if not rel or cnt <= 0:
                             continue
                         geoms = []
                         for foff in (0x20, 0x60):
@@ -393,19 +405,23 @@ class AssetsCacheService:
                                 geoms.append(gp)
                         if not geoms:
                             continue
-                        end = off + rel + 0x10000
-                        if off + isize + 0x78 + 8 <= len(data):
-                            nxt = struct.unpack_from('<Q', data, off + isize + 0x78)[0]
-                            if nxt and nxt > rel:
-                                end = off + isize + nxt
-                        end = min(end, len(data))
-                        seg = data[off + rel:end]
-                        for o in range(0, len(seg) - 0x30, 4):
-                            shp = sdict.get(struct.unpack_from('<I', seg, o)[0]) or ''
+                        # 渲染集数组：+0x78 rel 为 **record-relative**（相对记录起始），
+                        # 数组从 rel+0x40 起、每项 0x50 步长；+0x70 count 为权威条数。
+                        # ⚠️ 绝不用「下一记录 rel」或 +0x10000 兜底界定区域——ST 服 visual
+                        # 记录乱序时渲染集池按**原始记录顺序**排列，按当前下标越界会读到
+                        # 相邻模型（别的船）的渲染集 → 跨模型串用（如 SternShape 配到
+                        # Amagi_Hull / JSB040_Hull）。按 count 精确截断即可根治。
+                        # count 可靠性：全库实证 count+1 项恒不是渲染集（0 条漏项）。
+                        base = off + rel + 0x40
+                        if base + cnt * 0x50 > len(data):
+                            continue
+                        for k in range(cnt):
+                            o = base + k * 0x50
+                            shp = sdict.get(struct.unpack_from('<I', data, o)[0]) or ''
                             if not shp.endswith('.vertices'):
                                 continue
-                            mat = sdict.get(struct.unpack_from('<I', seg, o + 8)[0]) or ''
-                            mfm_h = struct.unpack_from('<Q', seg, o + 0x20)[0]
+                            mat = sdict.get(struct.unpack_from('<I', data, o + 8)[0]) or ''
+                            mfm_h = struct.unpack_from('<Q', data, o + 0x20)[0]
                             mfm = self._path_of(mfm_h, db, self_id_idx)
                             damage = int('_crack_' in shp or '_lod' in shp
                                          or 'Crack' in mat)
@@ -420,6 +436,17 @@ class AssetsCacheService:
                     "VALUES (?,?,?,?,?,?)", rs_rows)
             counts["render_sets"] = len(rs_rows)
             del rs_rows
+
+            # 2.5) shape 名哈希表（*.vertices：mapping_id → 名，LOD/crack 兜底跳过用）
+            #      ★ 显示时只从本库读取，绝不现场读 assets.bin 字符串表
+            sn_rows = [(bin_folder, h, nm) for h, nm in sdict.items()
+                       if nm.endswith(".vertices")]
+            if sn_rows:
+                self._conn.executemany(
+                    "INSERT OR REPLACE INTO shape_names (bin_folder, hash, name) "
+                    "VALUES (?,?,?)", sn_rows)
+            counts["shape_names"] = len(sn_rows)
+            del sn_rows
 
             _p(f"解析材质（{len(mfm_files)} 个 mfm 文件）...")
 
@@ -624,6 +651,19 @@ class AssetsCacheService:
                 })
         except sqlite3.OperationalError:
             out = []
+        return out
+
+    def get_shape_names(self, bin_folder: str) -> dict:
+        """*.vertices 名字哈希 → 名字（LOD/crack 兜底跳过用；**只从 DB 读取**）。"""
+        out: dict = {}
+        try:
+            rows = self._conn.execute(
+                "SELECT hash, name FROM shape_names WHERE bin_folder=?",
+                (bin_folder,)).fetchall()
+            for r in rows:
+                out[r["hash"]] = r["name"]
+        except sqlite3.OperationalError:
+            out = {}
         return out
 
     def get_mfm_textures(self, bin_folder: str) -> dict:
