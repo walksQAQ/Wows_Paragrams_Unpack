@@ -1,12 +1,16 @@
 """
-项目元数据。
+项目元数据（模板）。
+
+构建时由 scripts/gen_version.py 依据 Git Tag 生成 __about__.py：
+仅替换 {version} 占位符，其余元数据原样保留。
+请勿手工修改生成物 __about__.py；改动请编辑本模板。
 
 作者: walksQAQ
 仓库: https://github.com/walksQAQ/Wows_Paragrams_Unpack
 """
 
 __title__ = "Wows/Korabli Paragrams Unpack"
-__version__ = "3.2.2-fix"
+__version__ = "{version}"
 __description__ = "World of Warships / Mir Korabli 游戏数据分析工具"
 __author__ = "walksQAQ"
 __author_email__ = ""
