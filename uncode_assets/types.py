@@ -38,8 +38,8 @@ KORABLI_TYPES: Tuple[PrototypeType, ...] = (
     # 字段 8 字节对齐，names_ptr@+0x18，与 WoWS 的 0x78 不同。
     PrototypeType("MaterialPrototype", 0x5069C471, 0x88, 0, "材质属性表（Korabli 实测 0x88）", (".mfm",)),
     PrototypeType("SkeletonPrototype", 0xD9BB9F4A, 0x40, 1, "Lesta 骨架系统（Korabli 独有）", (".visual",)),
-    # Visual/Model 步长均为 2026-08-03 Korabli 正式服实测（与 WoWS 0x70/0x28 不同）
-    PrototypeType("VisualPrototype", 0x480DC57B, 0x80, 2, "渲染集合（Korabli 实测 0x80；geometry/primitives/render_sets/lods 已结构化）", (".visual",)),
+    # Visual/Model 步长均为 2026-08-19 Korabli 重新实测（Visual 0x40，非 0x80）
+    PrototypeType("VisualPrototype", 0x480DC57B, 0x40, 2, "渲染集合（Korabli 实测 0x40；geometry@+0x20/primitives@+0x28/render_sets count@+0x30 rel@+0x38）", (".visual",)),
     PrototypeType("ModelPrototype", 0xA9576F28, 0x20, 3, "模型引用（Korabli 实测 0x20；model/visual 资源路径已解码）", (".model",)),
     PrototypeType("ModelFbxPrototype", 0xDF80CF54, 0x10, 4, "FBX 模型（Korabli 独有，空 blob）", (".model_fbx",)),
     PrototypeType("EffectPrototype", 0xEB23E0AF, 0x10, 5, "粒子效果"),

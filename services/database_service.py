@@ -745,6 +745,29 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             return []
 
+    def load_ship_snapshot(self, ship_id: str,
+                           version_code: str = "") -> Optional[dict]:
+        """读取指定舰船实体的规范化 JSON 快照（entity_snapshots 表）。
+
+        DB-first：3D 查看器的装甲厚度 / HP 挂载引用在显示阶段只走数据库，
+        不读 data/split JSON（快照在加载数据入库时写入）。缺失返回 None。
+        """
+        if not version_code:
+            version_code = self.get_latest_version_code() or ""
+        if not version_code:
+            return None
+        try:
+            cur = self._conn.execute(
+                "SELECT data_json FROM entity_snapshots "
+                "WHERE version_code=? AND entity_id=? AND entity_type='ship'",
+                (version_code, ship_id))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return json.loads(row["data_json"])
+        except (sqlite3.OperationalError, json.JSONDecodeError):
+            return None
+
     # ── 查询 ───────────────────────────────────────────────
 
     def get_entity(self, category: str, key: str,
