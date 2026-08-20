@@ -1,0 +1,23 @@
+name: Create Release on Tag Push
+
+on:
+  push:
+    tags:
+      - 'v*'  # 匹配 v3.2.3-beta1, v1.0.0 等
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          generate_release_notes: true  # 自动生成 Commit 变更日志
+          prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
