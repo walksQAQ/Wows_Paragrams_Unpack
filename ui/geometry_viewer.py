@@ -7,6 +7,8 @@ bus.log_message + theme.bind。含装甲厚度图例与显示开关。
 
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import Qt, QSettings, Signal, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import (
@@ -85,6 +87,8 @@ class GeometryViewerDialog(QDialog):
 
     #: 记录加载状态供外部查询
     ship_loaded = Signal(str)
+    #: 后台加载进度（0..100, 消息, 代数）→ 主线程更新右侧进度条
+    progress_changed = Signal(float, str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,13 +107,19 @@ class GeometryViewerDialog(QDialog):
         self._pending_ship_id = None
         self._restored_geometry = self._restore_geometry()
 
+        # ── 生命周期 / 取消状态 ──
+        self._closed = False          # 关闭标记：关闭后丢弃一切过期任务回调
+        self._load_generation = 0     # 加载代数：新任务取代旧任务
+        self._loading_ships = False   # 舰船列表后台任务进行中
+        self._ships_task = None       # 舰船列表任务句柄（可取消）
+        self._load_task = None        # 舰船模型加载任务句柄（可取消）
+
         self._build_ui()
         theme.bind(self, "QDialog { background: @panel_bg@; }")
         bus.log_message.connect(self._on_log)
 
-        # 舰船列表后台加载
-        run_async(self._load_ships_task, on_finished=self._on_ships_loaded,
-                  on_error=self._on_ships_error)
+        # 舰船列表后台加载（保存句柄，关闭时可取消）
+        self._start_ships_load()
 
     # ── UI 构建 ──────────────────────────────────────────
 
@@ -189,6 +199,8 @@ class GeometryViewerDialog(QDialog):
         theme.bind(self.progress, "QProgressBar { border:1px solid #0078d4; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
                     "QProgressBar::chunk { background:#0078d4; }")
         pl.addWidget(self.progress)
+        # 后台线程经信号投递进度 → 主线程更新进度条
+        self.progress_changed.connect(self._on_progress_changed)
 
         sec_style = "color:@text_muted@; font-size:11px; font-weight:bold; background:transparent; border:none; padding-top:4px;"
         cb_style = "QCheckBox { color:@text@; font-size:12px; spacing:6px; }"
@@ -524,10 +536,23 @@ class GeometryViewerDialog(QDialog):
             self._service = GeometryService.instance()
         return self._service
 
+    def _start_ships_load(self):
+        """后台加载舰船列表（幂等：已有结果/已在加载则跳过；保存句柄可取消）。"""
+        if self._ships or self._loading_ships:
+            return
+        self._loading_ships = True
+        self.ship_status.setText("正在加载舰船列表...")
+        self._ships_task = run_async(self._load_ships_task,
+                                     on_finished=self._on_ships_loaded,
+                                     on_error=self._on_ships_error)
+
     def _load_ships_task(self):
         return self._get_service().list_ships()
 
     def _on_ships_loaded(self, ships):
+        self._loading_ships = False
+        if self._closed:
+            return  # 窗口已关闭：丢弃过期列表结果
         self._ships = ships or []
         self.ship_combo.clear()
         for s in self._ships:
@@ -559,6 +584,8 @@ class GeometryViewerDialog(QDialog):
 
     def _try_load_pending(self):
         """舰船列表就绪且空闲时，载入挂起的舰船。"""
+        if self._closed:
+            return
         if not self._pending_ship_id or self._loading or not self._ships:
             return
         ship = next((s for s in self._ships if s.game_key == self._pending_ship_id), None)
@@ -572,6 +599,9 @@ class GeometryViewerDialog(QDialog):
         self._on_load()
 
     def _on_ships_error(self, err):
+        self._loading_ships = False
+        if self._closed:
+            return
         self.ship_status.setText(f"加载舰船列表失败: {err}")
 
     # ── 加载舰船 ─────────────────────────────────────────
@@ -605,6 +635,11 @@ class GeometryViewerDialog(QDialog):
         if ship is None:
             self.stats_label.setText("未找到匹配的舰船")
             return
+        # 取消旧加载任务（若仍在运行），并让旧回调因代数不匹配而失效
+        if self._load_task is not None:
+            self._load_task.cancel()
+        self._load_generation += 1
+        gen = self._load_generation
         self._loading = True
         self.btn_load.setEnabled(False)
         self.progress.setVisible(True)
@@ -612,23 +647,42 @@ class GeometryViewerDialog(QDialog):
         self.stats_label.setText(f"正在加载 {ship.display_name}...")
         self._set_loading_overlay(True, f"正在加载 {ship.display_name}...")
 
-        def _work():
+        def _work(cancel_event):
             geom = self._get_service().load_ship(
                 ship,
-                progress_cb=lambda p, m: self._on_progress(p, m),
+                progress_cb=lambda p, m: self._on_progress(p, m, gen),
+                cancel_event=cancel_event,
             )
             # 后台构建装甲聚合场景（拾取/描边/层级数据源）
             from models.armor_scene import ArmorScene
-            scene = ArmorScene.build(geom.armor_meshes)
+            scene = ArmorScene.build(geom.armor_meshes, cancel_event=cancel_event)
             return geom, scene
 
-        run_async(_work, on_finished=self._on_ship_loaded, on_error=self._on_ship_error)
+        self._load_task = run_async(
+            _work,
+            on_finished=lambda r: self._on_ship_loaded(r, gen),
+            on_error=lambda e: self._on_ship_error(e, gen),
+            cancel_event=threading.Event(),
+        )
 
-    def _on_progress(self, pct, msg):
-        # 后台线程 → 主线程（queued signal）
+    def _on_progress(self, pct, msg, gen):
+        # 后台线程调用：经信号投递到主线程更新进度条；关闭或旧任务不再刷
+        if self._closed or gen != self._load_generation:
+            return
+        self.progress_changed.emit(float(pct), msg, gen)
         bus.log_message.emit(f"🔧 3D: {msg} ({pct:.0f}%)")
 
-    def _on_ship_loaded(self, result):
+    def _on_progress_changed(self, pct: float, msg: str, gen: int) -> None:
+        """主线程更新进度条（由后台线程经信号投递，带代数防过期覆盖）。"""
+        if self._closed or gen != self._load_generation:
+            return
+        pct = max(0.0, min(100.0, float(pct)))
+        self.progress.setValue(int(pct))
+        self.progress.setFormat(f"{msg}  {pct:.0f}%")
+
+    def _on_ship_loaded(self, result, gen):
+        if self._closed or gen != self._load_generation:
+            return  # 窗口已关闭或已被新任务取代：丢弃过期结果
         geom, scene = result
         self._loading = False
         self.btn_load.setEnabled(True)
@@ -692,7 +746,9 @@ class GeometryViewerDialog(QDialog):
         # 加载期间又收到新的 open_ship 请求 → 现在兑现
         self._try_load_pending()
 
-    def _on_ship_error(self, err):
+    def _on_ship_error(self, err, gen):
+        if self._closed or gen != self._load_generation:
+            return  # 窗口已关闭或已被新任务取代：丢弃过期结果
         self._loading = False
         self.btn_load.setEnabled(True)
         self.progress.setVisible(False)
@@ -721,7 +777,32 @@ class GeometryViewerDialog(QDialog):
             self.move(geo.x() + (geo.width() - self.width()) // 2,
                       geo.y() + (geo.height() - self.height()) // 2)
 
+    def showEvent(self, event):
+        # 重新显示：清除关闭状态，按需重载舰船列表/兑现挂起请求
+        self._closed = False
+        self._start_ships_load()
+        self._try_load_pending()
+        super().showEvent(event)
+
     def closeEvent(self, event):
+        self._closed = True
+        # 后台任务收尾：舰船列表快速查询用协作式取消；模型加载是只读/内存型，
+        # 用 kill() 强制终止（无论进度如何立即结束），避免关闭后仍在后台解析。
+        if self._ships_task is not None:
+            self._ships_task.cancel()
+        if self._load_task is not None:
+            self._load_task.kill(timeout=1.0)
+        self._load_task = None
+        self._ships_task = None
+        # 释放服务层缓存的本次加载重内存（挂载几何/贴图/材质/快照等），
+        # 否则关闭后内存仍被单例 GeometryService 占用
+        if self._service is not None:
+            self._service.release_load_caches()
+        # 舰船列表尚未就绪时允许重新打开后重载；模型加载状态复位
+        self._loading_ships = False
+        self._loading = False
+        # 停止转圈并隐藏加载覆盖层（窗口仍在，控件可安全访问）
+        self._set_loading_overlay(False)
         self._save_geometry()
         self.viewport.clear_scene()
         self._current_geom = None

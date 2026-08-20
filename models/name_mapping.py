@@ -143,7 +143,7 @@ class Mapping:
         "speedBatteryLastChanceCoeff": "位于水面时的航速",
         "pingerReloadCoeff": "声呐冷却时间",
         "healthHullCoeff": "战舰生命值",
-        "healthPerLevel": "基础血量",
+        "healthPerLevel": "每个战舰等级提升的生命值",
         "healthRegen": "每秒回复血量",
         "vulnerabilityBurn": "受到的火灾伤害",
         "vulnerabilityFlood": "受到的进水伤害",
@@ -319,7 +319,7 @@ class Mapping:
         "AAAuraDamage": "coeff",
         "AAAuraReceiveDamageCoeff": "coeff",
         "prioritySectorCooldownMultiplier": "coeff",
-        "prioritySectorStrengthBonus": "raw_pct",
+        "prioritySectorStrengthBonus": "raw_int",  # 整数百分比（35 = +35%）
         # ── 鱼雷 ──
         "GTCritProb": "coeff",
         "GTShotDelay": "coeff",
@@ -419,8 +419,9 @@ class Mapping:
         "torpedoDetectionCoefficient": "coeff",
         "mineDetectionCoefficient": "coeff",
         "torpedoDetectionCoefficientByPlane": "coeff",
-        "visionXRayMineDist": "coeff",
-        "visionXRayTorpedoDist": "coeff",
+        # 绝对捕获距离：固定加值（存储单位米），非百分比系数
+        "visionXRayMineDist": "raw_km",
+        "visionXRayTorpedoDist": "raw_km",
         # ── 生存性 ──
         "healthHullCoeff": "coeff",
         "healthPerLevel": "raw_int",
@@ -432,7 +433,7 @@ class Mapping:
         "planeBubbleArmorCoeff": "coeff",
         "critProbCoefficient": "coeff",
         "uwSourceDmgReduction": "coeff",
-        "uwCoeffBonus": "raw_pct",
+        "uwCoeffBonus": "raw_int",  # 整数百分比（7 = +7%）
         "batteryRegenCoeff": "coeff",
         "batteryRegenBatteryLastChanceCoeff": "coeff",
         "batteryCapacityCoeff": "coeff",
@@ -485,11 +486,6 @@ class Mapping:
         "workTime": "coeff",
     }
 
-    # ── 颜色方向：哪些词条是"负值=增益" ─────────────────
-    # 默认方向为"pos"（正值=增益，标记为绿色；负值=减益，标记为红色）
-    # 以下列表中的词条方向为"neg"（负值=增益，标记为绿色；正值=减益，标记为红色）
-    # 适用场景：装填时间、修理时间、散布、隐蔽、航速减益等"越低越好"的属性
-
     # ── 值倍率：需要将存储值乘以固定系数后才能得到真实百分比 ──
     MODIFIER_VALUE_FACTOR: dict[str, float] = {
         "AABubbleDamageBonus": 7.0,   # 42.86 × 7 = +300%
@@ -513,7 +509,13 @@ class Mapping:
         "skipBomberAimingTime": "s",
         "crashCrewWorkTimeBonus": "s",
         "ignorePTZBonus": "%",
+        "uwCoeffBonus": "%",
+        "prioritySectorStrengthBonus": "%",
+        "visionXRayMineDist": "km",
+        "visionXRayTorpedoDist": "km",
     }
+
+    # ── 颜色方向：哪些词条是"负值=增益" ─────────────────
     # 默认方向为"pos"（正值=增益，标记为绿色；负值=减益，标记为红色）
     # 以下列表中的词条方向为"neg"（负值=增益，标记为绿色；正值=减益，标记为红色）
     # 适用场景：装填时间、修理时间、散布、隐蔽、航速减益等"越低越好"的属性
@@ -541,6 +543,7 @@ class Mapping:
         "planeVisibilityFactor",
         "planeSpreadMultiplier",
         "callFightersTimeDelayAttack",
+        "AAAuraReceiveDamageCoeff",
         # ── 空袭/支援 ──
         "asReloadTimeCoeff",
         # ── 深弹 ──
@@ -624,6 +627,9 @@ class Mapping:
         elif fmt == "raw_int":
             iv = int(value)
             text = f"{iv:+.0f}"
+        elif fmt == "raw_km":
+            # 固定距离加值（存储单位米 → 显示公里，如 +500 → +0.50km）
+            text = f"{value / 1000:+.2f}"
         else:
             text = f"{value:+.1f}"
         unit = Mapping.MODIFIER_UNIT_MAP.get(key, "")

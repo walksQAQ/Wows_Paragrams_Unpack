@@ -2,10 +2,12 @@
 
 功能：
   - 打开已解压的 assets.bin 文件或直接选择游戏目录（自动用 data_extractor 提取）
+  - 打开窗口时不自动载入数据，由用户手动选择数据源
   - 后台线程加载解析（避免卡 UI），左侧懒加载虚拟文件树
   - 点击文件在右侧显示解码 JSON（深色等宽主题）
   - 顶部搜索：按路径关键字定位文件
   - 状态栏显示数据库概览
+  - 关闭窗口时询问是否清理 .uncode_cache 索引缓存
 
 独立运行：  python -m uncode_assets.gui [assets.bin 或 游戏目录]
 也可由主程序通过 AssetsBinViewer(source) 打开。
@@ -23,7 +25,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
     QPushButton, QLabel, QFileDialog, QLineEdit, QStatusBar, QToolBar,
-    QHeaderView, QAbstractItemView,
+    QHeaderView, QAbstractItemView, QMessageBox,
 )
 
 from .errors import AssetsBinError
@@ -88,16 +90,13 @@ class AssetsBinViewer(QMainWindow):
         self.resize(1280, 820)
         self.setStyleSheet(_STYLE)
         self._build_ui()
+        # 打开窗口时不自动载入数据：由用户手动选择 assets.bin 文件或游戏目录，
+        # 避免后台解析与模型查看器渲染争抢 GIL 造成卡顿。
+        # 仅命令行显式传入路径时才自动加载（python -m uncode_assets.gui <path>）。
         if source:
             self.load_source(str(source))
-            return
-        # 无显式来源时，继承主应用已配置的游戏目录设置
-        inherited = self._inherited_game_dir()
-        if inherited:
-            game_dir, bin_folder = inherited
-            self._bin_folder = bin_folder
-            self._set_source_label(game_dir)
-            self.load_source(game_dir)
+        else:
+            self.status_label.setText("未加载 —— 请打开 assets.bin 文件或选择游戏目录")
 
     # ── UI 构建 ─────────────────────────────────────────
 
@@ -389,20 +388,6 @@ class AssetsBinViewer(QMainWindow):
 
     # ── 主应用目录继承 ─────────────────────────────────
 
-    def _inherited_game_dir(self) -> Optional[tuple]:
-        """继承主应用（app.ctx）已配置的游戏目录，返回 (game_dir, bin_folder) 或 None。"""
-        try:
-            from app.application import app
-            ctx = getattr(app, "ctx", None)
-            if ctx is None:
-                return None
-            game_path = getattr(ctx, "game_path", "")
-            if game_path and game_path != "未设置" and Path(game_path).is_dir():
-                return game_path, getattr(ctx, "bin_folder", "") or None
-        except Exception:  # noqa: BLE001
-            pass
-        return None
-
     def _save_inherited_dir(self, path: str) -> None:
         """把浏览器中选择的游戏目录写回主应用配置，保持两侧一致。"""
         try:
@@ -413,6 +398,43 @@ class AssetsBinViewer(QMainWindow):
 
     def _set_source_label(self, path: str) -> None:
         self.source_label.setText(f"来源: {Path(path).name}")
+
+    # ── 关闭与索引缓存清理 ─────────────────────────────
+
+    def closeEvent(self, event) -> None:
+        """关闭窗口：若存在 .uncode_cache 索引缓存，弹出询问是否清理。
+
+        清理后下次打开同一 assets.bin 需重新构建索引（加载变慢）；
+        保留则下次秒开。索引缓存读取功能本身不受影响。
+        仅删除本浏览器写入的 idx_*.pkl（目录可能还含其他工具缓存）。
+        """
+        cache_dir = None
+        if self._svc is not None:
+            cp = getattr(self._svc, "cache_path", None)
+            if cp is not None:
+                cache_dir = Path(cp).parent
+        if cache_dir is not None and cache_dir.is_dir() \
+                and any(cache_dir.glob("idx_*.pkl")):
+            ans = QMessageBox.question(
+                self, "清理索引缓存",
+                f"检测到 assets.bin 索引缓存：\n{cache_dir}\n\n"
+                "是否在关闭时清理该索引缓存？\n"
+                "清理后下次打开同一文件将重新构建索引（加载变慢）。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ans == QMessageBox.StandardButton.Yes:
+                for f in cache_dir.glob("idx_*.pkl"):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                # 目录已空则一并删除
+                try:
+                    if not any(cache_dir.iterdir()):
+                        cache_dir.rmdir()
+                except OSError:
+                    pass
+        event.accept()
 
 
 def main(argv: Optional[list] = None) -> int:

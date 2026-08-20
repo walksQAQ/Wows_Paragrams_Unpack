@@ -2,7 +2,7 @@
 
 > 状态：**装甲展示重构已完成（2026-08-20）+ 后续修复已完成（2026-08-20，见「三、重构后修复」）**
 >
-> 本文档原为 3D 查看器首版规划（已实现，见「一、现状」）。重构任务：**参考 landaire/wows-toolkit 彻底重构装甲模型展示功能并重做查看器 UI**（见「二、装甲展示重构设计」，P0-A~P0-D 全部完成并验证）。`.geometry` 格式规范保留在「附录 A」作为唯一格式文档。
+> 本文档原为 3D 查看器首版规划（已实现，见「一、现状」）。重构任务：**参考 landaire/wows-toolkit 彻底重构装甲模型展示功能并重做查看器 UI**（见「二、装甲展示重构设计」，P0-A~P0-D 全部完成并验证）。`.geometry` 格式规范见 `docs/geometry-format.md`（唯一格式文档）。
 
 ---
 
@@ -25,6 +25,10 @@
 首版遗留（未实现，低优先级）：OBJ 导出、碰撞模型渲染。
 
 ### GLB 舰船模型导出设计方案（待实现）
+
+> 实施顺序与 INDEXED 转码细节见 `todo_list/New_function_of_fix_indexed_render_and_export_glb.md`：
+> 先修正 INDEXED 特殊渲染规则（P1），渲染正确后再启动导出（P2）；INDEXED 导出贴图
+> 按用户要求烘焙成标准 PBS 形态（baseColor/normal/MG/AO 常规贴图集）。
 
 #### 1. 目标与边界
 
@@ -418,81 +422,9 @@ CREASE_DOT = 0.7       # 折角阈值（法线点积）
 
 ---
 
-## 附录 A：.geometry 格式规范（唯一格式文档，保留）
+## 附录 A：.geometry 格式规范
 
-### A.1 MergedGeometryPrototype 头部（72 字节）
-
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 4 | u32 | mergedVerticesCount |
-| 0x04 | 4 | u32 | mergedIndicesCount |
-| 0x08 | 4 | u32 | verticesMappingCount |
-| 0x0C | 4 | u32 | indicesMappingCount |
-| 0x10 | 4 | u32 | collisionModelCount |
-| 0x14 | 4 | u32 | armorModelCount |
-| 0x18 | 8 | i64 | verticesMappingPtr → MappingEntry[] |
-| 0x20 | 8 | i64 | indicesMappingPtr → MappingEntry[] |
-| 0x28 | 8 | i64 | mergedVerticesPtr → VerticesPrototype[] |
-| 0x30 | 8 | i64 | mergedIndicesPtr → IndicesPrototype[] |
-| 0x38 | 8 | i64 | collisionModelsPtr → CollisionModelPrototype[] |
-| 0x40 | 8 | i64 | armorModelsPtr → ArmorModelPrototype[] |
-
-所有指针为相对结构体基址的偏移：`resolve_relptr(base, ptr) = base + ptr`。
-
-### A.2 MappingEntry（0x10 字节）
-
-`u32 mappingId（murmur3 哈希）/ u16 mergedBufferIndex / u16 packedTexelDensity / u32 itemsOffset / u32 itemsCount`
-
-### A.3 VerticesPrototype（0x20 字节）
-
-`i64 verticesDataPtr / PackedString formatName / u32 sizeInBytes / u16 strideInBytes / u8 isSkinned / u8 isBumped`
-
-顶点格式名如 `set3/xyznuvtbpc`：`xyz`=POSITION f32×3，`n`=NORMAL packed 4B，`uv`=TEXCOORD 2×f16，`tb`=切线/副切线，`iiiww`=骨骼索引×3+权重×2。
-
-### A.4 IndicesPrototype（0x10 字节）
-
-`i64 indicesDataPtr / u32 sizeInBytes / u16 保留 / u16 indexSize（2=u16, 4=u32）`
-
-### A.5 CollisionModelPrototype（0x20 字节）
-
-`i64 cmDataPtr / PackedString name / u32 sizeInBytes / u32 填充`。数据范围 = `cmDataPtr → cmDataPtr + sizeInBytes`。
-
-碰撞数据为纯三角形汤：`u32 vertexCount / u32 indexCount / f32×3 顶点 / u16 索引`。命名 `CM_*`（CM_Helium 船体、CM_Turret 炮塔等），无材质信息。
-
-### A.6 ArmorModelPrototype（0x20 字节）
-
-同布局，但数据范围 = `struct_base + 0x20 → resolve_relptr(struct_base, data_relptr) + sizeInBytes`。命名 `CM_*.armor`。
-
-装甲数据为 16 字节条目流：每组 = 2 个头条目（第一条目 byte0=material_id、byte2=layer_index；第二条目 offset+12 处 u32=vertex_count）+ vertex_count 个顶点条目。每顶点：`f32 x,y,z + u8[3] packed_normal（/127.5-1）+ u8 zero` = 16B。
-
-```python
-ArmorTriangle {
-    vertices: [[f32; 3]; 3],
-    normals: [[f32; 3]; 3],
-    material_id: u8,   # 头条目 byte 0
-    layer_index: u8,   # 头条目 byte 2
-}
-```
-
-### A.7 ENCD 压缩
-
-Magic `ENCD`（0x44434E45）+ u32 elementCount + meshoptimizer 压缩 payload。用 `meshoptimizer` wheel 解码（注意 dtype 与 u16 索引包装）。
-
-### A.8 PackedString（0x10 字节）
-
-`u32 charCount（含 null）/ u32 填充 / i64 textPtr（相对偏移）`。
-
-### A.9 舰船文件路径
-
-```
-content/gameplay/{nation}/ship/{type}/{ship_name}/{ship_name}_{part}.geometry
-```
-
-### A.10 装甲厚度数据源
-
-主库 entity_snapshots 舰船快照：`A_Hull.armor` + `A1_Artillery/A_ATBA/...` 下各 `HP_*.armor`。键为 `(model_index << 16) | material_id` → mm；几何 layer_index = model_index。多层材质（Dual_*）同一 material_id 有多个 model_index 层。
-
----
+> `.geometry` 格式规范已迁移至 `docs/geometry-format.md`（唯一格式文档，2026-08-20）。
 
 ## 参考资源
 

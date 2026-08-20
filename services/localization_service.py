@@ -196,7 +196,7 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     return stats
 
 
-def run_localization() -> None:
+def run_localization() -> "_AppTask":
     ctx = app_ctx.ctx
     wows_type = ctx.wows_type
     game_path = ctx.game_path
@@ -309,4 +309,4 @@ def run_localization() -> None:
     def _err(msg: str):
         bus.log_message.emit(f"❌ 加载失败: {msg}")
 
-    run_async(_run, on_finished=_ok, on_error=_err)
+    return run_async(_run, on_finished=_ok, on_error=_err)
