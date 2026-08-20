@@ -260,10 +260,11 @@ class AssetsBinService:
             ]
             for off, esize, c in arrays:
                 if c > 0:
-                    rel = _B.read_u32(hdr, off)
+                    # ⚠️ 2026-08-19：relptr 为 u64（旧 u32 读低 4 字节碰巧对，但需一致）
+                    rel = _B.read_u64(hdr, off)
                     need = max(need, rel + esize * c)
             if rot_count > 0:
-                rel = _B.read_u32(hdr, 0x28)  # rotation_limits Vec4×2，32B/条
+                rel = _B.read_u64(hdr, 0x28)  # rotation_limits Vec4×2，32B/条
                 need = max(need, rel + 32 * rot_count)
             data = self.vfs.open_file_len(path, need + 16)  # 留安全余量
             return decode_skeleton(data, self.db)

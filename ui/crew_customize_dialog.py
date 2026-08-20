@@ -557,24 +557,31 @@ class CrewCustomizeDialog(QDialog):
                 sk = None
             if not sk:
                 continue
-            # 检查是否有 EPIC 版本
+            # 检查是否有 EPIC 版本（主 modifiers 或 trigger 段 modifiers 任一非空）
+            # 有些技能（如潜艇 2-6/3-1）EPIC 加成在 trigger 段，主 modifiers 为空
             mods_epic = {}
             mods_reg = {}
             try:
                 cur = db._conn.execute(
-                    "SELECT modifiers_json FROM crew_skill_definitions WHERE version_code=? AND skill_key=? AND rarity='EPIC'",
+                    "SELECT modifiers_json, trigger_json FROM crew_skill_definitions WHERE version_code=? AND skill_key=? AND rarity='EPIC'",
                     (vc, sk)
                 )
                 row = cur.fetchone()
                 if row:
                     mods_epic = json.loads(row['modifiers_json']) if row['modifiers_json'] else {}
+                    t = json.loads(row['trigger_json']) if row['trigger_json'] else {}
+                    if not mods_epic and isinstance(t, dict):
+                        mods_epic = t.get('modifiers') or {}
                 cur = db._conn.execute(
-                    "SELECT modifiers_json FROM crew_skill_definitions WHERE version_code=? AND skill_key=? AND rarity='REGULAR'",
+                    "SELECT modifiers_json, trigger_json FROM crew_skill_definitions WHERE version_code=? AND skill_key=? AND rarity='REGULAR'",
                     (vc, sk)
                 )
                 row = cur.fetchone()
                 if row:
                     mods_reg = json.loads(row['modifiers_json']) if row['modifiers_json'] else {}
+                    t = json.loads(row['trigger_json']) if row['trigger_json'] else {}
+                    if not mods_reg and isinstance(t, dict):
+                        mods_reg = t.get('modifiers') or {}
             except Exception:
                 pass
             if not mods_epic:

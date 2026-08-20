@@ -218,6 +218,9 @@ def main() -> None:
                 bus.can_process_data.emit(True)
                 # 刷新完成后重新选中舰船大类
                 QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
+            elif db.schema_rebuilt():
+                # schema 版本落后 → initialize 已整库重建（旧数据被清空）
+                bus.log_message.emit("⚠️ 数据库结构已更新，需要重新加载数据")
             else:
                 bus.log_message.emit("ℹ️ 数据库为空，请加载数据")
         except Exception as e:

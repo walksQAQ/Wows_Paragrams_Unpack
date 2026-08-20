@@ -111,8 +111,11 @@ class ShipCardWidget(QGroupBox):
     """单张数据卡片，包含标题和键值表格"""
 
     firing_arc_clicked = Signal(dict)
+    #: 卡片底部动作按钮点击（data 为构造时传入的任意载荷，如 ship_id）
+    action_clicked = Signal(object)
 
-    def __init__(self, section: dict, parent=None, firing_arc: dict | None = None):
+    def __init__(self, section: dict, parent=None, firing_arc: dict | None = None,
+                 action: dict | None = None):
         """
         Args:
             section: 数据分区，格式：
@@ -123,6 +126,8 @@ class ShipCardWidget(QGroupBox):
                 ]}
             firing_arc: 射界入口信息（{"ship_id", "slot_type", "summary"}），
                         非空时在卡片底部追加可点击的射界按钮行
+            action: 卡片最下方动作按钮（{"text", "tooltip", "data"}），
+                    点击发射 action_clicked(data)
         """
         super().__init__(parent)
         self.setProperty("class", "ShipCardWidget")
@@ -177,9 +182,32 @@ class ShipCardWidget(QGroupBox):
 
         layout.addWidget(self._table)
 
+        # 卡片最下方动作按钮（如「3D 模型查看」）
+        if action:
+            self._add_action_row(action)
+
         # 延迟自适应高度，等布局完成后再计算
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._adjust_height)
+
+    def _add_action_row(self, action: dict) -> None:
+        """在卡片最下方添加全宽动作按钮（点击发射 action_clicked(data)）。"""
+        btn = QPushButton(action.get("text", ""))
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        tip = action.get("tooltip", "")
+        if tip:
+            btn.setToolTip(tip)
+        btn.setStyleSheet(theme.qss("""
+            QPushButton {
+                background: @panel_alt@; color: @text@;
+                border: 1px solid @border@; border-radius: 4px;
+                padding: 5px 8px; font-size: 12px; text-align: center;
+            }
+            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+        """))
+        data = action.get("data")
+        btn.clicked.connect(lambda _=False: self.action_clicked.emit(data))
+        self.layout().addWidget(btn)
 
     def _add_firing_arc_row(self, fa: dict) -> None:
         """在卡片底部添加射界行：左列标签 + 右列可点击的值按钮（齐射角）"""
@@ -407,7 +435,12 @@ class ShipCardWidget(QGroupBox):
         for r in range(rows):
             height += self._table.rowHeight(r) + 2
         self._table.setFixedHeight(height)
-        card_height = height + 22
+        # 卡片最下方动作按钮（若有）的高度也需计入
+        extra_h = 0
+        for child in self.children():
+            if isinstance(child, QPushButton):
+                extra_h += child.sizeHint().height() + 6
+        card_height = height + 22 + extra_h
         self.setFixedHeight(card_height)
         self._adjusting = False
 

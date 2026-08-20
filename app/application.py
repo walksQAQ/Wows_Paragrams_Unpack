@@ -70,7 +70,7 @@ class Application(QObject):
         self._config_manager = ConfigManager()
         self._ctx = AppContext(config=self._config_manager._raw)
 
-        # 启动时自动同步 game_data_state：检查 split 目录是否有数据
+        # 启动时自动同步 game_data_state：优先检查主数据库，兼容旧版 split 数据
         self._sync_data_state()
 
         # ── 信号连接 ──────────────────────────────────────
@@ -78,9 +78,17 @@ class Application(QObject):
         bus.game_path_changed.connect(self._on_game_path_changed)
 
     def _sync_data_state(self) -> None:
-        """检查 split 目录是否有效，自动更新 game_data_state"""
+        """检查已入库数据是否有效，自动更新 game_data_state。"""
         split_dir = get_split_dir()
-        has_data = split_dir.exists() and any(split_dir.iterdir())
+        has_data = False
+        try:
+            from services.database_service import get_db
+            db = get_db(self._ctx.wows_type)
+            has_data = db.exists and bool(db.get_latest_version_code())
+        except Exception:
+            pass
+        if not has_data:
+            has_data = split_dir.exists() and any(split_dir.iterdir())
         if has_data != self._ctx.game_data_state:
             self._config_manager.game_data_state = has_data
             self._refresh_ctx()
