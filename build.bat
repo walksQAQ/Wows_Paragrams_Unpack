@@ -2,6 +2,16 @@
 set _CL_=/utf-8
 chcp 65001 >nul
 
+:: ── 0. 重定向 Nuitka 编译缓存 / 临时构建目录到 D 盘（避免占用 C 盘） ──
+set NUITKA_CACHE_DIR=D:\nuitka_cache
+set TMPDIR=D:\nuitka_tmp
+set TEMP=D:\nuitka_tmp
+set TMP=D:\nuitka_tmp
+
+:: 自动创建这些文件夹（如果不存在）
+if not exist "D:\nuitka_cache" mkdir "D:\nuitka_cache"
+if not exist "D:\nuitka_tmp" mkdir "D:\nuitka_tmp"
+
 :: 强行结束可能仍在运行的旧程序，防止文件锁死导致 Access is denied
 taskkill /f /im WowsAnalyzer.exe 2>nul
 
