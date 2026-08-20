@@ -10,6 +10,7 @@ import pickle
 import shutil
 import struct
 import sys
+import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 
@@ -69,22 +70,80 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
         bus.log_message.emit(f"⚠️ 预分析跳过: {e}")
 
 
+def _save_ship_models(db, data_by_category: dict, version_code: str) -> None:
+    """把可载入舰船列表（有 model 的 Ship）写入数据库 ship_models 表。
+
+    3D 查看器的 list_ships 从该表读取，避免每次启动都扫描 data/split
+    （keep_split_json=False 时该目录会被清理）。
+    """
+    try:
+        ships = (data_by_category or {}).get("Ship") or {}
+        items = []
+        for key, v in ships.items():
+            hull = v.get("A_Hull") or {}
+            model = hull.get("model") or ""
+            if not model:
+                continue
+            model_path = str(model)
+            parts = [p for p in model_path.replace("\\", "/").split("/") if p]
+            model_folder = parts[-2] if len(parts) >= 2 else ""
+            nation = str(v.get("typeinfo", {}).get("nation", ""))
+            items.append((key, model_folder, model_path, nation))
+        n = db.save_ship_models(items, version_code)
+        if n:
+            bus.log_message.emit(f"📦 可载入舰船列表已记录: {n} 艘")
+    except Exception as e:  # noqa: BLE001
+        bus.log_message.emit(f"⚠️ 可载入舰船列表写入失败: {e}")
+
+
 def run_process() -> None:
     data_dir = get_data_dir()
     split_dir = get_split_dir()
 
     db: DatabaseManager | None = None
+    # assets_data.db 后台缓存：完成事件 + 结果标志 + 是否启动（主流程需等它写完才标「全部完成」）
+    assets_done = threading.Event()
+    assets_ok = [False]
+    assets_started = [False]
 
     def _finalize_import(db: DatabaseManager, db_batch: list, snapshots_batch: list,
                           data_by_category: dict, data_dir, version_code: str) -> None:
         db.insert_entities_batch(db_batch, version_code=version_code)
         # 同步写入实体快照（规范化 JSON），供跨版本字段级比对
         db.save_entity_snapshots(snapshots_batch, version_code=version_code)
+        # 可载入舰船列表（3D 查看器用）：入库时一并记录，不依赖 data/split
+        _save_ship_models(db, data_by_category, version_code)
         bus.task_progress.emit(45, "步骤 2/3: 写入数据库实体")
         ms = db.import_name_mappings(str(data_dir))
         bus.task_progress.emit(60, "步骤 2/3: 导入名称映射")
         bus.task_progress.emit(80, "步骤 3/3: 数据入库")
         bus.log_message.emit("🧠 步骤 3/3: 正在数据入库（内存模式）...")
+        # 预提取 assets.bin 到**独立缓存库 assets_data.db**（与主库 game_data.db 无锁冲突）。
+        # 在这里（分析开始前）后台启动，与下方 _run_analysis 写 game_data.db **同时进行**，
+        # 缩短整体加载时长；3D 查看器只读该缓存库。
+        assets_started[0] = True
+        try:
+            from utils.threading_utils import run_async
+
+            def _assets_cache_job():
+                try:
+                    assets_ok[0] = _populate_assets_cache(
+                        bin_folder=app_ctx.ctx.bin_folder,
+                        game_version=app_ctx.ctx.game_version,
+                        wows_type=app_ctx.ctx.wows_type)
+                except Exception as e:  # noqa: BLE001
+                    bus.log_message.emit(f"❌ assets_data.db 写入失败: {e}")
+                    assets_ok[0] = False
+                finally:
+                    # populate 完成后清理 assets.bin 临时文件与索引缓存
+                    # （data/assets.bin 提取产物 / data/assets_{bin_folder}.bin 版本缓存 / .uncode_cache）
+                    _cleanup_assets_temp()
+                    assets_done.set()
+
+            run_async(_assets_cache_job)
+        except Exception:  # noqa: BLE001
+            assets_done.set()  # 启动失败兜底，避免主流程等待卡死
+        # 主线程：分析并写 game_data.db（与 assets 后台缓存并行）
         _run_analysis(db, data_by_category, version_code=version_code)
         bus.log_message.emit(f"📦 步骤 3/3: 数据入库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
         bus.task_progress.emit(100, "步骤 3/3: 完成")
@@ -96,20 +155,46 @@ def run_process() -> None:
         "Other": "Other", "Exterior": "Exterior",
     }
 
-    def _collect_entity(k: str, v: dict, data_by_category: dict,
-                         db_batch: list, snapshots_batch: list, index) -> None:
+    def _collect_one(k: str, v: dict, index):
+        """线程安全收集单实体：返回独立结果，不共享可变状态（供并行收集）。
+
+        返回 (cat, k, v, db_item, snap_item)：主线程合并到分类/批量列表。
+        """
         t = v.get('typeinfo', {}).get('type', 'UnknownType')
         cat = TYPE_CATEGORY_MAP.get(t, None)
-        if cat:
-            data_by_category.setdefault(cat, {})[k] = v
-        db_batch.append((str(t), k, v))
-        # 收集规范化快照 JSON（v 已通过 _GPEncode 清洗，可直接序列化）
-        snapshots_batch.append((
+        db_item = (str(t), k, v)
+        snap_item = (
             k,
             DatabaseManager._entity_type(str(t)),
             str(v.get('typeinfo', {}).get('nation', '')),
             json.dumps(v, sort_keys=True, ensure_ascii=False),
-        ))
+        )
+        return cat, k, v, db_item, snap_item
+
+    def _collect_all(ej, ti, db_batch, snapshots_batch, data_by_category, sd, do_write_json):
+        """并行收集一批实体：CPU 密集的 json.dumps 与写 JSON 在线程池，主线程合并。
+
+        ej 是只读 dict；每项在子线程独立序列化，返回独立结果，主线程 append
+        到共享列表（无竞争）。比原主线程逐条 json.dumps 明显提速。
+        """
+        with ThreadPoolExecutor(max_workers=8) as tpe:
+            write_futs = []
+            collect_futs = []
+            for k, v in ej.items():
+                if do_write_json:
+                    write_futs.append(tpe.submit(_write_one, k, v, ti, sd))
+                collect_futs.append(tpe.submit(_collect_one, k, v, ti))
+            for w in write_futs:
+                try:
+                    w.result()
+                except Exception:  # noqa: BLE001
+                    pass
+            for f in collect_futs:
+                cat, k, v, db_item, snap_item = f.result()
+                if cat:
+                    data_by_category.setdefault(cat, {})[k] = v
+                db_batch.append(db_item)
+                snapshots_batch.append(snap_item)
 
     def _process():
         nonlocal db
@@ -161,14 +246,7 @@ def run_process() -> None:
 
         if source_dict:
             ej = json.loads(json.dumps(source_dict, cls=_GPEncode, ensure_ascii=False))
-            if do_write_json:
-                with ThreadPoolExecutor(max_workers=8) as tpe:
-                    for k, v in ej.items():
-                        tpe.submit(_write_one, k, v, None, sd)
-                        _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, None)
-            else:
-                for k, v in ej.items():
-                    _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, None)
+            _collect_all(ej, None, db_batch, snapshots_batch, data_by_category, sd, do_write_json)
             msg = "Wargaming 拆分完成"
         else:
             for idx, elem in enumerate(data):
@@ -176,18 +254,17 @@ def run_process() -> None:
                     continue
                 ti = None if idx == 0 else idx
                 ej = json.loads(json.dumps(elem, cls=_GPEncode, ensure_ascii=False))
-                if do_write_json:
-                    with ThreadPoolExecutor(max_workers=8) as tpe:
-                        for k, v in ej.items():
-                            tpe.submit(_write_one, k, v, ti, sd)
-                            _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, ti)
-                else:
-                    for k, v in ej.items():
-                        _collect_entity(k, v, data_by_category, db_batch, snapshots_batch, ti)
+                _collect_all(ej, ti, db_batch, snapshots_batch, data_by_category, sd, do_write_json)
             msg = "Lesta 拆分完成"
 
         if db_batch:
             _finalize_import(db, db_batch, snapshots_batch, data_by_category, data_dir, version_code)
+            # 等 assets_data.db 后台缓存跑完（成功或失败都等）
+            if not assets_done.wait(timeout=900):
+                bus.log_message.emit("⚠️ 3D 缓存（assets_data.db）等待超时")
+            if not assets_ok[0]:
+                # assets_data.db 写入失败/超时 → 主流程以报错方式终止（不标「全部完成」）
+                return False, "3D 缓存（assets_data.db）写入失败，已终止加载流程"
         return True, msg
 
     def _ok(ret):
@@ -206,20 +283,17 @@ def run_process() -> None:
                     if p.exists():
                         p.unlink()
                         bus.log_message.emit(f"🧹 已删除原始数据文件: {n}")
-                # assets.bin 与 GameParams 同放 data/，入库完成后一并删除
-                assets_p = data_dir / "assets.bin"
-                if assets_p.exists():
-                    assets_p.unlink()
-                    bus.log_message.emit("🧹 已删除 assets.bin（提取产物）")
-                # 连同 assets.bin 的 VFS 索引缓存（.uncode_cache/）一并清理，避免残留堆积
-                arc_cache = data_dir / ".uncode_cache"
-                if arc_cache.exists():
-                    shutil.rmtree(str(arc_cache), ignore_errors=True)
-                    bus.log_message.emit("🧹 已删除 .uncode_cache（解析索引缓存）")
+                # assets.bin 临时文件（data/assets.bin / assets_{bin_folder}.bin / .uncode_cache）
+                # 由后台 _assets_cache_job 完成后统一清理（本流程可能仍在后台读取，避免竞争）
                 # 只保留最新 2 个版本，滚动删除更旧的
                 deleted = db.purge_old_versions(keep_count=2)
                 if deleted:
                     bus.log_message.emit(f"📂 已清理旧版本数据 ({deleted} 条版本记录)")
+                if assets_started[0]:
+                    if assets_ok[0]:
+                        bus.log_message.emit("✅ 3D 缓存（assets_data.db）已就绪")
+                    else:
+                        bus.log_message.emit("❌ 3D 缓存（assets_data.db）写入失败——3D 查看器可能缺少骨架/材质数据")
                 bus.log_message.emit(f"✅ 数据解析完成: {msg}")
                 bus.task_progress.emit(100, "全部完成")
                 app_ctx.set_game_data_state(True)
@@ -235,6 +309,13 @@ def run_process() -> None:
         else:
             bus.log_message.emit(f"❌ {msg}")
             bus.data_processed.emit(False)
+            # 失败终止同样收尾：关闭并重置数据库连接（避免 sqlite WAL 锁残留）
+            try:
+                if db is not None:
+                    db.close()
+            except Exception:
+                pass
+            reset_db()
 
     def _err(msg: str):
         # 由 run_async 在主线程执行，保证信号只在主线程发射
@@ -242,3 +323,68 @@ def run_process() -> None:
         bus.data_processed.emit(False)
 
     run_async(_process, on_finished=_ok, on_error=_err)
+
+
+def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -> bool:
+    """把当前客户端 assets.bin 的 3D 查看器数据预提取到 assets_data.db。
+
+    返回是否成功写入；过程中分阶段打日志（骨架/渲染集/材质）。
+    """
+    try:
+        from services.assets_cache_service import AssetsCacheService
+        from services.geometry_service import GeometryService
+        gsvc = GeometryService.instance()
+        path = gsvc._locate_assets_bin()
+        if not path:
+            bus.log_message.emit("⚠️ assets.bin 不可用，跳过 3D 数据缓存（3D 查看器将现场解析）")
+            return False
+        cache = AssetsCacheService()
+        bus.log_message.emit("⏳ 步骤 3/3: 后台预提取 3D 数据（assets_data.db）...")
+        counts = cache.populate(
+            path, bin_folder=bin_folder or "",
+            game_version=game_version or "",
+            wows_type=wows_type or "",
+            game_dir=app_ctx.ctx.game_path or None,
+            progress_cb=lambda msg: bus.log_message.emit(f"⏳ 3D 缓存: {msg}"))
+        bus.log_message.emit(
+            f"📦 assets.bin 数据已缓存（骨架挂点 {counts['skeleton']} / "
+            f"骨骼 {counts['skeleton_bones']} / 渲染集 {counts['render_sets']} / "
+            f"材质 {counts['mfm_textures']} / 完整材质 {counts['material_full']}）")
+        # 数据已全部入库，删除解包出来的临时 assets.bin 版本缓存（data/assets_*.bin），
+        # 不再占用磁盘；3D 查看器后续直接从 assets_data.db 读取，无需该文件
+        try:
+            from utils.path_utils import get_data_dir
+            removed = 0
+            for p in get_data_dir().glob("assets_*.bin"):
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            if removed:
+                bus.log_message.emit(f"🧹 已删除临时 assets.bin 解包缓存（{removed} 个）")
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except Exception as e:  # noqa: BLE001
+        bus.log_message.emit(f"❌ assets.bin 缓存写入失败: {e}")
+        return False
+
+
+def _cleanup_assets_temp() -> None:
+    """清理 assets.bin 临时产物：data/assets.bin（提取产物）、data/assets_{bin_folder}.bin
+    （版本缓存）、data/.uncode_cache（VFS 索引缓存）。在后台 assets 缓存入库完成后调用。"""
+    try:
+        from utils.path_utils import get_data_dir
+        dd = get_data_dir()
+        targets = [dd / "assets.bin"] + list(dd.glob("assets_*.bin")) + [dd / ".uncode_cache"]
+        for p in targets:
+            try:
+                if p.is_dir():
+                    shutil.rmtree(str(p), ignore_errors=True)
+                elif p.exists():
+                    p.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass

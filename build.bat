@@ -45,7 +45,7 @@ echo [QRC] 资源编译完成。
     --enable-plugin=pyside6 ^
     --include-module=app._resources ^
     --include-module=services.GameParams ^
-    --include-module=polib,requests ^
+    --include-package=meshoptimizer ^
     --output-filename=WowsAnalyzer.exe ^
     main.py
 

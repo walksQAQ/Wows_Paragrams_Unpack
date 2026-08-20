@@ -18,6 +18,9 @@ from utils.path_utils import get_data_dir
 class ShipPresenter(BasePresenter):
     """将舰船数据库记录组装为显示结构"""
 
+    #: 炮位安装朝向缓存（ship_id → {hp_key: (yaw, [x,y,z])}），惰性初始化
+    _mount_yaw_cache: dict | None = None
+
     MODIFIER_MAP = {
         # ── 主炮/副炮 ──
         "GMShotDelay": "装填时间", "GSShotDelay": "装填时间", "GMSShotDelay": "装填时间",
@@ -979,7 +982,7 @@ class ShipPresenter(BasePresenter):
                          "次级主炮": "secondary_artillery", "鱼雷": "torpedoes"}.get(label)
                 if _slot:
                     _arc_rows = conn.execute(
-                        "SELECT hp_key, horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json, mount_yaw, mount_pos_json "
+                        "SELECT hp_key, horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json "
                         "FROM ship_turret_arcs WHERE version_code=? AND ship_id=? AND slot_type=? "
                         "ORDER BY hp_key", (vc, ship_id, _slot)).fetchall()
                     if _arc_rows:
@@ -1030,27 +1033,71 @@ class ShipPresenter(BasePresenter):
 
         含齐射角：全炮塔能齐射时为前/后（X°（前）/Y°（后））；
         炮塔分列左右舷、无法全炮塔齐射时为左舷/右舷（X°（左舷）/Y°（右舷））。
+
+        炮位安装朝向/位置（mount_yaw/mount_pos）**直接从 assets_data.db** 读取
+        （HP_ 挂点解码值），不再依赖回填到 game_data.db ship_turret_arcs 的值。
         """
         import json as _json
         from utils.firing_arc import firing_arc_angles
 
+        mount_map = self._ship_mount_yaw_map(ship_id)
         guns = []
         for r in rows:
             try:
+                hp = r["hp_key"]
+                myaw, mpos = mount_map.get(hp, (None, None))
                 guns.append({
                     "horiz_sector": _json.loads(r["horiz_sector_json"]) if r["horiz_sector_json"] else None,
                     "vert_sector": _json.loads(r["vert_sector_json"]) if r["vert_sector_json"] else None,
                     "dead_zones": _json.loads(r["dead_zone_json"]) if r["dead_zone_json"] else [],
                     "pitch_dead_zones": _json.loads(r["pitch_dead_zones_json"]) if r["pitch_dead_zones_json"] else [],
                     "position": _json.loads(r["position_json"]) if r["position_json"] else None,
-                    "mount_yaw": r["mount_yaw"],
-                    "mount_pos": _json.loads(r["mount_pos_json"]) if r["mount_pos_json"] else None,
+                    "mount_yaw": myaw,
+                    "mount_pos": mpos,
                 })
             except Exception:
                 continue
         result = firing_arc_angles(guns)
         result.update({"ship_id": ship_id, "slot_type": slot_type, "count": len(rows)})
         return result
+
+    def _ship_mount_yaw_map(self, ship_id: str) -> dict:
+        """直接从 assets_data.db 读该船炮位安装朝向：{hp_key: (yaw, [x,y,z])}。
+
+        数据源：assets_data.db 的 skeleton_mounts（HP_ 挂点解码值，加载数据时预提取）。
+        按 ship_id 缓存（姊妹舰/共享船体复用）。无数据（未加载数据）返回 {}，
+        射界功能回退到默认朝向。
+        """
+        if self._mount_yaw_cache is None:
+            self._mount_yaw_cache = {}
+        cached = self._mount_yaw_cache.get(ship_id)
+        if cached is not None:
+            return cached
+        out: dict = {}
+        try:
+            import math
+            from services.assets_cache_service import AssetsCacheService
+            from app.application import app as app_ctx
+            row = self.conn.execute(
+                "SELECT model_folder FROM ship_models WHERE ship_id=? LIMIT 1",
+                (ship_id,)).fetchone()
+            stem = ""
+            if row:
+                try:
+                    stem = row["model_folder"] or ""
+                except (IndexError, TypeError, KeyError):
+                    stem = row[0] or ""
+            if stem:
+                c = AssetsCacheService()
+                mounts = c.get_skeleton_mounts(app_ctx.ctx.bin_folder or "", stem)
+                for hp, m in mounts.items():
+                    yaw = math.degrees(math.atan2(m[0, 2], m[2, 2])) % 360.0
+                    out[hp] = (round(yaw, 1),
+                               [round(m[0, 3], 4), round(m[1, 3], 4), round(m[2, 3], 4)])
+        except Exception:
+            out = {}
+        self._mount_yaw_cache[ship_id] = out
+        return out
 
     # ── 模块构建子方法 ─────────────────────────────────────
 

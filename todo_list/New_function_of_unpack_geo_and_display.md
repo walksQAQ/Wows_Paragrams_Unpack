@@ -1,87 +1,426 @@
-# 舰船 3D 模型解包与显示功能规划
+# 舰船 3D 模型解包与显示 —— 装甲展示重构规划
 
-## 概述
-
-在当前 PySide6 数据分析工具中新增**3D 模型查看器**模块，实现从游戏客户端解包并显示舰船 3D 模型、装甲模型、碰撞模型的能力。
-
-参考项目：
-- [landaire/wows-toolkit](https://github.com/landaire/wows-toolkit) — Rust 编写的完整 WoWS 工具包，含 `.geometry` 解析、GLB 导出、装甲查看器（wgpu 3D 渲染）
-- gmConverter3D — Electron + Three.js 实现的 BigWorld 模型查看器，支持 `.primitives`/`.object` 格式读取和 `.obj` 导出
+> 状态：**装甲展示重构已完成（2026-08-20）+ 后续修复已完成（2026-08-20，见「三、重构后修复」）**
+>
+> 本文档原为 3D 查看器首版规划（已实现，见「一、现状」）。重构任务：**参考 landaire/wows-toolkit 彻底重构装甲模型展示功能并重做查看器 UI**（见「二、装甲展示重构设计」，P0-A~P0-D 全部完成并验证）。`.geometry` 格式规范保留在「附录 A」作为唯一格式文档。
 
 ---
 
-## 一、整体架构
+## 一、现状（首版已实现，2026-08-18/19）
 
+| 层面 | 文件 | 说明 |
+|------|------|------|
+| .geometry 解析 | `models/geometry_parser.py` | 72B 头 + relptr + ENCD(meshoptimizer) + 顶点/索引/碰撞/装甲 BVH |
+| 装甲厚度 | `services/geometry_service.py` `_load_armor_thickness` | 主库 entity_snapshots 读 `A_Hull.armor` + 各挂载 `HP_*.armor`，DB-first |
+| 渲染 | `ui/geometry_renderer.py` + `models/camera.py` | PyOpenGL 3.3 Core（非 ModernGL）；舰体贴图 + INDEXED 分块材质 + 挂载矩阵 + 装甲厚度着色 |
+| 装甲分类 | `models/collision_materials.py` | 材质名表 / `thickness_to_color`（游戏 10 色桶）/ `zone_from_material_name` / `get_armor_types`（反编译 ArmorConstants） |
+| UI | `ui/geometry_viewer.py` | 独立窗口；装甲类型复选框筛选 + 厚度图例；船体/装甲互斥 |
+| 挂载 | `services/geometry_service.py` | HP_ 挂点 + MP_ 甲板设备 + 部件子设备递归定位（骨架世界矩阵） |
+
+架构约束（必须延续）：
+- 渲染集/骨架/材质元数据只从 `assets_data.db` 读；舰船实体数据（装甲厚度/挂载引用）只从主库 `entity_snapshots` 读；贴图字节从客户端 pkg 解包。
+- 显示阶段绝不读 `data/split/Ship/*.json`、绝不现场读 assets.bin。
+- 临时脚本只放 `_temp/scripts/`；内存 2GB 红线；CRLF 行尾；编辑工具避免 4 字节 emoji。
+
+首版遗留（未实现，低优先级）：OBJ 导出、碰撞模型渲染。
+
+### GLB 舰船模型导出设计方案（待实现）
+
+#### 1. 目标与边界
+
+新增 GLB（glTF 2.0 Binary）导出能力，导出结果应能在 Blender、Godot、Three.js
+等标准 glTF 工具中直接打开。导出对象以当前 `ShipGeometry` 为唯一输入，不重新解析
+`.geometry`，不依赖 `data/split/*.json`，也不把 OpenGL 缓冲区反向读回 CPU。
+
+首期目标：
+
+- 导出舰体全部 `hull_meshes`；
+- 导出 `mounts` 中的炮塔、副炮、防空、指挥仪和甲板设备，并应用已有挂载矩阵；
+- 导出法线、UV、三角形索引和可用的漫反射贴图；
+- 导出装甲作为独立节点，可选择“实体舰体”“装甲着色”“两者同时导出”；
+- 大模型采用二进制 GLB，避免 OBJ 的多文件贴图、材质和坐标管理问题；
+- 导出在后台线程执行，完成后由主线程弹出保存结果和警告摘要。
+
+明确不在首期强行复刻游戏 shader：GLB 使用 glTF 标准 `PBR Metallic-Roughness`，
+不能完整表达游戏的 INDEXED 分块涂装、detailMap、多层材质混合和运行时 shader 参数。
+这些信息通过贴图烘焙或 `extras` 保留，不能静默宣称与游戏内渲染完全一致。
+
+#### 2. 数据映射
+
+| 当前对象 | GLB 对象 | 处理方式 |
+|---|---|---|
+| `ShipGeometry` | 根节点 `ship_<game_key>` | 写入舰船 ID、名称、模型目录和导出版本到 `node.extras` |
+| `HullMesh` | 一个 glTF `mesh` + `node` | 位置、法线、UV、索引直接转为 accessor；舰体坐标保持统一 |
+| `MountMesh` | 一个带局部矩阵的 `node` | 几何保留本地坐标，`model_matrix` 写入 node.matrix；不得再次烘焙矩阵 |
+| `ArmorMesh` | 独立的 `armor` 节点/mesh | 应用与 `ArmorScene` 相同的世界空间变换；按 `component` 和 `plate_key` 分组 |
+| `texture_dds` | glTF image / bufferView | 转码为 PNG 或 JPEG 后嵌入 GLB；原始 DDS 路径写入 `extras` |
+| `material_textures` | PBR 贴图集合 | 首期至少映射 diffuse/albedo；normal、metallic/roughness 按可解码性映射 |
+| `indexed_params` | `extras.wows_indexed` | 保存数组、网格、offset 和原始材质路径，首期不直接作为标准 shader 输出 |
+
+推荐节点层级：
+
+```text
+ship_<game_key>
+├─ Hull
+│  ├─ <hull mesh part> ...
+├─ Mounts
+│  ├─ MainBattery/<mount> ...
+│  ├─ Secondary/<mount> ...
+│  ├─ AA/<mount> ...
+│  └─ Equipment/<mount> ...
+└─ Armor
+   ├─ Hull/<zone>/<part>/<thickness> ...
+   └─ Mounts/<component>/<part>/<thickness> ...
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   现有应用（PySide6）                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────────────┐ │
-│  │分类栏     │  │文件列表   │  │ 详情面板 (StackedWidget) │ │
-│  │CategoryBar│  │Browser   │  │ ┌────────────────────┐ │ │
-│  │          │  │          │  │ │ 现有数据分析页面    │ │ │
-│  │          │  │          │  │ ├────────────────────┤ │ │
-│  │          │  │          │  │ │ ★ 新: 3D 查看器页面 │ │ │
-│  │          │  │          │  │ └────────────────────┘ │ │
-│  └──────────┘  └──────────┘  └────────────────────────┘ │
-│                      ┌──────────────────────┐           │
-│                      │ 3D 渲染引擎 (PyQtGraph │           │
-│                      │ / ModernGL / pygltf  │           │
-│                      │ + QtOpenGLWidget)    │           │
-│                      └──────────────────────┘           │
-└─────────────────────────────────────────────────────────┘
+
+#### 3. 坐标系与矩阵规则
+
+当前渲染链路包含 `negz = diag(1, 1, -1, 1)` 的 OpenGL 镜像约定，GLB 导出不能
+直接复制渲染器中的矩阵。导出服务先统一到 glTF 右手坐标系，再对所有顶点执行一次
+坐标转换：
+
+```text
+gltf_position = C * source_position
+gltf_normal   = normalize(C3 * source_normal)
+gltf_matrix   = C4 * source_matrix * inverse(C4)
 ```
+
+其中 `C` 的具体定义必须由一个小型探针用已知船体和挂载 AABB 验证；不能凭视觉猜测。
+舰体 `HullMesh` 通常已经在舰船坐标系，直接应用 `C`；挂载沿用 `MountMesh.model_matrix`；
+装甲沿用 `ArmorScene.build()` 的世界空间变换规则，并验证炮塔装甲质心仍落在对应挂载附近。
+
+#### 4. 材质与贴图策略
+
+分三档实现，避免把游戏专用材质问题混入几何导出：
+
+1. **标准基础档（首期必做）**：每个 mesh 使用 `baseColorTexture` 或
+   `baseColorFactor`；无贴图时使用白色。`opaque=False` 的材质设置 alpha blend，
+   并将 `alphaMode` 写入 glTF。
+2. **PBS 增强档**：将 `normalMap` 映射为 `normalTexture`，将 metallicGloss 拆成
+   metallic/roughness 通道；必要时先把 DDS 转码到 PNG，记录通道来源和近似规则。
+3. **INDEXED/游戏 shader 档**：不伪造标准 PBR 结果。支持时将 material ID map、
+   albedoArray、art map 烘焙成一张最终 base color；不支持烘焙时导出默认材质，
+   同时在 `material.extras.wows_indexed` 保存原始参数和资源路径。
+
+当前程序的 DDS 读取器主要服务 OpenGL 上传，导出服务应增加明确的
+`DDS -> PNG/JPEG` CPU 转码步骤，并在遇到 BC/格式不支持时记录警告而跳过贴图，
+不能把 DDS 原始字节直接伪装成 glTF PNG/JPEG。
+
+#### 5. 装甲导出模式
+
+导出接口建议提供：
+
+```text
+armor_mode = "none"       # 只导出可视舰船
+             | "solid"     # 导出装甲几何，使用厚度颜色
+             | "both"       # 舰体 + 装甲，装甲半透明
+armor_hidden = false       # 是否包含当前 hidden 通用 Hull 板
+armor_visible_only = true  # 是否遵循查看器当前树的显隐掩码
+```
+
+装甲 mesh 按 `plate_key=(zone, material_name, thickness_tenths)` 分组，材质使用
+厚度颜色和透明度；每个节点的 `extras` 保存 `zone`、材质名、厚度、layer index、
+component 和 triangle 数。这样导入 Blender 后仍能按装甲区筛选，而不是只得到一张
+无法追溯来源的彩色大网格。`0mm` 三角形已经在 `_build_armor_mesh()` 中剔除，
+导出层不应重新生成它们。
+
+#### 6. 服务与接口设计
+
+新增 `services/export_service.py`，只负责把已加载的 `ShipGeometry` 转换为 GLB，
+不负责加载舰船。建议接口：
+
+```python
+class GlbExportOptions:
+    armor_mode: str = "none"
+    armor_hidden: bool = False
+    armor_visible_only: bool = True
+    embed_textures: bool = True
+    export_mounts: bool = True
+    export_collision: bool = False
+
+
+def export_ship_glb(
+    geometry: ShipGeometry,
+    output_path: Path,
+    options: GlbExportOptions | None = None,
+    progress_cb=None,
+) -> ExportReport:
+    ...
+```
+
+实现建议使用成熟 glTF 库（优先 `pygltflib`；若验证后需要更方便的 mesh/材质
+构建，可评估 `trimesh`），不要手写 GLB 二进制 chunk。`ExportReport` 至少包含
+导出节点数、三角形数、贴图数、跳过数量和警告列表。
+
+导出流程：
+
+1. 校验 `ShipGeometry` 非空，并冻结当前查看器的装甲显隐掩码；
+2. 建立 glTF buffer、bufferView、accessor，按 mesh 批量追加顶点/法线/UV/索引；
+3. 建立材质缓存，使用“材质属性 + 贴图路径 + alpha 状态”作为去重键；
+4. 写入 Hull、Mounts、Armor 节点和矩阵；
+5. 转码并嵌入贴图，失败时保留几何并追加 warning；
+6. 计算每个 mesh 的 bounds 与总 bounds；
+7. 写入 `asset.extras.wows_export`、节点 extras 和可选的原始路径信息；
+8. 在临时文件写完并成功重新读取校验后，再原子替换目标 `.glb`。
+
+#### 7. 查看器 UI 与线程
+
+在 `ui/geometry_viewer.py` 增加“导出 GLB”按钮和保存对话框：
+
+- 没有 `_current_geom` 或正在加载时禁用；
+- 导出选项使用复选框/下拉框：挂载、装甲模式、当前可见板块、嵌入贴图；
+- 复用现有 `run_async`，导出期间显示进度和取消状态；
+- 后台线程只读 `ShipGeometry`，不调用 Qt/OpenGL API；
+- 完成后在主线程显示输出路径、统计和警告；
+- 窗口关闭或切换舰船时，不删除正在写入的临时文件。
+
+详情页的“3D 模型查看”只负责打开查看器，不直接触碰导出服务，避免把导出失败
+误判为查看器加载失败。导出入口应使用当前已加载的模型，避免再次加载客户端 VFS。
+
+#### 8. 验证计划
+
+分阶段验证，先验证几何和坐标，再验证材质：
+
+| 阶段 | 验证内容 | 通过条件 |
+|---|---|---|
+| G0 | 最小合成三角形导出/再读 | GLB 能被标准 glTF 解析器重新打开 |
+| G1 | 真实舰体无贴图导出 | 节点、顶点、索引、bounds 与 `ShipGeometry` 一致 |
+| G2 | 炮塔/挂载矩阵 | 导入后挂载 AABB 在舰体范围内，质心方向不反转 |
+| G3 | 装甲分组 | zone/part/厚度节点数量和三角形计数与 `ArmorScene` 一致 |
+| G4 | 贴图 | Blender/Three.js 可显示 base color；失败贴图有 warning |
+| G5 | 大船性能 | 导出不超过内存红线，后台 UI 不冻结，临时文件可清理 |
+| G6 | 打包版 | onefile 中点击导出可用，输出 GLB 不依赖临时解压目录 |
+
+必须保留一份探针到 `_temp/scripts/`：使用真实舰船导出 GLB，再用 glTF 解析器检查
+buffer、accessor、image 和 node matrix；必要时用 Blender 或 Three.js 做一次人工
+截图验收。不同服务器、缺失贴图、无装甲数据和空模型都应有明确警告而不是静默失败。
+
+#### 9. 依赖与打包注意事项
+
+- 将 `pygltflib`（或最终选定库）加入 `requirements.txt`；
+- 若导出库含动态导入或本地扩展，先在 onefile 构建中验证并按实际情况添加
+  `--include-package`，不能仅凭源码能导入判断打包完整；
+- `meshoptimizer` 继续作为模块级依赖，并确认
+  `meshoptimizer/_meshoptimizer*.pyd` 被打入 onefile；
+- GLB 输出只写到用户选择的外部路径，不能写入 Nuitka onefile 临时目录；
+- 不把游戏原始 `.dds`、`.mfm` 或客户端路径作为 GLB 必需外链，嵌入失败时仍应生成
+  无贴图几何；
+- 导出格式版本和坐标转换规则写入 `asset.extras`，以后调整矩阵时可追溯。
 
 ---
 
-## 二、分步实现方案
+## 二、装甲展示重构设计（当前任务）
 
-### 步骤 1：新建 3D 查看器页面（UI 层）
+### 2.1 目标与范围（用户已确认全部纳入 + UI 重做）
 
-**文件**：`ui/geometry_viewer.py`
+| # | 能力 | wows-toolkit 对应 |
+|---|------|-------------------|
+| F1 | 板块边界描边（不同厚度/材质交界 + 轮廓 + 折角） | `upload_plate_boundary_edges` |
+| F2 | Zone→部件→板块 三级树 + 逐级显隐 | `part_visibility`/`plate_visibility` |
+| F3 | 鼠标拾取 + 悬停提示（含多层堆叠厚度） | `show_armor_tooltip` |
+| F4 | 高亮悬停/选中板块、部件、区域 | `upload_plate_highlight` |
+| F5 | 装甲不透明度滑杆 | `armor_opacity`（0mm 板开关已按用户要求移除） |
+| F6 | 船体半透明垫底（装甲下显示半透明船体） | hull backdrop |
+| F7 | 查看器 UI 整体重设计 | Armor Viewer 布局 |
 
-**内容**：
-1. 新建 `GeometryViewer` 类，继承 `QWidget`，作为 `DetailPanel` 的 `QStackedWidget` 新页面
-2. 添加 `QOpenGLWidget` 作为 3D 渲染区域
-3. 添加控制面板（旋转/缩放/平移控制、装甲层开关、碰撞模型开关、LOD 选择）
-4. 在 `DetailPanel` 中注册该新页面，通过分类栏切换
-5. **按钮入口**：在 `toolbar_widget.py` 或 `category_bar.py` 中新增一个"3D 查看"按钮
+不在本次范围：弹道/穿深模拟、相机椭圆环、多船对比、GAP 检测、replay 查看器。
 
-**关键点**：
-- `QOpenGLWidget` 提供 OpenGL 上下文
-- 可使用 `ModernGL`（Python 轻量 OpenGL 绑定）或 `PyOpenGL` 直接渲染
-- 或者使用 `pygltf` + `pyglet` 嵌入，但 Qt 集成度不如 ModernGL
+### 2.2 wows-toolkit 参考要点（已核对源码）
 
-**参考**：gmConverter3D 使用 Three.js + WebGL + OrbitControls，对应的 Python Qt 方案是 `ModernGL` + `QtGui.QOpenGLWidget` + 自实现轨道控制
+- **PlateKey** = `(zone, material_name, thickness_tenths)`，`thickness_tenths = round(mm*10)`；厚度作判别项使高亮在板块边界停止。
+- **厚度→颜色**：10 色桶 bisect_left，≤0 为未知浅灰。本项目 `thickness_to_color` 已一致。
+- **多层厚度** `lookup_all_layers`：Dual 材质跨 model_index 收集所有非零层 → tooltip 展示堆叠。
+- **边界描边**：顶点量化（×10000 取整）做边键；边两侧记录 `(plate_key, face_normal)`；输出条件 = 网格边界（仅 1 个三角形）∨ 板块边界（plate_key 不同）∨ 折角（法线点积 < 0.7 ≈ 45°）。
+- **显隐**：part/plate 两级字典，默认 true，上传时跳过不可见三角形。
+- **高亮**：匹配三角形沿法线偏移渲染覆盖网格。
+- **hidden**：游戏内查看器隐藏的板 = Hull 父区通用材质（Trans/Deck/Belt 等）。
 
-### 步骤 2：游戏文件资源读取（数据层）
-
-**文件**：`services/geometry_service.py`
-
-**内容**：
-1. 复用现有 `extractor_service.py` 的 IDX/PKG 解包机制
-2. 新增 `GeometryExtractor` 类，负责从 `.pkg` 中定位并提取 `.geometry` 文件
-3. 舰船 `.geometry` 文件路径规则（来自 wows-toolkit）：
+### 2.3 目标架构
 
 ```
-content/gameplay/{nation}/ship/{type}/{ship_name}/{ship_name}_{part}.geometry
+models/geometry_parser.py        （不动）.geometry 解析
+services/geometry_service.py     （小改）ArmorTriangleInfo 补 layers/hidden/plate_key；厚度字典补多层
+models/armor_scene.py            （新增）ArmorScene：世界空间三角形汤 + 层级索引 + 边界线 + 拾取
+ui/geometry_renderer.py          （改）edge/highlight/backdrop pass + 不透明度 + 拾取射线
+ui/geometry_viewer.py            （重做）三级树 + 悬停提示 + 滑杆 + 开关
 ```
 
-其中：
-- `nation`: japan, usa, germany, uk, france, ussr, italy, pan_asia, europe, netherlands, commonwealth, spain, pan_america
-- `type`: destroyer, cruiser, battleship, aircraftcarrier, submarine, torpedoboat, topship, topship, topship
-- `part`: 如 `hull`, `hull_damaged`, `turret_1`, `tower` 等
+数据流：
 
-4. 提供 `extract_geometry(ship_name: str) -> dict[str, bytes]` 方法
+```
+ShipGeometry.armor_meshes
+   └─ ArmorScene.build()
+        ├─ world_positions / world_normals（应用 model_matrix）
+        ├─ tri_info[]（layers / plate_key / zone / part / hidden）
+        ├─ zones 层级 {zone: {part: {thickness_tenths: [tri_idx]}}}
+        ├─ edge_positions（边界线端点对）
+        └─ per-mesh AABB（拾取预筛）
+   └─ GeometryViewport.set_armor_scene(scene)
+        ├─ 装甲 GpuMesh（flat 色 + opacity）
+        ├─ 边界线 GpuMesh（GL_LINES）
+        ├─ 高亮 GpuMesh（按需重建）
+        └─ ray_pick()
+```
 
-**参考**：wows-toolkit 的 `wowsunpack/src/main.rs:run_dump_uvs()` 函数通过遍历 nations 路径列表定位 `.geometry` 文件
+### 2.4 数据模型
 
-### 步骤 3：`.geometry` 文件解析（核心）
+`ArmorTriangleInfo` 扩展（`services/geometry_service.py`）：
 
-**文件**：`models/geometry_parser.py`
+```python
+@dataclass
+class ArmorTriangleInfo:
+    material_id: int
+    material_name: str
+    layer_index: int
+    thickness_mm: float
+    color: tuple
+    zone: str
+    layers: list[float]   # 新增：该材质所有非零层厚度（Dual 多层，升序）
+    hidden: bool          # 新增：游戏内查看器隐藏（Hull 区通用材质）
+    plate_key: tuple      # 新增：(zone, material_name, thickness_tenths)
+```
 
-**需要实现的二进制格式解析**（根据 wows-toolkit `docs/MODELS.md` 规范）：
+多层厚度：`_load_armor_thickness` 保持 `{(model_index, mat_id): mm}`；新增 `_load_armor_layers` → `{mat_id: [mm,...]}`（跨 model_index 收集非零层升序）。`thickness_mm` 取 layer_index 对应层（回退同材质最小非零层，保持现状）。
 
-#### 3.1 MergedGeometryPrototype 头部（72 字节）
+`models/armor_scene.py`：
+
+```python
+@dataclass
+class ArmorScene:
+    world_positions: np.ndarray        # (T*3,3) 舰船空间
+    world_normals: np.ndarray          # (T*3,3)
+    tri_info: list[ArmorTriangleInfo]  # 长度 T，与三角形索引对齐
+    mesh_aabb: list                    # 每 ArmorMesh 世界包围盒（拾取预筛）
+    mesh_tri_range: list               # (start, count) 扁平区间
+    zones: dict                        # zone→part→thickness_tenths→[tri_idx]
+    edge_positions: np.ndarray         # (E*2,3) 边界线端点
+    bounds: tuple                      # (min, max)
+
+    @classmethod
+    def build(cls, armor_meshes) -> "ArmorScene"
+    def ray_pick(self, ro, rd, visible_tris=None) -> int | None
+    def tris_for_plate(self, key) -> list[int]
+    def tris_for_part(self, zone, part) -> list[int]
+    def tris_for_zone(self, zone) -> list[int]
+```
+
+世界变换：`world = (model_matrix @ [pos,1])[:3]`；挂点矩阵为刚体，法线直接用 3x3 部分。
+
+### 2.5 渲染管线（ui/geometry_renderer.py）
+
+着色器：复用现有单 program。装甲 `u_mode=2`（无光照 flat）+ `u_opacity`；边界线/高亮 `u_mode=1`（纯色）。不新增 program。
+
+装甲模式 paintGL pass 顺序：
+
+```
+1. （可选 F6）船体垫底：u_opacity≈0.15，不写深度
+2. 装甲：flat 色 + armor_opacity，写深度，LEQUAL，polygon offset(-1,-1)
+3. 边界线（F1）：GL_LINES 黑色，polygon offset(-2,-2)，不写深度
+4. 高亮（F4）：沿法线偏移覆盖，半透明，不写深度
+```
+
+- 边界线首版用 `GL_LINES`（core profile 线宽 1px 为已知取舍）；四边形粗边为后续增强。
+- 高亮：选中橙色 `(1,0.6,0.1,0.6)`，偏移量随包围盒尺度缩放。
+
+### 2.6 拾取与交互（F3）
+
+- 屏幕坐标 → NDC → `inv(proj@view)` 反投影射线。
+- `ray_pick`：per-mesh AABB 预筛 + Möller–Trumbore，返回最近 tri_idx；悬停节流 ~30fps；只拾取当前可见三角形。
+- 悬停 → QToolTip：厚度色块 + `{mm} mm`、`{zone} / {material}`、多层时逐层色块（当前层加粗）。
+- 点选 → 选中板块：F4 高亮 + 树定位（展开并选中节点）。
+
+### 2.7 UI 重设计（ui/geometry_viewer.py，F7）
+
+侧栏自上而下：
+
+```
+[舰船选择 + 加载]
+── 显示 ──
+  显示船体 / 显示装甲（厚度着色） / 线框叠加
+  板块边界描边(F1) / 船体半透明垫底(F6)
+  装甲不透明度滑杆(F5)
+── 装甲结构树（F2，QTreeWidget 三级）──
+  Zone → 部件(material)[三角形数] → {mm}mm 板[三角形数]
+  每级 checkbox 三态级联控显隐；悬停高亮；点击选中 + 3D 高亮
+  [全选] [全不选] 快捷按钮
+── 选中信息 ──（悬停/选中板块详情）
+── 装甲厚度图例 ──（保留 10 色桶，可折叠）
+── 统计 ──（增加 板块数/部件数/zone 数）
+```
+
+- 旧的 8 个装甲类型复选框移除，由三级树取代。
+- 双向联动：3D 拾取 → 树展开选中；树选中 → 3D 高亮。
+- 保留船体/装甲互斥，但垫底开启时允许并存。
+
+### 2.8 分阶段实施
+
+| 阶段 | 内容 | 验证 | 状态 |
+|------|------|------|------|
+| P0-A | 数据层扩展（layers/hidden/plate_key + `_load_armor_layers`） | 探针打印 layers/plate_key | ✅ |
+| P0-B | `models/armor_scene.py`（三角形汤 + 层级 + 边界线 + 拾取） | 离屏脚本验证边数/拾取 | ✅ |
+| P0-C | 渲染器（边界线 + 不透明度 + 垫底 + 高亮） | 真实窗口渲染探针（大和：13117 三角形/5550 边，过滤/拾取/高亮/截图全通过） | ✅ |
+| P0-D | UI 三级树 + 显隐联动 + 提示 + 滑杆 | UI 探针（树构建/级联勾选/掩码/双向选中联动全通过） | ✅ |
+| 收尾 | 更新 repo memory + 清理 `_temp/scripts` | — | ✅ |
+
+验证沿用离屏渲染探针（`QApplication + GeometryViewport + glReadPixels`，venv python）。不改数据库格式，无需 bump `DB_SCHEMA_VERSION`。
+
+### 2.11 热修复（2026-08-20 晚：渲染不全/挂载偏移/缺失 + 移除 0mm）
+
+用户报告「模型渲染不全、挂载模型坐标偏移、模型缺失」，并要求移除 0mm 板渲染。根因与修复：
+
+1. **挂载装甲矩阵空间颠倒**（`models/armor_scene.py`）：`ArmorMesh.model_matrix` 是渲染空间（已 negz 共轭），而 ArmorScene 存未镜像舰船空间顶点，原代码直接相乘导致挂载装甲（炮塔等）整体偏移/缺失。修复：应用前先 `mat = negz @ mat @ negz` 转回舰船空间。
+2. **上下文外上传缓冲**（`ui/geometry_renderer.py`）：`set_visible_tris` / `select_plate` 在 GL 上下文外执行 VBO 上传 → 未定义内容渲染为白色巨三角。修复：`_gl_ready` 守卫 + `_run_gl`（makeCurrent 包裹）+ `_vis_pending`/`_hl_pending` 延迟到 `paintGL`/`initializeGL` 补做。
+3. **选中高亮颜色**：`select_plate` 原沿用默认悬停青色，浅色板上近白；修复为选中用 `HIGHLIGHT_SELECT` 橙。
+4. **0mm 板渲染功能整体移除**：`ZERO_MM_EPS`、`_show_zero_mm`、`_armor_thicknesses`、`show_zero_mm` 参数、`cb_zero` 复选框及其连接全部删除。
+
+验证：渲染探针（挂载 AABB 在船体范围内 ✓、高亮橙色 ✓、无白三角）+ UI 探针（初始掩码 12863、级联/全选/全不选/双向联动 ✓）。
+
+### 2.9 关键常量
+
+```python
+PLATE_EDGE_COLOR = (0, 0, 0, 0.9)
+HIGHLIGHT_HOVER = (0, 0.9, 1, 0.5)
+HIGHLIGHT_SELECT = (1, 0.6, 0.1, 0.6)
+HULL_BACKDROP_OPACITY = 0.15
+HIDDEN_GENERIC_MATERIALS = {"Trans", "Deck", "Belt", "Inclin", "ConstrSide", "Bottom"}
+QUANT = 10000          # 边键量化系数
+CREASE_DOT = 0.7       # 折角阈值（法线点积）
+```
+
+### 2.10 风险
+
+- 性能：大舰 >20 万装甲三角形 → 上传过滤而非重建场景；拾取 AABB 预筛 + 节流。
+- 内存 2GB：三角形汤无索引共享，控制重复拷贝。
+- GL：core profile 线宽=1px；`GL.ERROR_CHECKING=False` 维持。
+
+---
+
+## 三、修复记录（2026-08-20 用户反馈四项）
+
+1. **主炮塔装甲模型方向反转**（`services/geometry_service.py`）
+   - 根因：视觉网格与装甲共用含 `Root_BlendBone` 修正的 `mtx`；wows-toolkit（ship.rs L1124-1133）中装甲用**原始** hp_transform（装甲几何已与挂点对齐，不做旋转修正），多套一次 rb 导致方向反转。
+   - 修复：三处（HP 主循环 / MP 甲板设备循环 / `_place_skeleton_mps`）为 ArmorMesh 单独计算 `armor_mtx = negz @ m_raw @ negz`（不含 rb）；视觉 MountMesh 保持 `mtx` 不变。
+   - 验证：`_temp/scripts/probe_turret_armor.py` post-fix check 3/3 大和主炮塔装甲矩阵已不含 rb（centroid_err 0.271→0.178）。
+2. **0mm 装甲仍显示**（`_build_armor_mesh`）
+   - 修复：`thickness <= 0` 的三角形**硬剔除**（不进数组），全部剔除时返回 None；与 `hidden`（厚度>0 的通用 Hull 材质，可勾选恢复）语义分离。
+   - 验证：大和 11,305 装甲三角形中 0mm 计数 = 0。
+3. **装甲区中文词条**（`models/collision_materials.py` + `ui/geometry_viewer.py`）
+   - 新增 `ZONE_CHINESE` + `zone_display()`；结构树顶层节点、悬停 tooltip、选中标签三处显示中文；内部 dict key / UserRole 数据保持英文（联动逻辑不变）。
+4. **编号映射表外置**（`resources/database/collision_materials.json`）
+   - 结构：`{version, description, materials:{id:str}, zones:{英文:中文}}`（206 条材质 + 11 区词条）。
+   - `collision_materials.py` 加载器：文件系统（`get_bundled_dir()/resources/database/...`，源码模式热改即时生效）→ QRC（`:/resources/database/collision_materials.json`，打包模式）→ 硬编码兜底；JSON 条目覆盖同名硬编码。`gen_qrc.py` 自动纳入打包（build.bat 无需改动）。
+
+验证（大和 PJSB018，探针 `_temp/scripts/`）：
+- `probe_turret_armor.py`：post-fix check 3/3 炮塔装甲矩阵已应用 armor_mtx，centroid_err 0.271→0.178
+- 0mm 计数 = 0（11,305 三角形全部 thickness>0）
+- `probe_ui_tree.py`：ALL PASS（10 装甲区/71 板块，级联显隐与高亮联动正常）
+- 树顶层节点：舰艏/副炮区/核心区/船体/其他/舵机舱/舰艉/上层建筑/防雷带/炮塔
+
+---
+
+## 附录 A：.geometry 格式规范（唯一格式文档，保留）
+
+### A.1 MergedGeometryPrototype 头部（72 字节）
 
 | 偏移 | 大小 | 类型 | 字段 |
 |------|------|------|------|
@@ -98,434 +437,65 @@ content/gameplay/{nation}/ship/{type}/{ship_name}/{ship_name}_{part}.geometry
 | 0x38 | 8 | i64 | collisionModelsPtr → CollisionModelPrototype[] |
 | 0x40 | 8 | i64 | armorModelsPtr → ArmorModelPrototype[] |
 
-**指针解析**：所有指针是相对于文件开头的**相对偏移**（`relptr`），解析时 `resolve_relptr(struct_base, relptr)` = `struct_base + relptr`。
+所有指针为相对结构体基址的偏移：`resolve_relptr(base, ptr) = base + ptr`。
 
-#### 3.2 MappingEntry（0x10 字节）
+### A.2 MappingEntry（0x10 字节）
 
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 4 | u32 | mappingId（哈希标识符） |
-| 0x04 | 2 | u16 | mergedBufferIndex（合并缓冲区索引） |
-| 0x06 | 2 | u16 | packedTexelDensity（编码纹素密度） |
-| 0x08 | 4 | u32 | itemsOffset（在合并缓冲区中的起始偏移） |
-| 0x0C | 4 | u32 | itemsCount（元素数量） |
+`u32 mappingId（murmur3 哈希）/ u16 mergedBufferIndex / u16 packedTexelDensity / u32 itemsOffset / u32 itemsCount`
 
-#### 3.3 VerticesPrototype（0x20 字节）
+### A.3 VerticesPrototype（0x20 字节）
 
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 8 | i64 | verticesDataPtr → 顶点数据 blob |
-| 0x08 | 16 | PackedString | formatName（如 `"set3/xyznuvtbpc"`） |
-| 0x18 | 4 | u32 | sizeInBytes |
-| 0x1C | 2 | u16 | strideInBytes（每顶点步长，如 28, 32） |
-| 0x1E | 1 | u8 | isSkinned |
-| 0x1F | 1 | u8 | isBumped |
+`i64 verticesDataPtr / PackedString formatName / u32 sizeInBytes / u16 strideInBytes / u8 isSkinned / u8 isBumped`
 
-**顶点格式解析**（`set3/xyznuvtbpc` 含义）：
-- `xyz` → POSITION (f32 × 3, 12 字节)
-- `n` → NORMAL (packed 4 字节)
-- `uv` → TEXCOORD_0 (packed 4 字节, 2× float16)
-- `tb` → TANGENT + BINORMAL (2× packed 4 字节)
-- `iiiww` → BONE_INDICES(3) + BONE_WEIGHTS(2) = 8 字节
+顶点格式名如 `set3/xyznuvtbpc`：`xyz`=POSITION f32×3，`n`=NORMAL packed 4B，`uv`=TEXCOORD 2×f16，`tb`=切线/副切线，`iiiww`=骨骼索引×3+权重×2。
 
-#### 3.4 IndicesPrototype（0x10 字节）
+### A.4 IndicesPrototype（0x10 字节）
 
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 8 | i64 | indicesDataPtr → 索引数据 blob |
-| 0x08 | 4 | u32 | sizeInBytes |
-| 0x0C | 2 | u16 | (保留) |
-| 0x0E | 2 | u16 | indexSize（2=uint16, 4=uint32）|
+`i64 indicesDataPtr / u32 sizeInBytes / u16 保留 / u16 indexSize（2=u16, 4=u32）`
 
-#### 3.5 CollisionModelPrototype（0x20 字节）
+### A.5 CollisionModelPrototype（0x20 字节）
 
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 8 | i64 | cmDataPtr → 碰撞数据 blob（相对偏移）|
-| 0x08 | 16 | PackedString | collisionModelName（如 `"CM_FireControl"`）|
-| 0x18 | 4 | u32 | sizeInBytes |
-| 0x1C | 4 | (填充) | |
+`i64 cmDataPtr / PackedString name / u32 sizeInBytes / u32 填充`。数据范围 = `cmDataPtr → cmDataPtr + sizeInBytes`。
 
-**碰撞模型数据结构**：
+碰撞数据为纯三角形汤：`u32 vertexCount / u32 indexCount / f32×3 顶点 / u16 索引`。命名 `CM_*`（CM_Helium 船体、CM_Turret 炮塔等），无材质信息。
 
-碰撞模型的原始数据 blob 不是 BVH 树格式（与装甲模型不同），而是**直接存储的三角形网格**（triangle soup），用于物理碰撞检测和弹道计算。其二进制布局如下：
+### A.6 ArmorModelPrototype（0x20 字节）
 
-```
-[Header: 8 字节]
-  u32 vertexCount          # 顶点数量
-  u32 indexCount           # 索引数量（每个三角形 3 个索引）
+同布局，但数据范围 = `struct_base + 0x20 → resolve_relptr(struct_base, data_relptr) + sizeInBytes`。命名 `CM_*.armor`。
 
-[顶点数据: vertexCount × 12 字节]
-  f32 x, f32 y, f32 z     # 每个顶点 3 × f32 = 12 字节
+装甲数据为 16 字节条目流：每组 = 2 个头条目（第一条目 byte0=material_id、byte2=layer_index；第二条目 offset+12 处 u32=vertex_count）+ vertex_count 个顶点条目。每顶点：`f32 x,y,z + u8[3] packed_normal（/127.5-1）+ u8 zero` = 16B。
 
-[索引数据: indexCount × 2 字节]
-  u16 indices[]            # 每个索引 2 字节（uint16），每 3 个索引构成一个三角形
-```
-
-**碰撞模型命名规则**（`CM_` 前缀，表示 Collision Model）：
-- `CM_FireControl` — 火控系统碰撞体
-- `CM_Helium` — 船体
-- `CM_Deck` — 甲板
-- `CM_Tower` — 舰桥/上层建筑
-- `CM_Turret` — 炮塔
-- `CM_Bridge` — 舰桥
-- `CM_Stack` — 烟囱
-
-> **注意**：与装甲模型（`.armor` 后缀）不同，碰撞模型的数据 blob 直接从 `cmDataPtr` 指向的地址读取到 `cmDataPtr + sizeInBytes`，范围与装甲模型不同（装甲模型的数据范围从 struct_base + 0x20 开始）。
-
-**碰撞模型 vs 装甲模型的区别**：
-
-| 特性 | 碰撞模型 (Collision) | 装甲模型 (Armor) |
-|------|---------------------|-----------------|
-| 数据结构 | 简单三角形网格（顶点+索引） | BVH 树 + 三角形（带材质/层信息） |
-| 数据范围 | cmDataPtr → cmDataPtr + sizeInBytes | struct_base + 0x20 → data_offset + sizeInBytes |
-| 用途 | 物理碰撞检测、弹道阻挡 | 装甲穿透计算、装甲查看器显示 |
-| 命名 | `CM_*` | `CM_*.armor` |
-| 材质信息 | 无（纯几何） | 有 material_id + layer_index |
-
-**Python 解析代码结构**：
-```python
-@dataclass
-class CollisionMesh:
-    name: str
-    vertices: list[tuple[float, float, float]]
-    indices: list[tuple[int, int, int]]
-
-def parse_collision_model(data: bytes, name: str) -> CollisionMesh:
-    stream = DataStream(data)
-    vertex_count = stream.read_u32()
-    index_count = stream.read_u32()
-    
-    vertices = []
-    for _ in range(vertex_count):
-        x = stream.read_f32()
-        y = stream.read_f32()
-        z = stream.read_f32()
-        vertices.append((x, y, z))
-    
-    indices = []
-    for _ in range(index_count // 3):
-        i0 = stream.read_u16()
-        i1 = stream.read_u16()
-        i2 = stream.read_u16()
-        indices.append((i0, i1, i2))
-    
-    return CollisionMesh(name=name, vertices=vertices, indices=indices)
-```
-
-#### 3.6 ArmorModelPrototype（0x20 字节）
-
-与 CollisionModelPrototype 相同布局，但 `armorDataPtr` 指向的**数据范围从结构体结束处（struct_base + 0x20）到 data_offset + size_in_bytes**。
-
-**装甲模型二进制格式（BVH + 三角形数据）**：
-- 所有条目 16 字节
-- 2 个全局头条目（包围盒 + BVH 节点数）
-- N 个 BVH 节点组，每组：2 条目（节点头 + 包围盒最大 + 顶点数），vertex_count 个三角形顶点
-- 每顶点：f32 x, f32 y, f32 z, u8[3] packed_normal, u8 zero = 16 字节
-
-**装甲三角形结构**：
 ```python
 ArmorTriangle {
-    vertices: [[f32; 3]; 3],    # 三个顶点
-    normals: [[f32; 3]; 3],     # 三个法线
-    material_id: u8,             # 碰撞材质 ID（来自 BVH 节点头 byte 0）
-    layer_index: u8,             # 层索引（来自 BVH 节点头 byte 2）
+    vertices: [[f32; 3]; 3],
+    normals: [[f32; 3]; 3],
+    material_id: u8,   # 头条目 byte 0
+    layer_index: u8,   # 头条目 byte 2
 }
 ```
 
-#### 3.7 ENCD 压缩数据解码
+### A.7 ENCD 压缩
 
-顶点和索引数据可能使用 **ENCD**（`0x44434E45`）格式压缩：
-- Magic: `ENCD`（4 字节）
-- elementCount: u32（4 字节）
-- Payload: 剩余字节
-- 使用 **meshoptimizer** 解码
+Magic `ENCD`（0x44434E45）+ u32 elementCount + meshoptimizer 压缩 payload。用 `meshoptimizer` wheel 解码（注意 dtype 与 u16 索引包装）。
 
-**Python 实现**：需要使用 `meshoptimizer` 的 Python 绑定，或使用 `meshpy`，或用 `ctypes` 调用 meshoptimizer DLL。gmConverter3D 的 BigWorldReader 使用了 `MeshoptDecoder`（JS 版），Python 侧可以使用 `meshoptimizer` PyPI 包。
+### A.8 PackedString（0x10 字节）
 
-#### 3.8 PackedString 解析（0x10 字节）
+`u32 charCount（含 null）/ u32 填充 / i64 textPtr（相对偏移）`。
 
-| 偏移 | 大小 | 类型 | 字段 |
-|------|------|------|------|
-| 0x00 | 4 | u32 | charCount（包括 null 终止符）|
-| 0x04 | 4 | (填充) | |
-| 0x08 | 8 | i64 | textPtr（相对偏移 → 文本数据）|
+### A.9 舰船文件路径
+
+```
+content/gameplay/{nation}/ship/{type}/{ship_name}/{ship_name}_{part}.geometry
+```
+
+### A.10 装甲厚度数据源
+
+主库 entity_snapshots 舰船快照：`A_Hull.armor` + `A1_Artillery/A_ATBA/...` 下各 `HP_*.armor`。键为 `(model_index << 16) | material_id` → mm；几何 layer_index = model_index。多层材质（Dual_*）同一 material_id 有多个 model_index 层。
 
 ---
 
-### 步骤 4：装甲贴图与碰撞材质系统
-
-**文件**：`services/armor_service.py`、`models/collision_materials.py`
-
-根据 wows-toolkit 的反向工程结果：
-
-#### 4.1 碰撞材质名称表
-
-材质 ID 0–255 映射到材质名称，如：
-- `Cit_Belt`, `Cit_Deck`, `Cit_Bulkhead` → 核心区
-- `Bow_Bottom`, `Bow_Deck`, `Bow_Plating` → 船首
-- `Cas_Plating`, `Cas_Deck` → 船中上层
-- `SS_Plating` → 防雷鼓包
-- `Deck_Armor`, `Belt_Armor`, `Bulge_Armor` → 通用装甲层
-- `Trans_Water`, `Trans_Water_Additional` → 水下透明
-
-#### 4.2 Splash Boxes（`.splash` 文件）
-
-与 `.geometry` 文件同名的 `.splash` 文件包含命名 AABB，用于将装甲三角形分类到不同命中区域：
-```
-u32 count
-每个 box:
-  u32 name_len
-  char[name_len] name     # 如 "CM_SB_bow_1"
-  f32 min_x, min_y, min_z
-  f32 max_x, max_y, max_z
-```
-
-分类规则：测试三角形中心点与所有 AABB，最小体积命中者获胜。
-
-**重要**：游戏内装甲查看器的 Python 脚本决定哪些材质显示/隐藏。`Hull` 区域的板材在游戏查看器中不可见，但碰撞检测中仍然有效。
-
-#### 4.3 多层装甲
-
-某些材质（如 `Dual_Cit_Belt_0`）有多层，通过 `layer_index` 区分。不同层覆盖不同的空间区域。
-
----
-
-### 步骤 5：3D 渲染（显示层）
-
-#### 5.1 OpenGL 渲染方案
-
-**方案 A：ModernGL + PyQt6**（推荐）
-```python
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
-import moderngl as mgl
-
-class GeometryWidget(QOpenGLWidget):
-    def initializeGL(self):
-        self.ctx = mgl.create_context()
-        # 编译 shader、创建 VAO
-
-    def paintGL(self):
-        self.ctx.clear(0.1, 0.1, 0.1)
-        # 渲染所有网格
-```
-
-**方案 B：PyOpenGL + PyQt6**（传统方案）
-```python
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from OpenGL import GL
-
-class GeometryWidget(QOpenGLWidget):
-    def paintGL(self):
-        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-        # 渲染网格
-```
-
-#### 5.2 需要实现的渲染功能
-
-1. **舰船外壳模型**：从 `.geometry` 解析的顶点索引缓冲区渲染三角网格（带纹理/颜色）
-2. **装甲模型**：半透明着色，按厚度颜色编码（从 wows-toolkit 移植 `thickness_to_color` 函数）
-3. **碰撞模型**：线框/半透明显示，支持独立开关
-4. **OrbitControls**：鼠标轨道控制（旋转/平移/缩放）— 可参考 gmConverter3D 的 `OrbitControls` 或 Three.js 实现
-5. **光照系统**：简单环境光 + 方向光
-
-#### 5.3 碰撞模型渲染详细方案
-
-碰撞模型用于物理碰撞检测，通常不可见，但在开发/调试时需要显示。渲染方式：
-
-**渲染模式选项**（UI 下拉选择）：
-| 模式 | 说明 | 实现方式 |
-|------|------|----------|
-| 隐藏 | 不显示碰撞模型 | 默认状态 |
-| 线框 | 显示三角形边线 | `GL_LINES`，颜色亮绿 `#00FF00` |
-| 半透明实体 | 半透明填充 | `GL_TRIANGLES`，alpha=0.3，颜色按区域区分 |
-| 叠加显示 | 叠加在船体上 | 深度测试 `GL_LEQUAL`，Z 偏移避免 Z-fighting |
-
-**按碰撞模型名称着色**（便于区分不同碰撞体）：
-```python
-COLLISION_COLORS = {
-    'CM_FireControl': (0.0, 1.0, 0.0, 0.3),   # 绿色 — 火控
-    'CM_Helium':      (0.0, 0.5, 1.0, 0.3),   # 蓝色 — 船体
-    'CM_Deck':        (1.0, 1.0, 0.0, 0.3),   # 黄色 — 甲板
-    'CM_Tower':       (1.0, 0.5, 0.0, 0.3),   # 橙色 — 上层建筑
-    'CM_Turret':      (1.0, 0.0, 0.0, 0.3),   # 红色 — 炮塔
-    'CM_Bridge':      (1.0, 0.0, 1.0, 0.3),   # 紫色 — 舰桥
-    'CM_Stack':       (0.5, 0.5, 0.5, 0.3),   # 灰色 — 烟囱
-}
-```
-
-**碰撞模型列表面板**：在 UI 右侧显示所有碰撞模型的列表，带复选框控制显隐：
-```
-□ CM_FireControl    [线框] [半透明]
-☑ CM_Helium         [线框] [半透明]
-□ CM_Turret_1       [线框] [半透明]
-...
-```
-
-#### 5.5 厚度颜色映射
-
-```python
-# 来自 wows-toolkit 的厚度到颜色映射
-def thickness_to_color(mm: float) -> tuple[float, float, float, float]:
-    if mm <= 0: return (0.5, 0.5, 0.5, 0.3)     # 灰色半透明
-    if mm < 20: return (0.0, 1.0, 0.0, 0.6)      # 绿色
-    if mm < 50: return (0.0, 1.0, 1.0, 0.6)      # 青色
-    if mm < 100: return (0.0, 0.5, 1.0, 0.6)     # 蓝色
-    if mm < 150: return (1.0, 1.0, 0.0, 0.6)     # 黄色
-    if mm < 200: return (1.0, 0.5, 0.0, 0.6)     # 橙色
-    if mm < 300: return (1.0, 0.0, 0.0, 0.6)     # 红色
-    if mm < 400: return (0.8, 0.0, 0.8, 0.6)     # 紫色
-    return (1.0, 0.0, 1.0, 0.6)                   # 品红
-```
-
-### 步骤 6：GLB/OBJ 导出功能
-
-**文件**：`services/export_service.py`
-
-1. 实现将解析后的 `.geometry` 数据导出为 Wavefront `.obj` 格式（参考 gmConverter3D 的 `WavefrontSaver.js`）
-2. 可选实现 GLB 二进制导出（参考 wows-toolkit 的 `gltf_export.rs`）
-3. 对装甲模型导出带厚度颜色信息的网格
-
-**OBJ 格式导出**（简单可靠）：
-```
-# 顶点
-v x y z
-# 法线
-vn nx ny nz
-# 纹理坐标
-vt u v
-# 面
-f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
-```
-
----
-
-## 三、重点/难点详解
-
-### 3.1 `.geometry` 二进制解析
-
-这是**最核心也最复杂**的部分。关键点：
-
-1. **相对指针解析**：所有指针（i64）是相对于结构体基址的偏移量。`resolve_relptr(base, ptr)` = `base + ptr`
-2. **ENCD 压缩**：顶点/索引数据可能是 ENCD 压缩的（magic = `0x44434E45`），需要用 `meshoptimizer` 解码
-3. **PackedString**：字符串存储为 16 字节结构体，实际文本在偏移位置，以 null 终止
-4. **装甲数据 BVH 结构**：不是简单的三角列表示，而是 BVH 树结构需要遍历
-
-**参考实现**：wows-toolkit 的 `crates/wowsunpack/src/models/geometry.rs` 提供了完整实现，可直接参考逻辑翻译为 Python。
-
-### 3.5 ENCD 解码
-
-Python 中没有现成的 ENCD/meshoptimizer 解码库，但有几种方案：
-
-**方案 A**：使用 `subprocess` 调用 wowsunpack CLI 工具的 `--decode` 参数（最简单但需要分发 exe）
-**方案 B**：用 `ctypes` 调用 `meshoptimizer` 的 C DLL
-**方案 C**：使用 `numpy` 直接实现解码算法（复杂但纯 Python）
-
-推荐**方案 B**，因为 gmConverter3D 和 wows-toolkit 都依赖 meshoptimizer 解码。
-
-### 3.6 碰撞模型解析（Collision Model）
-
-碰撞模型与装甲模型共享相同的 **0x20 字节结构体原型**（`ModelPrototype`），但数据格式完全不同：
-
-| 方面 | 碰撞模型 | 装甲模型 |
-|------|---------|---------|
-| 解析函数 | `parse_model_array()` → `Vec<ModelPrototype>` | `parse_armor_model_array()` → `Vec<ArmorModel>` |
-| 数据结构 | 纯三角形网格（顶点+索引，无材质信息） | BVH 树 + 三角形（带材质ID、层索引） |
-| 数据范围 | `cmDataPtr → cmDataPtr + sizeInBytes` | `struct_base + 0x20 → data_offset + sizeInBytes` |
-| 名称后缀 | 无（`CM_*`） | `.armor`（`CM_*.armor`） |
-| 用途 | 物理碰撞检测、弹道阻挡判定 | 装甲穿透计算、厚度可视化 |
-
-**关键实现细节**：
-
-1. **数据读取**：碰撞模型的二进制协议与装甲模型使用同一 `parse_model_fields()` 解析前 8 字节（data_relptr + sizeInBytes），但碰撞模型的 `data_relptr` 直接指向数据起始位置
-
-2. **三角形端点编号**：碰撞模型的索引数据可能使用 uint16（最常见）或 uint32，需根据文件实际编码判断
-
-3. **碰撞模型名称**：通过 `PackedString` 解析得到 `CM_*` 格式的名称，可用于分类显示
-
-4. **无材质系统**：碰撞模型不关联 `material_id` 或 `layer_index`，因此无法像装甲模型那样按厚度着色；渲染时按名称前缀分配固定颜色
-
-**参考实现**：wows-toolkit 的 `geometry.rs:parse_model_array()` 和 `geometry.rs:parse_model_fields()`
-
-### 3.7 装甲模型分层与着色
-
-装甲模型在 `.geometry` 中以 BVH 树格式存储，需要：
-
-1. 遍历 BVH 节点提取三角形
-2. 读取每三角形的 `material_id` 和 `layer_index`
-3. 查询 `GameParams` 获取材质厚度
-4. 按厚度颜色编码渲染
-5. 多层装甲需要将同一位置不同层的三角形重叠显示
-
-### 3.9 与现有系统的集成
-
-当前应用已有：
-- `extractor_service.py` — 解包 `.pkg` 文件
-- `database_service.py` — 数据库读写
-- `analysis_service.py` — 数据分析
-- `processor_service.py` — 数据处理
-
-新的 3D 模块应：
-- 复用 `extractor_service` 的 IDX/PKG 解包能力
-- 从 `GameParams` 中读取装甲厚度数据
-- 新增 `geometry_service.py` 管理 `.geometry` 文件的提取、缓存、解析
-
-### 3.10 UI 集成
-
-在 `category_bar.py` 或 `toolbar_widget.py` 新增"3D 模型"按钮：
-```python
-# 在 TopToolbar 或 CategoryBar 中
-self.btn_3d_viewer = QPushButton("3D 查看")
-self.btn_3d_viewer.clicked.connect(self._open_3d_viewer)
-```
-
-在 `DetailPanel` 中注册新页面：
-```python
-# detail_panel.py 中
-class DetailPanel(QWidget):
-    def __init__(self):
-        # ... 现有代码 ...
-        self.geometry_viewer = GeometryViewer()  # 新页面
-        self.stacked.addWidget(self.geometry_viewer)
-```
-
----
-
-## 四、文件清单与实现顺序
-
-| 优先级 | 文件 | 说明 |
-|--------|------|------|
-| P0 | `models/geometry_parser.py` | `.geometry` 文件格式解析（最核心，含碰撞/装甲模型）|
-| P0 | `services/geometry_service.py` | 几何数据提取服务 |
-| P1 | `ui/geometry_viewer.py` | 3D 查看器 UI 页面（含 QOpenGLWidget） |
-| P1 | `ui/geometry_renderer.py` | OpenGL 渲染引擎（ModernGL 实现） |
-| P2 | `models/collision_materials.py` | 碰撞材质名称表与厚度数据 |
-| P2 | `services/armor_service.py` | 装甲数据处理服务 |
-| P2 | `models/collision_parser.py` | 碰撞模型数据解析（从 raw blob 提取三角网格）|
-| P3 | `services/export_service.py` | OBJ/GLB 导出功能（含碰撞模型导出） |
-| P3 | 修改 `detail_panel.py` | 注册几何查看器页面 |
-| P3 | 修改 `category_bar.py` / `toolbar_widget.py` | 添加 3D 查看按钮 |
-| P4 | `models/camera.py` | 轨道摄像头控制 |
-| P4 | `models/shader.py` | GLSL 着色器程序（碰撞模型线框/实体两种）|
-
----
-
-## 五、参考资源
-
-### 格式规范
-- [landaire/wows-toolkit/docs/MODELS.md](https://github.com/landaire/wows-toolkit/blob/main/docs/MODELS.md) — 完整的 `.geometry`、`models.bin`、`space.bin` 装甲系统格式规范
-
-### 参考实现
-- [wowsunpack/src/models/geometry.rs](https://github.com/landaire/wows-toolkit/blob/main/crates/wowsunpack/src/models/geometry.rs) — `.geometry` 解析器（Rust）
-- [wowsunpack/src/export/gltf_export.rs](https://github.com/landaire/wows-toolkit/blob/main/crates/wowsunpack/src/export/gltf_export.rs) — GLB 导出（Rust）
-- [wows-toolkit-gpui/src/armor_viewer](https://github.com/landaire/wows-toolkit/tree/main/crates/wows-toolkit-gpui/src/armor_viewer) — wgpu 装甲查看器（Rust + gpui）
-- [wows_toolkit/src/armor_viewer](https://github.com/landaire/wows-toolkit/tree/main/crates/wows_toolkit/src/armor_viewer) — egui 装甲查看器（Rust + egui + wgpu）
-- gmConverter3D BigWorldReader.js — BigWorld `.primitives`/`.object` 格式读取（JavaScript）
-- gmConverter3D WavefrontSaver.js — OBJ 导出（JavaScript）
-
-### Python 3D 库
-- [ModernGL](https://github.com/moderngl/moderngl) — 轻量 Python OpenGL 绑定
-- [PyGLM](https://github.com/Zuzu-Typ/PyGLM) — OpenGL 数学库
-- [meshoptimizer](https://pypi.org/project/meshoptimizer/) — 网格优化/解码（需 C++ 扩展编译）
-- [trimesh](https://github.com/mikedh/trimesh) — 三角形网格处理库
-- [pygltflib](https://github.com/teknotus/pygltflib) — GLTF/GLB 读写
+## 参考资源
+
+- [landaire/wows-toolkit](https://github.com/landaire/wows-toolkit) — `armor_viewer/ui/tab.rs`（板块上传/描边/高亮/tooltip）、`export/gltf_export.rs`（thickness_to_color / lookup_all_layers / InteractiveArmorMesh）、`docs/MODELS.md`
+- 本仓库 `models/collision_materials.py`（材质表/色桶/zone/getArmorType 已与游戏一致）
+- 反编译依据：`_decompile/` ArmorConstants.pyc / ModelArmor.pyc（见 repo memory `decompiled-armor-constants.md`）

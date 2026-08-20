@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 40
+DB_SCHEMA_VERSION = 43
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -48,6 +48,9 @@ class DatabaseManager:
         else:
             self._db_path = get_data_dir() / self._db_name(wows_type)
         self._local = threading.local()
+        #: 本次 initialize 是否因 schema 版本落后而整库重建（旧数据被清空）。
+        #: 供启动/切换服务器时提示「需要重新加载数据」而非「数据库为空」。
+        self._schema_rebuilt = False
 
     @staticmethod
     def _db_name(wows_type: str = "") -> str:
@@ -115,8 +118,11 @@ class DatabaseManager:
     def initialize(self) -> None:
         """创建所有表（使用 database_new.sql）"""
         current_ver = self.get_current_version()
+        # schema 版本落后 → 整库重建（旧数据被清空），标记以便提示「需要重新加载数据」
+        self._schema_rebuilt = False
         if 0 < current_ver < DB_SCHEMA_VERSION:
             self._drop_all_tables()
+            self._schema_rebuilt = True
 
         # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
         from PySide6.QtCore import QFile, QIODevice
@@ -276,6 +282,23 @@ class DatabaseManager:
                 PRIMARY KEY (version_code, buff_id, buff_level),
                 FOREIGN KEY (version_code, buff_id) REFERENCES entity_registry(version_code, entity_id) ON DELETE CASCADE
             )""")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # ── 迁移：创建 ship_models 可载入舰船列表（3D 查看器用，数据入库时一并写入） ──
+        try:
+            # 用 IF NOT EXISTS（勿 DROP）：initialize 幂等，DROP 会导致每次启动清空列表
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_models (
+                version_code TEXT NOT NULL,
+                ship_id      TEXT NOT NULL,
+                model_folder TEXT NOT NULL DEFAULT '',
+                model_path   TEXT NOT NULL DEFAULT '',
+                nation       TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (version_code, ship_id)
+            )""")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ship_models ON ship_models(version_code)")
             self._conn.commit()
         except Exception:
             pass
@@ -517,8 +540,6 @@ class DatabaseManager:
                 dead_zone_json TEXT,
                 pitch_dead_zones_json TEXT,
                 position_json TEXT,
-                mount_yaw REAL,
-                mount_pos_json TEXT,
                 rotation_speed_h REAL,
                 rotation_speed_v REAL,
                 num_barrels INTEGER,
@@ -530,19 +551,6 @@ class DatabaseManager:
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_turret_arcs_ship "
                 "ON ship_turret_arcs(version_code, ship_id)")
-            # ── 迁移：为已有库补充炮位安装朝向列（mount_yaw / mount_pos_json）──
-            self._ensure_arc_columns()
-            self._conn.commit()
-        except Exception:
-            pass
-
-    def _ensure_arc_columns(self) -> None:
-        """幂等补齐 ship_turret_arcs 的 mount_yaw / mount_pos_json 列（旧库 ALTER）。"""
-        try:
-            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_turret_arcs)").fetchall()}
-            for col, typ in [("mount_yaw", "REAL"), ("mount_pos_json", "TEXT")]:
-                if col not in cols:
-                    self._conn.execute(f"ALTER TABLE ship_turret_arcs ADD COLUMN {col} {typ}")
             self._conn.commit()
         except Exception:
             pass
@@ -582,8 +590,6 @@ class DatabaseManager:
             dead_zone_json TEXT,
             pitch_dead_zones_json TEXT,
             position_json TEXT,
-            mount_yaw REAL,
-            mount_pos_json TEXT,
             rotation_speed_h REAL,
             rotation_speed_v REAL,
             num_barrels INTEGER,
@@ -604,6 +610,13 @@ class DatabaseManager:
             return row["version"] if row else 0
         except sqlite3.OperationalError:
             return 0
+
+    def schema_rebuilt(self) -> bool:
+        """本次 initialize 是否因 schema 版本落后而整库重建（旧数据被清空）。
+
+        供启动/切换服务器时区分「需要重新加载数据」与「数据库为空」。
+        """
+        return self._schema_rebuilt
 
     def _record_version(self, ver: int) -> None:
         self._conn.execute(
@@ -709,6 +722,64 @@ class DatabaseManager:
             "VALUES (?,?,?,?,?,?)", rows)
         self._conn.commit()
         return len(rows)
+
+    # ── 可载入舰船列表（3D 查看器） ────────────────────────
+
+    def save_ship_models(self, items: list[tuple[str, str, str, str]],
+                         version_code: str) -> int:
+        """写入可载入舰船列表（3D 查看器用）。
+
+        items 每项为 (ship_id, model_folder, model_path, nation)。
+        在数据入库时一并调用，使 list_ships 无需再扫描 data/split。
+        """
+        self._conn.execute("DELETE FROM ship_models WHERE version_code=?", (version_code,))
+        rows = [(version_code, sid, mf or "", mp or "", nat or "")
+                for sid, mf, mp, nat in items]
+        if rows:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO ship_models "
+                "(version_code, ship_id, model_folder, model_path, nation) "
+                "VALUES (?,?,?,?,?)", rows)
+        self._conn.commit()
+        return len(rows)
+
+    def load_ship_models(self, version_code: str = "") -> list[dict]:
+        """读取可载入舰船列表（最新版本，空则返回空列表）。"""
+        if not version_code:
+            version_code = self.get_latest_version_code() or ""
+        if not version_code:
+            return []
+        try:
+            cur = self._conn.execute(
+                "SELECT ship_id, model_folder, model_path, nation "
+                "FROM ship_models WHERE version_code=? ORDER BY ship_id",
+                (version_code,))
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    def load_ship_snapshot(self, ship_id: str,
+                           version_code: str = "") -> Optional[dict]:
+        """读取指定舰船实体的规范化 JSON 快照（entity_snapshots 表）。
+
+        DB-first：3D 查看器的装甲厚度 / HP 挂载引用在显示阶段只走数据库，
+        不读 data/split JSON（快照在加载数据入库时写入）。缺失返回 None。
+        """
+        if not version_code:
+            version_code = self.get_latest_version_code() or ""
+        if not version_code:
+            return None
+        try:
+            cur = self._conn.execute(
+                "SELECT data_json FROM entity_snapshots "
+                "WHERE version_code=? AND entity_id=? AND entity_type='ship'",
+                (version_code, ship_id))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return json.loads(row["data_json"])
+        except (sqlite3.OperationalError, json.JSONDecodeError):
+            return None
 
     # ── 查询 ───────────────────────────────────────────────
 
@@ -903,7 +974,7 @@ class DatabaseManager:
             if not fp.exists():
                 continue
             try:
-                items = [(cat, k, v)
+                items = [(cat, k, _unescape_po_str(v))
                          for k, v in json.loads(fp.read_text(encoding="utf-8")).items()]
                 if items:
                     self._conn.executemany(
@@ -950,7 +1021,7 @@ class DatabaseManager:
             m = re.search(r'^msgid\s+"(.+)"\s*$', block, re.MULTILINE)
             s = _Q.search(block)
             if m and s and m.group(1) and s.group(1):
-                items.append((m.group(1), s.group(1), ""))
+                items.append((m.group(1), _unescape_po_str(s.group(1)), ""))
         if items:
             try:
                 self._conn.executemany(
@@ -988,6 +1059,26 @@ class DatabaseManager:
                 pass
         conn.execute("PRAGMA foreign_keys=ON")
         conn.commit()
+
+
+def _unescape_po_str(s: str) -> str:
+    """解析 PO/JSON 中未转义的 C 风格转义序列（\\n → 换行、\\t → 制表等）。
+    未知转义保留反斜杠原样，避免破坏 Windows 路径等文本。"""
+    if "\\" not in s:
+        return s
+    out = []
+    i, n = 0, len(s)
+    mapping = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = s[i + 1]
+            out.append(mapping.get(nxt, "\\" + nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 # ── 全局单例 ──────────────────────────────────────────────

@@ -218,6 +218,9 @@ class TopToolbar(QWidget):
             bus.log_message.emit(f"🔄 已切换到 {server} 数据库")
             bus.folder_selected.emit("__REFRESH__")
             bus.can_process_data.emit(True)
+        elif db.schema_rebuilt():
+            bus.log_message.emit(f"⚠️ {server} 数据库结构已更新，需要重新加载数据")
+            bus.folder_selected.emit("__REFRESH__")
         else:
             bus.log_message.emit(f"ℹ️ {server} 数据库为空，请加载数据")
             bus.folder_selected.emit("__REFRESH__")

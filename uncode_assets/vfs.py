@@ -14,12 +14,12 @@ from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from . import binary as B
-from .decoders import decode_by_type
-from .parser import PrototypeDatabase, PrototypeLocation
+from .decoders import decode_by_type, decode_skeleton, decode_visual
+from .parser import BLOB_HEADER_SIZE, PrototypeDatabase, PrototypeLocation
 from .types import PrototypeType, type_from_magic
 
 #: VFS 索引缓存版本号：目录树/索引构建逻辑变更时 +1，使旧缓存自动失效
-CACHE_VERSION = 2
+CACHE_VERSION = 4
 
 
 @dataclass
@@ -80,6 +80,48 @@ class AssetsBinVfs:
         dirs: Dict[str, set] = {}
         dirs.setdefault("/", set())
 
+        # ── Korabli ST 服 r2p→visual 记录偏移修正索引 ────────────────────
+        # ST assets.bin 的 r2p 表对 VisualPrototype（blob 2）的记录索引错乱
+        # （rec 应为 N，r2p 却指向别船的记录），但 Model/Skeleton 正常。正确记录
+        # 可按「visual 同目录 geometry 文件名 → geometry self_id 索引」反查：
+        #   1) vis_geom_to_rec: {geometry self_id: 引用它的 visual 记录}
+        #      （扫描 visual blob +0x20/+0x60 两处引用，首个命中）
+        #   2) dir_geos: {目录: {去 .geometry 名: self_id}}（复用 full_paths O(1)）
+        # 无偏移的正式服 assets.bin 自校验通过，record_index 原样返回。
+        vis_blob: Optional[object] = None
+        for b in db.databases:
+            t = type_from_magic(b.prototype_magic)
+            if t is not None and t.name == "VisualPrototype":
+                vis_blob = b
+                break
+        vis_geom_to_rec: Dict[int, int] = {}
+        if vis_blob is not None:
+            vsize = vis_blob.item_size
+            vdata = vis_blob.data
+            for ri in range(vis_blob.record_count):
+                voff = BLOB_HEADER_SIZE + ri * vsize
+                if voff + 0x40 > len(vdata):
+                    break
+                vrec = vdata[voff:voff + 0x40]
+                # ⚠️ 2026-08-19 修正：VisualPrototype item=0x40（非 0x80），
+                # 每条记录唯一 geometry（+0x20）+ primitives（+0x28），无 +0x60。
+                h = B.read_u64(vrec, 0x20)
+                if h not in vis_geom_to_rec:
+                    i = self_id_index.get(h)
+                    if i is not None:
+                        gp = full_paths[i]
+                        if gp and gp.endswith(".geometry"):
+                            vis_geom_to_rec[h] = ri
+        dir_geos: Dict[str, Dict[str, int]] = {}
+        for i, e in enumerate(paths):
+            if not e.name.endswith(".geometry"):
+                continue
+            fp = full_paths[i]
+            if not fp:
+                continue
+            dir_geos.setdefault(fp.rsplit('/', 1)[0], {})[
+                e.name[:-len(".geometry")]] = e.self_id
+
         for i, entry in enumerate(paths):
             value = db.lookup_r2p(entry.self_id)
             if value is None:
@@ -98,8 +140,12 @@ class AssetsBinVfs:
             raw_path = full_paths[i]
             if not raw_path:
                 continue
+            if proto_type.name == "VisualPrototype" and vis_blob is not None:
+                record_index = self._correct_visual_record(
+                    raw_path, record_index, vis_blob, vis_geom_to_rec,
+                    dir_geos, self_id_index, full_paths)
             full_path = "/" + raw_path
-            record_offset = 16 + record_index * item_size
+            record_offset = BLOB_HEADER_SIZE + record_index * item_size
             byte_length = len(db_entry.data) - record_offset
             if byte_length <= 0:
                 continue
@@ -125,6 +171,57 @@ class AssetsBinVfs:
             self._register_parent_dirs(dirs, "/" + raw_path)
 
         self._dirs = {k: sorted(v) for k, v in dirs.items()}
+
+    @staticmethod
+    def _correct_visual_record(rel_path: str, record_index: int, vis_blob,
+                               vis_geom_to_rec: Dict[int, int],
+                               dir_geos: Dict[str, Dict[str, int]],
+                               self_id_index: Dict[int, int],
+                               full_paths: List[Optional[str]]) -> int:
+        """自校验并修正 Korabli ST 服 r2p→visual 记录索引。
+
+        r2p 表对 VisualPrototype 的记录索引错乱（指向别船记录）；这里校验
+        r2p rec 引用的 geometry 是否与 visual 同目录同名（含 `_ports` 等变体），
+        不符则按「同目录 geometry 文件名 → geometry self_id 反查正确 rec」修正。
+        正式服（无偏移）校验通过，record_index 原样返回。
+        """
+        if record_index >= vis_blob.record_count:
+            return record_index
+        vsize = vis_blob.item_size
+        voff = BLOB_HEADER_SIZE + record_index * vsize
+        vrec = vis_blob.data[voff:voff + 0x40]
+        vdir = rel_path.rsplit('/', 1)[0]
+        vname = rel_path.rsplit('/', 1)[-1][:-len(".visual")]
+
+        # 1) r2p rec 已正确：引用 geometry 与 visual 同目录且文件名匹配
+        #    ⚠️ 2026-08-19 修正：item=0x40，唯一 geometry@+0x20（无 +0x60）。
+        h = B.read_u64(vrec, 0x20)
+        i = self_id_index.get(h)
+        if i is None:
+            return record_index
+        gp = full_paths[i]
+        if not gp or not gp.endswith(".geometry"):
+            return record_index
+        gdir = gp.rsplit('/', 1)[0]
+        gname = gp.rsplit('/', 1)[-1][:-len(".geometry")]
+        if gdir == vdir and (gname == vname or gname.startswith(vname + "_")
+                             or vname.startswith(gname)):
+            return record_index
+
+        # 2) 修正：同目录 geometry 候选（精确名优先，其次前缀变体）→ self_id 索引
+        cands = dir_geos.get(vdir)
+        if not cands:
+            return record_index
+        gid = cands.get(vname)
+        if gid is None:
+            for nm, sid in cands.items():
+                if nm.startswith(vname + "_") or vname.startswith(nm):
+                    gid = sid
+                    break
+        if gid is None:
+            return record_index
+        fixed = vis_geom_to_rec.get(gid)
+        return fixed if fixed is not None else record_index
 
     @staticmethod
     def _register_parent_dirs(dirs: Dict[str, set], full_path: str) -> None:
@@ -266,13 +363,42 @@ class AssetsBinVfs:
         return self._db.get_prototype_data_len(loc, f.item_size, length)
 
     def decode_file(self, path: str) -> dict:
-        """解码虚拟文件为结构化 dict。"""
+        """解码虚拟文件为结构化 dict。
+
+        ⚠️ 2026-08-19：.visual 记录**骨架在 blob1(Skeleton)、视觉在 blob2(Visual)、
+        同 rec 索引**——浏览器显示时合并两者（ModsSDK 明文 visual 同时含节点树+渲染集）。
+        """
         f = self.get_file(path)
         if f is None:
             raise KeyError(f"虚拟文件不存在: {path}")
         data = self.open_file(path)
         record_base = 16 + f.record_index * f.item_size
-        return decode_by_type(data, self._db, f.prototype_type, record_base)
+        result = decode_by_type(data, self._db, f.prototype_type, record_base)
+        # 合并 Skeleton(blob1) + Visual(blob2)，同 rec 索引
+        if f.prototype_type is not None:
+            try:
+                if f.prototype_type.name == "VisualPrototype":
+                    skel = self._find_blob(self._db, "SkeletonPrototype")
+                    if skel is not None and f.record_index < skel.record_count:
+                        sdata = skel.data[16 + f.record_index * skel.item_size:]
+                        result["skeleton"] = decode_skeleton(sdata, self._db)
+                elif f.prototype_type.name == "SkeletonPrototype":
+                    vis = self._find_blob(self._db, "VisualPrototype")
+                    if vis is not None and f.record_index < vis.record_count:
+                        vdata = vis.data[16 + f.record_index * vis.item_size:]
+                        result["visual"] = decode_visual(vdata, self._db)
+            except Exception:  # noqa: BLE001
+                pass
+        return result
+
+    @staticmethod
+    def _find_blob(db, name: str):
+        """按类型名找 database blob（用于跨 blob 合并骨架/视觉）。"""
+        for b in db.databases:
+            t = type_from_magic(b.prototype_magic)
+            if t is not None and t.name == name:
+                return b
+        return None
 
     @staticmethod
     def _normalize(path: str) -> str:

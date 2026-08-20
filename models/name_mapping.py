@@ -129,6 +129,7 @@ class Mapping:
         "mineDetectionCoefficient": "水雷被探测距离",
         "torpedoDetectionCoefficient": "鱼雷捕获范围",
         "torpedoDetectionCoefficientByPlane": "空中鱼雷捕获范围",
+        "vulnerabilityTorpedo": "鱼雷伤害",
         "uwCoeffBonus": "鱼雷防护",
         "shootShift": "被敌方炮弹攻击的误差",
         "shootShiftBatteryLastChanceCoeff": "每消耗1%下潜能力，被敌方炮弹攻击的误差变化",
@@ -554,8 +555,8 @@ class Mapping:
         "burnProb", "floodProb",
         # ── 隐蔽 ──
         "visibilityDistCoeff",
-        "torpedoDetectionCoefficient", "mineDetectionCoefficient",
-        "torpedoDetectionCoefficientByPlane",
+        # 鱼雷/水雷捕获范围（越大越有利）→ 正向；受到的鱼雷伤害（越小越有利）→ 负向
+        "vulnerabilityTorpedo",
         # ── 生存性 ──
         "critProbCoefficient",
         "vulnerabilityBurn", "vulnerabilityFlood", "vulnerabilityDBomb",
@@ -645,6 +646,8 @@ class Mapping:
           - 检测到 HTML 标记时，整个文本包裹在 <html> 标签内
           - 将 \\n 替换为 <br/>（HTML 模式下 \\n 不换行）
         """
+        # 字面 \n（反斜杠+n，来自未解析转义的 PO/JSON）→ 真实换行符
+        text = text.replace("\\n", "\n")
         if "<" not in text or ">" not in text:
             return text
         text = text.replace("\n", "<br/>")

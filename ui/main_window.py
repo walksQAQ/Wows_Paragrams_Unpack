@@ -273,10 +273,20 @@ class MainWindow(QMainWindow):
         # 工具栏的穿深计算器
         _tb = getattr(self, "toolbar", None)
         if _tb is not None:
-            _bd = getattr(_tb, "_ballistics_dialog", None)
-            if _bd is not None:
+            for _attr in ("_ballistics_dialog",):
+                _w = getattr(_tb, _attr, None)
+                if _w is not None:
+                    try:
+                        _w.close()
+                    except Exception:
+                        pass
+        # 详情面板的 3D 模型查看器（入口在「基础属性」卡片）
+        _detail = getattr(self, "detail", None)
+        if _detail is not None:
+            _w = getattr(_detail, "_geometry_viewer", None)
+            if _w is not None:
                 try:
-                    _bd.close()
+                    _w.close()
                 except Exception:
                     pass
         super().closeEvent(event)
