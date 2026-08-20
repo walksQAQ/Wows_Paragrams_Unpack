@@ -241,7 +241,12 @@ jobs:
       （2026-08-21 实测：`v3.2.3-alpha1` 推送后 workflow `Create Release on Tag Push`
       conclusion=success，自动创建 `Release v3.2.3-alpha1` 且 `prerelease=True`，
       tag 在 master 上的校验步骤通过）
-- [ ] （可选增强）在 workflow 中用 Windows runner 跑 `build.bat` 自动打包 exe 并作为 Release 附件上传
+- [x] （可选增强）在 workflow 中用 Windows runner 跑 `build.bat` 自动打包 exe 并作为 Release 附件上传
+      （2026-08-21 落地：`release.yml` 新增 `build-windows` job——`needs: release`
+      保证 tag 校验通过后才打包；windows-latest + venv + `pip install -r requirements.txt`
+      + `CI_MODE=1 build.bat`；产物 `release/KorabliParagrams.exe` 上传为 Release 附件。
+      配套：`build.bat` 支持 `CI_MODE=1` 跳过本地 D 盘缓存重定向与 pause；
+      `main.py _ensure_about()` 修复编译模式下往 exe 目录写空壳 `__about__.py` 的问题）
 
 ### 3.6 发布流程串联回顾（完整工作流）
 

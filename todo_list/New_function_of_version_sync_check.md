@@ -1,5 +1,21 @@
 # 新功能：应用内实时检测与 GitHub 最新版本是否同步（含 pre-release 识别）
 
+> 状态：**已完成（2026-08-21 实施并验证）**
+>
+> 实施记录：
+> - `services/update_service.py`：releases 列表接口 + 轻量 semver 比较器
+>   （层级 test(0) < 正式版(1) < fix(2)，fix 高于同号正式版）+ 24h 缓存
+>   （`data/update_check.json`）+ 忽略版本列表 + 静默降级；
+> - `app/signals.py`：新增 `update_check_done` 信号；
+> - `app/config.py`：新增 `auto_check_update` / `include_prerelease` 配置项；
+> - `ui/toolbar_widget.py`：版本状态标签 + 「🔍 检查更新」按钮 + 新版本提示弹窗
+>   （前往 GitHub / 忽略此版本 / 稍后）；
+> - `ui/main_window.py`：启动后延迟 1s 自动检测（受配置与 24h 间隔控制）；
+> - `ui/advanced_settings.py`：「版本检测」配置组（置于面板最后）。
+>
+> 验证：semver 比较器 12/12 单测通过；端到端真实请求 GitHub API 通过
+> （本地 3.2.2-fix1 == 最新正式版 → 同步；识别出更高 pre-release v3.2.3-alpha1）。
+
 ## 目标
 
 应用内检测本地版本（`__about__.__version__`，当前 3.2.2）与 GitHub 仓库

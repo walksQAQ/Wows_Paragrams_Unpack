@@ -124,9 +124,14 @@ def _ensure_about() -> None:
     新工作流下 __about__.py 由 scripts/gen_version.py 从 __about__.py.template
     + Git Tag 生成，不入库。开发模式 fresh clone / 误删后直接运行 main.py
     会因缺少该文件而崩溃，这里在导入前自动重建（与 build.bat 打包前
-    调用同一脚本，行为一致）。Nuitka 打包时该文件已随构建生成并编译进
-    二进制，此分支不会触发。
+    调用同一脚本，行为一致）。
+
+    Nuitka 编译模式下 __about__.py 已随构建生成并编译进二进制，
+    运行时不需要也不应在 exe 目录重建（否则会往 release/ 写入空壳文件）。
     """
+    # 编译模式：__about__ 已内嵌，直接跳过（避免往 exe 目录写空壳）
+    if "__compiled__" in globals():
+        return
     if (_app_dir / "__about__.py").exists():
         return
     template = _app_dir / "__about__.py.template"

@@ -123,6 +123,15 @@ class TopToolbar(QWidget):
 
         layout.addSpacing(8)
 
+        # ── 版本检测（状态标签 + 检查按钮） ─
+        self.version_label = QLabel("")
+        self.version_label.setToolTip("本地版本与 GitHub 最新版本同步状态")
+        layout.addWidget(self.version_label)
+        self.btn_check_update = QPushButton("🔍  检查更新")
+        self.btn_check_update.setToolTip("检测 GitHub 仓库是否有新版本（含 pre-release 识别）")
+        layout.addWidget(self.btn_check_update)
+        self._update_task_running = False
+
         layout.addSpacing(8)
 
         # ── 信号 ──────────────────────────────────────────
@@ -131,6 +140,8 @@ class TopToolbar(QWidget):
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_ballistics.clicked.connect(self._on_ballistics)
         self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
+        self.btn_check_update.clicked.connect(lambda: self.check_update(force=True))
+        bus.update_check_done.connect(self._on_update_check_done)
         bus.task_progress.connect(self._on_progress)
         bus.localization_ready.connect(self._enable_all)
         bus.data_loaded.connect(self._on_extract_done)
@@ -273,3 +284,85 @@ class TopToolbar(QWidget):
             # "未选择" 时取消所有选中
             self.rb_lesta.setChecked(False)
             self.rb_wg.setChecked(False)
+
+    # ── 版本检测 ──────────────────────────────────────────
+
+    def check_update(self, force: bool = False):
+        """后台检测 GitHub 最新版本（结果经 bus.update_check_done 回主线程）。
+
+        force=True：手动触发，忽略缓存；False：自动检测，遵守 24h 缓存间隔。
+        """
+        if self._update_task_running:
+            return
+        self._update_task_running = True
+        self.btn_check_update.setEnabled(False)
+        self.version_label.setText("检查更新中...")
+
+        include_pre = app_ctx.config.include_prerelease
+
+        def _work():
+            from services.update_service import check
+            return check(force=force, include_prerelease=include_pre)
+
+        def _done(result):
+            self._update_task_running = False
+            self.btn_check_update.setEnabled(True)
+            bus.update_check_done.emit(result)
+
+        def _err(e):
+            self._update_task_running = False
+            self.btn_check_update.setEnabled(True)
+            self.version_label.setText("检查更新失败")
+            bus.log_message.emit(f"⚠️ 版本检测出错: {e}")
+
+        from utils.threading_utils import run_async
+        self._track_app_task(run_async(_work, on_finished=_done, on_error=_err))
+
+    def _on_update_check_done(self, result):
+        """检测完成（主线程）：更新状态标签 + 有新版本时弹窗提示。"""
+        if result is None:
+            return
+        if result.error:
+            self.version_label.setText("检查更新失败")
+            return
+        cur = result.current or "?"
+        if result.has_new_release:
+            self.version_label.setText(f"发现新版本 {result.latest_release}")
+            self._prompt_new_version(result)
+        elif result.has_new_prerelease:
+            self.version_label.setText(f"新预发布 {result.latest_prerelease}")
+            self._prompt_new_version(result)
+        else:
+            self.version_label.setText(f"当前 v{cur}（最新）")
+
+    def _prompt_new_version(self, result):
+        """新版本提示弹窗：前往 GitHub / 忽略此版本 / 稍后。"""
+        from PySide6.QtWidgets import QMessageBox
+        new_tag = result.latest_release if result.has_new_release else result.latest_prerelease
+        if not new_tag or new_tag in (result.ignored_versions or []):
+            return
+        url = result.release_url if result.has_new_release else result.prerelease_url
+        kind = "正式版" if result.has_new_release else "预发布版"
+        box = QMessageBox(self.window())
+        box.setWindowTitle("发现新版本")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(
+            f"检测到新的{kind}：{new_tag}\n"
+            f"当前版本：{result.current}\n\n"
+            f"是否前往 GitHub 查看？")
+        btn_go = box.addButton("前往 GitHub", QMessageBox.ButtonRole.AcceptRole)
+        btn_ignore = box.addButton("忽略此版本", QMessageBox.ButtonRole.RejectRole)
+        box.addButton("稍后", QMessageBox.ButtonRole.NoRole)
+        box.exec()
+        if box.clickedButton() is btn_go and url:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(url))
+        elif box.clickedButton() is btn_ignore:
+            from services.update_service import load_ignored_versions, save_ignored_versions
+            ignored = list(result.ignored_versions or [])
+            if new_tag not in ignored:
+                ignored.append(new_tag)
+                save_ignored_versions(ignored)
+            bus.log_message.emit(f"ℹ️ 已忽略版本 {new_tag}")
+            self.version_label.setText(f"当前 v{result.current}（最新）")
