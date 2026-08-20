@@ -44,8 +44,6 @@ from pathlib import Path
 from data_extractor import (
     GameExtractor,
     ExtractorError,
-    list_files as list_files_fn,
-    extract_files as extract_files_fn,
 )
 
 

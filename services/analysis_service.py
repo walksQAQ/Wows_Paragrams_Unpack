@@ -7,15 +7,10 @@
 from __future__ import annotations
 
 import json
-import math
-import os
 import re
-import sqlite3
-from collections import Counter, defaultdict
-from typing import Callable, Optional
+from collections import Counter
 
 from services.database_service import DatabaseManager
-from pathlib import Path
 from utils.path_utils import get_split_dir
 from app.signals import bus
 
@@ -1259,7 +1254,7 @@ class AnalysisStore:
         ammo_type = raw_data.get("ammoType", "")
         conn.execute("INSERT OR REPLACE INTO projectile_basic_info (version_code, projectile_id, projectile_index, projectile_id_num, species, ammo_type, custom_ui_postfix) VALUES (?,?,?,?,?,?,?)",
                      (version_code, proj_id, raw_data.get("index", proj_id), _i(raw_data.get("id")), species, ammo_type, raw_data.get("customUIPostfix", "")))
-        sk = species if species in PROJECTILE_EXT_MAP else ("SkipBomb" if species == "SkipBomb" else None)
+        sk = species if species in PROJECTILE_EXT_MAP else None
         if sk:
             ei = PROJECTILE_EXT_MAP[sk]
             vals = [self._gf(raw_data, f) for f in ei["fields"]]
@@ -1659,13 +1654,45 @@ class AnalysisService:
         species = (raw_data.get("typeinfo") or {}).get("species", "")
         if species == "Minefield":
             store.store_minefield(entity_id, raw_data, version_code=version_code)
-        elif entity_id.startswith("PCOK") or entity_id.startswith("PCOK_"):
+        elif entity_id.startswith("PCOK"):
             skill_key = re.sub(r'^PCOK\d+_', '', entity_id)
             store.store_skill_definition(skill_key, raw_data, version_code=version_code)
-        elif entity_id.startswith("PCOL") or entity_id.startswith("PCOL_"):
+        elif entity_id.startswith("PCOL"):
             store.store_skill_container(entity_id, raw_data, version_code=version_code)
-        elif entity_id.startswith("PCOM") or entity_id.startswith("PCOM_"):
+        elif entity_id.startswith("PCOM"):
             store.store_consumable_buff(entity_id, raw_data, version_code=version_code)
+
+    def _store_skills_and_minefields(self, db, other_dir, raw_conn, version_code=""):
+        """从 split/Other 目录入库 PCOK/PCOL 技能与雷场数据（内存/磁盘两分支共用）。"""
+        try:
+            if other_dir.exists():
+                store = AnalysisStore(db)
+                for fp in sorted(other_dir.glob("PCOK*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
+                        store.store_skill_definition(skill_key, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                for fp in sorted(other_dir.glob("PCOL*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        store.store_skill_container(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+                bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
+                # ── 额外处理雷场数据 ──
+                for fp in sorted(other_dir.glob("*.json")):
+                    try:
+                        raw = json.loads(fp.read_text("utf-8"))
+                        if raw.get("typeinfo", {}).get("species") == "Minefield":
+                            store.store_minefield(fp.stem, raw, version_code=version_code)
+                    except Exception:
+                        pass
+                raw_conn.commit()
+        except Exception as e:
+            bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
 
     def precompute_all(self, db: DatabaseManager,
                        data_by_category: dict[str, dict[str, dict]] | None = None,
@@ -1724,36 +1751,8 @@ class AnalysisService:
                 results[cat_name] = _process_batch(items, cat_labels.get(cat_name, cat_name))
 
             # ── 额外处理 PCOK/PCOL 技能数据 ──
-            try:
-                other_dir = get_split_dir() / "Other"
-                if other_dir.exists():
-                    store = AnalysisStore(db)
-                    for fp in sorted(other_dir.glob("PCOK*.json")):
-                        try:
-                            raw = json.loads(fp.read_text("utf-8"))
-                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
-                            store.store_skill_definition(skill_key, raw, version_code=version_code)
-                        except Exception:
-                            pass
-                    for fp in sorted(other_dir.glob("PCOL*.json")):
-                        try:
-                            raw = json.loads(fp.read_text("utf-8"))
-                            store.store_skill_container(fp.stem, raw, version_code=version_code)
-                        except Exception:
-                            pass
-                    raw_conn.commit()
-                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
-                # ── 额外处理雷场数据 ──
-                for fp in sorted(other_dir.glob("*.json")):
-                    try:
-                        raw = json.loads(fp.read_text("utf-8"))
-                        if raw.get("typeinfo", {}).get("species") == "Minefield":
-                            store.store_minefield(fp.stem, raw, version_code=version_code)
-                    except Exception:
-                        pass
-                raw_conn.commit()
-            except Exception as e:
-                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+            self._store_skills_and_minefields(db, get_split_dir() / "Other",
+                                              raw_conn, version_code)
 
             bus.task_progress.emit(95, f"步骤 3/3: 数据入库完成: {total_processed} 实体")
         else:
@@ -1788,36 +1787,8 @@ class AnalysisService:
                 results[cat_name] = _process_batch(items, cat_labels.get(cat_name, cat_name))
 
             # ── 额外处理 PCOK/PCOL 技能数据 ──
-            try:
-                other_dir = split_dir / "Other"
-                if other_dir.exists():
-                    store = AnalysisStore(db)
-                    for fp in sorted(other_dir.glob("PCOK*.json")):
-                        try:
-                            raw = json.loads(fp.read_text("utf-8"))
-                            skill_key = re.sub(r'^PCOK\d+_', '', fp.stem)
-                            store.store_skill_definition(skill_key, raw, version_code=version_code)
-                        except Exception:
-                            pass
-                    for fp in sorted(other_dir.glob("PCOL*.json")):
-                        try:
-                            raw = json.loads(fp.read_text("utf-8"))
-                            store.store_skill_container(fp.stem, raw, version_code=version_code)
-                        except Exception:
-                            pass
-                    raw_conn.commit()
-                    bus.log_message.emit("✅ 技能数据入库完成 (PCOK + PCOL)")
-                # ── 额外处理雷场数据 ──
-                for fp in sorted(other_dir.glob("*.json")):
-                    try:
-                        raw = json.loads(fp.read_text("utf-8"))
-                        if raw.get("typeinfo", {}).get("species") == "Minefield":
-                            store.store_minefield(fp.stem, raw, version_code=version_code)
-                    except Exception:
-                        pass
-                raw_conn.commit()
-            except Exception as e:
-                bus.log_message.emit(f"⚠️ 技能/雷场数据入库失败: {e}")
+            self._store_skills_and_minefields(db, split_dir / "Other",
+                                              raw_conn, version_code)
 
             bus.task_progress.emit(95, f"步骤 3/3: 数据入库完成: {total_processed} 实体")
 

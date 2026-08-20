@@ -209,16 +209,16 @@
 
 ## 二、实施阶段(按风险/收益排序)
 
-### Phase 0:快赢(低风险高收益)
+### Phase 0:快赢(低风险高收益) ✅ 已完成(2026-08-21)
 
-1. **B1** 字节反转:`processor_service.py` L221 改 `gpd = gpd[::-1]`。
-2. **A1** 穿深公式合并:`calc_ap_penetration` 改调 `calc_v3_penetration`。
-3. **A6** `precompute_all` 抽 `_store_skills_and_minefields()`。
-4. **UA1** `build_self_id_index()` 加惰性缓存(parser.py @property)。
-5. **UA4** `StringsSection` 预计算 `dict[int, str]`。
-6. **AC10** 删 `has_data` + meta 只写列。
-7. **N11/N25/N28/N32** 删未使用 import(4 文件)。
-8. **N9/N10** 删冗余条件/死分支。
+1. **B1** 字节反转:`processor_service.py` L221 改 `gpd = gpd[::-1]`。✅(5 组随机等价断言通过)
+2. **A1** 穿深公式合并:`calc_ap_penetration` 改调 `calc_v3_penetration`。✅(20 组随机等价断言通过)
+3. **A6** `precompute_all` 抽 `_store_skills_and_minefields()`。✅(内存/磁盘两分支共用)
+4. **UA1** `build_self_id_index()` 加惰性缓存(parser.py @property)。✅(合成数据验证缓存命中)
+5. **UA4** `StringsSection` 预计算 `dict[int, str]`。✅(合成数据验证 O(1) 查找)
+6. **AC10** 删 `has_data` + meta 只写列。✅(has_data 已删;meta 只写列保留——删列属 schema 变更,超出本轮边界)
+7. **N11/N25/N28/N32** 删未使用 import(4 文件)。✅(analysis_service 另删 os/math/defaultdict/Callable/Optional/Path)
+8. **N9/N10** 删冗余条件/死分支。✅
 
 ### Phase 1:data_extractor 低风险清理(不动算法)
 

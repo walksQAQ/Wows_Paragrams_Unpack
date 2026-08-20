@@ -218,7 +218,7 @@ def run_process() -> "_AppTask":
 
         with open(found, 'rb') as f:
             gpd = f.read()
-        gpd = struct.pack('B' * len(gpd), *gpd[::-1])
+        gpd = gpd[::-1]
         gpd = zlib.decompress(gpd)
         data = pickle.loads(gpd, encoding='latin1')
 

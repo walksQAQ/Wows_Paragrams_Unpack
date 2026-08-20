@@ -123,7 +123,8 @@ class BallisticsCalculator:
 
     @staticmethod
     def calc_ap_penetration(krupp: float, mass_kg: float, velocity: float, caliber_m: float) -> float:
-        return float(krupp) * (float(mass_kg) * (float(velocity) ** 2)) ** 0.69 * (float(caliber_m) ** -1.07) * 0.0000001
+        """AP 穿深（与 calc_v3_penetration 数学等价，保留接口兼容）。"""
+        return BallisticsCalculator.calc_v3_penetration(krupp, mass_kg, velocity, caliber_m)
 
     @staticmethod
     def calc_v3_penetration(krupp: float, mass_kg: float, velocity: float, caliber_m: float) -> float:
