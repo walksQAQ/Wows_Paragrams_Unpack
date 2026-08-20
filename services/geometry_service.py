@@ -24,6 +24,7 @@ import numpy as np
 from app.application import app as app_ctx
 from models.geometry_parser import parse_geometry, ArmorModel, GeometryError
 from models.collision_materials import collision_material_name, thickness_to_color
+from utils.threading_utils import TaskCancelled
 
 
 @dataclass
@@ -67,10 +68,37 @@ _COMPONENT_BY_KEY = {
     "A_Radars": COMPONENT_RADAR,
 }
 
+#: 主炮组件键后缀：`*_Artillery`（A1_/AB1_/B_/C_/X_..._Artillery 等）全部归类为主炮
+_ARTILLERY_SUFFIX = "_Artillery"
+
 
 def component_for_key(comp_key: str) -> str:
-    """GameParams 组件键 → 归属分类（未知键归"其他"）。"""
+    """GameParams 组件键 → 归属分类（未知键归"其他"）。
+
+    主炮按语义匹配 `*_Artillery` 变体（A1_/AB1_/B_/C_/X_..._Artillery 等），
+    避免固定键列表遗漏合法变体（如 PGSB207 的 AB1_Artillery）。
+    """
+    if comp_key and comp_key.endswith(_ARTILLERY_SUFFIX):
+        return COMPONENT_MAIN
     return _COMPONENT_BY_KEY.get(comp_key, COMPONENT_OTHER)
+
+
+def is_known_component_key(comp_key: str) -> bool:
+    """组件键是否已被识别（主炮变体或显式映射）；未知键用于告警诊断。"""
+    return bool(comp_key) and (
+        comp_key.endswith(_ARTILLERY_SUFFIX) or comp_key in _COMPONENT_BY_KEY)
+
+
+def iter_component_groups(data: dict):
+    """遍历快照中所有组件分组，产出 (component_key, category, group_dict)。
+
+    不依赖固定键列表：`*_Artillery` 变体归类为主炮，其余按 _COMPONENT_BY_KEY
+    或归「其他」。调用方据此加载挂载引用/装甲厚度，并可选告警未知组件。
+    """
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        yield key, component_for_key(key), value
 
 
 # ── MP 甲板设备节点 → misc 模型映射（纯命名约定，数据驱动校验 99.99% 命中）──
@@ -123,6 +151,9 @@ class HullMesh:
     indexed_params: dict | None = None  # INDEXED 分块参数 {arrays, grid, offset}
     opaque: bool = True                 # 半透明材质（玻璃等）用 alpha 混合
     is_wire: bool = False               # wire 线框辅助网格：用 GL_LINES 渲染（非实体面）
+    #: bind pose 蒙皮已实际施加到顶点（Root_BlendBone 已烘焙进几何）；
+    #: 挂载矩阵不得再乘 rb，否则双重镜像 → 朝向翻转（PASB111 副炮 AGS542 实证）
+    skinned_applied: bool = False
 
 
 @dataclass
@@ -327,6 +358,16 @@ class GeometryService:
 
     # ── 舰船列表 ────────────────────────────────────────
 
+    @staticmethod
+    def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+        """协作式取消检查点：取消已请求则抛出 TaskCancelled（正常结束，非错误）。
+
+        供 load_ship 及挂载加载等长循环在批次边界调用，使后台任务能在
+        关闭 3D 查看器后尽快退出，而不是继续跑完整艘船。
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled
+
     def list_ships(self, refresh: bool = False) -> list[ShipInfo]:
         """发现可载入舰船（DB-first：只读主库 ship_models 表）。
 
@@ -375,8 +416,23 @@ class GeometryService:
 
     # ── 舰船几何加载 ────────────────────────────────────
 
-    def load_ship(self, ship: ShipInfo, progress_cb=None) -> ShipGeometry:
+    def load_ship(self, ship: ShipInfo, progress_cb=None,
+                  cancel_event: threading.Event | None = None) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型。
+
+        实际逻辑见 _load_ship_impl；此处保证**每次加载结束（成功/失败/取消）
+        立即释放本船产生的挂载几何/贴图/快照等缓存**——本服务不跨船复用缓存，
+        避免内存随多次加载累积（返回的 ShipGeometry 已持有所需数组引用）。
+        """
+        try:
+            return self._load_ship_impl(ship, progress_cb=progress_cb,
+                                        cancel_event=cancel_event)
+        finally:
+            self._clear_per_load_caches()
+
+    def _load_ship_impl(self, ship: ShipInfo, progress_cb=None,
+                        cancel_event: threading.Event | None = None) -> ShipGeometry:
+        """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型（实现）。
 
         - 舰体：模型目录内全部 .geometry 分段（已处于舰船坐标系，直接合并）
         - 挂载：GameParams 各 HP_* 挂载模型 + assets.bin 骨架挂点变换定位，
@@ -384,9 +440,11 @@ class GeometryService:
         - 装甲：按归属分类标记（船体/主炮塔/副炮/防空/指挥仪/测距/雷达）
 
         progress_cb(pct: float, message: str) —— 0..100
+        cancel_event: 协作式取消事件；在长循环边界检查，取消时抛 TaskCancelled。
         """
         if progress_cb:
             progress_cb(2, "定位几何文件...")
+        self._raise_if_cancelled(cancel_event)
         extractor = self._get_extractor()
 
         # 读取该舰的装甲厚度字典（A_Hull.armor + 各挂载 HP_*.armor）
@@ -453,6 +511,7 @@ class GeometryService:
         total_parts = len(uniq)
 
         for idx, e in enumerate(uniq):
+            self._raise_if_cancelled(cancel_event)
             if progress_cb:
                 progress_cb(5 + 80 * idx / total_parts, f"解析 {e.path.rsplit('/', 1)[-1]}")
             try:
@@ -461,7 +520,7 @@ class GeometryService:
                 geom.stats.setdefault("warnings", []).append(f"{e.path}: 读取失败 {exc}")
                 continue
             try:
-                parsed = parse_geometry(data, file_path=e.path)
+                parsed = parse_geometry(data, file_path=e.path, cancel_event=cancel_event)
             except GeometryError as exc:
                 geom.stats.setdefault("warnings", []).append(f"{e.path}: {exc}")
                 continue
@@ -550,6 +609,7 @@ class GeometryService:
             geom.bounds_max = bmax
 
         # 提取船体漫反射贴图（尽力而为：单贴图应用到全部舰体分段）
+        self._raise_if_cancelled(cancel_event)
         try:
             tex_path, tex_bytes = self._find_hull_diffuse(ship, extractor)
             if tex_bytes:
@@ -565,7 +625,7 @@ class GeometryService:
             except Exception:  # noqa: BLE001
                 continue
             try:
-                parsed = parse_geometry(data, file_path=e.path)
+                parsed = parse_geometry(data, file_path=e.path, cancel_event=cancel_event)
             except GeometryError:  # noqa: BLE001
                 continue
             finally:
@@ -581,7 +641,9 @@ class GeometryService:
                         bmax = np.maximum(bmax, pmax)
 
         # ── 挂载模型（骨架定位 + 每个部件独立贴图） ──
-        self._load_mounts(geom, ship, extractor, armor_thickness, progress_cb)
+        self._raise_if_cancelled(cancel_event)
+        self._load_mounts(geom, ship, extractor, armor_thickness, progress_cb,
+                          cancel_event=cancel_event)
 
         if progress_cb:
             progress_cb(100, "加载完成")
@@ -590,13 +652,15 @@ class GeometryService:
     # ── 挂载模型 ────────────────────────────────────────
 
     def _load_mounts(self, geom: ShipGeometry, ship: ShipInfo, extractor,
-                     armor_thickness: dict, progress_cb=None):
+                     armor_thickness: dict, progress_cb=None,
+                     cancel_event: threading.Event | None = None):
         """加载 GameParams 各 HP_* 挂载模型并按骨架挂点定位。
 
         同一模型目录（如 JGM178 炮塔）只解析一次几何，按每个挂点实例化；
         每个挂载使用该模型自己的贴图（`{stem}_a.dd0` 命名约定）。
         """
-        refs = self._load_mount_refs(ship)
+        refs = self._load_mount_refs(
+            ship, warnings=geom.stats.setdefault("warnings", []))
         transforms = self._load_mount_transforms(ship)
         if not refs and not transforms:
             geom.stats["mounts"] = 0
@@ -618,7 +682,8 @@ class GeometryService:
         sub_placed = 0   # 挂载模型骨架上的 MP 子设备（炮塔测距仪/炮上防空炮等）
         _negz = np.diag([1.0, 1.0, -1.0, 1.0])   # 几何(左手系)→渲染(右手系) 共轭
         n_refs = len(refs)
-        for idx, (hp, comp, model_path) in enumerate(refs):
+        for idx, (hp, comp, model_path, misc_filter) in enumerate(refs):
+            self._raise_if_cancelled(cancel_event)
             # 挂载加载阶段同样报进度（66%→99%），避免进度条停在分段解析末尾
             if progress_cb:
                 progress_cb(66 + 33 * idx / max(1, n_refs), f"加载挂载 {hp}")
@@ -645,18 +710,20 @@ class GeometryService:
             armor_mtx = np.ascontiguousarray(_negz @ m_raw @ _negz, dtype=np.float32)
             if folder not in model_cache:
                 model_cache[folder] = self._load_mount_model(
-                    folder, extractor, armor_thickness, comp)
+                    folder, extractor, armor_thickness, comp, cancel_event=cancel_event)
             src = model_cache[folder]
             if src is None:
                 continue
 
             # 每个材质分片实例化一个挂载网格（本地坐标 + 挂点矩阵 + 独立贴图）
+            # ★ 已蒙皮网格的顶点已含 Root_BlendBone（_apply_skinning 烘焙），
+            #   矩阵用 armor_mtx（不乘 rb），否则双重镜像 → 朝向翻转（PASB111 副炮）
             for hm in src["meshes"]:
                 mm = MountMesh(
                     name=hp, component=comp,
                     positions=hm.positions, normals=hm.normals,
                     uvs=hm.uvs, indices=hm.indices,
-                    model_matrix=mtx,
+                    model_matrix=(armor_mtx if hm.skinned_applied else mtx),
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
@@ -685,9 +752,13 @@ class GeometryService:
 
             # 该挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等，
             # 全库约 1% MP 父节点非 Scene Root）。骨架空间→船 = m_raw。
+            # miscFilter 白名单：非空时该炮位仅显示列表中的 MP 节点
+            # （同一模型在不同炮位显示不同挂件，如 PGSB106 主炮塔）
+            mp_allow = frozenset(misc_filter) if misc_filter else None
             sub_n, bmin, bmax = self._place_skeleton_mps(
                 geom, folder, m_raw, model_cache, extractor, armor_thickness,
-                comp, bmin, bmax, 0, frozenset())
+                comp, bmin, bmax, 0, frozenset(), cancel_event=cancel_event,
+                mp_allow=mp_allow)
             sub_placed += sub_n
 
         # ── MP 甲板设备挂载（缆桩/小艇/探照灯/救生筏等 misc 模型）──
@@ -697,6 +768,7 @@ class GeometryService:
         mp_items = [(n, m) for n, m in transforms.items() if n.startswith("MP_")]
         n_mp = len(mp_items)
         for idx, (mp_name, m_raw) in enumerate(mp_items):
+            self._raise_if_cancelled(cancel_event)
             if progress_cb:
                 progress_cb(66 + 33 * (n_refs + idx) / max(1, n_refs + n_mp),
                             f"加载甲板设备 {mp_name}")
@@ -709,7 +781,8 @@ class GeometryService:
             armor_mtx = np.ascontiguousarray(_negz @ m_raw @ _negz, dtype=np.float32)
             if folder not in model_cache:
                 model_cache[folder] = self._load_mount_model(
-                    folder, extractor, armor_thickness, COMPONENT_DECK)
+                    folder, extractor, armor_thickness, COMPONENT_DECK,
+                    cancel_event=cancel_event)
             src = model_cache[folder]
             if src is None:
                 continue
@@ -718,7 +791,7 @@ class GeometryService:
                     name=mp_name, component=COMPONENT_DECK,
                     positions=hm.positions, normals=hm.normals,
                     uvs=hm.uvs, indices=hm.indices,
-                    model_matrix=mtx,
+                    model_matrix=(armor_mtx if hm.skinned_applied else mtx),
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
@@ -743,7 +816,7 @@ class GeometryService:
             # 甲板设备模型自身骨架上的 MP 子设备（递归，防环）
             sub_n, bmin, bmax = self._place_skeleton_mps(
                 geom, folder, m_raw, model_cache, extractor, armor_thickness,
-                COMPONENT_DECK, bmin, bmax, 0, frozenset())
+                COMPONENT_DECK, bmin, bmax, 0, frozenset(), cancel_event=cancel_event)
             sub_placed += sub_n
 
         if np.isfinite(bmin).all():
@@ -800,7 +873,7 @@ class GeometryService:
         if pm is None:
             return None
         parent_folder = None
-        for _hp, _comp, _mp in refs:
+        for _hp, _comp, _mp, *_ in refs:
             if _hp == parent:
                 parent_folder = self._folder_from_model_path(_mp)
                 break
@@ -831,20 +904,24 @@ class GeometryService:
         self._ship_snapshot_cache[ship.game_key] = data
         return data
 
-    def _load_mount_refs(self, ship: ShipInfo) -> list[tuple[str, str, str]]:
-        """从舰船实体快照收集所有 HP_ 挂载引用：[(hp_name, component, model_path)]。"""
-        out: list[tuple[str, str, str]] = []
+    def _load_mount_refs(self, ship: ShipInfo,
+                         warnings: list | None = None) -> list[tuple[str, str, str, list]]:
+        """从舰船实体快照收集所有 HP_ 挂载引用：[(hp_name, component, model_path, misc_filter)]。
+
+        遍历全部组件分组（不依赖固定键列表），`*_Artillery` 变体归类为主炮；
+        未知组件若含 HP_ + model 挂载引用，记录到 warnings（可见诊断而非静默丢失）。
+
+        misc_filter：该挂点的 `miscFilter` 列表（MP 节点名白名单，非空时仅显示
+        列表中的骨架 MP 子设备；如 PGSB106 同一主炮模型在二号炮塔显示防空炮
+        甲板、三号炮塔显示弹射器）。空列表 = 不限制。
+        """
+        out: list[tuple[str, str, str, list]] = []
         data = self._ship_snapshot(ship)
         if not data:
             return out
-        for key in ("A_Artillery", "A1_Artillery", "A_ATBA", "A_AirDefense",
-                    "A_AirSupport", "A_AirArmament", "A_Directors", "A_Finders",
-                    "A_Radars"):
-            comp = data.get(key)
-            if not isinstance(comp, dict):
-                continue
-            comp_component = component_for_key(key)
-            for hp, v in comp.items():
+        for key, category, group in iter_component_groups(data):
+            has_mount = False
+            for hp, v in group.items():
                 if not hp.startswith("HP_"):
                     continue
                 if not isinstance(v, dict):
@@ -852,7 +929,16 @@ class GeometryService:
                 model = v.get("model")
                 if not model:
                     continue
-                out.append((hp, comp_component, str(model)))
+                has_mount = True
+                mf = v.get("miscFilter") or []
+                if not isinstance(mf, list):
+                    mf = []
+                out.append((hp, category, str(model),
+                            [str(x) for x in mf if isinstance(x, str)]))
+            if has_mount and not is_known_component_key(key):
+                if warnings is not None:
+                    warnings.append(
+                        f"组件 {key} 含挂载引用但未被识别，已按「其他」归属加载")
         return out
 
     # ── assets.bin 骨架挂点 ─────────────────────────────
@@ -861,38 +947,25 @@ class GeometryService:
         """定位 assets.bin（3D 查看器骨架挂点权威来源）。
 
         只使用**当前加载客户端**的 assets.bin，绝不用别的客户端/来源不明的缓存：
-        1) 当前客户端已有解包产物 res_unpack/content/assets.bin（秒开）
-        2) 加载数据流程已提取的 data/assets.bin（复用，避免重复解压）
-        3) 当前客户端版本的现场提取缓存 data/assets_{bin_folder}.bin（仅本客户端生成）
-        4) 现场用解包器从当前客户端 .pkg 提取 content/assets.bin
+        1) 加载数据流程（extractor_service._extract_assets_bin）已提取的 data/assets.bin
+           （3D 查看器现场提取也写入同一路径，供下次复用）
+        2) 现场用解包器从当前客户端 .pkg 提取 content/assets.bin
         """
         import os
         game = app_ctx.ctx.game_path
         if not game:
             return None
-        bin_folder = app_ctx.ctx.bin_folder or ""
-        # 1) 当前客户端解包产物
-        unpacked = Path(game) / "res_unpack" / "content" / "assets.bin"
-        if os.path.exists(unpacked):
-            return str(unpacked)
         try:
             from utils.path_utils import get_data_dir
             data_dir = get_data_dir()
         except Exception:  # noqa: BLE001
             data_dir = None
-        # 2) 复用加载数据流程（extractor_service._extract_assets_bin）已提取的 data/assets.bin
+        # 1) 复用加载数据流程（extractor_service._extract_assets_bin）已提取的 data/assets.bin
         if data_dir is not None:
-            legacy = data_dir / "assets.bin"
-            if os.path.exists(legacy):
-                return str(legacy)
-        # 3) 当前客户端版本缓存（仅由本客户端现场提取生成，绑定版本号）
-        versioned = None
-        if data_dir is not None:
-            versioned = data_dir / (
-                f"assets_{bin_folder}.bin" if bin_folder else "assets_current.bin")
-            if os.path.exists(versioned):
-                return str(versioned)
-        # 4) 现场从当前客户端 .pkg 提取（骨架挂点须与模型同版本）
+            target = data_dir / "assets.bin"
+            if os.path.exists(target):
+                return str(target)
+        # 2) 现场从当前客户端 .pkg 提取（骨架挂点须与模型同版本），产物写入 data/assets.bin 复用
         try:
             ext = self._get_extractor()
             candidates = [
@@ -904,13 +977,13 @@ class GeometryService:
             data = ext.pkg_reader.read_file(entry.volume.filename, entry.file_info)
             if not data:
                 return None
-            if versioned is None:
+            if data_dir is None:
                 from utils.path_utils import get_data_dir
-                versioned = get_data_dir() / (
-                    f"assets_{bin_folder}.bin" if bin_folder else "assets_current.bin")
-            versioned.parent.mkdir(parents=True, exist_ok=True)
-            versioned.write_bytes(data)
-            return str(versioned)
+                data_dir = get_data_dir()
+            out = data_dir / "assets.bin"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+            return str(out)
         except Exception:  # noqa: BLE001
             return None
 
@@ -988,7 +1061,10 @@ class GeometryService:
     def _place_skeleton_mps(self, geom, folder: str, skel_to_ship_game: np.ndarray,
                             model_cache: dict, extractor, armor_thickness: dict,
                             component: str, bmin: np.ndarray, bmax: np.ndarray,
-                            depth: int, visited: frozenset) -> tuple[int, np.ndarray, np.ndarray]:
+                            depth: int, visited: frozenset,
+                            cancel_event: threading.Event | None = None,
+                            mp_allow: frozenset | None = None) \
+            -> tuple[int, np.ndarray, np.ndarray]:
         """递归放置挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等）。
 
         全库约 1% 的 MP 节点父节点不是 Scene Root，而是挂在炮塔/火控等挂载模型
@@ -1000,6 +1076,8 @@ class GeometryService:
               挂载模型骨架→船 = 其 HP 挂点矩阵 m_raw（几何→骨架 = Root_BlendBone 已约去）。
           component: 归属分类（继承父挂载，如主炮塔；甲板设备为 COMPONENT_DECK）
           visited: 递归路径上已出现的模型目录（防环）
+          mp_allow: 当前层 MP 节点白名单（来自挂点 miscFilter，非 None 时仅放置
+              列表中的节点；仅作用于本层，递归子设备不受限）。
 
         变换链（与舰体级 MP 同一规律：几何→自身骨架 = Root_BlendBone）：
           子设备骨架→船 = skel_to_ship_game @ W_sub（MP 节点世界矩阵）
@@ -1017,6 +1095,10 @@ class GeometryService:
         placed = 0
         visited_next = visited | {folder}
         for mp_name, W in mp_nodes.items():
+            self._raise_if_cancelled(cancel_event)
+            # miscFilter 白名单过滤：该炮位未授权的 MP 节点不放置
+            if mp_allow is not None and mp_name not in mp_allow:
+                continue
             sub_folder = mp_base_id(mp_name)
             if not sub_folder or sub_folder in visited_next:
                 continue
@@ -1029,7 +1111,8 @@ class GeometryService:
                 _negz @ sub_skel_to_ship @ _negz, dtype=np.float32)
             if sub_folder not in model_cache:
                 model_cache[sub_folder] = self._load_mount_model(
-                    sub_folder, extractor, armor_thickness, component)
+                    sub_folder, extractor, armor_thickness, component,
+                    cancel_event=cancel_event)
             src = model_cache[sub_folder]
             if src is None:
                 continue
@@ -1038,7 +1121,7 @@ class GeometryService:
                     name=mp_name, component=component,
                     positions=hm.positions, normals=hm.normals,
                     uvs=hm.uvs, indices=hm.indices,
-                    model_matrix=mtx,
+                    model_matrix=(armor_mtx if hm.skinned_applied else mtx),
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=sub_folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
@@ -1063,7 +1146,8 @@ class GeometryService:
             # 子设备自身骨架可能还有 MP（递归，防环）
             sub_n, bmin, bmax = self._place_skeleton_mps(
                 geom, sub_folder, sub_skel_to_ship, model_cache, extractor,
-                armor_thickness, component, bmin, bmax, depth + 1, visited_next)
+                armor_thickness, component, bmin, bmax, depth + 1, visited_next,
+                cancel_event=cancel_event)
             placed += sub_n
         return placed, bmin, bmax
 
@@ -1242,7 +1326,8 @@ class GeometryService:
         return idx
 
     def _load_mount_model(self, folder: str, extractor, armor_thickness: dict,
-                          component: str) -> dict | None:
+                          component: str,
+                          cancel_event: threading.Event | None = None) -> dict | None:
         """加载一个挂载模型目录的几何+贴图+装甲（本地坐标）。失败返回 None。
 
         使用目录索引 O(1) 查找；结果按 folder 缓存（跨船复用，多船共享炮塔等）。
@@ -1271,12 +1356,13 @@ class GeometryService:
         main_tex = ("", b"")
         first_geom_path = entries[0].path
         for e in entries:
+            self._raise_if_cancelled(cancel_event)
             try:
                 data = extractor.pkg_reader.read_file(e.volume.filename, e.file_info)
             except Exception:  # noqa: BLE001
                 continue
             try:
-                parsed = parse_geometry(data, file_path=e.path)
+                parsed = parse_geometry(data, file_path=e.path, cancel_event=cancel_event)
             except GeometryError:  # noqa: BLE001
                 continue
             finally:
@@ -1305,6 +1391,7 @@ class GeometryService:
                     hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'])
                     hm.material = mat
                     hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
+                    hm.skinned_applied = bool(g.get('skinned_applied'))
                     hm.texture_path = tex_path
                     hm.texture_dds = tex_bytes
                     meshes.append(hm)
@@ -1547,17 +1634,22 @@ class GeometryService:
                         if fuz is not None:
                             mat = fuz.get('material') or ''
                             mfm = fuz.get('mfm') or ''
-                            self._apply_skinning(p, fuz)
-                            g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
+                            if self._apply_skinning(p, fuz):
+                                g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
+                                g['skinned_applied'] = True
+                            else:
+                                g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
                             g['prims'].append(p)
                             continue
                 groups.setdefault(None, {'material': None, 'mfm': '', 'prims': []})['prims'].append(p)
             else:
                 mat, mfm = entry
                 rs = global_rs.get(p.mapping_id)
-                self._apply_skinning(p, rs)
+                applied = self._apply_skinning(p, rs)
                 g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
                 g['prims'].append(p)
+                if applied:
+                    g['skinned_applied'] = True
         return groups
 
     @staticmethod
@@ -1802,8 +1894,11 @@ class GeometryService:
         self._skeleton_bones_cache[stem] = out
         return out
 
-    def _apply_skinning(self, prim, rs: dict | None) -> None:
+    def _apply_skinning(self, prim, rs: dict | None) -> bool:
         """对蒙皮图元施加 bind pose 混合（原地修改 positions/normals）。
+
+        返回是否**实际变换了顶点**（True → Root_BlendBone 已烘焙进几何，
+        挂载矩阵不得再乘 rb，否则双重镜像导致朝向翻转）。
 
         背景（PASA111 实证）：Korabli 的蒙皮网格（如 Bow_Antenna / Bow_Antenna_wire，
         材质 *_skinned）顶点存于 **BlendBone 局部帧**，渲染集调色板节点（*_BlendBone /
@@ -1820,22 +1915,22 @@ class GeometryService:
         - 反射骨骼（det=-1）会翻转三角形绕序，但渲染器不启用背面剔除，无碍。
         """
         if prim is None or not prim.is_skinned:
-            return
+            return False
         if prim.bone_indices is None or prim.bone_weights is None:
-            return
+            return False
         if rs is None or not rs.get('skinned'):
-            return
+            return False
         palette = rs.get('nodes') or []
         if not palette:
-            return
+            return False
         # 骨架 stem：渲染集 shape 名 → 模型目录（如 Bow_AntennaShape → ASA031_...）
         # 用当前舰船 model_folder 的骨架（调色板节点名在舰船骨架里）
         stem = getattr(self, '_current_skinning_stem', None)
         if not stem:
-            return
+            return False
         bones = self._skeleton_bones(stem)
         if not bones:
-            return
+            return False
         # 收集调色板骨骼世界矩阵（缺失的跳过）
         mats: list[np.ndarray | None] = []
         any_non_identity = False
@@ -1845,7 +1940,7 @@ class GeometryService:
             if m is not None and not np.allclose(m, np.eye(4), atol=1e-4):
                 any_non_identity = True
         if not any_non_identity:
-            return  # 全部恒等 → 无需变换
+            return False  # 全部恒等 → 无需变换
 
         idx = prim.bone_indices  # (N,4) uint8
         wts = prim.bone_weights  # (N,4) float32
@@ -1881,6 +1976,7 @@ class GeometryService:
         ln = np.linalg.norm(new_nrm, axis=1, keepdims=True)
         ln[ln == 0] = 1.0
         prim.normals = (new_nrm / ln).astype(np.float32)
+        return True
 
     @staticmethod
     def _merge_hull(part_name: str, primitives) -> HullMesh:
@@ -2048,14 +2144,13 @@ class GeometryService:
 
         hull = data.get("A_Hull") or {}
         _collect(hull)
-        # 炮塔 / 副炮 / 防空等各挂载 HP_*.armor（含 A_Artillery 主炮）
-        for comp_key in ("A_Artillery", "A1_Artillery", "A_ATBA", "A_AirDefense",
-                         "A_AirSupport", "A_Directors", "A_Finders", "A_Radars"):
-            comp = data.get(comp_key)
-            if isinstance(comp, dict):
-                for sub in comp.values():
-                    if isinstance(sub, dict):
-                        _collect(sub)
+        # 炮塔 / 副炮 / 防空等各挂载 HP_*.armor（含 A_Artillery / AB1_Artillery 等主炮变体）
+        for key, _category, group in iter_component_groups(data):
+            if key == "A_Hull":
+                continue
+            for sub in group.values():
+                if isinstance(sub, dict):
+                    _collect(sub)
         return out
 
     # ── 生命周期 ────────────────────────────────────────
@@ -2064,3 +2159,31 @@ class GeometryService:
         self._ships = None
         self._ship_snapshot_cache.clear()
         self._release_extractor()
+
+    def _clear_per_load_caches(self) -> None:
+        """释放单次加载产生的全部重内存缓存（本服务**不跨船复用**缓存）。
+
+        挂载模型几何/贴图、材质贴图字节/信息、整船快照、骨架/挂点变换、
+        渲染集、mfm 识别结果均为单次加载的中间产物；返回的 ShipGeometry
+        已按引用共享这些数组（geom 持有引用），清空缓存不影响已加载场景。
+        全局参考数据（目录索引 / 材质名表 / mfm 映射 / shape 名表 / 渲染集
+        全局索引）保留，它们不是按船复用的加载结果。
+        """
+        self._mount_model_cache.clear()
+        self._material_texture_cache.clear()
+        self._material_full_cache.clear()
+        self._ship_snapshot_cache.clear()
+        self._skeleton_bones_cache.clear()
+        self._stem_mount_cache.clear()
+        self._visual_rs_cache.clear()
+        self._mfm_diffuse_cache.clear()
+
+    def release_load_caches(self) -> None:
+        """释放本次加载产生的重内存缓存（3D 查看器关闭时的兜底清理）。
+
+        正常情况下每次 load_ship 结束已在 finally 里清空缓存（无跨船复用）；
+        此处为关闭窗口时的安全网：再清一次并立即 gc.collect() 回收。
+        """
+        import gc
+        self._clear_per_load_caches()
+        gc.collect()

@@ -62,10 +62,12 @@
 
 ## 📄 许可证
 
-本仓库采用**双授权**结构：
+本仓库采用**分离授权**结构：
 
-- **All Rights Reserved (ARR)**：除特别声明外，其余全部代码与文档保留所有权利，未经版权所有者明确书面许可，不得以任何形式复制、分发或修改。详见 [LICENSE](./LICENSE)。
-- **GPLv3**：`data_extractor/kraken.py` 基于 [kraken-decompressor](https://github.com/domdfcoding/kraken-decompressor)（GPLv3）移植，按 GNU GPL v3.0（或更高版本）授权，全文见 [LICENSE.GPLv3](./LICENSE.GPLv3)。
+- **Apache License 2.0**：除下述明确列出的文件外，全部原创代码与文档按 Apache-2.0 授权（含专利授权条款）。详见 [LICENSE.Apache-2.0](./LICENSE.Apache-2.0)。
+- **GPLv3**：`data_extractor/kraken.py` 基于 [kraken-decompressor](https://github.com/domdfcoding/kraken-decompressor)（GPLv3）移植，单独按 GNU GPL v3.0（或更高版本）授权，全文见 [LICENSE.GPLv3](./LICENSE.GPLv3)。
+
+> ⚠️ **组合分发提示**：`kraken.py` 被主程序导入并构成同一组合程序。分发包含该文件的组合程序（如打包后的 exe）时，整体须遵守 GPLv3 的相应义务（提供对应源代码等）。Apache-2.0 与 GPLv3 兼容，可共存于同一程序。详见 [LICENSE](./LICENSE)。
 
 ## 👤 作者
 

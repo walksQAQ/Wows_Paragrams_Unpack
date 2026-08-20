@@ -77,6 +77,8 @@ class TopToolbar(QWidget):
 
         # 标记：是否正在执行加载→解析串联流程
         self._pending_process: bool = False
+        # 应用级后台任务句柄（提取/解析/本地化/刷新；主窗口关闭时取消）
+        self._app_tasks: list = []
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 6, 12, 6)
@@ -146,7 +148,7 @@ class TopToolbar(QWidget):
         self._pending_process = True
         bus.task_progress.emit(0, "开始提取")
         bus.log_message.emit("📦 步骤 1/3: 提取游戏数据...")
-        run_extract()
+        self._track_app_task(run_extract())
 
     def _on_extract_done(self, version: str) -> None:
         """提取完成 → 自动启动解析入库"""
@@ -159,14 +161,14 @@ class TopToolbar(QWidget):
         from services.processor_service import run_process
         bus.task_progress.emit(30, "步骤 2/3: 解析拆分数据")
         bus.log_message.emit("📦 步骤 2/3: 正在解析拆分数据...")
-        run_process()
+        self._track_app_task(run_process())
 
     def _on_lang(self):
         from services.localization_service import run_localization
         self.btn_lang.setEnabled(False)
         bus.task_progress.emit(0, "开始加载文本")
         bus.log_message.emit("🌐 正在加载语言文件...")
-        run_localization()
+        self._track_app_task(run_localization())
 
     def _on_refresh(self):
         """刷新界面：清空缓存 → 刷新显示（不触发重新分析）"""
@@ -186,10 +188,10 @@ class TopToolbar(QWidget):
             bus.task_progress.emit(100, "刷新完成")
 
         from utils.threading_utils import run_async
-        run_async(_work, on_finished=_done, on_error=lambda e: (
+        self._track_app_task(run_async(_work, on_finished=_done, on_error=lambda e: (
             bus.log_message.emit(f"❌ 刷新出错: {e}"),
             self._enable_all()
-        ))
+        )))
 
     def _on_ballistics(self):
         """打开穿深/散布计算器（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
@@ -244,6 +246,22 @@ class TopToolbar(QWidget):
         self.btn_lang.setEnabled(True)
         self.btn_ballistics.setEnabled(True)
         # 不隐藏进度条，由下个任务覆盖
+
+    def _track_app_task(self, task):
+        """记录应用级后台任务句柄（供主窗口关闭时取消）；顺带清理已结束的。"""
+        self._app_tasks = [t for t in self._app_tasks
+                           if t is not None and t.is_running()]
+        if task is not None:
+            self._app_tasks.append(task)
+
+    def cancel_app_tasks(self):
+        """取消所有应用级后台任务（主窗口关闭时调用；已取消任务不再回调）。"""
+        for t in self._app_tasks:
+            try:
+                t.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        self._app_tasks = []
 
     def _sync_server(self):
         t = app_ctx.ctx.wows_type

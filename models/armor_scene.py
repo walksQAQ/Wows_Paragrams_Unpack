@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from utils.threading_utils import TaskCancelled
+
 #: 顶点量化系数（边键去重用；与 wows-toolkit 一致）
 QUANT = 10000
 #: 折角判定阈值：相邻面法线点积 < 该值视为折角边界（≈45°）
@@ -55,9 +57,18 @@ class ArmorScene:
 
     # ── 构建 ────────────────────────────────────────────
 
+    @staticmethod
+    def _check_cancel(cancel_event) -> None:
+        """协作式取消检查点：取消已请求则抛出 TaskCancelled（正常结束，非错误）。"""
+        if cancel_event is not None and cancel_event.is_set():
+            raise TaskCancelled
+
     @classmethod
-    def build(cls, armor_meshes: list) -> "ArmorScene":
-        """由 ArmorMesh 列表聚合场景（应用各自 model_matrix 到舰船空间）。"""
+    def build(cls, armor_meshes: list, cancel_event=None) -> "ArmorScene":
+        """由 ArmorMesh 列表聚合场景（应用各自 model_matrix 到舰船空间）。
+
+        cancel_event: 协作式取消事件；在批次边界检查，取消时抛 TaskCancelled。
+        """
         sc = cls()
         meshes = [m for m in (armor_meshes or [])
                   if m is not None and m.positions.size]
@@ -73,6 +84,7 @@ class ArmorScene:
         # 存储未镜像的舰船空间坐标——先转回舰船空间再应用，否则挂载装甲错位
         negz = np.diag([1.0, 1.0, -1.0, 1.0]).astype(np.float32)
         for m in meshes:
+            cls._check_cancel(cancel_event)
             n_tri = m.positions.shape[0] // 3
             p = m.positions
             nm = m.normals
@@ -102,6 +114,8 @@ class ArmorScene:
         key_to_id: dict[tuple, int] = {}
         plate_ids = np.empty(sc.tri_count, dtype=np.int32)
         for t, info in enumerate(infos):
+            if cancel_event is not None and (t & 0x1FFF) == 0:
+                cls._check_cancel(cancel_event)
             k = info.plate_key
             pid = key_to_id.get(k)
             if pid is None:
@@ -113,6 +127,8 @@ class ArmorScene:
 
         # 层级索引：zone → part → thickness_tenths → [tri_idx]
         for t, info in enumerate(infos):
+            if cancel_event is not None and (t & 0x1FFF) == 0:
+                cls._check_cancel(cancel_event)
             tenths = info.plate_key[2] if len(info.plate_key) > 2 else round(info.thickness_mm * 10)
             part = info.material_name
             sc.zones.setdefault(info.zone, {}).setdefault(part, {}).setdefault(tenths, []).append(t)
@@ -120,20 +136,23 @@ class ArmorScene:
             sc._part_tris.setdefault((info.zone, part), []).append(t)
             sc._zone_tris.setdefault(info.zone, []).append(t)
 
-        sc._build_edges()
+        cls._check_cancel(cancel_event)
+        sc._build_edges(cancel_event)
 
         if sc.world_positions.size:
             sc.bounds_min = sc.world_positions.min(axis=0)
             sc.bounds_max = sc.world_positions.max(axis=0)
         return sc
 
-    def _build_edges(self) -> None:
+    def _build_edges(self, cancel_event=None) -> None:
         """提取板块边界线段（向量化）。
 
         输出条件（与 wows-toolkit 一致）：
           1. 网格边界：该边只有 1 个相邻三角形
           2. 板块边界：两侧三角形 plate_key 不同
           3. 折角：两侧面法线点积 < CREASE_DOT
+
+        cancel_event: 在主要向量化阶段之间检查协作式取消。
         """
         T = self.tri_count
         if T == 0:
@@ -148,12 +167,14 @@ class ArmorScene:
         ln = np.linalg.norm(fn, axis=1)
         ln[ln < 1e-12] = 1.0
         fn = fn / ln[:, None]
+        self._check_cancel(cancel_event)
 
         # 顶点量化 → 唯一顶点 id（跨三角形汤合并共享顶点）
         vq = np.round(pos.astype(np.float64) * QUANT).astype(np.int64)
         unique_v, inv = np.unique(vq, axis=0, return_inverse=True)
         # 每个唯一顶点的代表世界坐标（量化还原，保证共享顶点坐标一致、接缝闭合）
         unique_pos = (unique_v.astype(np.float64) / QUANT).astype(np.float32)
+        self._check_cancel(cancel_event)
 
         # 三条边的端点唯一 id
         n3 = np.arange(T, dtype=np.int64) * 3
@@ -184,6 +205,7 @@ class ArmorScene:
         emit_hi: list[np.ndarray] = []
         emit_t1: list[np.ndarray] = []
         emit_t2: list[np.ndarray] = []
+        self._check_cancel(cancel_event)
 
         # 单邻接边（网格边界）与 >2 邻接边（非流形，按边界处理）
         mask_single = sizes == 1
@@ -216,6 +238,7 @@ class ArmorScene:
                 emit_hi.append(s_hi[st[keep]])
                 emit_t1.append(t1[keep])
                 emit_t2.append(t2[keep])
+        self._check_cancel(cancel_event)
 
         if emit_lo:
             elo = np.concatenate(emit_lo)

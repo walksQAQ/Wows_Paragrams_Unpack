@@ -96,7 +96,7 @@ def _save_ship_models(db, data_by_category: dict, version_code: str) -> None:
         bus.log_message.emit(f"⚠️ 可载入舰船列表写入失败: {e}")
 
 
-def run_process() -> None:
+def run_process() -> "_AppTask":
     data_dir = get_data_dir()
     split_dir = get_split_dir()
 
@@ -148,6 +148,12 @@ def run_process() -> None:
         bus.log_message.emit(f"📦 步骤 3/3: 数据入库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
         bus.task_progress.emit(100, "步骤 3/3: 完成")
 
+    # Gun 复用数据层已有的武器类型识别：不单独新增分析。
+    # 数据层 DatabaseManager._entity_type("Gun")→"gun"、ENTITY_TYPES 含 "gun"、
+    # guns_names.json 名称映射、entity_registry 注册与 entity_snapshots 快照均
+    # 已覆盖 Gun（data/split/Gun/ 大量真实主炮/鱼雷/防空等实体）。这里保留
+    # "Gun" 映射使其继续进入基础实体/快照管线；Gun 无独立分析桶，若日后需要
+    # 结构化炮数据再另立 store_gun 功能。
     TYPE_CATEGORY_MAP = {
         "Ship": "Ship", "Gun": "Gun", "Projectile": "Projectile",
         "Aircraft": "Aircraft", "Ability": "Ability",
@@ -322,7 +328,7 @@ def run_process() -> None:
         bus.log_message.emit(f"❌ 解析失败: {msg}")
         bus.data_processed.emit(False)
 
-    run_async(_process, on_finished=_ok, on_error=_err)
+    return run_async(_process, on_finished=_ok, on_error=_err)
 
 
 def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -> bool:

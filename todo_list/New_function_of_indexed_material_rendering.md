@@ -1,6 +1,10 @@
 # INDEXED 材质（材质 ID 分块涂装）特殊渲染规则实施
 
-> 📌 **状态：待办（2026-08-19 记录，稍后实施）**
+> 📌 **状态：已由 `New_function_of_fix_indexed_render_and_export_glb.md` 取代（2026-08-20）**
+>
+> 2026-08-20 数据库探针证实：真实 vec4 数组只有 `albedoTintMatIdArr`（196×4 tint）与
+> `albedoToRemoveTintMatIdArr`（19×4）；本文档「渲染时」一节引用的 `offsetScaleMatIdArr`
+> 在数据库中不存在。修正方案与 GLB 导出转码设计见新计划文档。
 >
 > 背景：`assets_data.db` 的 `material_full` 表已入库全部材质（含 162 个 INDEXED 材质），
 > `_resolve_material_full` 已能返回 `tech_family=indexed` + 贴图路径 + `indexed_params`（vec4 数组）。

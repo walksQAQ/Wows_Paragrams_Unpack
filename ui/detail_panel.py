@@ -1224,7 +1224,7 @@ class DetailPanel(QWidget):
                         "activeAirDefense": "当防空炮开火时",
                         "visibleEnemyWithinGsTrigger": "当副炮射程内存在敌军战舰时",
                         "activationOnBurnFlood": "战舰上每个活跃的火源和进水点",
-                        "atbaHeat": "存在手动选择的副炮集火目标时",
+                        "atbaHeat": "存在手动选择的副炮优先目标时",
                         "enemyWithinVisibilityTrigger": "当战舰的标准被侦查范围内有敌方战舰时",
                         "EnemiesNotLessThanAlliesWithinGMTrigger": "当主炮射程范围内的友方战舰不多于敌方战舰时",
                         "entityIsVisibleTrigger": "当战舰被敌方发现时",
@@ -1275,7 +1275,7 @@ class DetailPanel(QWidget):
                     # 特殊修饰符覆盖描述
                     _desc_override = {
                         "restoreForsage": "完全恢复舰载机中队飞机最后一个攻击编队的引擎加力",
-                        "fireResistanceEnabled": "最大火灾次数-1",
+                        "fireResistanceEnabled": "最大火灾次数 <span style=\"color:#4caf50;\">-1</span>",
                     }
                     # 隐藏的修饰符（不在技能提示中显示）
                     _hidden_mods = {"torpedoDetectionCoefficientByPlane"}
@@ -1321,10 +1321,11 @@ class DetailPanel(QWidget):
                         if mk == "callFightersAdditionalPlanesLowLevel" and _ship_tier >= 8:
                             continue
                         # burnChanceFactor 高低级合并显示
+                        # 「造成起火的几率」为进攻属性：降低=减益(红)，升高=增益(绿)，不取反
                         if mk in ("burnChanceFactorHighLevel", "burnChanceFactorLowLevel"):
                             if not _burn_chance_shown:
                                 _burn_chance_shown = True
-                                _add_mod_line(lines, "应用加成前，造成起火的几率", mv, _neg=True)
+                                _add_mod_line(lines, "应用加成前，造成起火的几率", mv)
                             continue
                         # 按截击机/巡逻战斗机动态调整标签
                         if mk in ("callFightersWorkTimeCoeff", "callFightersAdditionalConsumables"):
