@@ -363,47 +363,6 @@ def _decode_golomb_rice_bits(dst, size, bitcount, br2):
     return True, br2
 
 
-def _huff_convert_to_ranges(range_out, num_symbols, P, symlen, br2):
-    """C++ Huff_ConvertToRanges — 构建符号范围列表
-    
-    range_out: 输出列表 [(symbol, num), ...]
-    symlen: 码长差分数组 (从 num_symbols 开始)
-    br2: BitReader2 (读取额外位)
-    返回: 范围数 (负数表示失败)
-    """
-    num_ranges = P >> 1
-    sym_idx = 0
-    
-    if P & 1:
-        v = symlen[0] if symlen else 0
-        if v >= 8:
-            return -1
-        sym_idx = br2.read_bits(v + 1) + (1 << (v + 1)) - 1
-    syms_used = 0
-    sli = 0
-    
-    for i in range(num_ranges):
-        v = symlen[sli] if sli < len(symlen) else 0
-        sli += 1
-        if v >= 9:
-            return -1
-        num = br2.read_bits(v) + (1 << v)
-        v = symlen[sli] if sli < len(symlen) else 0
-        sli += 1
-        if v >= 8:
-            return -1
-        space = br2.read_bits(v + 1) + (1 << (v + 1)) - 1
-        range_out.append((sym_idx, num))
-        syms_used += num
-        sym_idx += num + space
-    
-    if sym_idx >= 256 or syms_used >= num_symbols or sym_idx + num_symbols - syms_used > 256:
-        return -1
-    
-    range_out.append((sym_idx, num_symbols - syms_used))
-    return len(range_out)
-
-
 def _read_huff_codelens_new(src: bytes, byte_off: int, bit_off: int,
                             syms: list[int], code_prefix: list[int],
                             CODE_PREFIX_ORG: list[int]) -> tuple[int, int]:
@@ -533,6 +492,12 @@ def _read_huff_codelens_new(src: bytes, byte_off: int, bit_off: int,
     return num_symbols, consumed
 
 
+# 模块级 Huffman 码前缀表（C++ Huff_MakeLut 常量；build_kraken_lut 与
+# _decode_huff_type12 共用，避免逐函数重复定义）
+CODE_PREFIX_ORG = [0x0, 0x0, 0x2, 0x6, 0xE, 0x1E, 0x3E, 0x7E,
+                   0xFE, 0x1FE, 0x2FE, 0x3FE]
+
+
 def build_kraken_lut(syms: list[int], code_prefix: list[int],
                      num_syms: int) -> tuple[list[int], list[int]]:
     """构建 2048 条目 Huffman LUT (匹配 C++ Huff_MakeLut)
@@ -542,9 +507,6 @@ def build_kraken_lut(syms: list[int], code_prefix: list[int],
     
     返回 (lut_sym, lut_bits) — 需 bit-reversed 才能使用
     """
-    CODE_PREFIX_ORG = [0x0, 0x0, 0x2, 0x6, 0xE, 0x1E, 0x3E, 0x7E,
-                       0xFE, 0x1FE, 0x2FE, 0x3FE]
-    
     lut_sym = [0] * 2048
     lut_bits = [0] * 2048
     currslot = 0
@@ -591,34 +553,6 @@ def build_kraken_lut(syms: list[int], code_prefix: list[int],
         rev_bits[rev] = lut_bits[i]
     
     return rev_sym, rev_bits
-
-
-# ══════════════════════════════════════════════════════════
-# 3. 查表消费 + 三流并行解码
-# ══════════════════════════════════════════════════════════
-
-def _lookup(rd: OodleBitReader, lut_sym: list[int],
-             lut_bits: list[int], reverse: bool = False) -> tuple[int, int]:
-    """查表消费1个符号, 返回 (symbol, consumed_bits)
-    
-    MSB优先: peek = bit_buf >> 21 (高11位), consume = 左移
-    """
-    if reverse:
-        if rd.bits_left < 11:
-            rd.refill_reverse()
-        peek = rd.bit_buf >> 21
-    else:
-        if rd.bits_left < 11:
-            rd.refill()
-        peek = rd.bit_buf >> 21
-    
-    sym = lut_sym[peek]
-    nb = lut_bits[peek]
-    if nb == 0:
-        rd.consume(1)
-        return 0, 1
-    rd.consume(nb)
-    return sym, nb
 
 
 # ══════════════════════════════════════════════════════════
@@ -756,8 +690,6 @@ def _decode_huff_type12(src: bytes, out_size: int, huff_type: int
         return None
 
     br = OodleBitReader(src, 0)
-    CODE_PREFIX_ORG = [0x0, 0x0, 0x2, 0x6, 0xE, 0x1E, 0x3E, 0x7E,
-                       0xFE, 0x1FE, 0x2FE, 0x3FE]
     code_prefix = list(CODE_PREFIX_ORG)
     syms = list(range(1280))
 
@@ -834,7 +766,8 @@ def _decode_huff_type12(src: bytes, out_size: int, huff_type: int
 # ══════════════════════════════════════════════════════════
 
 def _byteswap(x: int) -> int:
-    return ((x >> 24) & 0xFF) | ((x >> 8) & 0xFF00) | ((x << 8) & 0xFF0000) | ((x << 24) & 0xFF000000)
+    """32 位字节交换（与 _bswap32 等价，保留名称以兼容调用点）。"""
+    return _bswap32(x)
 
 
 # ══════════════════════════════════════════════════════════

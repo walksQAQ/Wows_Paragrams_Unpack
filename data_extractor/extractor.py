@@ -192,26 +192,6 @@ class GameExtractor:
         folders.sort(key=int)
         return folders[-1]
 
-    def _match_pattern(self, pattern: str) -> list[VfsEntry]:
-        """用 glob 模式匹配文件树中的路径
-
-        支持:
-            - `*` 匹配任意字符（不含 '/'）
-            - `**` 匹配任意路径
-            - `?` 匹配单个字符
-            - `[abc]` 字符集
-        """
-        matches = []
-        for path, entry in self._file_tree.items():
-            if fnmatch.fnmatch(path, pattern):
-                matches.append(entry)
-            # 也支持 ** 模式在任意层级匹配
-            if '**' in pattern:
-                # 将 ** 转换为多级通配
-                if fnmatch.fnmatch(path, pattern):
-                    continue
-        return matches
-
     # ── 高级接口 ──────────────────────────────────────────
 
     def list_files(self, patterns: list[str] | None = None) -> list[VfsEntry]:
