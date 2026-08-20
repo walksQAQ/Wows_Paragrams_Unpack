@@ -2,7 +2,7 @@
 
 > 📌 **状态：已实现首版（2026-08-18 更新）**
 >
-> ✅ 已实现：数据层 .geometry 解析（含 ENCD 解码）、舰船 3D 渲染、装甲模型渲染（厚度着色）、装甲厚度图例。数据层（IDX/PKG/Kraken/bc7prep）与 .geometry 解析、装甲厚度、3D 渲染均已落地；碰撞模型渲染、OBJ 导出等仍待续。详见「实施记录（2026-08-18）」与「〇、现状审计与实施建议」。
+> ✅ 已实现：数据层 .geometry 解析（含 ENCD 解码）、舰船 3D 渲染、装甲模型渲染（厚度着色）、装甲厚度图例。数据层（IDX/PKG/Kraken/bc7prep）与 .geometry 解析、装甲厚度、3D 渲染均已落地；**渲染集/骨架/材质元数据一律从 assets_data.db 读取，舰船实体数据（装甲厚度/挂载引用）一律从主库 entity_snapshots 读取（DB-first，2026-08-19 审计收敛）**；**INDEXED 分块材质渲染已落地**；碰撞模型渲染、OBJ 导出等仍待续。详见「实施记录（2026-08-18/19）」与「〇、现状审计与实施建议」。
 
 ## 实施记录（2026-08-18）
 
@@ -22,14 +22,18 @@
 | P1 渲染 | ui/geometry_renderer.py 挂载矩阵+独立贴图+装甲过滤 | ✅ | per-mesh model_matrix/normal_mat + 归属/类型过滤 |
 | P1 UI | ui/geometry_viewer.py 归属+类型筛选 | ✅ | 组件 checkbox + 装甲类型 checkbox + 挂载统计 |
 | P1 性能 | 目录索引 + file_tree O(1) + 跨船缓存 | ✅ | 加载 100s → 23s |
-| P1 材质贴图 | _section_render_sets+_split_primitives_by_material | ✅ | 逆向 Korabli VisualPrototype 布局；舰体按材质拆分 Hull/DeckHouse 独立贴图 |
+| P1 材质贴图 | _ship_render_sets+_split_primitives_by_material | ✅ | 渲染集**只从 assets_data.db 读取**（_section_render_sets 已废弃为死代码）；舰体按材质拆分 Hull/DeckHouse 独立贴图 |
 | P1 LOD | _geometry_folder_index 排除 lods | ✅ | 仅显示高模（LOD0），排除 _lodN 与 crack/patch 变体 |
 | P1 逆向 | Korabli visual r2p 偏移 5510 定位 | ✅ | 扫描式记录发现 + murmur3(shape.vertices)==mapping_id 连接 |
-| P2 导出 OBJ / 解析器自测 | 未实现 | ○ | 待续 |
+| P1 DB-first | geometry_service 渲染集/骨架/材质全部走 assets_data.db | ✅ | 2026-08-19 审计：_ship_render_sets / _shape_names_sdict / _mfm_diffuse_base / _resolve_material_full / _load_mount_transforms / _skeleton_bone_world 均只读 DB；assets.bin 直读方法（_section_render_sets/_parse_visual_render_sets/_mfm_index/_strings_dict/_ensure_visual_geom_index）为死代码；贴图字节从客户端 pkg 解包（DB 只存路径） |
+| P1 DB-first | 舰船实体数据走主库 entity_snapshots | ✅ | 2026-08-19：_load_armor_thickness / _load_mount_refs 改读 db.load_ship_snapshot（加载数据入库的规范化 JSON），list_ships 移除 data/split 扫描回退；显示阶段不再读 data/split/Ship/*.json（3 船对照验证：装甲/HP 引用与直读 JSON 完全一致） |
+| P1 INDEXED | 材质技术族 + INDEXED 分块渲染 | ✅ | _resolve_material_full：indexed(0x0009)/pbs(0x0005) 技术族 + albedoArray 分块图集 + indexed_params(grid/offset/arrays) |
+| P2 导出 OBJ / 解析器自测 | 未实现 | ○ | 待续（services/export_service.py 不存在） |
 
 重要备注：
 - 工具栏“⛵ 3D 查看”按钮开启；框中可搜索 1056 艘舰船。
 - 默认侧舷视角；左键旋转 / 滚轮缩放 / 右键平移。
+- **架构约束（2026-08-19）**：渲染集/骨架/材质元数据一律只从 assets_data.db 读取（加载数据时 populate 入库），显示阶段绝不现场读 assets.bin；贴图字节（.dds/.dd0）例外，从客户端 pkg 解包。
 - 后续：OBJ 导出、碰撞模型渲染、厚度差值图例可选色等。
 
 ## 概述
@@ -52,7 +56,7 @@
 |------|------|------|
 | 数据层解包（IDX/PKG/Kraken/bc7prep） | ✅ 已就绪 | `data_extractor.GameExtractor`（`list_files`/`extract`/`extract_single`）已按 glob 匹配 VFS 文件，docstring 示例即 `D:/World_of_Warships_RU/Korabli_ST`，`content/**/*.geometry` 可直接提取，无需新写解包器 |
 | `.geometry` 格式解析 | ❌ 0% | `models/geometry_parser.py` 等全部不存在 |
-| 装甲厚度数据源 | ❌ 缺失 | `services/GameParams.py` 只是 pickle 桩类（仅为反序列化旧 .data）；SQLite 也无 armor 表 → 装甲按厚度着色无数据来源 |
+| 装甲厚度数据源 | ✅ 已解决 | 从主库 entity_snapshots 舰船快照读 `A_Hull.armor` + 各挂载 `HP_*.armor`（`_load_armor_thickness`，DB-first），无需依赖 GameParams |
 | 3D 渲染依赖 | ❌ 缺失 | `requirements.txt` 无 OpenGL / numpy / trimesh 等任何 3D 库 |
 | UI 集成点 | ✅ 结构清晰 | `DetailPanel` 有 `QStackedWidget`；`CategoryBar` 有 `CATEGORIES`；可照穿深计算器（`PenetrationCalculatorDialog`）的独立顶层窗口 + 懒创建单实例模式接入 |
 
@@ -79,15 +83,17 @@
 
 ### 0.4 任务分解（对应第四节清单）
 
-- [ ] P0-1 实证脚本 `_archive/scripts/probe_geometry.py`（列文件 + dump 头部）
-- [ ] P0-2 `models/geometry_parser.py`（骨架 + 头部/指针/PackedString → 顶点/索引 → 碰撞 → 装甲 BVH）
-- [ ] P0-3 ENCD 解码方案验证（wheel / ctypes / 纯 Python 分级降级）
-- [ ] P0-4 增强 `GameParams` 装甲厚度解析
-- [ ] P1-1 `services/geometry_service.py`（提取 + 缓存 + splash 分类）
-- [ ] P1-2 `models/collision_materials.py` 材质名表 + `services/armor_service.py`
-- [ ] P1-3 `ui/geometry_viewer.py` + `ui/geometry_renderer.py`（独立窗口 + ModernGL）
-- [ ] P1-4 `models/camera.py` + `models/shader.py`
-- [ ] P1-5 工具栏入口 + `main_window` 懒创建连接
+> ✅ 2026-08-19：P0-1~P1-5 已全部落地（见「实施记录」）；仅 P2（OBJ 导出 / 解析器自测）未实现。
+
+- [x] P0-1 实证脚本 `_archive/scripts/probe_geometry.py`（列文件 + dump 头部）
+- [x] P0-2 `models/geometry_parser.py`（骨架 + 头部/指针/PackedString → 顶点/索引 → 碰撞 → 装甲 BVH）
+- [x] P0-3 ENCD 解码方案验证（wheel / ctypes / 纯 Python 分级降级）
+- [x] P0-4 增强 `GameParams` 装甲厚度解析（改为从主库 entity_snapshots 舰船快照读 A_Hull.armor，DB-first）
+- [x] P1-1 `services/geometry_service.py`（提取 + 缓存 + splash 分类）
+- [x] P1-2 `models/collision_materials.py` 材质名表 + `services/armor_service.py`
+- [x] P1-3 `ui/geometry_viewer.py` + `ui/geometry_renderer.py`（独立窗口 + ModernGL→PyOpenGL）
+- [x] P1-4 `models/camera.py` + `models/shader.py`
+- [x] P1-5 工具栏入口 + `main_window` 懒创建连接
 - [ ] P2-1 `services/export_service.py` OBJ 导出
 - [ ] P2-2 解析器自测脚本（`_archive/scripts`，trimesh + matplotlib 三视图离线验证）
 - [ ] 依赖：`requirements.txt` 新增 `numpy`、`moderngl`、`PyGLM`、`trimesh`（可选）

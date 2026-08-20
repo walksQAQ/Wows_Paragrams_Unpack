@@ -2,7 +2,8 @@
 geometry_service.py —— 舰船 3D 几何与装甲提取服务。
 
 职责：
-  1. 从 data/split/Ship/*.json 发现舰船（GameParams 键、model 路径、装甲厚度字典、显示名）
+  1. 发现舰船（GameParams 键、model 路径、装甲厚度字典、显示名）——DB-first：
+     优先主库 ship_models/entity_snapshots 表；data/split JSON 仅作旧库回退
   2. 用 data_extractor.GameExtractor 从游戏客户端读取该舰所有 .geometry 部件文件
   3. 解析并合并为可直接上传 GPU 的 HullMesh / ArmorMesh / 碰撞模型
 
@@ -12,7 +13,7 @@ geometry_service.py —— 舰船 3D 几何与装甲提取服务。
 
 from __future__ import annotations
 
-import json
+import re
 import struct
 import threading
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ COMPONENT_AA = "防空"
 COMPONENT_DIRECTOR = "指挥仪"
 COMPONENT_FINDER = "测距仪"
 COMPONENT_RADAR = "雷达"
+COMPONENT_DECK = "甲板设备"
 COMPONENT_OTHER = "其他"
 
 #: GameParams 组件键 → 归属分类
@@ -64,6 +66,35 @@ _COMPONENT_BY_KEY = {
 def component_for_key(comp_key: str) -> str:
     """GameParams 组件键 → 归属分类（未知键归"其他"）。"""
     return _COMPONENT_BY_KEY.get(comp_key, COMPONENT_OTHER)
+
+
+# ── MP 甲板设备节点 → misc 模型映射（纯命名约定，数据驱动校验 99.99% 命中）──
+# MP_{baseID}_{desc}_{instance}[_INDEX_N] → 去 MP_ 前缀 → 首个「字母+数字」token
+# 即 baseID；国家目录由 baseID 首字母决定；模型目录 = baseID（几何在
+# content/gameplay/{nation}/misc/{baseID}/{baseID}.geometry，与 HP 挂载同一
+# 目录索引/渲染集/贴图管线加载）。
+_MP_NATION_BY_LETTER = {
+    "A": "usa", "B": "uk", "C": "common", "F": "france", "G": "germany",
+    "H": "netherlands", "I": "italy", "J": "japan", "R": "russia",
+    "S": "spain", "U": "commonwealth", "V": "panamerica", "W": "europe",
+    "X": "events", "Z": "panasia",
+}
+_MP_BASE_RE = re.compile(r"^([A-Z][A-Z0-9]*?\d+)")
+
+
+def mp_base_id(mp_name: str) -> str:
+    """MP 节点名 → baseID（模型目录名）；无法解析返回空串。
+
+    例：MP_AM003_Fairlead_1 / MP_AM003_Fairlead_1_INDEX_2 → "AM003"
+    """
+    body = mp_name[3:] if mp_name.startswith("MP_") else mp_name
+    m = _MP_BASE_RE.match(body)
+    return m.group(1) if m else ""
+
+
+def mp_nation(base_id: str) -> str:
+    """baseID 首字母 → 国家目录名；未知返回空串。"""
+    return _MP_NATION_BY_LETTER.get(base_id[:1], "") if base_id else ""
 
 
 @dataclass
@@ -253,6 +284,8 @@ class GeometryService:
         self._shape_names_tried = False
         #: assets_data.db 材质贴图映射缓存 {mfm_path: diffuse_base}（数据库优先，一次加载）
         self._mfm_textures_db: dict | None = None
+        #: 舰船实体 JSON 快照缓存 {game_key: dict}（DB-first：只读主库 entity_snapshots）
+        self._ship_snapshot_cache: dict = {}
     @classmethod
     def instance(cls) -> "GeometryService":
         with cls._lock:
@@ -282,11 +315,14 @@ class GeometryService:
     # ── 舰船列表 ────────────────────────────────────────
 
     def list_ships(self, refresh: bool = False) -> list[ShipInfo]:
-        """发现可载入舰船（优先数据库 ship_models 表，回退扫描 data/split/Ship）。"""
+        """发现可载入舰船（DB-first：只读主库 ship_models 表）。
+
+        ship_models 在「加载数据」入库时写入；数据库无记录提示先加载数据，
+        不再回退扫描 data/split JSON。
+        """
         if self._ships is not None and not refresh:
             return self._ships
 
-        # 1) 优先：数据库 ship_models 表（数据入库时一并记录，无需每次扫 data/split）
         ships: list[ShipInfo] = []
         try:
             from services.database_service import get_db
@@ -303,51 +339,8 @@ class GeometryService:
                     ))
         except Exception:  # noqa: BLE001
             ships = []
-        if ships:
-            self._ships = ships
-            return ships
-
-        # 2) 回退：数据库无记录（旧库/未入库）时扫描 data/split/Ship/*.json
-        split_dir = app_ctx.ctx.split_dir
-        ship_dir = split_dir / "Ship"
-        ships = []
-        if not ship_dir.exists():
-            self._ships_error = "未找到拆分数据: data/split/Ship"
-            self._ships = ships
-            return ships
-
-        try:
-            for f in sorted(ship_dir.iterdir()):
-                if f.suffix.lower() != ".json":
-                    continue
-                game_key = f.stem
-                try:
-                    with open(f, encoding="utf-8") as fh:
-                        data = json.load(fh)
-                except Exception:  # noqa: BLE001
-                    continue
-                hull = data.get("A_Hull") or {}
-                model = hull.get("model") or ""
-                if not model:
-                    continue
-                model_path = str(model)
-                # content/gameplay/{nation}/ship/{type}/{folder}/{folder}.model
-                parts = [p for p in model_path.replace("\\", "/").split("/") if p]
-                model_folder = ""
-                if len(parts) >= 2:
-                    model_folder = parts[-2]
-                nation = str(data.get("typeinfo", {}).get("nation", ""))
-                ships.append(ShipInfo(
-                    game_key=game_key,
-                    display_name=self._resolve_ship_name(game_key),
-                    model_folder=model_folder,
-                    model_path=model_path,
-                    nation=nation,
-                    has_geometry=bool(model_folder),
-                ))
-        except Exception as exc:  # noqa: BLE001
-            self._ships_error = str(exc)
-
+        if not ships:
+            self._ships_error = "数据库无可载入舰船（请先「加载数据」）"
         self._ships = ships
         return ships
 
@@ -588,10 +581,10 @@ class GeometryService:
         每个挂载使用该模型自己的贴图（`{stem}_a.dd0` 命名约定）。
         """
         refs = self._load_mount_refs(ship)
-        if not refs:
+        transforms = self._load_mount_transforms(ship)
+        if not refs and not transforms:
             geom.stats["mounts"] = 0
             return
-        transforms = self._load_mount_transforms(ship)
         if not transforms:
             geom.stats["mounts"] = 0
             geom.stats.setdefault("warnings", []).append(
@@ -669,10 +662,60 @@ class GeometryService:
                     bmax = np.maximum(bmax, mx)
             placed += 1
 
+        # ── MP 甲板设备挂载（缆桩/小艇/探照灯/救生筏等 misc 模型）──
+        # MP 节点不在 GameParams，由 populate 纳入 skeleton_mounts（v5）；
+        # 模型目录由命名约定推导：MP_{baseID}_... → misc/{baseID}/{baseID}.geometry
+        mp_placed = 0
+        mp_items = [(n, m) for n, m in transforms.items() if n.startswith("MP_")]
+        n_mp = len(mp_items)
+        for idx, (mp_name, m_raw) in enumerate(mp_items):
+            if progress_cb:
+                progress_cb(66 + 33 * (n_refs + idx) / max(1, n_refs + n_mp),
+                            f"加载甲板设备 {mp_name}")
+            folder = mp_base_id(mp_name)
+            if not folder:
+                continue
+            rb = self._mount_root_blend(folder)
+            mtx = np.ascontiguousarray(_negz @ (m_raw @ rb) @ _negz, dtype=np.float32)
+            if folder not in model_cache:
+                model_cache[folder] = self._load_mount_model(
+                    folder, extractor, armor_thickness, COMPONENT_DECK)
+            src = model_cache[folder]
+            if src is None:
+                continue
+            for hm in src["meshes"]:
+                mm = MountMesh(
+                    name=mp_name, component=COMPONENT_DECK,
+                    positions=hm.positions, normals=hm.normals,
+                    uvs=hm.uvs, indices=hm.indices,
+                    model_matrix=mtx,
+                    texture_dds=hm.texture_dds, texture_path=hm.texture_path,
+                    model_folder=folder, vertex_count=hm.vertex_count,
+                    is_wire=hm.is_wire,
+                )
+                geom.mounts.append(mm)
+                if mm.positions.size:
+                    mn, mx = mm.bounds_in_world()
+                    bmin = np.minimum(bmin, mn)
+                    bmax = np.maximum(bmax, mx)
+            for am in src["armor_meshes"]:
+                mesh = ArmorMesh(
+                    name=am.name, positions=am.positions, normals=am.normals,
+                    colors=am.colors, indices=am.indices, triangles=am.triangles,
+                    component=COMPONENT_DECK, model_matrix=mtx,
+                )
+                geom.armor_meshes.append(mesh)
+                if mesh.positions.size:
+                    mn, mx = mesh.bounds_in_world()
+                    bmin = np.minimum(bmin, mn)
+                    bmax = np.maximum(bmax, mx)
+            mp_placed += 1
+
         if np.isfinite(bmin).all():
             geom.bounds_min = bmin
             geom.bounds_max = bmax
         geom.stats["mounts"] = placed
+        geom.stats["deck_equipment"] = mp_placed
         geom.stats["unique_mount_models"] = len(model_cache)
 
     @staticmethod
@@ -732,16 +775,31 @@ class GeometryService:
             return None
         return pm @ child_w
 
-    def _load_mount_refs(self, ship: ShipInfo) -> list[tuple[str, str, str]]:
-        """从舰船 JSON 收集所有 HP_ 挂载引用：[(hp_name, component, model_path)]。"""
-        out: list[tuple[str, str, str]] = []
-        ship_file = app_ctx.ctx.split_dir / "Ship" / f"{ship.game_key}.json"
-        if not ship_file.exists():
-            return out
+    def _ship_snapshot(self, ship: ShipInfo) -> dict:
+        """舰船实体 JSON（DB-first：只读主库 entity_snapshots，绝不读 data/split）。
+
+        快照在「加载数据」入库时写入；按 game_key 缓存（同船多次查询复用）。
+        数据库无记录返回 {}（装甲厚度/挂载引用为空，舰体仍正常显示）。
+        """
+        cached = self._ship_snapshot_cache.get(ship.game_key)
+        if cached is not None:
+            return cached
+        data: dict = {}
         try:
-            with open(ship_file, encoding="utf-8") as fh:
-                data = json.load(fh)
+            from services.database_service import get_db
+            db = get_db(app_ctx.ctx.wows_type)
+            if db.exists:
+                data = db.load_ship_snapshot(ship.game_key) or {}
         except Exception:  # noqa: BLE001
+            data = {}
+        self._ship_snapshot_cache[ship.game_key] = data
+        return data
+
+    def _load_mount_refs(self, ship: ShipInfo) -> list[tuple[str, str, str]]:
+        """从舰船实体快照收集所有 HP_ 挂载引用：[(hp_name, component, model_path)]。"""
+        out: list[tuple[str, str, str]] = []
+        data = self._ship_snapshot(ship)
+        if not data:
             return out
         for key in ("A_Artillery", "A1_Artillery", "A_ATBA", "A_AirDefense",
                     "A_AirSupport", "A_AirArmament", "A_Directors", "A_Finders",
@@ -966,55 +1024,56 @@ class GeometryService:
             return db.reconstruct_path(i, idx) if i is not None else ''
 
         target = section_geom_path.rstrip('/')
-        # 1) 一次性索引：geometry 路径 → 引用它的 visual 记录（+0x20/+0x60）
+        # 1) 一次性索引：geometry 路径 → 引用它的 visual 记录（+0x20 geometry）
+        #    ⚠️ 2026-08-19 修正：VisualPrototype item_size=0x40（非 0x80）。
+        #    每条记录唯一 geometry（+0x20）+ primitives（+0x28），无 +0x60 第二引用。
         if self._visual_geom_index is None:
             geom_idx: dict = {}
             for ri in range(entry.record_count):
                 off = BLOB_HEADER_SIZE + ri * entry.item_size
-                if off + 0x80 > len(data):
+                if off + 0x40 > len(data):
                     break
-                rec = data[off:off + 0x80]
-                for foff in (0x20, 0x60):
-                    h = struct.unpack_from('<Q', rec, foff)[0]
-                    if h in idx:
-                        gp = db.reconstruct_path(idx[h], idx)
-                        # 同一记录可能同时引用多个分段几何（如 base + Bow），全部登记
-                        geom_idx.setdefault(gp, []).append(ri)
+                rec = data[off:off + 0x40]
+                h = struct.unpack_from('<Q', rec, 0x20)[0]
+                if h in idx:
+                    gp = db.reconstruct_path(idx[h], idx)
+                    geom_idx.setdefault(gp, []).append(ri)
             self._visual_geom_index = geom_idx
         recs = self._visual_geom_index.get(target) or []
         if not recs:
             return []
 
-        # 2) 用字符串扫描解析 OOL 渲染集（任意偏移，覆盖 LOD 组间间隙）：
-        #    渲染集结构（0x50 步长）：+0x00 shape.vertices 名 / +0x04 indices /
-        #    +0x08 材质名 / +0x20 .mfm 路径 selfId。扫描 *.vertices 即渲染集起点。
+        # 2) 解析 OOL 渲染集（rel 起、0x50 步长、count 项）：
+        #    渲染集结构（0x50 步长）：+0x00 shape.vertices / +0x04 indices /
+        #    +0x08 材质名 / +0x20 .mfm 路径 selfId。
         out: dict[str, dict] = {}
         for ri in recs:
             rec_off = BLOB_HEADER_SIZE + ri * entry.item_size
-            rec = data[rec_off:rec_off + 0x80]
-            rel = struct.unpack_from('<Q', rec, 0x78)[0]
-            if not rel:
+            rec = data[rec_off:rec_off + 0x40]
+            cnt = struct.unpack_from('<Q', rec, 0x30)[0]
+            rel = struct.unpack_from('<Q', rec, 0x38)[0]
+            if not rel or cnt <= 0 or cnt > 500:
                 continue
-            for base, label in ((rec_off + rel, 'rec-rel'), (rel, 'blob-rel')):
-                if not (0 <= base < len(data)):
+            base = rec_off + rel
+            if base + cnt * 0x50 > len(data):
+                continue
+            for k in range(cnt):
+                o = base + k * 0x50
+                shape_h = struct.unpack_from('<I', data, o)[0]
+                shape = db.strings.get_string_by_id(shape_h) or ''
+                if not shape.endswith('.vertices'):
                     continue
-                seg = data[base:base + 0x10000]
-                for off in range(0, len(seg) - 0x30, 4):
-                    u32 = struct.unpack_from('<I', seg, off)[0]
-                    shape = db.strings.get_string_by_id(u32) or ''
-                    if not shape.endswith('.vertices'):
-                        continue
-                    iid = struct.unpack_from('<I', seg, off + 4)[0]
-                    mid = struct.unpack_from('<I', seg, off + 8)[0]
-                    mfm = struct.unpack_from('<Q', seg, off + 0x20)[0]
-                    sind = db.strings.get_string_by_id(iid) or ''
-                    mat = db.strings.get_string_by_id(mid) or ''
-                    smfm = path_of(mfm)
-                    # 仅跳过 crack 损伤与低模 LOD；patch/wire/hide 保留渲染
-                    damage = ('_crack_' in shape or '_lod' in shape or 'Crack' in mat)
-                    if shape not in out:
-                        out[shape] = {'shape': shape, 'indices': sind,
-                                      'material': mat, 'mfm': smfm, 'damage': damage}
+                iid = struct.unpack_from('<I', data, o + 4)[0]
+                mat_h = struct.unpack_from('<I', data, o + 8)[0]
+                mfm_h = struct.unpack_from('<Q', data, o + 0x20)[0]
+                sind = db.strings.get_string_by_id(iid) or ''
+                mat = db.strings.get_string_by_id(mat_h) or ''
+                smfm = path_of(mfm_h)
+                # 仅跳过 crack 损伤与低模 LOD；patch/wire/hide 保留渲染
+                damage = ('_crack_' in shape or '_lod' in shape or 'Crack' in mat)
+                if shape not in out:
+                    out[shape] = {'shape': shape, 'indices': sind,
+                                  'material': mat, 'mfm': smfm, 'damage': damage}
         return list(out.values())
 
     def _geometry_folder_index(self, extractor) -> dict:
@@ -1358,22 +1417,16 @@ class GeometryService:
 
     @staticmethod
     def _norm_shape_stem(name: str) -> str:
-        """归一化 shape 名（去 .vertices 后缀 + 去尾部重复字母）。
+        """归一化 shape 名（仅去 .vertices 后缀；**不再剥尾部重复字母**）。
 
-        处理游戏渲染集/几何 shape 名笔误差异（如 `TurretShapeff.vertices` 是
-        `TurretShape.vertices` 双 f 笔误）——去尾部连续重复字母后两者归一相同，
-        供 _split_primitives_by_material 模糊兜底匹配。
+        ⚠️ 旧实现会把 TurretShapeff → TurretShape（剥 ff），导致 JGA180 的 TurretShape
+        网格在渲染集里模糊匹配到 JGA181 的 TurretShapeff 行，错用 JGA010 贴图。
+        实证 PT 26.9：TurretShapeff 是 JGA181.geometry 的真实网格名（mapping_id
+        0xb6f4c31d），TurretShape 是 JGA180 的真实网格名（0x03432c0c）——二者是
+        不同网格，必须严格区分，不得归并。模糊兜底保留（去后缀后同名才匹配），
+        仅处理真正的大小写/后缀笔误。
         """
-        stem = name[:-len('.vertices')] if name.endswith('.vertices') else name
-        # 仅当尾部连续相同字符 >=2 时剥掉整个 run（TurretShapeff → TurretShape；
-        # 单个尾部字符如 Shape 的 e 不剥）
-        if len(stem) >= 2 and stem[-1] == stem[-2]:
-            ch = stem[-1]
-            i = len(stem)
-            while i > 0 and stem[i - 1] == ch:
-                i -= 1
-            return stem[:i]
-        return stem
+        return name[:-len('.vertices')] if name.endswith('.vertices') else name
 
     def _strings_dict(self, db) -> dict:
         """字符串表 → {hash: name} Python dict（一次构建，O(1) 查询）。
@@ -1458,14 +1511,13 @@ class GeometryService:
             geom_idx: dict = {}
             for ri in range(vis.record_count):
                 off = BLOB_HEADER_SIZE + ri * isize
-                if off + 0x80 > len(data):
+                if off + 0x40 > len(data):
                     break
-                rec = data[off:off + 0x80]
-                for foff in (0x20, 0x60):
-                    h = _s.unpack_from('<Q', rec, foff)[0]
-                    if h in idx:
-                        gp = db.reconstruct_path(idx[h], idx)
-                        geom_idx.setdefault(gp, []).append(ri)
+                rec = data[off:off + 0x40]
+                h = _s.unpack_from('<Q', rec, 0x20)[0]
+                if h in idx:
+                    gp = db.reconstruct_path(idx[h], idx)
+                    geom_idx.setdefault(gp, []).append(ri)
             self._visual_geom_index = geom_idx
         except Exception:  # noqa: BLE001
             self._visual_geom_index = {}
@@ -1692,15 +1744,14 @@ class GeometryService:
     # ── 装甲厚度字典 ────────────────────────────────────
 
     def _load_armor_thickness(self, ship: ShipInfo) -> dict:
-        """读取 A_Hull.armor + 炮塔/副炮 armor，构建 {(model_index, material_id): mm}。"""
+        """读取 A_Hull.armor + 炮塔/副炮 armor，构建 {(model_index, material_id): mm}。
+
+        DB-first：数据源为主库 entity_snapshots 舰船快照（加载数据时入库），
+        不读 data/split JSON。
+        """
         out: dict[tuple[int, int], float] = {}
-        ship_file = app_ctx.ctx.split_dir / "Ship" / f"{ship.game_key}.json"
-        if not ship_file.exists():
-            return out
-        try:
-            with open(ship_file, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except Exception:  # noqa: BLE001
+        data = self._ship_snapshot(ship)
+        if not data:
             return out
 
         def _collect(d):
@@ -1737,4 +1788,5 @@ class GeometryService:
 
     def clear(self):
         self._ships = None
+        self._ship_snapshot_cache.clear()
         self._release_extractor()

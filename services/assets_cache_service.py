@@ -9,7 +9,8 @@ assets.bin（约 217MB）每次启动 3D 查看器都要现场提取+解析，�
 
 表结构（均以 bin_folder 绑定客户端版本，避免跨版本串用）：
 - meta:            客户端版本元信息
-- skeleton_mounts: 舰体骨架 HP_ 挂点矩阵（行主序渲染空间 16 float）
+- skeleton_mounts: 舰体骨架 HP_/MP_ 挂点矩阵（行主序渲染空间 16 float；
+                   MP_ 为甲板设备挂点，v5 起纳入）
 - render_sets:     visual 渲染集 shape → 材质/mfm（按 geometry 路径）
 - mfm_textures:    材质 .mfm → diffuseMap 贴图基础名
 - material_full:   材质完整信息（shader/全部贴图路径/INDEXED vec4 数组）
@@ -31,7 +32,9 @@ from utils.path_utils import get_data_dir
 #: v2（2026-08-19）：skeleton_bones 增加解码列（pos/四元数/scale）
 #: v4（2026-08-19）：渲染集按 count(+0x70) 精确解析（根治跨模型串用）；新增 shape_names 表
 #:    （*.vertices 名哈希→名，LOD/crack 兜底用；显示时只读 DB，绝不现场读 assets.bin）
-ASSETS_SCHEMA_VERSION = 4
+#: v5（2026-08-20）：skeleton_mounts 纳入 MP_ 甲板设备挂点（此前仅 HP_，
+#:    导致 MP 节点挂载的缆桩/小艇/探照灯等甲板设备模型不显示）
+ASSETS_SCHEMA_VERSION = 5
 
 
 class AssetsCacheService:
@@ -235,8 +238,45 @@ class AssetsCacheService:
 
     # ── 入库（「加载数据」时调用）────────────────────────────
 
+    @staticmethod
+    def _murmur3_32(data: bytes, seed: int = 0) -> int:
+        """MurmurHash3_x86_32：渲染集 shape 名 ↔ geometry mapping_id 归属校验用。"""
+        import struct as _s
+        c1 = 0xCC9E2D51
+        c2 = 0x1B873593
+        length = len(data)
+        h1 = seed
+        for i in range(length // 4):
+            k1 = _s.unpack_from('<I', data, i * 4)[0]
+            k1 = (k1 * c1) & 0xFFFFFFFF
+            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
+            k1 = (k1 * c2) & 0xFFFFFFFF
+            h1 ^= k1
+            h1 = ((h1 << 13) | (h1 >> 19)) & 0xFFFFFFFF
+            h1 = (h1 * 5 + 0xE6546B64) & 0xFFFFFFFF
+        tail = data[length // 4 * 4:]
+        k1 = 0
+        if len(tail) >= 3:
+            k1 ^= tail[2] << 16
+        if len(tail) >= 2:
+            k1 ^= tail[1] << 8
+        if len(tail) >= 1:
+            k1 ^= tail[0]
+            k1 = (k1 * c1) & 0xFFFFFFFF
+            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
+            k1 = (k1 * c2) & 0xFFFFFFFF
+            h1 ^= k1
+        h1 ^= length
+        h1 ^= h1 >> 16
+        h1 = (h1 * 0x85EBCA6B) & 0xFFFFFFFF
+        h1 ^= h1 >> 13
+        h1 = (h1 * 0xC2B2AE35) & 0xFFFFFFFF
+        h1 ^= h1 >> 16
+        return h1
+
     def populate(self, assets_path: str, bin_folder: str,
                  game_version: str = "", wows_type: str = "",
+                 game_dir: str | Path | None = None,
                  progress_cb=None) -> dict:
         """现场解析 assets.bin 并写入缓存数据库。
 
@@ -247,6 +287,13 @@ class AssetsCacheService:
         """
         from uncode_assets.service import AssetsBinService
 
+        self.initialize()
+        # ── 全量重建（覆盖全部内容，无视 bin 版本号）─────────────
+        # 用户要求：每次加载数据都清空 assets_data.db 全部表并重新写入一次，
+        # 彻底避免跨客户端/旧版本数据残留（旧实现按 bin_folder 逐表 DELETE，
+        # 若中途失败会整事务回滚，留下旧数据未覆盖；且多客户端数据并存）。
+        # drop 全部表 → 幂等重建（assets_database.sql 优先 / inline 兜底）→ 记录 schema 版本。
+        self._drop_all_tables()
         self.initialize()
         svc = AssetsBinService(assets_path=assets_path)
         db = svc.db
@@ -264,20 +311,7 @@ class AssetsCacheService:
             # 共用：字符串 dict + self_id 索引（渲染集/材质解析都要用）
             sdict = self._strings_dict(db)
             self_id_idx = db.build_self_id_index()
-            self._conn.execute(
-                "DELETE FROM skeleton_mounts WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM skeleton_bones WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM render_sets WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM mfm_textures WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM material_full WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM shape_names WHERE bin_folder=?", (bin_folder,))
-            self._conn.execute(
-                "DELETE FROM meta WHERE bin_folder=?", (bin_folder,))
+            # 表已全量清空重建，无需按 bin_folder 逐表 DELETE；直接写入元信息
             self._conn.execute(
                 "INSERT INTO meta(bin_folder, game_version, wows_type, created_at) "
                 "VALUES (?,?,?,datetime('now'))",
@@ -344,9 +378,12 @@ class AssetsCacheService:
                                     scale[0], scale[1], scale[2]))
                     except Exception:  # noqa: BLE001
                         pass
-                # HP_ 挂点（舰船骨架定位用；存解码后坐标/四元数/缩放）
+                # HP_/MP_ 挂点（舰船骨架定位用；存解码后坐标/四元数/缩放）
+                # MP_ 为甲板设备挂点（缆桩/小艇/探照灯等 misc 模型），v5 起纳入；
+                # 其 parent 恒为 Scene Root，原始矩阵即船空间 bind pose
                 for i, n in enumerate(names):
-                    if not (isinstance(n, str) and n.startswith("HP_")):
+                    if not (isinstance(n, str)
+                            and (n.startswith("HP_") or n.startswith("MP_"))):
                         continue
                     if i >= len(mats) or not mats[i] or len(mats[i]) < 16:
                         continue
@@ -391,28 +428,23 @@ class AssetsCacheService:
                     nrec = vis.record_count
                     for ri in range(nrec):
                         off = BLOB_HEADER_SIZE + ri * isize
-                        if off + 0x80 > len(data):
+                        if off + 0x40 > len(data):
                             break
-                        cnt = struct.unpack_from('<Q', data, off + 0x70)[0]
-                        rel = struct.unpack_from('<Q', data, off + 0x78)[0]
+                        cnt = struct.unpack_from('<Q', data, off + 0x30)[0]
+                        rel = struct.unpack_from('<Q', data, off + 0x38)[0]
                         if not rel or cnt <= 0:
                             continue
-                        geoms = []
-                        for foff in (0x20, 0x60):
-                            h = struct.unpack_from('<Q', data, off + foff)[0]
-                            gp = self._path_of(h, db, self_id_idx)
-                            if gp and gp.endswith(".geometry"):
-                                geoms.append(gp)
-                        if not geoms:
+                        h = struct.unpack_from('<Q', data, off + 0x20)[0]
+                        gp = self._path_of(h, db, self_id_idx)
+                        if not (gp and gp.endswith(".geometry")):
                             continue
-                        # 渲染集数组：+0x78 rel 为 **record-relative**（相对记录起始），
-                        # 数组从 rel+0x40 起、每项 0x50 步长；+0x70 count 为权威条数。
-                        # ⚠️ 绝不用「下一记录 rel」或 +0x10000 兜底界定区域——ST 服 visual
-                        # 记录乱序时渲染集池按**原始记录顺序**排列，按当前下标越界会读到
-                        # 相邻模型（别的船）的渲染集 → 跨模型串用（如 SternShape 配到
-                        # Amagi_Hull / JSB040_Hull）。按 count 精确截断即可根治。
-                        # count 可靠性：全库实证 count+1 项恒不是渲染集（0 条漏项）。
-                        base = off + rel + 0x40
+                        # 渲染集数组：+0x38 rel 为 **record-relative**（相对记录起始），
+                        # 数组从 rel 起、每项 0x50 步长；+0x30 count 为权威条数。
+                        # ⚠️ 2026-08-19 修正：VisualPrototype item_size=0x40（非 0x80）。
+                        # 每条记录唯一 geometry（+0x20）+ primitives（+0x28）。旧 0x80
+                        # 误把两条记录合并 → JGA180 误用 JGA181 的 TurretShapeff。
+                        # 无多 geometry 共用 → 无需广播归属，直接归本记录 geometry。
+                        base = off + rel
                         if base + cnt * 0x50 > len(data):
                             continue
                         for k in range(cnt):
@@ -425,8 +457,7 @@ class AssetsCacheService:
                             mfm = self._path_of(mfm_h, db, self_id_idx)
                             damage = int('_crack_' in shp or '_lod' in shp
                                          or 'Crack' in mat)
-                            for gp in geoms:
-                                rs_rows.append((bin_folder, gp, shp, mat, mfm, damage))
+                            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage))
             except Exception:  # noqa: BLE001
                 pass
             if rs_rows:

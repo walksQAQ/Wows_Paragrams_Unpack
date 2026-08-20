@@ -15,7 +15,7 @@ import ctypes
 
 import numpy as np
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QFont, QColor
+from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from OpenGL import GL
@@ -357,8 +357,6 @@ class GeometryViewport(QOpenGLWidget):
         self._show_mounts = True
         self._show_armor = True
         self._wireframe = False
-        #: 临时调试：画面上叠加显示每个挂载的 hp 编号
-        self._show_mount_labels = True
         #: 装甲归属过滤：None/空 = 全部显示；否则仅显示集合内的 component
         self._armor_components: set | None = None
         #: 装甲类型过滤（ArmorConstants 归属类型）：None/空 = 全部
@@ -482,43 +480,9 @@ class GeometryViewport(QOpenGLWidget):
                             flip = np.array([-1.0, -1.0, 1.0], dtype=np.float32)
                 except Exception:  # noqa: BLE001
                     pass
-            # ── 逐三角形「质心向外」定向（修复甲板/水平面暗面） ─────────
-            # 上面的 mesh 级 flip 只翻 Z，Y 轴法线（甲板/船底等水平面）保持原朝向；
-            # Korabli 数据绕序不统一时甲板法线常朝下 → 只受环境光 → 看似"面缺失"。
-            # 这里对仍朝内的三角形（渲染法线·(三角形中心-质心)<0）复制顶点并翻转法线，
-            # 使每面朝外：甲板朝上、侧舷朝外，均被光源照亮。
-            try:
-                tri = idx.reshape(-1, 3)
-                v0 = pos0[tri[:, 0]]; v1 = pos0[tri[:, 1]]; v2 = pos0[tri[:, 2]]
-                ctr = (v0 + v1 + v2) / 3.0
-                centroid = pos0.mean(axis=0)
-                outward = ctr - centroid
-                on = np.linalg.norm(outward, axis=1); on[on < 1e-8] = 1.0
-                outward = outward / on[:, None]
-                ncur = n0[tri[:, 0]] * flip
-                inward = (ncur * outward).sum(1) < 0
-                if inward.any() and not inward.all():
-                    btri = tri[inward]
-                    nb = btri.shape[0]
-                    src = btri.ravel()
-                    extra_pos = pos0[src]
-                    extra_n = -n0[src]
-                    extra_idx = (np.arange(nb * 3).reshape(-1, 3)
-                                 + len(pos0)).astype(np.uint32)
-                    new_idx = idx.copy()
-                    bad_flat = np.flatnonzero(inward)
-                    for j, t in enumerate(bad_flat):
-                        new_idx[t * 3:(t + 1) * 3] = extra_idx[j]
-                    n_old = len(pos0)
-                    pos0 = np.vstack([pos0, extra_pos])
-                    n0 = np.vstack([n0, extra_n])
-                    if colors0 is not None and colors0.shape[0] == n_old:
-                        colors0 = np.vstack([colors0, colors0[src]])
-                    if uvs0 is not None and uvs0.shape[0] == n_old:
-                        uvs0 = np.vstack([uvs0, uvs0[src]])
-                    idx = new_idx
-            except Exception:  # noqa: BLE001
-                pass
+            # ⚠️ 逐三角形「质心向外」定向已移除（2026-08-19）：当初为修甲板面加，
+            # 但甲板缺失的真因是「长边剔除」误删（已修），并非面朝向错误；
+            # 该逻辑复制顶点翻转法线会破坏平滑着色，且文件法线(u8/255*2-1)已正确。
             # ─────────────────────────────────────────────
             p = np.ascontiguousarray(pos0 * np.array([1.0, 1.0, -1.0], dtype=np.float32))
             n = np.ascontiguousarray(n0 * flip)
@@ -713,10 +677,6 @@ class GeometryViewport(QOpenGLWidget):
 
         GL.glUseProgram(0)
 
-        # ── 临时调试：叠加显示每个挂载的 hp 编号 ──
-        if self._show_mount_labels:
-            self._draw_mount_labels(w, h, view, proj)
-
     def _bind_indexed(self, mesh, u):
         """绑定 INDEXED 分块贴图与参数（u_mode=3），供 paintGL 调用。
 
@@ -768,47 +728,6 @@ class GeometryViewport(QOpenGLWidget):
         nm = np.ascontiguousarray(m[:3, :3].T, dtype=np.float32)
         GL.glUniformMatrix4fv(u["u_mvp"], 1, GL.GL_FALSE, mvp)
         GL.glUniformMatrix3fv(u["u_normal_mat"], 1, GL.GL_FALSE, nm)
-
-    def _draw_mount_labels(self, w: int, h: int, view, proj):
-        """临时调试：把每个挂载模型（mount mesh）的 hp 名投影到屏幕叠加显示。"""
-        try:
-            painter = QPainter(self)
-            font = QFont()
-            font.setPointSize(9)
-            font.setBold(True)
-            painter.setFont(font)
-            seen: set = set()
-            for m in self._meshes:
-                if m.kind != "mount" or m.model_matrix is None:
-                    continue
-                if m.name in seen:
-                    continue
-                seen.add(m.name)
-                pos = m.model_matrix[0:3, 3]
-                clip = proj @ view @ np.array([pos[0], pos[1], pos[2], 1.0], dtype=np.float64)
-                if clip[3] <= 1e-9:
-                    continue
-                ndc = clip[:3] / clip[3]
-                if abs(ndc[0]) > 1.3 or abs(ndc[1]) > 1.3 or ndc[2] > 1.0:
-                    continue
-                sx = (ndc[0] * 0.5 + 0.5) * w
-                sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * h
-                painter.setPen(QColor(0, 0, 0))
-                painter.drawText(int(sx) + 1, int(sy) + 1, m.name)
-                painter.setPen(QColor(255, 255, 0))
-                painter.drawText(int(sx), int(sy), m.name)
-            painter.end()
-        except Exception:  # noqa: BLE001
-            pass
-        # QPainter 2D 覆盖可能改变 GL 状态（关闭 depth test / 改 blend）——恢复默认，
-        # 否则下一帧 depth test 失效 → 背面模型未被正面遮挡（"背面在第一层"）
-        try:
-            GL.glEnable(GL.GL_DEPTH_TEST)
-            GL.glDepthMask(GL.GL_TRUE)
-            GL.glDisable(GL.GL_BLEND)
-            GL.glDepthFunc(GL.GL_LESS)
-        except Exception:  # noqa: BLE001
-            pass
 
     # ── 交互 ─────────────────────────────────────────────
 

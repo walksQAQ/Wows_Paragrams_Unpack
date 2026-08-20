@@ -164,6 +164,9 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 
     return {
         "_type": "MaterialPrototype",
+        # 官方 ModsSDK 明文格式（<mfm><fx>/<collisionFlags>/<property>）
+        "fx": f"0x{shader_id:08X}",
+        "collisionFlags": flags,
         "property_count": property_count,
         "flags": flags,
         "shader_id": f"0x{shader_id:08X}",
@@ -175,18 +178,19 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 # ── VisualPrototype ───────────────────────────────────────────────────────
 
 def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> dict:
-    """解码 VisualPrototype（Korabli 实测 0x80B/条，blob 2）。
+    """解码 VisualPrototype（Korabli 实测 0x40B/条，blob 2）。
 
-    Korabli 布局（2026-08-18 实证，见 /memories/repo/korabli-visual-layout.md）：
-      +0x00/+0x10 bbox1 min/max, +0x40/+0x50 bbox2 min/max
+    Korabli 布局（2026-08-19 重新实测，与 Ghidra 反编译 + wows-toolkit 交叉验证）：
+      +0x00/+0x0C bbox min/max（vec3）
       +0x20 u64 geometry 资源ID（.geometry）, +0x28 u64 primitives 资源ID
-      +0x30/+0x38 u64（Korabli 实测恒 0，勿用）
-      +0x60 u64 geometry2, +0x68 u64 primitives2（第二组资源）
-      +0x70 u64 render_sets_count, +0x78 u64 render_sets relptr（**record-relative**）
+      +0x30 u64 render_sets_count, +0x38 u64 render_sets relptr（**record-relative**）
     渲染集 OOL（步长 0x50）：+0x00 u32 shape.vertices 名 / +0x04 u32 indices 名 /
     +0x08 u32 材质名 / +0x20 u64 material_mfm selfId。
+
+    ⚠️ 旧实现误用 0x80 步长（把两条 0x40 记录合并成一条），导致渲染集错配
+    （如 JGA180 误用 JGA181 的 TurretShapeff）。修正后每条记录唯一 geometry。
     """
-    if len(data) < 0x80:
+    if len(data) < 0x40:
         raise ParseError(f"VisualPrototype 数据过短: {len(data)}")
 
     index = db.build_self_id_index()
@@ -199,42 +203,38 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
         i = index.get(h)
         return db.reconstruct_path(i, index) if i is not None else f"0x{h:016X}"
 
-    render_sets_count = B.read_u64(data, 0x70)
-    render_sets_rel = B.read_u64(data, 0x78)
+    render_sets_count = B.read_u64(data, 0x30)
+    render_sets_rel = B.read_u64(data, 0x38)
 
     result = {
         "_type": "VisualPrototype",
         "bounding_box": {
             "min": _arr(B.parse_vec3(data, 0x00)),
-            "max": _arr(B.parse_vec3(data, 0x10)),
+            "max": _arr(B.parse_vec3(data, 0x0C)),
         },
-        "bounding_box_2": {
-            "min": _arr(B.parse_vec3(data, 0x40)),
-            "max": _arr(B.parse_vec3(data, 0x50)),
+        "geometry": {
+            "path": path_of(B.read_u64(data, 0x20)),
+            "id": f"0x{B.read_u64(data, 0x20):016X}",
+            "primitives": path_of(B.read_u64(data, 0x28)),
+            "primitives_id": f"0x{B.read_u64(data, 0x28):016X}",
         },
-        "geometry_path": path_of(B.read_u64(data, 0x20)),
-        "geometry_id": f"0x{B.read_u64(data, 0x20):016X}",
-        "primitives_path": path_of(B.read_u64(data, 0x28)),
-        "primitives_id": f"0x{B.read_u64(data, 0x28):016X}",
-        "geometry_2_path": path_of(B.read_u64(data, 0x60)),
-        "primitives_2_path": path_of(B.read_u64(data, 0x68)),
         "render_sets_count": render_sets_count,
     }
 
     # 渲染集 OOL：relptr 为 **record-relative**（data 从记录起始切片 → 下标即 rel）。
-    # 区域边界 = 下一记录 +0x78 relptr（相邻记录渲染集区首尾相接），避免越界
-    # 扫到其他 visual 的渲染集。用字符串扫描解析，每项含 mfm 材质路径。
+    # 渲染集数组从 **rel** 起（每项 0x50 步长）。旧实现误 +0x40（0x80 错位补偿）。
+    # 区域边界 = 下一记录 +0x38 relptr（相邻记录渲染集区首尾相接），避免越界。
     rs_pos = render_sets_rel if 0 < render_sets_rel < len(data) else None
     rs_end = len(data)
-    if len(data) >= 0x80 + 0x78 + 8:
-        _nxt = B.read_u64(data, 0x80 + 0x78)
+    if len(data) >= 0x40 + 0x38 + 8:
+        _nxt = B.read_u64(data, 0x40 + 0x38)
         if _nxt and _nxt > render_sets_rel:
-            rs_end = 0x80 + _nxt
+            rs_end = 0x40 + _nxt
     if rs_pos is not None:
-        result["render_sets_items"] = _visual_render_sets(
+        result["render_sets"] = _visual_render_sets(
             data, rs_pos, db, index, end_pos=rs_end, max_items=render_sets_count)
     else:
-        result["render_sets_items"] = []
+        result["render_sets"] = []
 
     # 粒子相关引用（渲染集 OOL 区域内可反查的粒子路径）
     if rs_pos is not None:
@@ -277,9 +277,10 @@ def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
             smfm = db.reconstruct_path(i, self_id_index)
         damage = ("_crack_" in shape or "_lod" in shape or "Crack" in mat)
         items.append({
-            "shape_vertices": shape,
-            "shape_indices": sind,
-            "material": mat,
+            # 官方 ModsSDK 明文格式（<renderSet><geometry><vertices/primitive/material>）
+            "vertices": shape,
+            "primitive": sind,
+            "material_identifier": mat,
             "material_mfm": smfm,
             "damage": damage,
         })
@@ -315,14 +316,15 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
 
     return {
         "_type": "ModelPrototype",
-        "model_resource_path": path_of(model_id),
-        "model_resource_id": f"0x{model_id:016X}",
-        "visual_resource_path": path_of(visual_id),
-        "visual_resource_id": f"0x{visual_id:016X}",
-        "params": {
+        # 官方 ModsSDK 明文格式（<model><parent>/<nodefullVisual>/<extent>）
+        "parent": path_of(model_id),
+        "nodefullVisual": path_of(visual_id),
+        "extent": {
             "distance_a": _f(B.read_f32(data, 0x10)),
             "distance_b": _f(B.read_f32(data, 0x14)),
         },
+        "castsShadow": None,
+        "metaData": "Lesta Studio",
         "count": B.read_u32(data, 0x18),
         "tail": B.read_u32(data, 0x1C),
         "raw_hex": data[:0x20].hex(),
@@ -341,30 +343,32 @@ def decode_skeleton(data: bytes, db: PrototypeDatabase) -> dict:
     count = B.read_u32(data, 0x00)
     rotation_limits_count = B.read_u32(data, 0x04)
 
+    # ⚠️ 2026-08-19 修正：指针为 **u64**（旧实现误用 u32，导致骨架节点树解析失败）。
+    # rec9769（JGA181 骨架）实证：+0x08 起 u64 relptr → 指向 Scene Root/HP_gunFire 节点名。
     name_map_name_ids: List[int] = []
     name_map_node_ids: List[int] = []
     name_ids: List[int] = []
     matrices: List[List[float]] = []
     parent_ids: List[int] = []
     if count > 0:
-        name_map_name_ids = B.parse_u32_array(data, B.read_u32(data, 0x08), count)
-        name_map_node_ids = B.parse_u16_array(data, B.read_u32(data, 0x10), count)
-        name_ids = B.parse_u32_array(data, B.read_u32(data, 0x18), count)
-        matrices = B.parse_matrix_array(data, B.read_u32(data, 0x20), count)
-        parent_ids = B.parse_u16_array(data, B.read_u32(data, 0x38), count)
+        name_map_name_ids = B.parse_u32_array(data, B.read_u64(data, 0x08), count)
+        name_map_node_ids = B.parse_u16_array(data, B.read_u64(data, 0x10), count)
+        name_ids = B.parse_u32_array(data, B.read_u64(data, 0x18), count)
+        matrices = B.parse_matrix_array(data, B.read_u64(data, 0x20), count)
+        parent_ids = B.parse_u16_array(data, B.read_u64(data, 0x38), count)
 
     # 旋转限制：Vec4×2[rotationLimitsCount]（min/max 角度）
     rotation_limits: List[dict] = []
     rotation_limits_ids: List[int] = []
     if rotation_limits_count > 0:
-        lim_abs = B.read_u32(data, 0x28)
+        lim_abs = B.read_u64(data, 0x28)
         for j in range(rotation_limits_count):
             off = lim_abs + j * 32
             rotation_limits.append({
                 "min": _arr(B.parse_vec4(data, off)),
                 "max": _arr(B.parse_vec4(data, off + 16)),
             })
-        rotation_limits_ids = B.parse_u16_array(data, B.read_u32(data, 0x30), count)
+        rotation_limits_ids = B.parse_u16_array(data, B.read_u64(data, 0x30), count)
 
     return {
         "_type": "SkeletonPrototype",

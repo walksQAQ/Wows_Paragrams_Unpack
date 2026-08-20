@@ -344,6 +344,7 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
             path, bin_folder=bin_folder or "",
             game_version=game_version or "",
             wows_type=wows_type or "",
+            game_dir=app_ctx.ctx.game_path or None,
             progress_cb=lambda msg: bus.log_message.emit(f"⏳ 3D 缓存: {msg}"))
         bus.log_message.emit(
             f"📦 assets.bin 数据已缓存（骨架挂点 {counts['skeleton']} / "

@@ -14,12 +14,12 @@ from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional, Tuple
 
 from . import binary as B
-from .decoders import decode_by_type
+from .decoders import decode_by_type, decode_skeleton, decode_visual
 from .parser import BLOB_HEADER_SIZE, PrototypeDatabase, PrototypeLocation
 from .types import PrototypeType, type_from_magic
 
 #: VFS 索引缓存版本号：目录树/索引构建逻辑变更时 +1，使旧缓存自动失效
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 
 
 @dataclass
@@ -100,17 +100,18 @@ class AssetsBinVfs:
             vdata = vis_blob.data
             for ri in range(vis_blob.record_count):
                 voff = BLOB_HEADER_SIZE + ri * vsize
-                if voff + 0x80 > len(vdata):
+                if voff + 0x40 > len(vdata):
                     break
-                vrec = vdata[voff:voff + 0x80]
-                for foff in (0x20, 0x60):
-                    h = B.read_u64(vrec, foff)
-                    if h not in vis_geom_to_rec:
-                        i = self_id_index.get(h)
-                        if i is not None:
-                            gp = full_paths[i]
-                            if gp and gp.endswith(".geometry"):
-                                vis_geom_to_rec[h] = ri
+                vrec = vdata[voff:voff + 0x40]
+                # ⚠️ 2026-08-19 修正：VisualPrototype item=0x40（非 0x80），
+                # 每条记录唯一 geometry（+0x20）+ primitives（+0x28），无 +0x60。
+                h = B.read_u64(vrec, 0x20)
+                if h not in vis_geom_to_rec:
+                    i = self_id_index.get(h)
+                    if i is not None:
+                        gp = full_paths[i]
+                        if gp and gp.endswith(".geometry"):
+                            vis_geom_to_rec[h] = ri
         dir_geos: Dict[str, Dict[str, int]] = {}
         for i, e in enumerate(paths):
             if not e.name.endswith(".geometry"):
@@ -188,24 +189,24 @@ class AssetsBinVfs:
             return record_index
         vsize = vis_blob.item_size
         voff = BLOB_HEADER_SIZE + record_index * vsize
-        vrec = vis_blob.data[voff:voff + 0x80]
+        vrec = vis_blob.data[voff:voff + 0x40]
         vdir = rel_path.rsplit('/', 1)[0]
         vname = rel_path.rsplit('/', 1)[-1][:-len(".visual")]
 
         # 1) r2p rec 已正确：引用 geometry 与 visual 同目录且文件名匹配
-        for foff in (0x20, 0x60):
-            h = B.read_u64(vrec, foff)
-            i = self_id_index.get(h)
-            if i is None:
-                continue
-            gp = full_paths[i]
-            if not gp or not gp.endswith(".geometry"):
-                continue
-            gdir = gp.rsplit('/', 1)[0]
-            gname = gp.rsplit('/', 1)[-1][:-len(".geometry")]
-            if gdir == vdir and (gname == vname or gname.startswith(vname + "_")
-                                 or vname.startswith(gname)):
-                return record_index
+        #    ⚠️ 2026-08-19 修正：item=0x40，唯一 geometry@+0x20（无 +0x60）。
+        h = B.read_u64(vrec, 0x20)
+        i = self_id_index.get(h)
+        if i is None:
+            return record_index
+        gp = full_paths[i]
+        if not gp or not gp.endswith(".geometry"):
+            return record_index
+        gdir = gp.rsplit('/', 1)[0]
+        gname = gp.rsplit('/', 1)[-1][:-len(".geometry")]
+        if gdir == vdir and (gname == vname or gname.startswith(vname + "_")
+                             or vname.startswith(gname)):
+            return record_index
 
         # 2) 修正：同目录 geometry 候选（精确名优先，其次前缀变体）→ self_id 索引
         cands = dir_geos.get(vdir)
@@ -362,13 +363,42 @@ class AssetsBinVfs:
         return self._db.get_prototype_data_len(loc, f.item_size, length)
 
     def decode_file(self, path: str) -> dict:
-        """解码虚拟文件为结构化 dict。"""
+        """解码虚拟文件为结构化 dict。
+
+        ⚠️ 2026-08-19：.visual 记录**骨架在 blob1(Skeleton)、视觉在 blob2(Visual)、
+        同 rec 索引**——浏览器显示时合并两者（ModsSDK 明文 visual 同时含节点树+渲染集）。
+        """
         f = self.get_file(path)
         if f is None:
             raise KeyError(f"虚拟文件不存在: {path}")
         data = self.open_file(path)
         record_base = 16 + f.record_index * f.item_size
-        return decode_by_type(data, self._db, f.prototype_type, record_base)
+        result = decode_by_type(data, self._db, f.prototype_type, record_base)
+        # 合并 Skeleton(blob1) + Visual(blob2)，同 rec 索引
+        if f.prototype_type is not None:
+            try:
+                if f.prototype_type.name == "VisualPrototype":
+                    skel = self._find_blob(self._db, "SkeletonPrototype")
+                    if skel is not None and f.record_index < skel.record_count:
+                        sdata = skel.data[16 + f.record_index * skel.item_size:]
+                        result["skeleton"] = decode_skeleton(sdata, self._db)
+                elif f.prototype_type.name == "SkeletonPrototype":
+                    vis = self._find_blob(self._db, "VisualPrototype")
+                    if vis is not None and f.record_index < vis.record_count:
+                        vdata = vis.data[16 + f.record_index * vis.item_size:]
+                        result["visual"] = decode_visual(vdata, self._db)
+            except Exception:  # noqa: BLE001
+                pass
+        return result
+
+    @staticmethod
+    def _find_blob(db, name: str):
+        """按类型名找 database blob（用于跨 blob 合并骨架/视觉）。"""
+        for b in db.databases:
+            t = type_from_magic(b.prototype_magic)
+            if t is not None and t.name == name:
+                return b
+        return None
 
     @staticmethod
     def _normalize(path: str) -> str:
