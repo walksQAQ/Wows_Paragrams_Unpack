@@ -4,6 +4,12 @@
 > 2026-08-19 归档。这是**非 INDEXED**（非 `0x0009` 材质 ID 分块）材质的权威属性参考，
 > 与 `prototype-formats.md`（MaterialPrototype 二进制布局）互补：本文档讲**属性名/语义**，那个讲**字节布局**。
 >
+> 2026-08-20 更新（数据库探针）：INDEXED 材质的真实 vec4 数组只有
+> `albedoTintMatIdArr`（196×4 tint）与 `albedoToRemoveTintMatIdArr`（19×4）；
+> `offsetScaleMatIdArr` / `tileIdxMatIdArr` / `artStrengthMatIdArr` 在数据库中**不存在**，
+> 渲染器 `offset`/`grid` 为默认回退（38,38）。详见 `docs/shaders-format.md` 与
+> `todo_list/New_function_of_fix_indexed_render_and_export_glb.md` P1。
+
 > 注意：`.mfm` 里的贴图路径指向 Mod SDK 内部（`PnFMods/...`），**仅作属性与命名约定参考**；
 > 实际渲染路径以客户端 assets.bin 的 `value_path` 为准（`material_full.textures` 已入库原始路径）。
 
@@ -75,7 +81,7 @@
 2. `geometry_service._resolve_material_full()` 读取 `material_full`，构造：
    - `tech_family`
    - `textures`：`{name: 原始路径}`
-   - `indexed_params`：含 `arrays` + `offset` + `grid`
+   - `indexed_params`：含 `arrays`（真实 vec4 数组，见下） + 渲染回退参数 `offset`/`grid`
 3. 真实贴图 bytes 在渲染阶段通过 `_load_texture_tier()` 从客户端 pkg 资源里按 `.dd0` → `.dd1` → `.dd2` → `.dds` 依次加载。
 
 因此，本文档中的“属性名 / fx 语义”是对现有 `.mfm` 规范的说明，

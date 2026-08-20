@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from PySide6.QtCore import Qt, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -44,7 +46,8 @@ class _DiffSignals(QObject):
     """后台线程结果 → 主线程槽（Qt 队列连接自动保证线程安全）。"""
 
     diff_done = Signal(str, str, object)     # (base_vc, target_vc, overview)
-    fields_done = Signal(str, object, str)   # (entity_id, list[FieldDiff] | None, error)
+    fields_done = Signal(int, str, str, str, object, str)
+    # (req_id, base_vc, target_vc, entity_id, node | None, error)
     failed = Signal(str)
 
 
@@ -60,6 +63,11 @@ class VersionDiffDialog(QDialog):
         self._last_target_vc = ""
         self._field_counts: dict[str, int] = {}
         self._busy = False
+        # ── 生命周期 / 取消状态 ──
+        self._closed = False          # 关闭标记：关闭后丢弃过期任务回调
+        self._field_request_id = 0    # 字段查询代际：新点击/新比对使旧查询过期
+        self._field_task = None       # 字段查询任务句柄（可取消）
+        self._compare_task = None     # 比对任务句柄（可取消）
 
         self.setWindowTitle("版本数据比对")
         self.setMinimumSize(900, 600)
@@ -251,8 +259,18 @@ class VersionDiffDialog(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         super().showEvent(event)
+        self._closed = False
         # 每次打开都刷新版本列表（导入新数据后下拉框同步更新）
         self._load_versions()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        self._closed = True
+        # 取消在途任务并使其回调失效（窗口关闭后不得更新界面）
+        self._invalidate_field_requests()
+        if self._compare_task is not None:
+            self._compare_task.cancel()
+            self._compare_task = None
+        super().closeEvent(event)
 
     # ── 版本加载 ──────────────────────────────────────────
 
@@ -314,6 +332,10 @@ class VersionDiffDialog(QDialog):
         self.status_label.setText(f"正在比对 {base} → {target} ...")
         self.field_header.setText("正在比对...")
         self.field_tree.clear()
+        # 取消旧的比对/字段查询任务，并让旧回调因代际不匹配而失效
+        if self._compare_task is not None:
+            self._compare_task.cancel()
+        self._invalidate_field_requests()
 
         import time
 
@@ -323,9 +345,10 @@ class VersionDiffDialog(QDialog):
             overview["elapsed"] = time.time() - t0
             return overview
 
-        run_async(work,
-                  on_finished=lambda ov: self._sig.diff_done.emit(base, target, ov),
-                  on_error=lambda err: self._sig.failed.emit(err))
+        self._compare_task = run_async(
+            work,
+            on_finished=lambda ov: self._sig.diff_done.emit(base, target, ov),
+            on_error=lambda err: self._sig.failed.emit(err))
 
     def _on_swap(self) -> None:
         bi = self.base_combo.currentIndex()
@@ -531,20 +554,45 @@ class VersionDiffDialog(QDialog):
     def _load_field_diff(self, entity_id: str) -> None:
         if self._busy or not self._last_base_vc or not self._last_target_vc:
             return
+        # 取消旧字段查询（若仍在运行），并让旧回调因代际不匹配而失效
+        if self._field_task is not None:
+            self._field_task.cancel()
+        self._field_request_id += 1
+        req_id = self._field_request_id
+        base_vc = self._last_base_vc
+        target_vc = self._last_target_vc
         self.field_tree.clear()
         self.field_header.setText(f"正在加载 {entity_id} 信息面板...")
 
-        def work():
+        def work(cancel_event):
             svc = self._get_svc()
-            node = svc.build_entity_tree(self._last_base_vc, self._last_target_vc, entity_id)
-            return entity_id, node
+            node = svc.build_entity_tree(base_vc, target_vc, entity_id)
+            return req_id, base_vc, target_vc, entity_id, node
 
-        run_async(work,
-                  on_finished=lambda r: self._sig.fields_done.emit(r[0], r[1], ""),
-                  on_error=lambda err: self._sig.fields_done.emit(entity_id, None, err))
+        self._field_task = run_async(
+            work,
+            on_finished=lambda r: self._sig.fields_done.emit(
+                r[0], r[1], r[2], r[3], r[4], ""),
+            on_error=lambda err: self._sig.fields_done.emit(
+                req_id, base_vc, target_vc, entity_id, None, err),
+            cancel_event=threading.Event(),
+        )
 
-    @Slot(str, object, str)
-    def _on_fields_done(self, entity_id: str, node, error: str) -> None:
+    def _invalidate_field_requests(self) -> None:
+        """使所有在途字段查询过期并取消其任务（新点击/新比对/关闭时调用）。"""
+        self._field_request_id += 1
+        if self._field_task is not None:
+            self._field_task.cancel()
+            self._field_task = None
+
+    @Slot(int, str, str, str, object, str)
+    def _on_fields_done(self, req_id: int, base_vc: str, target_vc: str,
+                        entity_id: str, node, error: str) -> None:
+        # 只接受仍匹配当前请求代际与版本组合的结果（防旧查询覆盖新选择）
+        if self._closed or req_id != self._field_request_id:
+            return
+        if base_vc != self._last_base_vc or target_vc != self._last_target_vc:
+            return
         if error:
             self.field_header.setText(f"{entity_id} — 信息加载失败: {error}")
             return

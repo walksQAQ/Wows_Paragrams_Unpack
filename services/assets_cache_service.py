@@ -38,7 +38,7 @@ from utils.path_utils import get_data_dir
 #:    供蒙皮网格按渲染集调色板施加 bind pose 混合（修复 PASA111 天线/索具
 #:    180° 朝向错误；Korabli 渲染集项 +0x0C skinned / +0x0D nodes_count /
 #:    +0x28 item-relative relptr → u32 名ID 数组）
-ASSETS_SCHEMA_VERSION = 6
+ASSETS_SCHEMA_VERSION = 7
 
 
 class AssetsCacheService:
@@ -286,7 +286,7 @@ class AssetsCacheService:
                  progress_cb=None) -> dict:
         """现场解析 assets.bin 并写入缓存数据库。
 
-        assets_path: assets.bin 文件路径（当前客户端提取或 res_unpack 产物）
+        assets_path: assets.bin 文件路径（当前客户端提取产物）
         progress_cb: 可选阶段进度回调（str 消息），用于把骨架/渲染集/材质各阶段
         显示到日志区。
         返回 {skeleton, render_sets, mfm_textures} 各条数。

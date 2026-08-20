@@ -57,6 +57,7 @@ class AssetsBinService:
         self._game_dir: Optional[Path] = None
         self._bin_folder: Optional[str] = bin_folder
         self._from_cache: bool = False
+        self._cache_path: Optional[Path] = None
 
         if assets_bytes is not None:
             self.load_bytes(assets_bytes)
@@ -72,16 +73,10 @@ class AssetsBinService:
     def load_from_game(self, game_dir: str | Path) -> bytes:
         """步骤 1：从游戏 .pkg 中提取 content/assets.bin 并解析。
 
-        优先使用游戏目录下已解压的 res_unpack/content/assets.bin（秒开），
-        否则用 data_extractor 从 .pkg 中提取（Kraken 解压 227MB，较慢）。
+        用 data_extractor 从当前客户端 .pkg 提取（Kraken 解压 227MB，较慢）。
+        不假定游戏目录下存在任何解包产物目录。
         """
         game_dir = Path(game_dir)
-        # 优先使用已解压的明文 assets.bin
-        unpacked = game_dir / "res_unpack" / "content" / "assets.bin"
-        if unpacked.exists():
-            self._game_dir = game_dir
-            return self.load_file(unpacked)
-
         from data_extractor import GameExtractor
 
         extractor = GameExtractor(game_dir, bin_folder=self._bin_folder)
@@ -122,6 +117,7 @@ class AssetsBinService:
         cache_path 存在且有效时，用缓存索引快速恢复 VFS（跳过耗时的
         路径重建与目录构建）；否则正常构建并写缓存。
         """
+        self._cache_path = Path(cache_path) if cache_path is not None else None
         self._db = parse_assets_bin(data)
         if cache_path is not None and Path(cache_path).exists():
             try:
@@ -157,6 +153,11 @@ class AssetsBinService:
         if self._vfs is None:
             raise AssetsBinError("尚未加载 assets.bin")
         return self._vfs
+
+    @property
+    def cache_path(self) -> Optional[Path]:
+        """本次加载使用（或将写入）的 .uncode_cache 索引缓存路径；无缓存为 None。"""
+        return self._cache_path
 
     @property
     def game_dir(self) -> Optional[Path]:

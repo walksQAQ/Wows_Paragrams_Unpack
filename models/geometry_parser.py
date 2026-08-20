@@ -25,6 +25,18 @@ from dataclasses import dataclass, field
 import numpy as np
 import meshoptimizer
 
+from utils.threading_utils import TaskCancelled
+
+
+def _check_cancel(cancel_event) -> None:
+    """协作式取消检查点：取消已请求则抛出 TaskCancelled。
+
+    供 parse_geometry 在缓冲区/图元/装甲三角形批次边界调用，使后台任务
+    在关闭 3D 查看器后能尽快停止解析，而不是跑完整个文件。
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskCancelled
+
 #: ENCD 魔数（"ENCD" little-endian）
 ENCD_MAGIC = 0x44434E45
 
@@ -366,10 +378,12 @@ def _read_collision_models(data: bytes, ptr: int, count: int) -> list[CollisionM
     return out
 
 
-def _read_armor_models(data: bytes, ptr: int, count: int) -> list[ArmorModel]:
+def _read_armor_models(data: bytes, ptr: int, count: int,
+                       cancel_event=None) -> list[ArmorModel]:
     """装甲模型：数据范围 = struct_base+0x20 → resolve_relptr(struct_base, data_relptr) + size_in_bytes。"""
     out = []
     for i in range(count):
+        _check_cancel(cancel_event)
         struct_base = ptr + i * MODEL_PROTO_SIZE
         if struct_base + MODEL_PROTO_SIZE > len(data):
             break
@@ -384,11 +398,11 @@ def _read_armor_models(data: bytes, ptr: int, count: int) -> list[ArmorModel]:
             out.append(ArmorModel(name))
             continue
         armor_data = data[data_start:data_end]
-        out.append(ArmorModel(name, _parse_armor_triangles(armor_data)))
+        out.append(ArmorModel(name, _parse_armor_triangles(armor_data, cancel_event=cancel_event)))
     return out
 
 
-def _parse_armor_triangles(armor_data: bytes) -> list[ArmorTriangle]:
+def _parse_armor_triangles(armor_data: bytes, cancel_event=None) -> list[ArmorTriangle]:
     """解析装甲 BVH 条目流（每条 16 字节）→ 三角形列表。
 
     布局：2 个全局头条目；随后 N 个 BVH 节点组 =
@@ -403,6 +417,8 @@ def _parse_armor_triangles(armor_data: bytes) -> list[ArmorTriangle]:
     tris: list[ArmorTriangle] = []
     pos = 2  # 跳过 2 个全局头条目
     while pos < entry_count:
+        if cancel_event is not None and (pos & 0x7FF) == 0:
+            _check_cancel(cancel_event)
         e0 = pos * ARMOR_ENTRY_SIZE
         material_id = armor_data[e0]
         layer_index = armor_data[e0 + 2]
@@ -435,8 +451,14 @@ def _parse_armor_triangles(armor_data: bytes) -> list[ArmorTriangle]:
 # 顶层入口
 # ────────────────────────────────────────────────────────────────────────────
 
-def parse_geometry(data: bytes, file_path: str = "") -> ParsedGeometry:
-    """解析一个 `.geometry` 文件字节流。"""
+def parse_geometry(data: bytes, file_path: str = "",
+                   cancel_event=None) -> ParsedGeometry:
+    """解析一个 `.geometry` 文件字节流。
+
+    cancel_event: 协作式取消事件；在缓冲区/图元/装甲三角形批次边界检查，
+    取消时抛 TaskCancelled（关闭查看器后用于尽快停止解析）。
+    """
+    _check_cancel(cancel_event)
     if len(data) < HEADER_SIZE:
         raise GeometryError(f"文件过短: {len(data)} 字节 (< {HEADER_SIZE})")
 
@@ -456,11 +478,13 @@ def parse_geometry(data: bytes, file_path: str = "") -> ParsedGeometry:
     result.indices_mapping = _read_mapping_array(data, i_map_ptr, i_map_count)
 
     for i in range(merged_v_count):
+        _check_cancel(cancel_event)
         vb = _read_vertex_buffer(data, 0, mv_ptr + i * VERT_PROTO_SIZE)
         if vb is not None:
             result.vertex_buffers.append(vb)
 
     for i in range(merged_i_count):
+        _check_cancel(cancel_event)
         ib = _read_index_buffer(data, 0, mi_ptr + i * INDEX_PROTO_SIZE)
         if ib is not None:
             result.index_buffers.append(ib)
@@ -468,13 +492,15 @@ def parse_geometry(data: bytes, file_path: str = "") -> ParsedGeometry:
     if coll_count:
         result.collision_models = _read_collision_models(data, coll_ptr, coll_count)
     if armor_count:
-        result.armor_models = _read_armor_models(data, armor_ptr, armor_count)
+        result.armor_models = _read_armor_models(
+            data, armor_ptr, armor_count, cancel_event=cancel_event)
 
-    _build_primitives(result)
+    _build_primitives(result, cancel_event=cancel_event)
+    _check_cancel(cancel_event)
     return result
 
 
-def _build_primitives(geom: ParsedGeometry):
+def _build_primitives(geom: ParsedGeometry, cancel_event=None):
     """把 verticesMapping 与 indicesMapping 配对成可渲染网格。
 
     ⚠️ BigWorld(.object) 配对：顶点 block 与索引 block 按 **unknown 字段（=td）相等**
@@ -489,6 +515,7 @@ def _build_primitives(geom: ParsedGeometry):
     used_imaps: set = set()   # 已配对的索引 mapping 下标
 
     for i, vm in enumerate(vmaps):
+        _check_cancel(cancel_event)
         if vm.merged_buffer_index >= len(vbufs):
             continue
         vb = vbufs[vm.merged_buffer_index]
