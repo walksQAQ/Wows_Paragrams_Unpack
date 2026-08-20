@@ -1,6 +1,8 @@
 # assets.bin（PrototypeDatabase）提取与解码功能规划
 
 > 注意：此条目前为半成品
+>
+> 格式说明：assets.bin 的格式权威文档见 `docs/assets-bin-format.md`；Korabli 逆向详情见 `docs/assets-bin-format.md` 与 `/memories/repo/assets-bin-korabli.md`。本文件的「二、assets.bin 格式」章节为早期规划草稿，以 docs 文档为准。
 
 ## 概述
 

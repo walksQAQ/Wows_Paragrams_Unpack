@@ -32,6 +32,7 @@ class ShipPresenter(BasePresenter):
         "GTRotationSpeed": "垂直回转速度",
         "GSAlphaFactor": "标伤",
         "GMDamageCoeff": "标伤", "GMSDamageCoeff": "标伤", "GMAPDamageCoeff": "标伤",
+        "GMHeavyCruiserCaliberDamageCoeff": "标伤",
         # ── 鱼雷 ──
         "torpedoDamageCoeff": "标伤",
         "torpedoSpeedMultiplier": "航速",
@@ -192,7 +193,8 @@ class ShipPresenter(BasePresenter):
                 is_sub_main = mod_key.startswith("GMS") and len(mod_key) > 3 and mod_key[3].isupper()
                 is_main = mod_key.startswith("GM") and not is_sub_main
                 is_secondary = mod_key.startswith("GS") and not is_sub_main
-                if is_main and "主炮" not in label:
+                # GMBigGunVisibilityCoeff 作用于船体段隐蔽条目，不受"主炮段"限制
+                if is_main and "主炮" not in label and mod_key != "GMBigGunVisibilityCoeff":
                     continue
                 if is_secondary and "副炮" not in label:
                     continue
@@ -204,6 +206,20 @@ class ShipPresenter(BasePresenter):
                 # visibilityDistCoeff 同时影响水面隐蔽和空中隐蔽
                 elif mod_key == "visibilityDistCoeff" and name in ("水面隐蔽", "空中隐蔽"):
                     field = name
+                # GMBigGunVisibilityCoeff：仅主炮口径≥149mm 的舰船生效（被侦查范围增大）
+                elif mod_key == "GMBigGunVisibilityCoeff" and name in ("水面隐蔽", "空中隐蔽"):
+                    if not getattr(self, '_big_gun_flag', False):
+                        continue
+                    field = name
+                # GMHeavyCruiserCaliberDamageCoeff：仅主炮口径≥190mm 的舰船生效
+                # （重巡 AP 标伤；通过同组"弹种"项判定仅 AP 弹生效，避免误伤 HE/CS 与小口径主炮）
+                elif mod_key == "GMHeavyCruiserCaliberDamageCoeff":
+                    if not getattr(self, '_heavy_cruiser_flag', False):
+                        continue
+                    _at = next((i.get("value", "") for i in items if i.get("name") == "弹种"), "")
+                    if str(_at).upper() != "AP":
+                        continue
+                    field = "标伤"
                 # planeExtraHangarSize 同时影响最大可用数量和开局可用数量
                 elif mod_key == "planeExtraHangarSize" and name in ("最大可用数量", "开局可用数量"):
                     field = name
@@ -316,6 +332,26 @@ class ShipPresenter(BasePresenter):
         # ── 5. 应用升级品修饰符 ─────────────────────────
         self._mod_ship_type = basic['shiptype'] or ''
         self._current_tier = basic['tier'] or 0
+        # GMBigGunVisibilityCoeff 仅对主炮口径≥149mm 的舰船生效；
+        # GMHeavyCruiserCaliberDamageCoeff 仅对主炮口径≥190mm 的舰船生效
+        # （口径存于弹药表 bullet_diameter，单位米；经 ship_weapon_projectiles 关联）
+        self._big_gun_flag = False
+        self._heavy_cruiser_flag = False
+        try:
+            _cal = conn.execute(
+                "SELECT MAX(e.bullet_diameter) AS mc FROM ship_weapon_projectiles p "
+                "JOIN projectile_bullet_ext e ON e.version_code=p.version_code "
+                "AND e.projectile_id=p.ammo_id "
+                "WHERE p.version_code=? AND p.ship_id=? AND p.slot_type='artillery'",
+                (vc, ship_id)).fetchone()
+            if _cal and _cal['mc'] is not None:
+                _cal_mm = float(_cal['mc']) * 1000
+                if _cal_mm >= 149.0:
+                    self._big_gun_flag = True
+                if _cal_mm >= 190.0:
+                    self._heavy_cruiser_flag = True
+        except Exception:
+            pass
         if modifiers:
             for sec in sections:
                 self._apply_modifiers([sec], modifiers)
@@ -343,6 +379,7 @@ class ShipPresenter(BasePresenter):
                                             restored = float(m.group(1)) - _mv
                                         item["value"] = f"{restored:.0f} 架"
             # 应用到弹药详情（带 section label 以便 GS 等前缀过滤）
+            # GMHeavyCruiserCaliberDamageCoeff 的过滤在 _apply_modifiers_to_items 内完成（参考 GMBigGunVisibilityCoeff）
             for sec in sections:
                 sec_label = sec.get("label", "")
                 raw_ammo = sec.get("raw_ammo_types", [])
@@ -1260,7 +1297,7 @@ class ShipPresenter(BasePresenter):
                     sub_details.append(self.make_item(f"{cn_name}航速", depth_val, len(sub_details), unit="kts"))
 
                 if sub_details:
-                    items.append(self.make_item("潜艇性能", "查看详情", o, details=sub_details))
+                    items.append(self.make_item("潜艇详细性能", "查看详情", o, details=sub_details))
                     o += 1
 
         if items:

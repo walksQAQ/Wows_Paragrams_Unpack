@@ -123,7 +123,7 @@ def _extract_assets_bin(game_path: str, latest_bin: str) -> str | None:
         extractor.close()
 
 
-def run_extract() -> None:
+def run_extract() -> "_AppTask":
     ctx = app_ctx.ctx
     game_path = ctx.game_path
     wows_type = ctx.wows_type
@@ -166,4 +166,4 @@ def run_extract() -> None:
         bus.can_process_data.emit(False)
         bus.data_loaded.emit("")
 
-    run_async(_extract, on_finished=_ok, on_error=_err)
+    return run_async(_extract, on_finished=_ok, on_error=_err)

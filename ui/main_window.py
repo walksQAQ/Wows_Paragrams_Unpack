@@ -174,7 +174,11 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._on_about)
 
     def _on_open_assets_viewer(self) -> None:
-        """打开 assets.bin 可视化浏览器（独立顶层窗口，置顶居中，懒创建单实例）。"""
+        """打开 assets.bin 可视化浏览器（独立顶层窗口，置顶居中，懒创建单实例）。
+
+        窗口打开时不自动载入数据：由用户在浏览器内手动选择 assets.bin 文件
+        或游戏目录，避免后台解析与模型查看器渲染争抢 GIL 造成卡顿。
+        """
         from uncode_assets.gui import AssetsBinViewer
         if not hasattr(self, "_assets_viewer") or self._assets_viewer is None:
             # 独立顶层窗口：不挂在主窗口下，避免 Z 序被主窗口遮挡、样式混淆
@@ -211,23 +215,28 @@ class MainWindow(QMainWindow):
 
         ver = QCoreApplication.applicationVersion()
 
-        QMessageBox.about(
-            self,
-            f"关于 {__about__.__title__}",
-            (
-                f"<h3>{__about__.__description__}</h3>"
-                "<hr>"
-                f"<p><b>版本：</b>{ver}</p>"
-                f"<p><b>作者：</b>{__about__.__author__}</p>"
-                f"<p><b>仓库：</b><a href='{__about__.__url__}'>{__about__.__url__}</a></p>"
-                f"<p><b>许可证：</b>{__about__.__license__}</p>"
-                "<hr>"
-                "<p style='color: #888888; font-size: 11px;'>"
-                "本工具仅供学习与研究使用，仅支持访问公开版本的游戏数据。"
-                "所有数据版权及相关权利均归原游戏公司所有。"
-                "</p>"
-            ),
+        box = QMessageBox(self)
+        box.setWindowTitle(f"关于 {__about__.__title__}")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            f"<h3>{__about__.__description__}</h3>"
+            "<hr>"
+            f"<p><b>版本：</b>{ver}</p>"
+            f"<p><b>作者：</b>{__about__.__author__}</p>"
+            f"<p><b>仓库：</b><a href='{__about__.__url__}'>{__about__.__url__}</a></p>"
+            f"<p><b>许可证：</b>{__about__.__license__}"
+            "（点击下方「显示详情」查看两个许可证的完整说明）</p>"
+            "<hr>"
+            "<p style='color: #888888; font-size: 11px;'>"
+            "本工具仅供学习与研究使用，仅支持访问公开版本的游戏数据。"
+            "所有数据版权及相关权利均归原游戏公司所有。"
+            "</p>"
         )
+        # 两个许可证的详细信息（Apache-2.0 + GPLv3 分离授权说明）
+        box.setDetailedText(getattr(__about__, "__license_detail__", ""))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     # ── 信号槽 ────────────────────────────────────────────
 
@@ -273,6 +282,11 @@ class MainWindow(QMainWindow):
         # 工具栏的穿深计算器
         _tb = getattr(self, "toolbar", None)
         if _tb is not None:
+            # 取消应用级后台任务（提取/解析/本地化/刷新），避免退出后继续回调
+            try:
+                _tb.cancel_app_tasks()
+            except Exception:  # noqa: BLE001
+                pass
             for _attr in ("_ballistics_dialog",):
                 _w = getattr(_tb, _attr, None)
                 if _w is not None:
