@@ -50,8 +50,9 @@ COMPONENT_DECK = "甲板设备"
 COMPONENT_OTHER = "其他"
 
 #: 游戏内装甲查看器隐藏的「通用 Hull 材质」集合（wows-toolkit hidden 语义）：
-#: 这些板位于 Hull 父区且为通用材质（Trans/Deck/Belt 等），游戏查看器不显示。
-HIDDEN_GENERIC_MATERIALS = {"Trans", "Deck", "Belt", "Inclin", "ConstrSide", "Bottom"}
+#: 原本借鉴 wows-toolkit 把 Hull 区通用材质（Trans/Deck/Belt 等）标记为隐藏，
+#: 但这些板有真实厚度数据，在我们的查看器中应默认显示。清空该集合即可。
+HIDDEN_GENERIC_MATERIALS: set[str] = set()
 
 #: GameParams 组件键 → 归属分类
 _COMPONENT_BY_KEY = {
