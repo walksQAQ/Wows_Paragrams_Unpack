@@ -55,44 +55,48 @@ COMPONENT_OTHER = "其他"
 #: 但这些板有真实厚度数据，在我们的查看器中应默认显示。清空该集合即可。
 HIDDEN_GENERIC_MATERIALS: set[str] = set()
 
-#: GameParams 组件键 → 归属分类
-_COMPONENT_BY_KEY = {
-    "A_Artillery": COMPONENT_MAIN,
-    "A1_Artillery": COMPONENT_MAIN,
-    "A_ATBA": COMPONENT_SECONDARY,
-    "A_AirDefense": COMPONENT_AA,
-    "A_AirSupport": COMPONENT_AA,
-    "A_AirArmament": COMPONENT_OTHER,   # 弹射器（HP_JC_*）
-    "A_Directors": COMPONENT_DIRECTOR,
-    "A_Finders": COMPONENT_FINDER,
-    "A_Radars": COMPONENT_RADAR,
+#: GameParams 组件键 → 归属分类（按 base 组件名匹配任意前缀变体）
+#: 键格式 {PREFIX}_{BASE}，如 AB1_Artillery / B_AirDefense / A1_Torpedoes
+_COMPONENT_BY_BASE = {
+    "Artillery": COMPONENT_MAIN,            # 主炮塔（A1_/AB1_/B_/C_/X_... 前缀）
+    "ATBA": COMPONENT_SECONDARY,            # 副炮（A_/B_...）
+    "SecondaryArtillery": COMPONENT_SECONDARY,
+    "AirDefense": COMPONENT_AA,             # 防空（A_/B_...）
+    "AirSupport": COMPONENT_AA,
+    "Directors": COMPONENT_DIRECTOR,        # 指挥仪（A_/AB_...）
+    "Finders": COMPONENT_FINDER,            # 测距仪（A_/AB_...）
+    "Radars": COMPONENT_RADAR,              # 雷达（A_/AB_...）
+    "AirArmament": COMPONENT_OTHER,         # 弹射器（HP_JC_*）
+    "Torpedoes": COMPONENT_OTHER,           # 鱼雷发射管（HP_*GT_*）
 }
 
-#: 主炮组件键后缀：`*_Artillery`（A1_/AB1_/B_/C_/X_..._Artillery 等）全部归类为主炮
-_ARTILLERY_SUFFIX = "_Artillery"
+
+def _component_base(comp_key: str) -> str:
+    """组件键的 base 组件名：`AB1_Artillery` → `Artillery`。"""
+    if not comp_key:
+        return ""
+    return comp_key.split("_", 1)[1] if "_" in comp_key else comp_key
 
 
 def component_for_key(comp_key: str) -> str:
     """GameParams 组件键 → 归属分类（未知键归"其他"）。
 
-    主炮按语义匹配 `*_Artillery` 变体（A1_/AB1_/B_/C_/X_..._Artillery 等），
-    避免固定键列表遗漏合法变体（如 PGSB207 的 AB1_Artillery）。
+    键格式 {PREFIX}_{BASE}，BASE 匹配任意前缀变体（A1_/AB_/B_/C_/X_...），
+    避免固定键列表遗漏合法变体（如 PGSB207 的 AB1_Artillery、AB_Directors、
+    B_AirDefense、A1_Torpedoes 等）。
     """
-    if comp_key and comp_key.endswith(_ARTILLERY_SUFFIX):
-        return COMPONENT_MAIN
-    return _COMPONENT_BY_KEY.get(comp_key, COMPONENT_OTHER)
+    return _COMPONENT_BY_BASE.get(_component_base(comp_key), COMPONENT_OTHER)
 
 
 def is_known_component_key(comp_key: str) -> bool:
-    """组件键是否已被识别（主炮变体或显式映射）；未知键用于告警诊断。"""
-    return bool(comp_key) and (
-        comp_key.endswith(_ARTILLERY_SUFFIX) or comp_key in _COMPONENT_BY_KEY)
+    """组件键是否已被识别（按 base 组件名匹配任意前缀变体）。"""
+    return _component_base(comp_key) in _COMPONENT_BY_BASE
 
 
 def iter_component_groups(data: dict):
     """遍历快照中所有组件分组，产出 (component_key, category, group_dict)。
 
-    不依赖固定键列表：`*_Artillery` 变体归类为主炮，其余按 _COMPONENT_BY_KEY
+    不依赖固定键列表：按 base 组件名匹配任意前缀变体，其余归「其他」。
     或归「其他」。调用方据此加载挂载引用/装甲厚度，并可选告警未知组件。
     """
     for key, value in data.items():
@@ -682,7 +686,7 @@ class GeometryService:
         sub_placed = 0   # 挂载模型骨架上的 MP 子设备（炮塔测距仪/炮上防空炮等）
         _negz = np.diag([1.0, 1.0, -1.0, 1.0])   # 几何(左手系)→渲染(右手系) 共轭
         n_refs = len(refs)
-        for idx, (hp, comp, model_path, misc_filter) in enumerate(refs):
+        for idx, (hp, comp, model_path, misc_filter, custom_battle) in enumerate(refs):
             self._raise_if_cancelled(cancel_event)
             # 挂载加载阶段同样报进度（66%→99%），避免进度条停在分段解析末尾
             if progress_cb:
@@ -752,13 +756,15 @@ class GeometryService:
 
             # 该挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等，
             # 全库约 1% MP 父节点非 Scene Root）。骨架空间→船 = m_raw。
-            # miscFilter 白名单：非空时该炮位仅显示列表中的 MP 节点
-            # （同一模型在不同炮位显示不同挂件，如 PGSB106 主炮塔）
-            mp_allow = frozenset(misc_filter) if misc_filter else None
+            # miscFilter 白名单：**恒生效**（空列表 = 空白名单 = 不显示任何
+            # MP 子设备），对齐游戏 MiscsController；customMiscs.battle 预设
+            # 按 miscName 兜底显示。同一模型在不同炮位显示不同挂件（PGSB106）。
+            mp_allow = frozenset(misc_filter)
+            battle_customs = frozenset(custom_battle)
             sub_n, bmin, bmax = self._place_skeleton_mps(
                 geom, folder, m_raw, model_cache, extractor, armor_thickness,
                 comp, bmin, bmax, 0, frozenset(), cancel_event=cancel_event,
-                mp_allow=mp_allow)
+                mp_allow=mp_allow, battle_customs=battle_customs)
             sub_placed += sub_n
 
         # ── MP 甲板设备挂载（缆桩/小艇/探照灯/救生筏等 misc 模型）──
@@ -905,17 +911,18 @@ class GeometryService:
         return data
 
     def _load_mount_refs(self, ship: ShipInfo,
-                         warnings: list | None = None) -> list[tuple[str, str, str, list]]:
-        """从舰船实体快照收集所有 HP_ 挂载引用：[(hp_name, component, model_path, misc_filter)]。
+                         warnings: list | None = None) -> list[tuple[str, str, str, list, list]]:
+        """从舰船实体快照收集所有 HP_ 挂载引用：
+        [(hp_name, component, model_path, misc_filter, custom_battle)]。
 
-        遍历全部组件分组（不依赖固定键列表），`*_Artillery` 变体归类为主炮；
+        遍历全部组件分组（不依赖固定键列表），按 base 组件名归类；
         未知组件若含 HP_ + model 挂载引用，记录到 warnings（可见诊断而非静默丢失）。
 
-        misc_filter：该挂点的 `miscFilter` 列表（MP 节点名白名单，非空时仅显示
-        列表中的骨架 MP 子设备；如 PGSB106 同一主炮模型在二号炮塔显示防空炮
-        甲板、三号炮塔显示弹射器）。空列表 = 不限制。
+        misc_filter：该挂点的 `miscFilter` 白名单（MP 节点**全名**；**空列表 =
+        空白名单 = 不显示任何**骨架 MP 子设备，对齐游戏 MiscsController）。
+        custom_battle：`customMiscs.battle` 预设的 misc 名集合（按 miscName 兜底显示）。
         """
-        out: list[tuple[str, str, str, list]] = []
+        out: list[tuple[str, str, str, list, list]] = []
         data = self._ship_snapshot(ship)
         if not data:
             return out
@@ -933,8 +940,15 @@ class GeometryService:
                 mf = v.get("miscFilter") or []
                 if not isinstance(mf, list):
                     mf = []
+                cm = v.get("customMiscs") or {}
+                if not isinstance(cm, dict):
+                    cm = {}
+                cb = cm.get("battle") or []
+                if not isinstance(cb, list):
+                    cb = []
                 out.append((hp, category, str(model),
-                            [str(x) for x in mf if isinstance(x, str)]))
+                            [str(x) for x in mf if isinstance(x, str)],
+                            [str(x) for x in cb if isinstance(x, str)]))
             if has_mount and not is_known_component_key(key):
                 if warnings is not None:
                     warnings.append(
@@ -1058,12 +1072,35 @@ class GeometryService:
         self._mount_model_cache[key] = world
         return world
 
+    @staticmethod
+    def _misc_name_from_node(node_name: str) -> str:
+        """MP_ 节点名 → misc 模型名（去 MP_ 前缀 + 尾部实例索引）。
+
+        对齐 wows-toolkit `misc_name_from_node`：去 MP_ 前缀，剥尾部
+        `.NNN`（带点三位数）或 `_INDEX_N`（传统索引）后缀。
+        例：MP_BM800_Ventilators_mushroom_INDEX_16 → BM800_Ventilators_mushroom
+        """
+        if not node_name.startswith("MP_"):
+            return node_name
+        rest = node_name[3:]
+        if "." in rest:
+            pos = rest.rfind(".")
+            tail = rest[pos + 1:]
+            if len(tail) == 3 and tail.isdigit():
+                return rest[:pos]
+        idx = rest.rfind("_INDEX_")
+        if idx >= 0:
+            return rest[:idx]
+        return rest
+
+
     def _place_skeleton_mps(self, geom, folder: str, skel_to_ship_game: np.ndarray,
                             model_cache: dict, extractor, armor_thickness: dict,
                             component: str, bmin: np.ndarray, bmax: np.ndarray,
                             depth: int, visited: frozenset,
                             cancel_event: threading.Event | None = None,
-                            mp_allow: frozenset | None = None) \
+                            mp_allow: frozenset | None = None,
+                            battle_customs: frozenset | None = None) \
             -> tuple[int, np.ndarray, np.ndarray]:
         """递归放置挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等）。
 
@@ -1076,8 +1113,9 @@ class GeometryService:
               挂载模型骨架→船 = 其 HP 挂点矩阵 m_raw（几何→骨架 = Root_BlendBone 已约去）。
           component: 归属分类（继承父挂载，如主炮塔；甲板设备为 COMPONENT_DECK）
           visited: 递归路径上已出现的模型目录（防环）
-          mp_allow: 当前层 MP 节点白名单（来自挂点 miscFilter，非 None 时仅放置
-              列表中的节点；仅作用于本层，递归子设备不受限）。
+          mp_allow: 当前层 MP 节点白名单（来自挂点 miscFilter；None=不过滤
+              （甲板设备/递归子设备），空集合=空白名单=不显示任何节点）。
+          battle_customs: customMiscs.battle 预设的 misc 名集合（按 miscName 兜底）。
 
         变换链（与舰体级 MP 同一规律：几何→自身骨架 = Root_BlendBone）：
           子设备骨架→船 = skel_to_ship_game @ W_sub（MP 节点世界矩阵）
@@ -1096,8 +1134,10 @@ class GeometryService:
         visited_next = visited | {folder}
         for mp_name, W in mp_nodes.items():
             self._raise_if_cancelled(cancel_event)
-            # miscFilter 白名单过滤：该炮位未授权的 MP 节点不放置
-            if mp_allow is not None and mp_name not in mp_allow:
+            # miscFilter 白名单过滤：仅放置白名单内节点（空白名单 = 不放置任何），
+            # 或 miscName 命中 customMiscs.battle 预设的兜底显示
+            if mp_allow is not None and mp_name not in mp_allow \
+                    and self._misc_name_from_node(mp_name) not in (battle_customs or ()):
                 continue
             sub_folder = mp_base_id(mp_name)
             if not sub_folder or sub_folder in visited_next:
