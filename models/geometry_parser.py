@@ -23,6 +23,7 @@ import struct
 from dataclasses import dataclass, field
 
 import numpy as np
+import meshoptimizer
 
 #: ENCD 魔数（"ENCD" little-endian）
 ENCD_MAGIC = 0x44434E45
@@ -247,7 +248,6 @@ def unpack_vertices(raw: np.ndarray, fmt: str) -> tuple[np.ndarray, np.ndarray, 
 # ────────────────────────────────────────────────────────────────────────────
 
 def _decode_vertex_encd(payload: bytes, count: int, stride: int) -> np.ndarray:
-    import meshoptimizer
     # 注意：该 wheel 的 dtype=uint8 分支有缓冲区溢出 bug（只分配 vertex_count 字节），
     # 必须用默认 float32 模式（内部正确分配 vertex_count*stride 字节），再按位还原为 uint8。
     out = meshoptimizer.decode_vertex_buffer(count, stride, payload)
@@ -255,7 +255,6 @@ def _decode_vertex_encd(payload: bytes, count: int, stride: int) -> np.ndarray:
 
 
 def _decode_index_encd(payload: bytes, count: int, index_size: int) -> np.ndarray:
-    import meshoptimizer
     # wheel 的 decode_index_buffer 始终返回 uint32 数组（分配 count*4 字节）。
     # 对 index_size=2，C 层把 u16 索引紧凑写入前 count*2 字节，需按 index_size 重新解释。
     out = np.ascontiguousarray(meshoptimizer.decode_index_buffer(count, index_size, payload))
