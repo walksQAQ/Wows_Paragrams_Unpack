@@ -22,7 +22,190 @@
 - 显示阶段绝不读 `data/split/Ship/*.json`、绝不现场读 assets.bin。
 - 临时脚本只放 `_temp/scripts/`；内存 2GB 红线；CRLF 行尾；编辑工具避免 4 字节 emoji。
 
-首版遗留（未实现，低优先级）：OBJ 导出（`services/export_service.py`）、碰撞模型渲染。
+首版遗留（未实现，低优先级）：OBJ 导出、碰撞模型渲染。
+
+### GLB 舰船模型导出设计方案（待实现）
+
+#### 1. 目标与边界
+
+新增 GLB（glTF 2.0 Binary）导出能力，导出结果应能在 Blender、Godot、Three.js
+等标准 glTF 工具中直接打开。导出对象以当前 `ShipGeometry` 为唯一输入，不重新解析
+`.geometry`，不依赖 `data/split/*.json`，也不把 OpenGL 缓冲区反向读回 CPU。
+
+首期目标：
+
+- 导出舰体全部 `hull_meshes`；
+- 导出 `mounts` 中的炮塔、副炮、防空、指挥仪和甲板设备，并应用已有挂载矩阵；
+- 导出法线、UV、三角形索引和可用的漫反射贴图；
+- 导出装甲作为独立节点，可选择“实体舰体”“装甲着色”“两者同时导出”；
+- 大模型采用二进制 GLB，避免 OBJ 的多文件贴图、材质和坐标管理问题；
+- 导出在后台线程执行，完成后由主线程弹出保存结果和警告摘要。
+
+明确不在首期强行复刻游戏 shader：GLB 使用 glTF 标准 `PBR Metallic-Roughness`，
+不能完整表达游戏的 INDEXED 分块涂装、detailMap、多层材质混合和运行时 shader 参数。
+这些信息通过贴图烘焙或 `extras` 保留，不能静默宣称与游戏内渲染完全一致。
+
+#### 2. 数据映射
+
+| 当前对象 | GLB 对象 | 处理方式 |
+|---|---|---|
+| `ShipGeometry` | 根节点 `ship_<game_key>` | 写入舰船 ID、名称、模型目录和导出版本到 `node.extras` |
+| `HullMesh` | 一个 glTF `mesh` + `node` | 位置、法线、UV、索引直接转为 accessor；舰体坐标保持统一 |
+| `MountMesh` | 一个带局部矩阵的 `node` | 几何保留本地坐标，`model_matrix` 写入 node.matrix；不得再次烘焙矩阵 |
+| `ArmorMesh` | 独立的 `armor` 节点/mesh | 应用与 `ArmorScene` 相同的世界空间变换；按 `component` 和 `plate_key` 分组 |
+| `texture_dds` | glTF image / bufferView | 转码为 PNG 或 JPEG 后嵌入 GLB；原始 DDS 路径写入 `extras` |
+| `material_textures` | PBR 贴图集合 | 首期至少映射 diffuse/albedo；normal、metallic/roughness 按可解码性映射 |
+| `indexed_params` | `extras.wows_indexed` | 保存数组、网格、offset 和原始材质路径，首期不直接作为标准 shader 输出 |
+
+推荐节点层级：
+
+```text
+ship_<game_key>
+├─ Hull
+│  ├─ <hull mesh part> ...
+├─ Mounts
+│  ├─ MainBattery/<mount> ...
+│  ├─ Secondary/<mount> ...
+│  ├─ AA/<mount> ...
+│  └─ Equipment/<mount> ...
+└─ Armor
+   ├─ Hull/<zone>/<part>/<thickness> ...
+   └─ Mounts/<component>/<part>/<thickness> ...
+```
+
+#### 3. 坐标系与矩阵规则
+
+当前渲染链路包含 `negz = diag(1, 1, -1, 1)` 的 OpenGL 镜像约定，GLB 导出不能
+直接复制渲染器中的矩阵。导出服务先统一到 glTF 右手坐标系，再对所有顶点执行一次
+坐标转换：
+
+```text
+gltf_position = C * source_position
+gltf_normal   = normalize(C3 * source_normal)
+gltf_matrix   = C4 * source_matrix * inverse(C4)
+```
+
+其中 `C` 的具体定义必须由一个小型探针用已知船体和挂载 AABB 验证；不能凭视觉猜测。
+舰体 `HullMesh` 通常已经在舰船坐标系，直接应用 `C`；挂载沿用 `MountMesh.model_matrix`；
+装甲沿用 `ArmorScene.build()` 的世界空间变换规则，并验证炮塔装甲质心仍落在对应挂载附近。
+
+#### 4. 材质与贴图策略
+
+分三档实现，避免把游戏专用材质问题混入几何导出：
+
+1. **标准基础档（首期必做）**：每个 mesh 使用 `baseColorTexture` 或
+   `baseColorFactor`；无贴图时使用白色。`opaque=False` 的材质设置 alpha blend，
+   并将 `alphaMode` 写入 glTF。
+2. **PBS 增强档**：将 `normalMap` 映射为 `normalTexture`，将 metallicGloss 拆成
+   metallic/roughness 通道；必要时先把 DDS 转码到 PNG，记录通道来源和近似规则。
+3. **INDEXED/游戏 shader 档**：不伪造标准 PBR 结果。支持时将 material ID map、
+   albedoArray、art map 烘焙成一张最终 base color；不支持烘焙时导出默认材质，
+   同时在 `material.extras.wows_indexed` 保存原始参数和资源路径。
+
+当前程序的 DDS 读取器主要服务 OpenGL 上传，导出服务应增加明确的
+`DDS -> PNG/JPEG` CPU 转码步骤，并在遇到 BC/格式不支持时记录警告而跳过贴图，
+不能把 DDS 原始字节直接伪装成 glTF PNG/JPEG。
+
+#### 5. 装甲导出模式
+
+导出接口建议提供：
+
+```text
+armor_mode = "none"       # 只导出可视舰船
+             | "solid"     # 导出装甲几何，使用厚度颜色
+             | "both"       # 舰体 + 装甲，装甲半透明
+armor_hidden = false       # 是否包含当前 hidden 通用 Hull 板
+armor_visible_only = true  # 是否遵循查看器当前树的显隐掩码
+```
+
+装甲 mesh 按 `plate_key=(zone, material_name, thickness_tenths)` 分组，材质使用
+厚度颜色和透明度；每个节点的 `extras` 保存 `zone`、材质名、厚度、layer index、
+component 和 triangle 数。这样导入 Blender 后仍能按装甲区筛选，而不是只得到一张
+无法追溯来源的彩色大网格。`0mm` 三角形已经在 `_build_armor_mesh()` 中剔除，
+导出层不应重新生成它们。
+
+#### 6. 服务与接口设计
+
+新增 `services/export_service.py`，只负责把已加载的 `ShipGeometry` 转换为 GLB，
+不负责加载舰船。建议接口：
+
+```python
+class GlbExportOptions:
+    armor_mode: str = "none"
+    armor_hidden: bool = False
+    armor_visible_only: bool = True
+    embed_textures: bool = True
+    export_mounts: bool = True
+    export_collision: bool = False
+
+
+def export_ship_glb(
+    geometry: ShipGeometry,
+    output_path: Path,
+    options: GlbExportOptions | None = None,
+    progress_cb=None,
+) -> ExportReport:
+    ...
+```
+
+实现建议使用成熟 glTF 库（优先 `pygltflib`；若验证后需要更方便的 mesh/材质
+构建，可评估 `trimesh`），不要手写 GLB 二进制 chunk。`ExportReport` 至少包含
+导出节点数、三角形数、贴图数、跳过数量和警告列表。
+
+导出流程：
+
+1. 校验 `ShipGeometry` 非空，并冻结当前查看器的装甲显隐掩码；
+2. 建立 glTF buffer、bufferView、accessor，按 mesh 批量追加顶点/法线/UV/索引；
+3. 建立材质缓存，使用“材质属性 + 贴图路径 + alpha 状态”作为去重键；
+4. 写入 Hull、Mounts、Armor 节点和矩阵；
+5. 转码并嵌入贴图，失败时保留几何并追加 warning；
+6. 计算每个 mesh 的 bounds 与总 bounds；
+7. 写入 `asset.extras.wows_export`、节点 extras 和可选的原始路径信息；
+8. 在临时文件写完并成功重新读取校验后，再原子替换目标 `.glb`。
+
+#### 7. 查看器 UI 与线程
+
+在 `ui/geometry_viewer.py` 增加“导出 GLB”按钮和保存对话框：
+
+- 没有 `_current_geom` 或正在加载时禁用；
+- 导出选项使用复选框/下拉框：挂载、装甲模式、当前可见板块、嵌入贴图；
+- 复用现有 `run_async`，导出期间显示进度和取消状态；
+- 后台线程只读 `ShipGeometry`，不调用 Qt/OpenGL API；
+- 完成后在主线程显示输出路径、统计和警告；
+- 窗口关闭或切换舰船时，不删除正在写入的临时文件。
+
+详情页的“3D 模型查看”只负责打开查看器，不直接触碰导出服务，避免把导出失败
+误判为查看器加载失败。导出入口应使用当前已加载的模型，避免再次加载客户端 VFS。
+
+#### 8. 验证计划
+
+分阶段验证，先验证几何和坐标，再验证材质：
+
+| 阶段 | 验证内容 | 通过条件 |
+|---|---|---|
+| G0 | 最小合成三角形导出/再读 | GLB 能被标准 glTF 解析器重新打开 |
+| G1 | 真实舰体无贴图导出 | 节点、顶点、索引、bounds 与 `ShipGeometry` 一致 |
+| G2 | 炮塔/挂载矩阵 | 导入后挂载 AABB 在舰体范围内，质心方向不反转 |
+| G3 | 装甲分组 | zone/part/厚度节点数量和三角形计数与 `ArmorScene` 一致 |
+| G4 | 贴图 | Blender/Three.js 可显示 base color；失败贴图有 warning |
+| G5 | 大船性能 | 导出不超过内存红线，后台 UI 不冻结，临时文件可清理 |
+| G6 | 打包版 | onefile 中点击导出可用，输出 GLB 不依赖临时解压目录 |
+
+必须保留一份探针到 `_temp/scripts/`：使用真实舰船导出 GLB，再用 glTF 解析器检查
+buffer、accessor、image 和 node matrix；必要时用 Blender 或 Three.js 做一次人工
+截图验收。不同服务器、缺失贴图、无装甲数据和空模型都应有明确警告而不是静默失败。
+
+#### 9. 依赖与打包注意事项
+
+- 将 `pygltflib`（或最终选定库）加入 `requirements.txt`；
+- 若导出库含动态导入或本地扩展，先在 onefile 构建中验证并按实际情况添加
+  `--include-package`，不能仅凭源码能导入判断打包完整；
+- `meshoptimizer` 继续作为模块级依赖，并确认
+  `meshoptimizer/_meshoptimizer*.pyd` 被打入 onefile；
+- GLB 输出只写到用户选择的外部路径，不能写入 Nuitka onefile 临时目录；
+- 不把游戏原始 `.dds`、`.mfm` 或客户端路径作为 GLB 必需外链，嵌入失败时仍应生成
+  无贴图几何；
+- 导出格式版本和坐标转换规则写入 `asset.extras`，以后调整矩阵时可追溯。
 
 ---
 
