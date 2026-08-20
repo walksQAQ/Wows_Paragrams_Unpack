@@ -407,13 +407,15 @@ class GeometryViewerDialog(QDialog):
         mounts_n = len(geom.mounts)
         mounts_v = sum(m.vertex_count for m in geom.mounts)
         deck_n = st.get("deck_equipment", 0)
+        sub_n = st.get("sub_equipment", 0)
+        hp_n = mounts_n - deck_n - sub_n
         warns = len(st.get("warnings", []))
         tex_info = "贴图：已加载" if geom.texture_dds else "贴图：未找到"
         self.stats_label.setText(
             f"舰船：{geom.display_name}（{geom.game_key}）\n"
             f"模型：{geom.model_folder}\n"
             f"船体：{total_v:,} 顶点 / {total_t:,} 三角形\n"
-            f"挂载：{mounts_n} 个（HP {mounts_n - deck_n} + 甲板设备 {deck_n}，{mounts_v:,} 顶点）\n"
+            f"挂载：{mounts_n} 个（HP {hp_n} + 甲板设备 {deck_n} + 部件子设备 {sub_n}，{mounts_v:,} 顶点）\n"
             f"装甲：{armor_t:,} 三角形（厚度已知 {known_t:,}）\n"
             f"{tex_info}\n"
             f"包围盒：{geom.bounds_size[0]:.1f} × {geom.bounds_size[1]:.1f} × {geom.bounds_size[2]:.1f}\n"
@@ -422,10 +424,9 @@ class GeometryViewerDialog(QDialog):
         # 把加载警告逐条写入日志区（此前只显示"警告 N 条（见日志）"但日志区从未收到内容）
         for w in st.get("warnings", []):
             bus.log_message.emit(f"⚠️ 3D 加载警告: {w}")
-        deck_n = st.get("deck_equipment", 0)
         bus.log_message.emit(
             f"✅ 3D: {geom.display_name} 加载完成（船体 {total_t:,} 三角形 / "
-            f"挂载 {mounts_n} 个（HP {mounts_n - deck_n} + 甲板设备 {deck_n}） / "
+            f"挂载 {mounts_n} 个（HP {hp_n} + 甲板设备 {deck_n} + 部件子设备 {sub_n}） / "
             f"装甲 {armor_t:,}）")
         self.ship_loaded.emit(geom.game_key)
 

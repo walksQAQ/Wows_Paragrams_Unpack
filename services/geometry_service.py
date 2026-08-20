@@ -599,6 +599,7 @@ class GeometryService:
 
         model_cache: dict = {}   # model_folder -> 加载结果 or None
         placed = 0
+        sub_placed = 0   # 挂载模型骨架上的 MP 子设备（炮塔测距仪/炮上防空炮等）
         _negz = np.diag([1.0, 1.0, -1.0, 1.0])   # 几何(左手系)→渲染(右手系) 共轭
         n_refs = len(refs)
         for idx, (hp, comp, model_path) in enumerate(refs):
@@ -662,6 +663,13 @@ class GeometryService:
                     bmax = np.maximum(bmax, mx)
             placed += 1
 
+            # 该挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等，
+            # 全库约 1% MP 父节点非 Scene Root）。骨架空间→船 = m_raw。
+            sub_n, bmin, bmax = self._place_skeleton_mps(
+                geom, folder, m_raw, model_cache, extractor, armor_thickness,
+                comp, bmin, bmax, 0, frozenset())
+            sub_placed += sub_n
+
         # ── MP 甲板设备挂载（缆桩/小艇/探照灯/救生筏等 misc 模型）──
         # MP 节点不在 GameParams，由 populate 纳入 skeleton_mounts（v5）；
         # 模型目录由命名约定推导：MP_{baseID}_... → misc/{baseID}/{baseID}.geometry
@@ -710,12 +718,18 @@ class GeometryService:
                     bmin = np.minimum(bmin, mn)
                     bmax = np.maximum(bmax, mx)
             mp_placed += 1
+            # 甲板设备模型自身骨架上的 MP 子设备（递归，防环）
+            sub_n, bmin, bmax = self._place_skeleton_mps(
+                geom, folder, m_raw, model_cache, extractor, armor_thickness,
+                COMPONENT_DECK, bmin, bmax, 0, frozenset())
+            sub_placed += sub_n
 
         if np.isfinite(bmin).all():
             geom.bounds_min = bmin
             geom.bounds_max = bmax
         geom.stats["mounts"] = placed
         geom.stats["deck_equipment"] = mp_placed
+        geom.stats["sub_equipment"] = sub_placed
         geom.stats["unique_mount_models"] = len(model_cache)
 
     @staticmethod
@@ -926,6 +940,104 @@ class GeometryService:
             pass
         self._mount_model_cache[key] = rb
         return rb
+
+    def _skeleton_bones_all(self, folder: str) -> dict:
+        """某模型骨架的**全部骨骼世界矩阵**表（bind pose，只读 assets_data.db）。
+
+        与 `_skeleton_bone_world` 共用 `skelworld:{folder}` 缓存；返回
+        {bone_name: (4,4)}（含 MP_/HP_ 挂点节点，供子设备递归放置用）。
+        """
+        key = f"skelworld:{folder}"
+        cached = self._mount_model_cache.get(key)
+        if cached is not None:
+            return cached
+        world: dict = {}
+        try:
+            from services.assets_cache_service import AssetsCacheService
+            world = AssetsCacheService().get_skeleton_bones(
+                app_ctx.ctx.bin_folder or "", folder)
+        except Exception:  # noqa: BLE001
+            world = {}
+        self._mount_model_cache[key] = world
+        return world
+
+    def _place_skeleton_mps(self, geom, folder: str, skel_to_ship_game: np.ndarray,
+                            model_cache: dict, extractor, armor_thickness: dict,
+                            component: str, bmin: np.ndarray, bmax: np.ndarray,
+                            depth: int, visited: frozenset) -> tuple[int, np.ndarray, np.ndarray]:
+        """递归放置挂载模型骨架上的 MP 子设备（炮塔测距仪/炮管防空炮/弹药箱等）。
+
+        全库约 1% 的 MP 节点父节点不是 Scene Root，而是挂在炮塔/火控等挂载模型
+        自己的骨架里（`Rotate_Y`/`Roll_Back1` 等骨骼下）。这些子设备此前被遗漏。
+
+        参数：
+          folder: 当前挂载模型目录（读其骨架的 MP_ 节点）
+          skel_to_ship_game: 当前模型**骨架空间 → 舰船游戏空间**矩阵（未 negz 共轭）。
+              挂载模型骨架→船 = 其 HP 挂点矩阵 m_raw（几何→骨架 = Root_BlendBone 已约去）。
+          component: 归属分类（继承父挂载，如主炮塔；甲板设备为 COMPONENT_DECK）
+          visited: 递归路径上已出现的模型目录（防环）
+
+        变换链（与舰体级 MP 同一规律：几何→自身骨架 = Root_BlendBone）：
+          子设备骨架→船 = skel_to_ship_game @ W_sub（MP 节点世界矩阵）
+          子设备几何→船 = 上式 @ rb_sub，再 negz 共轭转渲染空间。
+        返回 (放置数, bmin, bmax)。
+        """
+        if depth > 3 or folder in visited:
+            return 0, bmin, bmax
+        bones = self._skeleton_bones_all(folder)
+        mp_nodes = {k: v for k, v in bones.items() if k.startswith("MP_")}
+        if not mp_nodes:
+            return 0, bmin, bmax
+        _negz = np.diag([1.0, 1.0, -1.0, 1.0])
+        placed = 0
+        visited_next = visited | {folder}
+        for mp_name, W in mp_nodes.items():
+            sub_folder = mp_base_id(mp_name)
+            if not sub_folder or sub_folder in visited_next:
+                continue
+            sub_skel_to_ship = skel_to_ship_game @ W
+            rb_sub = self._mount_root_blend(sub_folder)
+            mtx = np.ascontiguousarray(
+                _negz @ (sub_skel_to_ship @ rb_sub) @ _negz, dtype=np.float32)
+            if sub_folder not in model_cache:
+                model_cache[sub_folder] = self._load_mount_model(
+                    sub_folder, extractor, armor_thickness, component)
+            src = model_cache[sub_folder]
+            if src is None:
+                continue
+            for hm in src["meshes"]:
+                mm = MountMesh(
+                    name=mp_name, component=component,
+                    positions=hm.positions, normals=hm.normals,
+                    uvs=hm.uvs, indices=hm.indices,
+                    model_matrix=mtx,
+                    texture_dds=hm.texture_dds, texture_path=hm.texture_path,
+                    model_folder=sub_folder, vertex_count=hm.vertex_count,
+                    is_wire=hm.is_wire,
+                )
+                geom.mounts.append(mm)
+                if mm.positions.size:
+                    mn, mx = mm.bounds_in_world()
+                    bmin = np.minimum(bmin, mn)
+                    bmax = np.maximum(bmax, mx)
+            for am in src["armor_meshes"]:
+                mesh = ArmorMesh(
+                    name=am.name, positions=am.positions, normals=am.normals,
+                    colors=am.colors, indices=am.indices, triangles=am.triangles,
+                    component=component, model_matrix=mtx,
+                )
+                geom.armor_meshes.append(mesh)
+                if mesh.positions.size:
+                    mn, mx = mesh.bounds_in_world()
+                    bmin = np.minimum(bmin, mn)
+                    bmax = np.maximum(bmax, mx)
+            placed += 1
+            # 子设备自身骨架可能还有 MP（递归，防环）
+            sub_n, bmin, bmax = self._place_skeleton_mps(
+                geom, sub_folder, sub_skel_to_ship, model_cache, extractor,
+                armor_thickness, component, bmin, bmax, depth + 1, visited_next)
+            placed += sub_n
+        return placed, bmin, bmax
 
     def _load_mount_transforms(self, ship: ShipInfo) -> dict:
         """收集舰体骨架 HP_ 挂点矩阵（**只从 assets_data.db 读取**）。
