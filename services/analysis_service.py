@@ -1774,11 +1774,17 @@ class AnalysisService:
                 if cat_name == "Exterior":
                     fps = [f for f in fps if f.stem.startswith("PCEF")]
                 items = []
+                failed = []
                 for fp in fps:
                     try:
                         items.append((fp.stem, json.loads(fp.read_text(encoding="utf-8"))))
-                    except Exception:
-                        continue
+                    except Exception as exc:
+                        failed.append((fp.stem, exc))
+                if failed:
+                    names = ", ".join(n for n, _e in failed[:5])
+                    more = f" 等 {len(failed)} 个" if len(failed) > 5 else ""
+                    bus.log_message.emit(
+                        f"⚠️ {cat_name}: {len(failed)} 个文件解析失败未入库: {names}{more}")
                 results[cat_name] = _process_batch(items, cat_labels.get(cat_name, cat_name))
 
             # ── 额外处理 PCOK/PCOL 技能数据 ──

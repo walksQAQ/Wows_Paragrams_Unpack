@@ -1026,8 +1026,13 @@ class PenetrationCalculatorDialog(QDialog):
                 self.gun_cb.addItem(f"次级主炮 · {label}", f"sec:{row['module_key']}")
             if self.gun_cb.count() == 0:
                 self.gun_cb.addItem("无可用火炮")
-        except Exception:
+        except Exception as exc:
             self.gun_cb.addItem("无可用火炮")
+            try:
+                from app.signals import bus
+                bus.log_message.emit(f"⚠️ 火炮列表加载失败: {exc}")
+            except Exception:  # noqa: BLE001
+                pass
         # clear+addItem 会自动选中第 0 项且被 blockSignals 屏蔽；先复位 -1，
         # 确保下面 setCurrentIndex 一定改变索引并触发 currentIndexChanged → 重载加成面板
         self.gun_cb.setCurrentIndex(-1)

@@ -1083,8 +1083,12 @@ class DetailPanel(QWidget):
                             ORDER BY c.is_unique DESC, c.is_elite DESC, c.is_person DESC
                         """, (db_nation,))
                         _crew_list = [dict(r) for r in cur.fetchall()]
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        try:
+                            from app.signals import bus
+                            bus.log_message.emit(f"⚠️ 舰长列表查询失败: {exc}")
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 # 填充下拉框：按分类分组
                 self._crew_data = []

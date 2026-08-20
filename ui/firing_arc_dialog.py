@@ -591,8 +591,13 @@ class FiringArcDialog(QDialog):
                     yaw = math.degrees(math.atan2(m[0, 2], m[2, 2])) % 360.0
                     out[hp] = (round(yaw, 1),
                                [round(m[0, 3], 4), round(m[1, 3], 4), round(m[2, 3], 4)])
-        except Exception:
+        except Exception as exc:
             out = {}
+            try:
+                from app.signals import bus
+                bus.log_message.emit(f"⚠️ 射界挂载朝向读取失败({ship_id}): {exc}，已回退默认朝向")
+            except Exception:  # noqa: BLE001
+                pass
         cache[ship_id] = out
         return out
 

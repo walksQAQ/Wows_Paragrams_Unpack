@@ -4,6 +4,7 @@ __pycache__/
 .vscode/
 _temp/
 data/
+log/
 release/
 config.json
 embed_text_watermark.py
