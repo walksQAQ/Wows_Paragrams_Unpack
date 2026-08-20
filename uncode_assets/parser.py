@@ -62,37 +62,44 @@ class StringsSection:
     offsets_map: HashmapSection
     string_data: bytes
     string_data_base: int = 0
+    #: 哈希→字符串预计算缓存（惰性构建，避免每次调用线性探测）
+    _cache: Optional[Dict[int, str]] = field(default=None, repr=False)
+
+    def _build_cache(self) -> Dict[int, str]:
+        """一次性遍历 offsetsMap 构建 哈希(u32)→字符串 字典。"""
+        hmap = self.offsets_map
+        cap = hmap.capacity
+        stride = hmap.bucket_stride
+        out: Dict[int, str] = {}
+        for idx in range(cap):
+            bucket_off = idx * stride
+            key = B.read_u64(hmap.buckets, bucket_off)
+            if stride >= 16:
+                occ = B.read_u64(hmap.buckets, bucket_off + 8)
+                if occ == 0:
+                    continue
+            else:
+                if key == 0:
+                    continue
+            value_off = idx * hmap.value_stride
+            str_off = B.read_u32(hmap.values, value_off)
+            if str_off >= len(self.string_data):
+                continue
+            s = B.read_null_terminated_string(self.string_data, str_off)
+            if s is not None:
+                out.setdefault(key & 0xFFFFFFFF, s)
+        return out
 
     def get_string_by_id(self, hash_id: int) -> Optional[str]:
         """用字符串哈希（MurmurHash3_x86_32 的 u32 值）反查字符串名。
 
         offsetsMap 的 buckets 为 8B/项（仅 u64 key，空槽 key=0），
         与 r2p 的 16B（key+occupancy）不同，故按 bucket_stride 自适应。
+        首次调用时预计算全表字典，后续 O(1) 查找。
         """
-        hmap = self.offsets_map
-        cap = hmap.capacity
-        if cap == 0:
-            return None
-        stride = hmap.bucket_stride
-        slot = (hash_id & 0xFFFFFFFF) % cap
-        for i in range(cap):
-            idx = (slot + i) % cap
-            bucket_off = idx * stride
-            key = B.read_u64(hmap.buckets, bucket_off)
-            if stride >= 16:
-                occ = B.read_u64(hmap.buckets, bucket_off + 8)
-                if occ == 0:
-                    return None
-            else:
-                if key == 0:
-                    return None
-            if (key & 0xFFFFFFFF) == (hash_id & 0xFFFFFFFF):
-                value_off = idx * hmap.value_stride
-                str_off = B.read_u32(hmap.values, value_off)
-                if str_off >= len(self.string_data):
-                    return None
-                return B.read_null_terminated_string(self.string_data, str_off)
-        return None
+        if self._cache is None:
+            self._cache = self._build_cache()
+        return self._cache.get(hash_id & 0xFFFFFFFF)
 
     def get_string_or_hex(self, hash_id: int) -> str:
         s = self.get_string_by_id(hash_id)
@@ -140,6 +147,8 @@ class PrototypeDatabase:
     paths_storage: List[PathEntry]
     databases: List[DatabaseEntry]
     data: bytes = field(default=b"", repr=False)
+    #: selfId→pathsStorage 下标索引缓存（惰性构建，避免每次调用重建 O(N)）
+    _self_id_index: Optional[Dict[int, int]] = field(default=None, repr=False)
 
     # ── r2p 查找 ─────────────────────────────────────────
 
@@ -220,8 +229,10 @@ class PrototypeDatabase:
     # ── 路径解析 ─────────────────────────────────────────
 
     def build_self_id_index(self) -> Dict[int, int]:
-        """构建 selfId → pathsStorage 下标 的索引。"""
-        return {entry.self_id: i for i, entry in enumerate(self.paths_storage)}
+        """构建 selfId → pathsStorage 下标 的索引（惰性缓存，跨调用复用）。"""
+        if self._self_id_index is None:
+            self._self_id_index = {entry.self_id: i for i, entry in enumerate(self.paths_storage)}
+        return self._self_id_index
 
     def reconstruct_path(self, entry_index: int, self_id_index: Dict[int, int]) -> str:
         """沿 parentId 链重建完整路径（不含前导 '/'）。"""

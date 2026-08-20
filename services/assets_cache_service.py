@@ -621,14 +621,6 @@ class AssetsCacheService:
 
     # ── 查询（3D 查看器用）─────────────────────────────────
 
-    def has_data(self, bin_folder: str) -> bool:
-        """该客户端版本是否已有缓存数据。"""
-        try:
-            row = self._conn.execute(
-                "SELECT 1 FROM meta WHERE bin_folder=?", (bin_folder,)).fetchone()
-            return row is not None
-        except sqlite3.OperationalError:
-            return False
 
     def get_skeleton_mounts(self, bin_folder: str, stem: str) -> dict:
         """某舰体骨架的 HP_ 挂点：{hp_name: (4,4) 行主序渲染空间矩阵（由解码值重建）}。"""
