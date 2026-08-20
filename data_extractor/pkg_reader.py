@@ -67,15 +67,6 @@ class PkgReader:
     def pkgs_dir(self) -> Path:
         return self._pkgs_dir
 
-    def _load_pkg(self, filename: str) -> bytes:
-        """将 .pkg 文件加载到内存（带缓存）"""
-        if filename not in self._cache:
-            pkg_path = self._pkgs_dir / filename
-            if not pkg_path.exists():
-                raise PkgError(f"PKG 文件不存在: {pkg_path}")
-            self._cache[filename] = pkg_path.read_bytes()
-        return self._cache[filename]
-
     @staticmethod
     def _check_kraken() -> bool:
         """检查纯 Python Kraken 解压器是否可用"""
@@ -262,6 +253,19 @@ class PkgReader:
         )
 
     @staticmethod
+    def _is_bc7prep(data: bytes) -> bool:
+        """判断字节数据是否为 bc7prep 纹理（DDS magic + offset148 version=0x000007BC）。
+
+        file_needs_bc7prep（文件头快检）与 _decode_bc7prep（解码前校验）共用，
+        避免两处重复的 DDS 头检测逻辑。
+        """
+        if len(data) < 196:
+            return False
+        if data[:4] != b'DDS ':
+            return False
+        return struct.unpack_from('<I', data, 148)[0] == 0x000007BC
+
+    @staticmethod
     def file_needs_bc7prep(path: str | Path) -> bool:
         """快速判断文件是否为 bc7prep 纹理 (仅读 196 字节头, 不加载全文)。"""
         try:
@@ -269,11 +273,7 @@ class PkgReader:
                 head = f.read(196)
         except OSError:
             return False
-        if len(head) < 196:
-            return False
-        if head[:4] != b'DDS ':
-            return False
-        return struct.unpack_from('<I', head, 148)[0] == 0x000007BC
+        return PkgReader._is_bc7prep(head)
 
     def decode_bc7prep_file(self, path: str | Path) -> None:
         """若文件是 bc7prep 纹理, 解码为标准 BC7 并原地重写 (与 pfsunpack2 一致)。"""
@@ -294,12 +294,7 @@ class PkgReader:
         bc7prep 头位于 DDS+DX10 头 (148 字节) 之后: version=0x000007BC。
         解码输出与 pfsunpack2 逐字节一致 (100% 无损位重排)。
         """
-        if len(data) < 196:
-            return data
-        # DDS magic + DX10 fourcc + bc7prep version
-        if data[:4] != b'DDS ':
-            return data
-        if struct.unpack_from('<I', data, 148)[0] != 0x000007BC:
+        if not PkgReader._is_bc7prep(data):
             return data
         try:
             from data_extractor.bc7prep import bc7prep_decode
@@ -311,10 +306,6 @@ class PkgReader:
         except Exception:
             # 解码失败时回退到原始数据 (保持可用性)
             return data
-
-    def clear_cache(self) -> None:
-        """清除缓存的 PKG 数据"""
-        self._cache.clear()
 
     def close(self) -> None:
         """释放所有资源"""

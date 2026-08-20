@@ -220,12 +220,21 @@
 7. **N11/N25/N28/N32** 删未使用 import(4 文件)。✅(analysis_service 另删 os/math/defaultdict/Callable/Optional/Path)
 8. **N9/N10** 删冗余条件/死分支。✅
 
-### Phase 1:data_extractor 低风险清理(不动算法)
+### Phase 1:data_extractor 低风险清理(不动算法) ✅ 已完成(2026-08-21)
 
-1. 死代码删除(kraken/pkg_reader/extractor 如 1.8 所列)。
-2. 同函数合并:D2/D4/D7。
-3. 去冗余:P6/P7。
-4. *(可选)* P2/P3/P4。
+1. 死代码删除(kraken/pkg_reader/extractor 如 1.8 所列)。✅
+   - kraken: `_huff_convert_to_ranges`/`_lookup` 删除(全库无调用)
+   - pkg_reader: `_load_pkg`/`clear_cache` 删除(read_file 直读磁盘,不依赖)
+   - extractor: `_match_pattern` 删除(死代码)
+   - ⚠️ `flatten` 参数**保留**(CLI `--flatten` 在用,审计文档误标为死代码)
+2. 同函数合并:D2/D4/D7。✅
+   - D2: `_byteswap` 委托 `_bswap32`(2000 随机值等价断言通过)
+   - D4: `CODE_PREFIX_ORG` 提升为模块级常量(删除 build_kraken_lut/_decode_huff_type12 两处局部定义)
+   - D7: 抽取 `_is_bc7prep(bytes)` 共用(file_needs_bc7prep 与 _decode_bc7prep 去重,等价断言通过)
+3. 去冗余:P6/P7。⏭️ 跳过(P6 `_decode_rle` 缓冲/P7 scratch 均在解码算法热路径内,按"不动解码算法"边界跳过;P7 的 scratch 参数在当前 decompress 签名中已不存在)
+4. *(可选)* P2/P3/P4。⏭️ 跳过(同属解码/IO 热路径,超出本轮边界)
+
+验证: kraken 核心解码 API 完整(decompress/decompress_stream/_decode_bytes/_decode_rle/build_kraken_lut/_parse_kraken_header);D2/D4/D7 等价断言全部通过;3 文件编译无错误。
 
 ### Phase 2:services 层收敛
 
