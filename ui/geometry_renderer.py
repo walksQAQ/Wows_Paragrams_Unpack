@@ -178,7 +178,7 @@ def _gl_off(offset: int):
     return ctypes.c_void_p(offset)
 
 
-def _upload_texture(dds_bytes: bytes, srgb: bool = True) -> int:
+def _upload_texture(dds_bytes: bytes, srgb: bool = True, label: str = "") -> int:
     """把 DDS 字节上传为 GL 压缩/未压缩纹理，返回纹理 id（失败返回 0）。
 
     srgb=False：materialIdMap 等数据纹理（存储 0-255 材质 ID）用非 sRGB 格式，
@@ -187,7 +187,12 @@ def _upload_texture(dds_bytes: bytes, srgb: bool = True) -> int:
     from models.dds_reader import parse_dds, GL_SRGB_RGBA8
     try:
         dds = parse_dds(dds_bytes)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        try:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 贴图解析失败{(' ' + label) if label else ''}: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
         return 0
     tex = GL.glGenTextures(1)
     GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
@@ -292,7 +297,7 @@ class GpuMesh:
         self._texture = 0
         self.has_tex = False
         if texture_dds:
-            tid = _upload_texture(texture_dds)
+            tid = _upload_texture(texture_dds, label=self.name)
             if tid:
                 self._texture = tid
                 self.has_tex = True
@@ -302,7 +307,7 @@ class GpuMesh:
         if material_textures:
             for key, (_path, tbytes) in material_textures.items():
                 # materialIdMap 是数据纹理（材质 ID 0-255），用非 sRGB 避免 gamma 失真
-                tid = _upload_texture(tbytes, srgb=(key != "materialIdMap"))
+                tid = _upload_texture(tbytes, srgb=(key != "materialIdMap"), label=_path or key)
                 if tid:
                     self._extra_tex[key] = tid
 

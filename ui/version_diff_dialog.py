@@ -292,8 +292,13 @@ class VersionDiffDialog(QDialog):
     def _load_versions(self) -> None:
         try:
             versions = self._get_svc().list_versions()
-        except Exception:
+        except Exception as exc:
             versions = []
+            try:
+                from app.signals import bus
+                bus.log_message.emit(f"⚠️ 版本列表加载失败: {exc}")
+            except Exception:  # noqa: BLE001
+                pass
         self.base_combo.clear()
         self.target_combo.clear()
         for v in versions:

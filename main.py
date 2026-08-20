@@ -118,6 +118,41 @@ def _patch_tooltip() -> None:
     QWidget.setToolTip = _patched_set_tooltip
 
 
+def _ensure_about() -> None:
+    """确保 __about__.py 存在（它是 gitignore 的构建生成物）。
+
+    新工作流下 __about__.py 由 scripts/gen_version.py 从 __about__.py.template
+    + Git Tag 生成，不入库。开发模式 fresh clone / 误删后直接运行 main.py
+    会因缺少该文件而崩溃，这里在导入前自动重建（与 build.bat 打包前
+    调用同一脚本，行为一致）。Nuitka 打包时该文件已随构建生成并编译进
+    二进制，此分支不会触发。
+    """
+    if (_app_dir / "__about__.py").exists():
+        return
+    template = _app_dir / "__about__.py.template"
+    if template.exists():
+        try:
+            sys.path.insert(0, str(_app_dir / "scripts"))
+            from gen_version import generate_version  # noqa: PLC0415
+            generate_version()
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] __about__.py 自动生成失败: {e}")
+    # 模板也缺失（异常环境）：写最小兜底保证可启动
+    try:
+        (_app_dir / "__about__.py").write_text(
+            '__title__ = "Wows/Korabli Paragrams Unpack"\n'
+            '__version__ = "0.0.0-dev"\n'
+            '__description__ = ""\n__author__ = "walksQAQ"\n'
+            '__author_email__ = ""\n__url__ = ""\n'
+            '__license__ = ""\n__copyright__ = ""\n'
+            '__license_detail__ = ""\n',
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[main] __about__.py 兜底写入失败: {e}")
+
+
 def _refresh_all_widgets_theme() -> None:
     """强制所有已存在控件重新应用当前样式，避免主题切换后部分页面停留在旧配色。"""
     from PySide6.QtWidgets import QApplication
@@ -150,6 +185,9 @@ def _refresh_all_widgets_theme() -> None:
 
 
 def main() -> None:
+    # 0. 确保 __about__.py 存在（生成物缺失时从模板自动重建）
+    _ensure_about()
+
     # 1. 创建 Qt 应用
     app = QApplication(sys.argv)
     import __about__
@@ -165,6 +203,15 @@ def main() -> None:
     #    导入即触发初始化 —— Application() 在模块级别实例化
     from app.application import app as app_ctx
     from app.signals import bus
+
+    # 运行日志文件：启动会话（log/log-YYYYMMDD_HHMMSS.log）+ 异常钩子
+    from utils.log_writer import log_writer
+    log_writer.start(
+        version=app.applicationVersion(),
+        wows_type=app_ctx.ctx.wows_type,
+        bin_folder=app_ctx.ctx.bin_folder or "",
+    )
+    bus.log_message.connect(log_writer.write)
 
     # 2. 加载样式（按配置的主题模式：auto/light/dark）
     theme_mode = app_ctx.config.theme_mode
@@ -228,8 +275,10 @@ def main() -> None:
 
     QTimer.singleShot(200, _auto_refresh)
 
-    # 7. 进入事件循环
-    sys.exit(app.exec())
+    # 7. 进入事件循环（退出时关闭日志文件）
+    ret = app.exec()
+    log_writer.close()
+    sys.exit(ret)
 
 
 if __name__ == "__main__":

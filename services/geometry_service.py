@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from app.application import app as app_ctx
+from app.signals import bus
 from models.geometry_parser import parse_geometry, ArmorModel, GeometryError
 from models.collision_materials import collision_material_name, thickness_to_color
 from utils.threading_utils import TaskCancelled
@@ -395,8 +396,9 @@ class GeometryService:
                         nation=row["nation"],
                         has_geometry=bool(row["model_folder"]),
                     ))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             ships = []
+            bus.log_message.emit(f"⚠️ 舰船列表加载异常: {exc}")
         if not ships:
             self._ships_error = "数据库无可载入舰船（请先「加载数据」）"
         self._ships = ships
@@ -626,11 +628,13 @@ class GeometryService:
         for e in main_entries:
             try:
                 data = extractor.pkg_reader.read_file(e.volume.filename, e.file_info)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                geom.stats.setdefault("warnings", []).append(f"{e.path}: 装甲读取失败 {exc}")
                 continue
             try:
                 parsed = parse_geometry(data, file_path=e.path, cancel_event=cancel_event)
-            except GeometryError:  # noqa: BLE001
+            except GeometryError as exc:  # noqa: BLE001
+                geom.stats.setdefault("warnings", []).append(f"{e.path}: 装甲解析失败 {exc}")
                 continue
             finally:
                 del data
@@ -1047,8 +1051,8 @@ class GeometryService:
             bones = c.get_skeleton_bones(app_ctx.ctx.bin_folder or "", folder)
             if bones and "Root_BlendBone" in bones:
                 rb = bones["Root_BlendBone"]
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ Root_BlendBone 读取失败({folder}): {exc}，已回退恒等矩阵")
         self._mount_model_cache[key] = rb
         return rb
 
@@ -1360,8 +1364,8 @@ class GeometryService:
                     continue
                 folder = parts[-2]
                 idx.setdefault(folder, []).append(entry)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 几何目录索引构建失败: {exc}")
         self._geom_folder_index = idx
         return idx
 
@@ -1381,6 +1385,7 @@ class GeometryService:
             return cached
         entries = self._geometry_folder_index(extractor).get(folder) or []
         if not entries:
+            bus.log_message.emit(f"⚠️ 挂载模型 {folder}: 未找到几何文件，该挂载不显示")
             self._mount_model_cache[folder] = None
             return None
         # 蒙皮 bind pose 骨架 stem = 挂载模型目录（_apply_skinning 用它查骨骼矩阵）
@@ -1399,11 +1404,13 @@ class GeometryService:
             self._raise_if_cancelled(cancel_event)
             try:
                 data = extractor.pkg_reader.read_file(e.volume.filename, e.file_info)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                bus.log_message.emit(f"⚠️ 挂载模型读取失败 {e.path}: {exc}")
                 continue
             try:
                 parsed = parse_geometry(data, file_path=e.path, cancel_event=cancel_event)
-            except GeometryError:  # noqa: BLE001
+            except GeometryError as exc:  # noqa: BLE001
+                bus.log_message.emit(f"⚠️ 挂载模型解析失败 {e.path}: {exc}")
                 continue
             finally:
                 del data
@@ -1439,6 +1446,7 @@ class GeometryService:
                         main_tex = (tex_path, tex_bytes)
 
         if not meshes and not all_armor:
+            bus.log_message.emit(f"⚠️ 挂载模型 {folder}: 解析后无网格/装甲，该挂载不显示")
             self._mount_model_cache[folder] = None
             return None
 
@@ -1511,8 +1519,9 @@ class GeometryService:
                         return (len(prefer), 1)
                     cands.sort(key=_key)
                     result = cands[0][1]
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             result = ""
+            bus.log_message.emit(f"⚠️ mfm 贴图识别失败({stem}): {exc}")
         self._mfm_diffuse_cache[stem] = result
         return result
 
@@ -1760,8 +1769,9 @@ class GeometryService:
             from services.assets_cache_service import AssetsCacheService
             c = AssetsCacheService()
             out = c.get_shape_names(app_ctx.ctx.bin_folder or "") or {}
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             out = {}
+            bus.log_message.emit(f"⚠️ shape_names 数据读取失败: {exc}")
         self._shape_names_cache = out
         return out
 
@@ -1831,8 +1841,9 @@ class GeometryService:
                             idx[mid] = entry
                         continue
                     idx[mid] = entry
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             idx = {}
+            bus.log_message.emit(f"⚠️ 渲染集数据读取失败({model_folder}): {exc}，已回退默认贴图")
         self._visual_rs_cache[key] = idx
         return idx
 
@@ -1914,8 +1925,9 @@ class GeometryService:
                         result["indexed_params"] = params
                     except Exception:  # noqa: BLE001
                         pass
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             result = {}
+            bus.log_message.emit(f"⚠️ 材质数据读取失败({mfm_path}): {exc}")
         self._material_full_cache[mfm_path] = result
         return result
 

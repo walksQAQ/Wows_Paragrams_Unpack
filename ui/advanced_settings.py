@@ -97,6 +97,24 @@ class AdvancedSettingsDialog(QDialog):
         ilay.addRow("数据已加载：", self._data_state_label)
         layout.addWidget(grp_info)
 
+        # ── 日志与诊断 ──────────────────────────────
+        grp_log = QGroupBox("日志与诊断")
+        llay = QVBoxLayout(grp_log)
+        lrow = QHBoxLayout()
+        lrow.setSpacing(8)
+        from utils.path_utils import get_app_dir
+        self._log_dir_label = QLabel(str(get_app_dir() / "log"))
+        self._log_dir_label.setStyleSheet(theme.qss("color: @text_muted@; font-size: 12px;"))
+        self._log_dir_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        btn_open_log = QPushButton("打开日志文件夹")
+        btn_open_log.clicked.connect(self._on_open_log_dir)
+        lrow.addWidget(self._log_dir_label, stretch=1)
+        lrow.addWidget(btn_open_log)
+        llay.addLayout(lrow)
+        llay.addWidget(QLabel("程序运行日志按启动时间存为 log-*.log（保留最近 30 个），反馈 Bug 时可附上。",
+                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
+        layout.addWidget(grp_log)
+
         # ── 按钮 ──────────────────────────────────────
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
@@ -125,6 +143,17 @@ class AdvancedSettingsDialog(QDialog):
             self, "选择游戏目录", self._path_edit.text() or app_ctx.ctx.game_path)
         if d:
             self._path_edit.setText(d)
+
+    def _on_open_log_dir(self) -> None:
+        """在系统文件管理器中打开日志文件夹（不存在则先创建）。"""
+        import os
+        from utils.path_utils import get_app_dir
+        log_dir = get_app_dir() / "log"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(log_dir))  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 无法打开日志文件夹: {exc}")
 
     def _on_ok(self) -> None:
         """点击确定：保存所有设置"""

@@ -1,6 +1,6 @@
 # 报错日志可见性修复 + 运行日志文件功能
 
-> 状态：**待办（2026-08-21 立项）**
+> 状态：**已完成（2026-08-21 实施）**
 >
 > 目标：
 > 1. 把「报错 / 超出预期」的内容全部显示到日志区（`bus.log_message`），
@@ -8,6 +8,22 @@
 > 2. 追加「启动时把程序运行日志输出到 `log/` 下 `log-[程序启动时间].log`」功能。
 >
 > 日志区通道：`app/signals.py` `log_message` 信号 → `ui/main_window.py` `_on_log` → 日志面板。
+>
+> **实施记录（2026-08-21）**：
+> - 新增 `utils/log_writer.py`（LogWriter 单例：会话头 + bus.log_message 监听 +
+>   sys.excepthook/threading.excepthook + 保留最近 30 个日志轮转）；
+>   目录用 `get_app_dir()/log/`，Nuitka onefile 下落在 exe 同级（与 data/ 同策略）。
+> - `main.py`：启动时 `log_writer.start()` + 连接信号；退出时 `close()`；
+>   另加 `_ensure_about()`（`__about__.py` 为生成物，缺失时自动从模板重建）。
+> - 静默吞错修复：geometry_service（2.1-2.4/2.8/2.9 挂载/装甲/渲染集/材质/RootBlend/
+>   list_ships/目录索引）、analysis_service（2.5 split JSON 失败计数汇总）、
+>   assets_cache_service（2.6 populate 骨架/材质失败计数）、geometry_renderer（2.7 贴图解析）、
+>   version_diff_dialog（2.10）、penetration_calculator（2.11）、detail_panel（2.12）、
+>   firing_arc_dialog（2.13）。2.14 低优先级共性模式未做（按文档建议可选）。
+> - 高级设置新增「日志与诊断」分组（显示日志目录 + 打开日志文件夹按钮）。
+> - 验证：轮转 37→30 ✓；excepthook traceback 写入 ✓；删 `__about__.py` 后启动自动重建 ✓；
+>   应用启动日志区消息落盘 ✓；**Nuitka onefile 打包版验证 ✓**（`release/log/` 在 exe
+>   同级生成，版本 3.2.2-fix1，数据目录正确指向 exe 同级 `release/data`）。
 
 ---
 

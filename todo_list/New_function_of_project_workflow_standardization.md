@@ -141,9 +141,12 @@ if __name__ == "__main__":
     generate_version()
 ```
 
-- [x] 新增 `scripts/gen_version.py`（模板替换；实际实现为三级回退：
-      setuptools-scm → `git describe --tags --abbrev=0` 去 v 前缀 → `0.0.0-dev`，
-      以兼容存量非 PEP 440 tag）
+- [x] 新增 `scripts/gen_version.py`（模板替换；**版本强制同步自 master**：
+      优先取 master（或 origin/master / main）可达的最近 tag 去 v 前缀，
+      而非当前分支 HEAD——避免特性分支上的杂散 tag 污染版本号；
+      master 引用不存在时回退 HEAD tag，再无则 setuptools-scm / 0.0.0-dev。
+      实测：在 new-function-dev 分支构建，版本正确取 master 的 3.2.2-fix1
+      而非本分支的 3.2.2-test2）
 
 #### 3.3.3 build.bat 集成
 
@@ -195,6 +198,9 @@ git push origin main --tags
       （如 `v3.2.3-beta1` → setuptools-scm 解析为 `3.2.3b1`）。
       **弃用** `-test` / `-fix` / `-bugfix` 后缀——非 PEP 440，setuptools-scm 无法解析；
       未来测试版本一律改用 `-betaN`。存量旧 tag 由 `gen_version.py` 的 git 回退兜底，不影响打包。
+- [x] **tag 强制同步自 master**：版本号一律取 master 可达的最近 tag（`gen_version.py`
+      已实现）；GitHub Actions 建 Release 前校验 tag 必须在 master 上（`release.yml`
+      已加 `merge-base --is-ancestor` 校验）。在特性分支打 tag 会被拒绝/忽略。
 - [ ] 不再在 GitHub 网页手动创建 Release
 - [ ] 发版即打 Tag，版本号由 setuptools-scm 从 Tag 推导，杜绝"代码版本与 Tag 不一致"
 
@@ -228,7 +234,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
 ```
 
-- [x] 创建 `.github/workflows/release.yml`（内容如上）
+- [x] 创建 `.github/workflows/release.yml`（含 **tag 必须在 master 上**的校验：
+      `git merge-base --is-ancestor <tag> origin/master`，不在则拒绝建 Release）
 - [ ] 验证：推送一个测试 Tag，确认自动创建 Release 且 pre-release 判定正确（待推送后验证）
 - [ ] （可选增强）在 workflow 中用 Windows runner 跑 `build.bat` 自动打包 exe 并作为 Release 附件上传
 
