@@ -13,13 +13,13 @@ if not exist "D:\nuitka_cache" mkdir "D:\nuitka_cache"
 if not exist "D:\nuitka_tmp" mkdir "D:\nuitka_tmp"
 
 :: 强行结束可能仍在运行的旧程序，防止文件锁死导致 Access is denied
-taskkill /f /im WowsAnalyzer.exe 2>nul
+taskkill /f /im KorabliParagrams.exe 2>nul
 
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
 
 :: 如果文件被杀毒软件等临时锁死，尝试强力删除旧 exe
-if exist "%OUTDIR%\WowsAnalyzer.exe" del /f /q "%OUTDIR%\WowsAnalyzer.exe" 2>nul
+if exist "%OUTDIR%\KorabliParagrams.exe" del /f /q "%OUTDIR%\KorabliParagrams.exe" 2>nul
 
 :: ── 步骤 1: 生成并编译 Qt 资源文件（QRC → _resources.py） ──
 echo [QRC] 生成 resources.qrc ...
@@ -46,6 +46,15 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo [QRC] 资源编译完成。
 
+:: ── 步骤 1.5: 从 Git Tag 生成版本文件（Nuitka 编译前） ──
+echo [VERSION] 从 Git Tag 生成 __about__.py ...
+%PYTHON% scripts/gen_version.py
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] 生成版本文件失败，中止打包。
+    pause
+    exit /b %ERRORLEVEL%
+)
+
 :: ── 步骤 2: 编译 onefile 可执行文件 ──
 %PYTHON% -m nuitka ^
     --standalone ^
@@ -56,7 +65,7 @@ echo [QRC] 资源编译完成。
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
-    --output-filename=WowsAnalyzer.exe ^
+    --output-filename=KorabliParagrams.exe ^
     main.py
 
 if %ERRORLEVEL% NEQ 0 (

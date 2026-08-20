@@ -1,0 +1,94 @@
+name: Bug 报告
+description: 提交一个问题，帮助改进工具
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 感谢反馈
+        请尽量完整填写以下信息，便于快速定位问题。提交前请先搜索是否已有相同 issue。
+
+  - type: dropdown
+    id: server
+    attributes:
+      label: 服务器类型
+      description: 你使用的是哪个服务器数据？
+      options:
+        - Lesta（Korabli 莱斯塔服）
+        - Wargaming（国际服） （此选项暂为装饰，因为我压根没开放国际服的那个按钮）
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 程序版本
+      description: 程序版本号（菜单「关于」可查看）。
+      placeholder: 例如 v3.2.2
+    validations:
+      required: true
+
+  - type: input
+    id: game_version
+    attributes:
+      label: 游戏版本 / bin 文件夹
+      description: 游戏客户端版本号与 bin 文件夹名（config.json 中的 game_version / bin_folder）
+      placeholder: 26,9,0,0 / 8863276
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 相关功能模块
+      description: 问题出现在哪个功能？
+      options:
+        - 3D 模型查看器
+        - 版本数据比对
+        - 穿深 / 散布计算器
+        - 数据解包（提取 / 解析 / 入库）
+        - assets.bin 浏览器
+        - 本地化 / 文本加载
+        - 主界面 / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？预期是什么？
+      placeholder: 描述你遇到的问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 如何稳定复现？（若无法稳定复现，也请描述大致的操作路径）
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 主界面日志区的输出、或截图（如果有的话，虽然我知道有些报错现在应该是没显示在日志区里的），便于定位问题
+      render: shell
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 检查清单
+      description: 提交前请确认
+      options:
+        - label: 已加载过数据（或已说明数据状态）
+        - label: 已搜索仓库，无相同 issue
+        - label: 已附上必要的日志 / 截图
+    validations:
+      required: true
