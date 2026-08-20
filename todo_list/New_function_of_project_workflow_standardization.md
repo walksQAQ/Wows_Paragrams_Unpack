@@ -284,3 +284,47 @@ jobs:
    许可证信息会丢失（Gemini 示例只写 `__version__` 的写法不适用于本项目）。
 5. **GitHub Actions 网络**：若仓库推送/Actions 受限，自动 Release 会失败，
    需保留手动发 Release 作为降级手段。
+
+---
+
+## 六、配套改动：程序名/产物名统一（WowsAnalyzer.exe → KorabliParagrams.exe）
+
+> 状态：**待办（2026-08-21 加入）**
+> 用户已确认：exe 文件名改为 `KorabliParagrams.exe`；
+> `__about__.__title__`（任务栏/窗口标题/关于对话框显示名）**保持不变**。
+
+### 6.1 现状
+
+`WowsAnalyzer.exe` 是 Nuitka 打包产物名，全库仅出现在 `build.bat` 的 **3 处**（已全库
+grep 确认，README / config.json / 代码均无引用）：
+
+| 行 | 内容 | 作用 |
+|---|---|---|
+| L16 | `taskkill /f /im WowsAnalyzer.exe` | 打包前强制结束旧进程（防文件锁） |
+| L22 | `del /f /q "%OUTDIR%\WowsAnalyzer.exe"` | 清理旧产物 |
+| L59 | `--output-filename=WowsAnalyzer.exe` | Nuitka 产物名（**唯一事实源**） |
+
+显示名与文件名**分离**：`__about__.__title__ = "Wows/Korabli Paragrams Unpack"`
+（`main.py` L157 用作 `setApplicationName`）只影响任务栏/窗口标题/关于对话框，
+与 exe 文件名解耦，本次不改。
+
+### 6.2 改动清单
+
+- [ ] `build.bat` 三处 `WowsAnalyzer.exe` → `KorabliParagrams.exe`
+- [ ] 确认 `config.json` 部署逻辑不依赖旧名（当前复制到 `%OUTDIR%\config.json`，
+      与产物名无关，应无需改）
+- [ ] 清理 `release/` 下旧产物（`WowsAnalyzer.exe` 及 `main.build/`、`main.dist/`、
+      `main.onefile-build/` 中间目录）
+- [ ] 验证：`.\build.bat` 产出 `release/KorabliParagrams.exe`，双击可运行
+
+### 6.3 与发布流的衔接
+
+- [ ] 3.5 可选增强（Windows runner 自动打包 exe 并作为 Release 附件上传）落地时，
+      附件名 = `KorabliParagrams.exe`
+- [ ] README 下载/使用说明若日后提及 exe 名，一并更新（当前未引用，无需改）
+
+### 6.4 不改动项
+
+- `__about__.__title__` 保持 "Wows/Korabli Paragrams Unpack"（显示名）
+- 仓库名 `Wows_Paragrams_Unpack`、3.2 拟定的 `pyproject.toml` `name` 字段
+  （`wows-paragrams-unpack`）与 exe 文件名解耦，本次不改
