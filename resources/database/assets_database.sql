@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS skeleton_bones (
 CREATE INDEX IF NOT EXISTS idx_bones_stem ON skeleton_bones(bin_folder, stem);
 
 -- visual 渲染集：shape(.vertices) → 材质 / mfm / 是否损伤网格
+-- skinned: 该渲染集是否蒙皮（Korabli 渲染集项 +0x0C）
+-- nodes:   蒙皮调色板节点名 JSON 数组（+0x0D nodes_count / +0x28 item-relative relptr）
 CREATE TABLE IF NOT EXISTS render_sets (
     bin_folder TEXT NOT NULL,
     geom_path TEXT NOT NULL,
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS render_sets (
     material TEXT NOT NULL DEFAULT '',
     mfm TEXT NOT NULL DEFAULT '',
     damage INTEGER NOT NULL DEFAULT 0,
+    skinned INTEGER NOT NULL DEFAULT 0,
+    nodes TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(bin_folder, geom_path, shape)
 );
 CREATE INDEX IF NOT EXISTS idx_rs_geom ON render_sets(bin_folder, geom_path);

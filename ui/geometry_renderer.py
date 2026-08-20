@@ -12,6 +12,7 @@ geometry_renderer.py —— 舰船 3D 渲染引擎（QOpenGLWidget + PyOpenGL）
 from __future__ import annotations
 
 import ctypes
+import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QPoint
@@ -25,6 +26,11 @@ from OpenGL import GL
 GL.ERROR_CHECKING = False
 
 from models.camera import OrbitCamera
+
+# ── 装甲展示重构常量（参考 landaire/wows-toolkit）─────────────────────────
+PLATE_EDGE_COLOR = (0.0, 0.0, 0.0, 0.9)       # 板块边界描边色
+HIGHLIGHT_HOVER = (0.0, 0.9, 1.0, 0.5)        # 悬停高亮（青）
+HIGHLIGHT_SELECT = (1.0, 0.6, 0.1, 0.6)       # 选中高亮（橙）
 
 # ── OpenGL 3.3 Core 表面格式（在首个 QOpenGLWidget 创建前生效）──────────────
 _gl_format_done = False
@@ -326,6 +332,20 @@ class GpuMesh:
         GL.glDrawElements(mode, count, GL.GL_UNSIGNED_INT, None)
         GL.glBindVertexArray(0)
 
+    def update_indices(self, indices: np.ndarray):
+        """动态替换索引缓冲（可见性过滤/高亮重建，不重建 VBO/VAO）。"""
+        idx = np.ascontiguousarray(indices, dtype=np.uint32)
+        self._indices = idx
+        self.index_count = int(idx.size)
+        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._ibo)
+        GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, idx.nbytes, idx, GL.GL_DYNAMIC_DRAW)
+        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0)
+        # 索引变化后线框 IBO 失效
+        if self._line_ibo is not None:
+            GL.glDeleteBuffers(1, [self._line_ibo])
+            self._line_ibo = None
+            self._line_count = 0
+
     def release(self):
         try:
             GL.glDeleteVertexArrays(1, [self._vao])
@@ -364,14 +384,40 @@ class GeometryViewport(QOpenGLWidget):
         self._auto_frame = True
         self._needs_rebuild = False
         self._last_pos: QPoint | None = None
+        # ── 装甲场景（重构后：世界空间三角形汤聚合） ──
+        self._armor_scene = None              # ArmorScene | None
+        self._armor_gpu: GpuMesh | None = None     # 聚合装甲网格（渲染空间）
+        self._edge_gpu: GpuMesh | None = None      # 板块边界线
+        self._hl_gpu: GpuMesh | None = None        # 高亮覆盖网格（按需重建）
+        self._hl_color: tuple = HIGHLIGHT_HOVER
+        self._visible_tris: np.ndarray | None = None   # (T,) bool，None=全可见
+        self._armor_opacity: float = 1.0
+        self._show_edges: bool = True
+        #: GL 上下文是否已就绪（initializeGL 后）；未就绪的重建操作延迟到 paintGL
+        self._gl_ready: bool = False
+        self._vis_pending: bool = False
+        self._hl_pending: bool = False
+        self._hover_tri: int | None = None
+        self._selected_plate: tuple | None = None
+        self._last_pick_time: float = 0.0
+        self._press_pos: QPoint | None = None
+        #: 交互回调（viewer 设置）：on_hover(tri_idx|None, QPoint全局坐标)
+        self.on_hover = None
+        #: on_select(plate_key|None)
+        self.on_select = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(480, 360)
 
     # ── 场景设置 ─────────────────────────────────────────
 
-    def set_scene(self, ship_geometry, show_hull: bool = True, show_armor: bool = True):
-        """加载舰船场景：舰体分段 + 挂载模型（各自独立贴图/变换）+ 装甲（按归属）。"""
+    def set_scene(self, ship_geometry, show_hull: bool = True, show_armor: bool = True,
+                  armor_scene=None):
+        """加载舰船场景：舰体分段 + 挂载模型（各自独立贴图/变换）+ 装甲。
+
+        armor_scene：ArmorScene 聚合场景（重构后装甲渲染/拾取数据源）。
+        传入时装甲改由场景渲染（跳过逐 ArmorMesh 的 spec 路径）。
+        """
         specs = []
         if ship_geometry is not None:
             tex = ship_geometry.texture_dds if ship_geometry.texture_dds else None
@@ -399,21 +445,27 @@ class GeometryViewport(QOpenGLWidget):
                     "model": mm.model_matrix,
                     "is_wire": getattr(mm, "is_wire", False),
                 })
-            for am in ship_geometry.armor_meshes:
-                atypes = frozenset()
-                from models.collision_materials import get_armor_types
-                for tri in am.triangles:
-                    atypes |= get_armor_types(tri.material_name)
-                specs.append({
-                    "name": am.name, "kind": "armor",
-                    "positions": am.positions, "normals": am.normals, "uvs": None,
-                    "colors": am.colors, "indices": am.indices, "texture": None,
-                    "model": am.model_matrix, "component": am.component,
-                    "armor_types": atypes,
-                })
+            if armor_scene is None:
+                # 旧路径：逐 ArmorMesh spec（无聚合场景时的兼容渲染）
+                for am in ship_geometry.armor_meshes:
+                    atypes = frozenset()
+                    from models.collision_materials import get_armor_types
+                    for tri in am.triangles:
+                        atypes |= get_armor_types(tri.material_name)
+                    specs.append({
+                        "name": am.name, "kind": "armor",
+                        "positions": am.positions, "normals": am.normals, "uvs": None,
+                        "colors": am.colors, "indices": am.indices, "texture": None,
+                        "model": am.model_matrix, "component": am.component,
+                        "armor_types": atypes,
+                    })
             if ship_geometry.bounds_min is not None:
                 self._scene_bounds = (ship_geometry.bounds_center, ship_geometry.bounds_size)
         self._mesh_specs = specs
+        self._armor_scene = armor_scene
+        self._visible_tris = None
+        self._hover_tri = None
+        self._selected_plate = None
         self._show_hull = show_hull
         self._show_armor = show_armor
         self._auto_frame = True
@@ -502,9 +554,47 @@ class GeometryViewport(QOpenGLWidget):
             )
             self._meshes.append(mesh)
 
+        # ── 装甲场景聚合网格（重构后路径） ──
+        self._release_armor_gpu()
+        if self._armor_scene is not None and self._armor_scene.tri_count:
+            self._build_armor_gpu()
+
+    def _build_armor_gpu(self):
+        """由 ArmorScene 构建聚合装甲网格 + 边界线网格（渲染空间：Z 镜像）。"""
+        sc = self._armor_scene
+        # 渲染空间：世界坐标 Z 取反（与 _build_meshes 的镜像一致）
+        mirror = np.array([1.0, 1.0, -1.0], dtype=np.float32)
+        pos = np.ascontiguousarray(sc.world_positions * mirror)
+        # 法线：Z 镜像后需翻转 Z 分量（位置镜像 det=-1）
+        nrm = np.ascontiguousarray(sc.world_normals * mirror)
+        col = np.ascontiguousarray(sc.colors, dtype=np.float32)
+        idx = np.arange(sc.tri_count * 3, dtype=np.uint32)
+        self._armor_gpu = GpuMesh(
+            name="armor_scene", kind="armor_scene",
+            positions=pos, normals=nrm, uvs=None, colors=col, indices=idx,
+        )
+        # 边界线：端点对 → 渲染空间坐标，索引为顺序对
+        if sc.edge_positions.shape[0]:
+            epos = np.ascontiguousarray(sc.edge_positions * mirror)
+            enrm = np.zeros_like(epos)
+            ecol = np.full((epos.shape[0], 4), PLATE_EDGE_COLOR, dtype=np.float32)
+            eidx = np.arange(epos.shape[0], dtype=np.uint32)
+            self._edge_gpu = GpuMesh(
+                name="armor_edges", kind="armor_edge",
+                positions=epos, normals=enrm, uvs=None, colors=ecol, indices=eidx,
+            )
+
+    def _release_armor_gpu(self):
+        for attr in ("_armor_gpu", "_edge_gpu", "_hl_gpu"):
+            m = getattr(self, attr)
+            if m is not None:
+                m.release()
+                setattr(self, attr, None)
+
     def clear_scene(self):
         self._mesh_specs = []
         self._scene_bounds = None
+        self._armor_scene = None
         self._needs_rebuild = True
         self.update()
 
@@ -535,6 +625,133 @@ class GeometryViewport(QOpenGLWidget):
             self._armor_types = set(armor_types) if armor_types else None
         self.update()
 
+    # ── 装甲场景显示控制（重构后） ─────────────────────
+
+    def set_armor_display(self, opacity=None, show_edges=None):
+        """装甲显示选项：不透明度 / 板块描边。"""
+        if opacity is not None:
+            self._armor_opacity = float(np.clip(opacity, 0.05, 1.0))
+        if show_edges is not None:
+            self._show_edges = bool(show_edges)
+        self.update()
+
+    def set_visible_tris(self, visible_tris):
+        """设置装甲三角形可见掩码（(T,) bool；None=全部可见）。"""
+        self._visible_tris = visible_tris
+        if not self._run_gl(self._apply_visibility):
+            self._vis_pending = True
+        self.update()
+
+    def select_plate(self, plate_key):
+        """选中板块（plate_key=(zone, mat, tenths)；None=取消），重建高亮。"""
+        self._selected_plate = plate_key
+        self._hl_color = HIGHLIGHT_SELECT if plate_key is not None else HIGHLIGHT_HOVER
+        if not self._run_gl(self._rebuild_highlight):
+            self._hl_pending = True
+        self.update()
+
+    def _run_gl(self, fn):
+        """在 GL 上下文内执行 GL 依赖的重建操作。
+
+        GL 未就绪（initializeGL 前）返回 False，由调用方置 pending 标记，
+        在 paintGL 首帧补做；避免在上下文外上传缓冲产生未定义内容。
+        """
+        if not self._gl_ready:
+            return False
+        self.makeCurrent()
+        try:
+            fn()
+        finally:
+            self.doneCurrent()
+        return True
+
+    def _flush_pending_gl(self):
+        """在 paintGL/initializeGL 内补做上下文外登记的重建操作。"""
+        if self._vis_pending:
+            self._apply_visibility()
+            self._vis_pending = False
+        if self._hl_pending:
+            self._rebuild_highlight()
+            self._hl_pending = False
+
+    def _apply_visibility(self):
+        """按可见掩码重建装甲/边界线索引缓冲。"""
+        if self._armor_gpu is None or self._armor_scene is None:
+            return
+        sc = self._armor_scene
+        vis = self._visible_tris
+        if vis is None:
+            idx = np.arange(sc.tri_count * 3, dtype=np.uint32)
+        else:
+            idx = (np.nonzero(vis)[0][:, None] * 3
+                   + np.arange(3, dtype=np.uint32)).ravel().astype(np.uint32)
+        self._armor_gpu.update_indices(idx)
+        # 边界线：任一侧三角形可见即显示
+        if self._edge_gpu is not None and sc.edge_positions.shape[0]:
+            if vis is None:
+                eidx = np.arange(sc.edge_positions.shape[0], dtype=np.uint32)
+            else:
+                t1, t2 = sc.edge_tris[:, 0], sc.edge_tris[:, 1]
+                keep = np.zeros(sc.edge_tris.shape[0], dtype=bool)
+                k1 = t1 >= 0
+                k2 = t2 >= 0
+                keep[k1] |= vis[t1[k1]]
+                keep[k2] |= vis[t2[k2]]
+                eidx = (np.nonzero(keep)[0][:, None] * 2
+                        + np.arange(2, dtype=np.uint32)).ravel().astype(np.uint32)
+            self._edge_gpu.update_indices(eidx)
+
+    def _rebuild_highlight(self):
+        """按选中板块重建高亮覆盖网格（沿法线微偏移防 z-fighting）。"""
+        if self._hl_gpu is not None:
+            self._hl_gpu.release()
+            self._hl_gpu = None
+        if self._selected_plate is None or self._armor_scene is None \
+                or self._armor_gpu is None:
+            return
+        tris = self._armor_scene.tris_for_plate(self._selected_plate)
+        if not len(tris):
+            return
+        tris = np.asarray(tris, dtype=np.int64)
+        sc = self._armor_scene
+        mirror = np.array([1.0, 1.0, -1.0], dtype=np.float32)
+        p = sc.world_positions[tris[:, None] * 3 + np.arange(3)].reshape(-1, 3)
+        n = sc.world_normals[tris[:, None] * 3 + np.arange(3)].reshape(-1, 3)
+        pos = np.ascontiguousarray((p + n * 0.02) * mirror)
+        nrm = np.ascontiguousarray(n * mirror)
+        col = np.full((pos.shape[0], 4), self._hl_color, dtype=np.float32)
+        idx = np.arange(pos.shape[0], dtype=np.uint32)
+        self._hl_gpu = GpuMesh(
+            name="armor_highlight", kind="armor_hl",
+            positions=pos, normals=nrm, uvs=None, colors=col, indices=idx,
+        )
+
+    def pick_at(self, x: int, y: int):
+        """屏幕坐标 → 射线拾取。返回 (tri_idx, ArmorTriangleInfo) 或 None。"""
+        sc = self._armor_scene
+        if sc is None or not sc.tri_count or self.width() < 2:
+            return None
+        aspect = self.width() / max(self.height(), 1)
+        inv_vp = np.linalg.inv(
+            self._camera.projection_matrix(aspect) @ self._camera.view_matrix())
+        ndcx = 2.0 * x / self.width() - 1.0
+        ndcy = 1.0 - 2.0 * y / max(self.height(), 1)
+
+        def _unproj(z):
+            v = inv_vp @ np.array([ndcx, ndcy, z, 1.0], dtype=np.float64)
+            return v[:3] / v[3]
+
+        p0, p1 = _unproj(0.0), _unproj(1.0)
+        d = p1 - p0
+        d /= (np.linalg.norm(d) + 1e-12)
+        # ArmorScene 为未镜像船体空间 → 射线 Z 取反
+        ro = p0 * np.array([1.0, 1.0, -1.0])
+        rd = d * np.array([1.0, 1.0, -1.0])
+        ti = sc.ray_pick(ro, rd, self._visible_tris)
+        if ti is None:
+            return None
+        return int(ti), sc.tri_info[int(ti)]
+
     def camera(self) -> OrbitCamera:
         return self._camera
 
@@ -551,8 +768,10 @@ class GeometryViewport(QOpenGLWidget):
         for name in _UNIFORMS:
             self._uniforms[name] = GL.glGetUniformLocation(self._program, name)
         GL.glEnable(GL.GL_DEPTH_TEST)
+        self._gl_ready = True
         self._build_meshes()
         self._needs_rebuild = False
+        self._flush_pending_gl()
         if self._auto_frame:
             self._frame_camera()
 
@@ -576,6 +795,7 @@ class GeometryViewport(QOpenGLWidget):
             self._needs_rebuild = False
             if self._auto_frame:
                 self._frame_camera()
+        self._flush_pending_gl()
 
         if not self._meshes or not self._program:
             return
@@ -626,9 +846,7 @@ class GeometryViewport(QOpenGLWidget):
             self._apply_model(view, proj, None)
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
 
-            # ── 装甲 pass：只渲染当前视角最表层装甲（外层遮挡内部层） ──
-            # 启用深度写入 + LEQUAL：装甲与船体共面可通过；最近的装甲写深度后，
-            # 内部/远侧装甲被深度测试剔除，不再"穿透"显示内部层。
+            # ── 装甲 pass ──
             if self._show_armor:
                 GL.glUniform1i(u["u_has_tex"], 0)
                 GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
@@ -637,22 +855,64 @@ class GeometryViewport(QOpenGLWidget):
                 GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
                 GL.glDepthMask(GL.GL_TRUE)
                 GL.glDepthFunc(GL.GL_LEQUAL)
-                for mesh in self._meshes:
-                    if mesh.kind != "armor":
-                        continue
-                    if self._armor_components is not None and \
-                            mesh.component not in self._armor_components:
-                        continue
-                    if self._armor_types is not None and \
-                            not (mesh.armor_types & self._armor_types):
-                        continue
-                    self._apply_model(view, proj, mesh.model_matrix)
-                    mesh.render(GL.GL_TRIANGLES)
+                if self._armor_scene is not None and self._armor_gpu is not None:
+                    # 重构后：聚合装甲场景（平涂色 + 不透明度）
+                    GL.glUniform1i(u["u_mode"], 2)
+                    GL.glUniform1f(u["u_opacity"], self._armor_opacity)
+                    self._apply_model(view, proj, None)
+                    self._armor_gpu.render(GL.GL_TRIANGLES)
+                    GL.glUniform1f(u["u_opacity"], 1.0)
+                    GL.glUniform1i(u["u_mode"], 0)
+                else:
+                    # 旧路径：逐 ArmorMesh
+                    for mesh in self._meshes:
+                        if mesh.kind != "armor":
+                            continue
+                        if self._armor_components is not None and \
+                                mesh.component not in self._armor_components:
+                            continue
+                        if self._armor_types is not None and \
+                                not (mesh.armor_types & self._armor_types):
+                            continue
+                        self._apply_model(view, proj, mesh.model_matrix)
+                        mesh.render(GL.GL_TRIANGLES)
                 self._apply_model(view, proj, None)
                 GL.glDisable(GL.GL_BLEND)
                 GL.glDepthFunc(GL.GL_LESS)
                 GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
                 GL.glDepthMask(GL.GL_TRUE)
+
+                # ── 板块边界描边 pass（装甲场景模式） ──
+                if self._armor_scene is not None and self._edge_gpu is not None \
+                        and self._show_edges and self._edge_gpu.index_count:
+                    GL.glDisable(GL.GL_BLEND)
+                    GL.glDepthMask(GL.GL_FALSE)
+                    GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glPolygonOffset(-2.0, -2.0)
+                    GL.glUniform1i(u["u_mode"], 2)
+                    GL.glUniform1f(u["u_opacity"], PLATE_EDGE_COLOR[3])
+                    self._apply_model(view, proj, None)
+                    self._edge_gpu.render(GL.GL_LINES)
+                    GL.glUniform1f(u["u_opacity"], 1.0)
+                    GL.glUniform1i(u["u_mode"], 0)
+                    GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glDepthMask(GL.GL_TRUE)
+
+                # ── 选中板块高亮 pass ──
+                if self._hl_gpu is not None and self._hl_gpu.index_count:
+                    GL.glEnable(GL.GL_BLEND)
+                    GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+                    GL.glDepthMask(GL.GL_FALSE)
+                    GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glPolygonOffset(-2.0, -2.0)
+                    GL.glUniform1i(u["u_mode"], 2)
+                    GL.glUniform1f(u["u_opacity"], 1.0)
+                    self._apply_model(view, proj, None)
+                    self._hl_gpu.render(GL.GL_TRIANGLES)
+                    GL.glUniform1i(u["u_mode"], 0)
+                    GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+                    GL.glDisable(GL.GL_BLEND)
+                    GL.glDepthMask(GL.GL_TRUE)
 
             # ── 线框叠加 ──
             if self._wireframe:
@@ -733,16 +993,23 @@ class GeometryViewport(QOpenGLWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         self._last_pos = event.position().toPoint()
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        if self._last_pos is None:
-            self._last_pos = event.position().toPoint()
-            return
-        dx = event.position().x() - self._last_pos.x()
-        dy = event.position().y() - self._last_pos.y()
-        self._last_pos = event.position().toPoint()
-
+        pos = event.position().toPoint()
         buttons = event.buttons()
+        if not buttons:
+            # 悬停拾取（节流 ~30fps）
+            self._hover_pick(pos)
+            self._last_pos = pos
+            return
+        if self._last_pos is None:
+            self._last_pos = pos
+            return
+        dx = pos.x() - self._last_pos.x()
+        dy = pos.y() - self._last_pos.y()
+        self._last_pos = pos
         if buttons & Qt.LeftButton:
             self._camera.rotate(-dx * 0.4, dy * 0.4)
             self.update()
@@ -751,7 +1018,41 @@ class GeometryViewport(QOpenGLWidget):
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton and self._press_pos is not None:
+            pos = event.position().toPoint()
+            moved = (pos - self._press_pos).manhattanLength()
+            self._press_pos = None
+            if moved < 5 and self._armor_scene is not None and self._show_armor:
+                # 点击选中/取消选中板块
+                hit = self.pick_at(pos.x(), pos.y())
+                key = hit[1].plate_key if hit else None
+                if key == self._selected_plate:
+                    key = None
+                self.select_plate(key)
+                if self.on_select is not None:
+                    self.on_select(key)
         self._last_pos = None
+
+    def _hover_pick(self, pos):
+        """鼠标悬停拾取：更新 hover 三角形并回调 on_hover。"""
+        if self._armor_scene is None or self.on_hover is None:
+            return
+        if not self._show_armor:
+            # 装甲未显示时不做拾取：清除悬停状态并隐藏提示
+            if self._hover_tri is not None:
+                self._hover_tri = None
+                self.on_hover(None, QPoint())
+            return
+        now = time.perf_counter()
+        if now - self._last_pick_time < 0.033:
+            return
+        self._last_pick_time = now
+        hit = self.pick_at(pos.x(), pos.y())
+        tri = hit[0] if hit else None
+        if tri != self._hover_tri:
+            self._hover_tri = tri
+        global_pos = self.mapToGlobal(pos)
+        self.on_hover(tri, global_pos)
 
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
@@ -761,3 +1062,7 @@ class GeometryViewport(QOpenGLWidget):
 
     def leaveEvent(self, event):
         self._last_pos = None
+        if self._hover_tri is not None:
+            self._hover_tri = None
+            if self.on_hover is not None:
+                self.on_hover(None, QPoint())

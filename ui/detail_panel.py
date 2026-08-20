@@ -2257,8 +2257,19 @@ class DetailPanel(QWidget):
                     elif label == "支援":
                         widget = self._build_support_widget(sec)
                     else:
-                        widget = ShipCardWidget(sec, firing_arc=sec.get("_firing_arc"))
+                        # 「基础属性」卡片最下方追加 3D 模型查看入口按钮
+                        action = None
+                        if label == "基础属性" and self._current_filename:
+                            action = {
+                                "text": "⛵  3D 模型查看",
+                                "tooltip": "打开当前舰船的 3D 模型 / 装甲查看器（自动载入本舰模型）",
+                                "data": self._current_filename,
+                            }
+                        widget = ShipCardWidget(sec, firing_arc=sec.get("_firing_arc"),
+                                                action=action)
                         widget.firing_arc_clicked.connect(self._open_firing_arc)
+                        if action:
+                            widget.action_clicked.connect(self._open_3d_viewer)
 
                     col_layout.addWidget(widget)
 
@@ -2279,6 +2290,26 @@ class DetailPanel(QWidget):
             self._arcs_dialog.activateWindow()
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开射界查看器失败: {exc}")
+
+    def _open_3d_viewer(self, ship_id):
+        """打开 3D 模型查看器并自动载入当前所选舰船（懒创建单实例）。
+
+        不传 parent：传主窗口为父会让 QOpenGLWidget 作为主窗口子窗口创建，
+        Windows 上 GL 上下文创建触发主窗口重绘闪烁。关闭联动由
+        MainWindow.closeEvent 显式关闭 detail._geometry_viewer 保证。
+        """
+        try:
+            from ui.geometry_viewer import GeometryViewerDialog
+            if not hasattr(self, "_geometry_viewer") or self._geometry_viewer is None:
+                self._geometry_viewer = GeometryViewerDialog()
+                if not getattr(self._geometry_viewer, "_restored_geometry", False):
+                    self._geometry_viewer.center_on_screen(self.window())
+            self._geometry_viewer.open_ship(ship_id)
+            self._geometry_viewer.show()
+            self._geometry_viewer.raise_()
+            self._geometry_viewer.activateWindow()
+        except Exception as exc:
+            bus.log_message.emit(f"❌ 打开 3D 查看器失败: {exc}")
 
     def _build_sub_widget(self, title: str, sub_info: dict) -> QWidget:
         """构建无标签栏的子分类面板，仅显示默认配置内容，顶栏按钮控制切换"""

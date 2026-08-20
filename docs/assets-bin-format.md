@@ -8,6 +8,18 @@
 assets.bin 是游戏资源原型数据库（PrototypeDatabase），magic = `0x42574442`（"BWDB"），version = `0x01010000`。
 Korabli（Lesta 服）正式服实测：约 217MB，680393 路径，12 个 blob。
 
+> 实际源码来源：`uncode_assets/types.py` 的 `KORABLI_TYPES`、`type_from_magic()`，以及
+> `services/assets_cache_service.py` / `services/geometry_service.py` 中的缓存与渲染解耦逻辑。
+> 这里的权威规则不是“按 blob index 想当然套 WoWS 表”，而是“按 `prototype_magic` 识别类型”。
+
+### 当前实现中的关键约束
+
+- `PrototypeType` 以 `magic` 唯一标识，不再依赖 blob index 作为主键。
+- `assets_cache_service.populate()` 预先把 `render_sets`、`material_full`、`shape_names` 等快取表写进 `assets_data.db`，
+  3D 查看器渲染阶段只读数据库，尽量不在现场反复扫 `assets.bin`。
+- `geometry_service._material_family()` 把 `shader_id` 的高 16 位解释成技术族：`0x0009` = `indexed`，`0x0005` = `pbs`，其余 = `other`。 
+- `VisualPrototype` 的渲染集 `relptr` 以记录起始为基准，且 `item_size` 在 Korabli 里实测为 `0x40`，不是旧的 `0x80` 版本。 
+
 ## 文件头（16 字节）
 
 | 偏移 | 类型 | 说明 |

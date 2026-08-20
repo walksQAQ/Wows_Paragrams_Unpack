@@ -63,10 +63,23 @@
 
 - `assets_data.db / material_full` 已入库**全部材质**（29139 个）的 `shader_id`、全部贴图原始路径
   （`textures` JSON，含 `diffuseMap/ambientOcclusionMap/metallicGlossMap/normalMap/detailMap` 等）、
-  `family`（pbs/indexed/other）、INDEXED 的 vec4 数组。
-- `_resolve_material_full(mfm)` 从库返回 `tech_family` + `textures`（路径）+ `indexed_params`，
-  非 INDEXED 渲染目前主要用 `diffuseMap`（`_load_texture_tier` 实时解包）。
-- 本文档的 detail/glass 参数可作后续完善非 INDEXED PBS 渲染（细节混合、玻璃折射/透明）的参考。
+  `family`（`pbs` / `indexed` / `other`）、INDEXED 的 vec4 数组。
+- `services/geometry_service.py::_resolve_material_full()` 从库返回 `tech_family` + `textures` + `indexed_params`，
+  非 INDEXED 渲染目前优先读取 `diffuseMap`，并在 `renderer` 中按 `.dd0/.dd1/.dd2/.dds` 分级实时解包。
+- `shader_id` 解析逻辑来自 `geometry_service._material_family()`：高 16 位 `0x0009` 归类为 `indexed`，`0x0005` 归类为 `pbs`，其余为 `other`。
+- 本文档的 detail/glass 参数属于**语义参考**：它描述 `.mfm` 明文字段的命名/用途，但程序当前真正的渲染采样路径是数据库缓存后再按材质 family 选择渲染分支。
+
+### 运行时解析方式（当前代码）
+
+1. `assets_cache_service.populate()` 遍历所有 `.mfm`，读取 `shader_id`、名称哈希、属性类型和 `vec4` 数组，写入 `material_full` 和 `mfm_textures`。
+2. `geometry_service._resolve_material_full()` 读取 `material_full`，构造：
+   - `tech_family`
+   - `textures`：`{name: 原始路径}`
+   - `indexed_params`：含 `arrays` + `offset` + `grid`
+3. 真实贴图 bytes 在渲染阶段通过 `_load_texture_tier()` 从客户端 pkg 资源里按 `.dd0` → `.dd1` → `.dd2` → `.dds` 依次加载。
+
+因此，本文档中的“属性名 / fx 语义”是对现有 `.mfm` 规范的说明，
+而 `material_full` 表和 `geometry_service` 的分支判断则是当前程序真实的执行入口。
 
 ## 原始 .mfm 归档（Bandizip 临时解包）
 
