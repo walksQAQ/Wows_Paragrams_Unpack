@@ -347,13 +347,15 @@ class AssetsCacheService:
             import numpy as np
             skel_rows: list[tuple] = []
             bone_rows: list[tuple] = []
+            skel_failed: list[str] = []
             for f in skel_files:
                 stem = self._stem_of_skeleton(f.path)
                 if not stem:
                     continue
                 try:
                     sk = svc.decode_skeleton_path(f.path)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    skel_failed.append(f"{stem}({exc})")
                     continue
                 names = sk.get("name_ids") or []
                 mats = sk.get("matrices") or []
@@ -399,6 +401,10 @@ class AssetsCacheService:
                                       pos[0], pos[1], pos[2],
                                       quat[0], quat[1], quat[2], quat[3],
                                       scale[0], scale[1], scale[2]))
+            if skel_failed:
+                sample = ", ".join(skel_failed[:5])
+                more = f" 等 {len(skel_failed)} 个" if len(skel_failed) > 5 else ""
+                _p(f"⚠️ {len(skel_failed)} 个骨架解码失败: {sample}{more}")
             if skel_rows:
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO skeleton_mounts "
@@ -512,10 +518,12 @@ class AssetsCacheService:
             from uncode_assets.decoders import _read_typed_value
             mfm_rows: list[tuple] = []
             mf_rows: list[tuple] = []
+            mfm_failed: list[str] = []
             for f in mfm_files:
                 try:
                     data = svc.vfs.open_file_len(f.path, 0x90)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
+                    mfm_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
                     continue
                 if len(data) < 0x88:
                     continue
@@ -588,6 +596,10 @@ class AssetsCacheService:
                 family = self._material_family(f"0x{shader_id:08X}")
                 mf_rows.append((bin_folder, self._norm_vfs_path(f.path), f"0x{shader_id:08X}", family,
                                 json.dumps(textures), json.dumps(indexed)))
+            if mfm_failed:
+                sample = ", ".join(mfm_failed[:5])
+                more = f" 等 {len(mfm_failed)} 个" if len(mfm_failed) > 5 else ""
+                _p(f"⚠️ {len(mfm_failed)} 个材质文件读取失败: {sample}{more}")
             if mfm_rows:
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO mfm_textures "

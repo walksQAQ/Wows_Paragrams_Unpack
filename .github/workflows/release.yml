@@ -13,6 +13,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 完整历史，用于校验 tag 是否在 master 上
+
+      - name: Verify tag is on master
+        run: |
+          git fetch origin master
+          if git merge-base --is-ancestor "${{ github.ref_name }}" origin/master; then
+            echo "Tag ${{ github.ref_name }} 在 master 分支上，继续发布。"
+          else
+            echo "::error::Tag ${{ github.ref_name }} 不在 master 分支上，拒绝创建 Release（请先合并到 master 再打 Tag）。"
+            exit 1
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
