@@ -1,0 +1,62 @@
+name: 功能请求
+description: 提出一个新功能或改进建议
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 建议描述
+        请说明你希望的功能及其价值。提交前请先搜索是否已有相同建议。
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 相关模块
+      description: 该功能属于哪个方向？
+      options:
+        - 3D 模型查看器 / 装甲展示
+        - 版本数据比对
+        - 穿深 / 散布计算器
+        - 数据解包 / 提取 / 入库
+        - assets.bin / 资源浏览
+        - 本地化 / 文本
+        - 界面 / 体验 / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 现状与痛点
+      description: 当前缺少什么？使用上有什么不便？
+      placeholder: 描述现状与痛点
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望功能
+      description: 你希望的行为 / 界面 / 交互是怎样的？
+      placeholder: 描述期望的功能
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准（可选）
+      description: 怎样算实现完成？可列验收点
+      placeholder: |
+        1.
+        2.
+        3.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 检查清单
+      options:
+        - label: 已搜索仓库，无相同请求
+        - label: 已考虑实现难度 / 收益

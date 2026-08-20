@@ -225,18 +225,28 @@ class MainWindow(QMainWindow):
             f"<p><b>版本：</b>{ver}</p>"
             f"<p><b>作者：</b>{__about__.__author__}</p>"
             f"<p><b>仓库：</b><a href='{__about__.__url__}'>{__about__.__url__}</a></p>"
-            f"<p><b>许可证：</b>{__about__.__license__}"
-            "（点击下方「显示详情」查看两个许可证的完整说明）</p>"
+            f"<p><b>许可证：</b>{__about__.__license__}</p>"
             "<hr>"
             "<p style='color: #888888; font-size: 11px;'>"
             "本工具仅供学习与研究使用，仅支持访问公开版本的游戏数据。"
             "所有数据版权及相关权利均归原游戏公司所有。"
             "</p>"
         )
-        # 两个许可证的详细信息（Apache-2.0 + GPLv3 分离授权说明）
-        box.setDetailedText(getattr(__about__, "__license_detail__", ""))
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        # 自定义「许可证详情」按钮（setDetailedText 的内建按钮文本由 Qt 管理，
+        # 默认英文 "Show Details..."，无法汉化；改为独立按钮弹出详情）
+        license_btn = box.addButton(
+            "许可证详情...", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
         box.exec()
+        if box.clickedButton() is license_btn:
+            detail = getattr(__about__, "__license_detail__", "")
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("许可证详情")
+            dlg.setIcon(QMessageBox.Icon.Information)
+            dlg.setTextFormat(Qt.TextFormat.PlainText)
+            dlg.setText(detail)
+            dlg.addButton(QMessageBox.StandardButton.Ok)
+            dlg.exec()
 
     # ── 信号槽 ────────────────────────────────────────────
 

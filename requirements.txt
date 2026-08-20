@@ -26,3 +26,4 @@ polib>=1.2
 # 打包构建相关依赖
 nuitka>=2.0
 zstandard>=0.25
+setuptools-scm>=8

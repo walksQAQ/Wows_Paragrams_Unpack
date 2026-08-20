@@ -1,6 +1,7 @@
 # 项目流程规范化：版本管理 + 标准发布流（Gemini 建议整理）
 
-> 状态：**待办（2026-08-21 立项，来源：Gemini 建议，已按本项目实际适配）**
+> 状态：**本地落地完成（2026-08-21）**，剩余：推送测试 Tag 验证 Actions、未来打 beta 版 tag
+> （来源：Gemini 建议，已按本项目实际适配）
 >
 > 目标：把"手动改版本号 + 网页手动发 Release"的松散流程，升级为
 > **以 Git Tag 为唯一版本真理源、GitHub Actions 自动发 Release** 的规范流程。
@@ -61,8 +62,8 @@ my_project/
 **本项目适配**：代码已按 `app/ models/ services/ ui/ utils/` 分层，**不做大规模
 目录搬迁**（风险高、收益低）；仅补充缺失的规范文件：
 
-- [ ] 新建 `pyproject.toml`（见 3.2，含 `setuptools-scm` 动态版本配置）
-- [ ] 确认 `.gitignore` 覆盖 `__pycache__/`、`release/`、`data/`、`.venv/`、`_temp/`
+- [x] 新建 `pyproject.toml`（见 3.2，含 `setuptools-scm` 动态版本配置）
+- [x] 确认 `.gitignore` 覆盖 `__pycache__/`、`release/`、`data/`、`.venv/`、`_temp/`
 - [ ] `tests/` 目录：暂不强制，后续把 `_temp/scripts/` 中稳定的探针迁移为正式测试
 
 ### 3.2 pyproject.toml + setuptools-scm 动态版本
@@ -89,9 +90,10 @@ version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 ```
 
-- [ ] 新建 `pyproject.toml`（如上，包名/许可证字段按实际调整）
-- [ ] 安装构建依赖：`pip install setuptools-scm`
-- [ ] 验证：`python -m setuptools_scm` 能依据当前 Git 状态输出版本（如 `3.2.2` / `3.2.3.dev0+...`）
+- [x] 新建 `pyproject.toml`（如上；license 实际指向 `LICENSE.Apache-2.0`）
+- [x] 安装构建依赖：`pip install setuptools-scm`（10.2.1，已加入 requirements.txt）
+- [x] 验证：setuptools-scm 10.2.1 可运行；⚠️ 当前 HEAD 最近 tag `v3.2.2-test2` 非 PEP 440，
+      由 `gen_version.py` 的 git 回退兜底（见 3.3.2 实际实现）；未来 `-betaN` tag 可被原生解析
 
 ### 3.3 构建时生成版本文件（Nuitka 兼容核心，Gemini 细化版）
 
@@ -102,9 +104,9 @@ local_scheme = "no-local-version"
 
 #### 3.3.1 版本模板
 
-- [ ] 新建 `__about__.py.template`：复制当前 `__about__.py` 全部字段，
+- [x] 新建 `__about__.py.template`：复制当前 `__about__.py` 全部字段，
       其中版本行写 `__version__ = "{version}"` 占位
-- [ ] 仓库内**不再提交** `__about__.py`（由脚本生成），只提交模板
+- [x] 仓库内**不再提交** `__about__.py`（已 `git rm --cached`，保留磁盘文件）
 
 #### 3.3.2 scripts/gen_version.py 实现
 
@@ -139,7 +141,9 @@ if __name__ == "__main__":
     generate_version()
 ```
 
-- [ ] 新增 `scripts/gen_version.py`（如上，模板替换而非整体覆盖，保留其他元数据）
+- [x] 新增 `scripts/gen_version.py`（模板替换；实际实现为三级回退：
+      setuptools-scm → `git describe --tags --abbrev=0` 去 v 前缀 → `0.0.0-dev`，
+      以兼容存量非 PEP 440 tag）
 
 #### 3.3.3 build.bat 集成
 
@@ -156,22 +160,22 @@ if %ERRORLEVEL% NEQ 0 (
 )
 ```
 
-- [ ] `build.bat` 在 Nuitka 前插入上述步骤（注意：应放在 QRC 步骤之后、`nuitka` 之前）
+- [x] `build.bat` 在 Nuitka 前插入上述步骤（QRC 之后、`nuitka` 之前，已验证生效）
 
 #### 3.3.4 .gitignore 补充
 
-- [ ] `.gitignore` 加入 `__about__.py`（生成物，避免本地版本频繁变更污染 git status）
-- [ ] 确认 `__about__.py.template` **不被**忽略（需入库）
-- [ ] 可选：`git update-index --assume-unchanged __about__.py` 已不再需要
+- [x] `.gitignore` 加入 `__about__.py`（生成物，避免本地版本频繁变更污染 git status）
+- [x] 确认 `__about__.py.template` **不被**忽略（需入库）
+- [x] 可选：`git update-index --assume-unchanged __about__.py` 已不再需要
       （既然模板方案已让该文件不入库）
 
 #### 3.3.5 验证
 
-- [ ] 打包后的 exe 中 `__about__.__version__` 是具体字符串（如 `3.2.2`），
-      而非 `0.0.0-dev`
-- [ ] `__about__.__license__` / `__license_detail__` 等元数据在打包后仍完整保留
-      （模板替换方案保证不丢失）
-- [ ] 无 Git Tag 的本地仓库打 `build.bat` 时回退到 `0.0.0-dev` 且不报错
+- [x] 打包后的 exe 中 `__about__.__version__` 是具体字符串（实测 `3.2.2-test2`，
+      由 git 回退推导），而非 `0.0.0-dev`
+- [x] `__about__.__license__` / `__license_detail__` 等元数据在打包后仍完整保留
+      （实测导入正常，license_detail 782 字符含 Apache/GPLv3 全文引用）
+- [ ] 无 Git Tag 的本地仓库打 `build.bat` 时回退到 `0.0.0-dev` 且不报错（未实测，逻辑已覆盖）
 
 ### 3.4 Tag 驱动的发布流
 
@@ -187,7 +191,10 @@ git tag v3.2.2
 git push origin main --tags
 ```
 
-- [ ] 版本号语义约定：`vX.Y.Z` 正式版；带后缀（`-fix` / `-rc1` / `-beta`）为 pre-release
+- [ ] 版本号语义约定（**PEP 440**）：`vX.Y.Z` 正式版；预发布用 `-betaN` / `-rcN` / `-aN`
+      （如 `v3.2.3-beta1` → setuptools-scm 解析为 `3.2.3b1`）。
+      **弃用** `-test` / `-fix` / `-bugfix` 后缀——非 PEP 440，setuptools-scm 无法解析；
+      未来测试版本一律改用 `-betaN`。存量旧 tag 由 `gen_version.py` 的 git 回退兜底，不影响打包。
 - [ ] 不再在 GitHub 网页手动创建 Release
 - [ ] 发版即打 Tag，版本号由 setuptools-scm 从 Tag 推导，杜绝"代码版本与 Tag 不一致"
 
@@ -201,7 +208,7 @@ name: Create Release on Tag Push
 on:
   push:
     tags:
-      - 'v*'  # 匹配 v3.2.2-fix, v1.0.0 等
+      - 'v*'  # 匹配 v3.2.3-beta1, v1.0.0 等
 
 jobs:
   release:
@@ -221,8 +228,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
 ```
 
-- [ ] 创建 `.github/workflows/release.yml`（内容如上）
-- [ ] 验证：推送一个测试 Tag，确认自动创建 Release 且 pre-release 判定正确
+- [x] 创建 `.github/workflows/release.yml`（内容如上）
+- [ ] 验证：推送一个测试 Tag，确认自动创建 Release 且 pre-release 判定正确（待推送后验证）
 - [ ] （可选增强）在 workflow 中用 Windows runner 跑 `build.bat` 自动打包 exe 并作为 Release 附件上传
 
 ### 3.6 发布流程串联回顾（完整工作流）
@@ -242,15 +249,15 @@ jobs:
    ```
 3. **在主干上打 Tag 并推送**：
    ```bash
-   git tag v3.2.2-fix
+   git tag v3.2.3-beta1
    git push origin master --tags
    ```
 4. **触发自动化与本地打包**：
    - GitHub Actions 监听到 `master` 上的新 Tag，自动在云端创建
      对应 Release / Pre-release（带 `-` 后缀自动标记 Pre-release）。
    - 随后在本地 `master` 分支运行 `build.bat`：`gen_version.py` 此时由
-     setuptools-scm 准确读取当前 `v3.2.2-fix` 标签写入 `__about__.py`，
-     Nuitka 把最新主干代码 + 正确版本号打包成 exe。
+     setuptools-scm 准确读取当前 `v3.2.3-beta1` 标签写入 `__about__.py`
+     （解析为 `3.2.3b1`），Nuitka 把最新主干代码 + 正确版本号打包成 exe。
 
 > 日常开发则在特性分支随意 commit，不用管版本号（`__about__.py` 是生成物，
 > 不入库）；只有上述第 2~4 步（主干 + Tag + 构建）才涉及版本号。
@@ -310,12 +317,11 @@ grep 确认，README / config.json / 代码均无引用）：
 
 ### 6.2 改动清单
 
-- [ ] `build.bat` 三处 `WowsAnalyzer.exe` → `KorabliParagrams.exe`
-- [ ] 确认 `config.json` 部署逻辑不依赖旧名（当前复制到 `%OUTDIR%\config.json`，
-      与产物名无关，应无需改）
-- [ ] 清理 `release/` 下旧产物（`WowsAnalyzer.exe` 及 `main.build/`、`main.dist/`、
+- [x] `build.bat` 三处 `WowsAnalyzer.exe` → `KorabliParagrams.exe`
+- [x] 确认 `config.json` 部署逻辑不依赖旧名（复制到 `%OUTDIR%\config.json`，无需改）
+- [x] 清理 `release/` 下旧产物（`WowsAnalyzer.exe` 及 `main.build/`、`main.dist/`、
       `main.onefile-build/` 中间目录）
-- [ ] 验证：`.\build.bat` 产出 `release/KorabliParagrams.exe`，双击可运行
+- [x] 验证：`.\build.bat` 产出 `release/KorabliParagrams.exe`（55.6 MB），启动冒烟测试通过
 
 ### 6.3 与发布流的衔接
 
