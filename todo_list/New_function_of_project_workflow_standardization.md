@@ -1,6 +1,7 @@
 # 项目流程规范化：版本管理 + 标准发布流（Gemini 建议整理）
 
-> 状态：**本地落地完成（2026-08-21）**，剩余：推送测试 Tag 验证 Actions、未来打 beta 版 tag
+> 状态：**已落地并验证（2026-08-21）**：本地流程 + GitHub Actions 自动 Release 均实测通过
+> （测试 tag `v3.2.3-alpha1` → workflow success → Pre-release 自动创建）；剩余：未来打 beta 版 tag
 > （来源：Gemini 建议，已按本项目实际适配）
 >
 > 目标：把"手动改版本号 + 网页手动发 Release"的松散流程，升级为
@@ -236,7 +237,10 @@ jobs:
 
 - [x] 创建 `.github/workflows/release.yml`（含 **tag 必须在 master 上**的校验：
       `git merge-base --is-ancestor <tag> origin/master`，不在则拒绝建 Release）
-- [ ] 验证：推送一个测试 Tag，确认自动创建 Release 且 pre-release 判定正确（待推送后验证）
+- [x] 验证：推送一个测试 Tag，确认自动创建 Release 且 pre-release 判定正确
+      （2026-08-21 实测：`v3.2.3-alpha1` 推送后 workflow `Create Release on Tag Push`
+      conclusion=success，自动创建 `Release v3.2.3-alpha1` 且 `prerelease=True`，
+      tag 在 master 上的校验步骤通过）
 - [ ] （可选增强）在 workflow 中用 Windows runner 跑 `build.bat` 自动打包 exe 并作为 Release 附件上传
 
 ### 3.6 发布流程串联回顾（完整工作流）
