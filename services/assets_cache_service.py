@@ -34,7 +34,11 @@ from utils.path_utils import get_data_dir
 #:    （*.vertices 名哈希→名，LOD/crack 兜底用；显示时只读 DB，绝不现场读 assets.bin）
 #: v5（2026-08-20）：skeleton_mounts 纳入 MP_ 甲板设备挂点（此前仅 HP_，
 #:    导致 MP 节点挂载的缆桩/小艇/探照灯等甲板设备模型不显示）
-ASSETS_SCHEMA_VERSION = 5
+#: v6（2026-08-20）：render_sets 增加 skinned 标志 + nodes 调色板（JSON 数组），
+#:    供蒙皮网格按渲染集调色板施加 bind pose 混合（修复 PASA111 天线/索具
+#:    180° 朝向错误；Korabli 渲染集项 +0x0C skinned / +0x0D nodes_count /
+#:    +0x28 item-relative relptr → u32 名ID 数组）
+ASSETS_SCHEMA_VERSION = 6
 
 
 class AssetsCacheService:
@@ -172,6 +176,8 @@ class AssetsCacheService:
             material TEXT NOT NULL DEFAULT '',
             mfm TEXT NOT NULL DEFAULT '',
             damage INTEGER NOT NULL DEFAULT 0,
+            skinned INTEGER NOT NULL DEFAULT 0,
+            nodes TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(bin_folder, geom_path, shape)
         );
         CREATE INDEX IF NOT EXISTS idx_rs_geom ON render_sets(bin_folder, geom_path);
@@ -457,14 +463,32 @@ class AssetsCacheService:
                             mfm = self._path_of(mfm_h, db, self_id_idx)
                             damage = int('_crack_' in shp or '_lod' in shp
                                          or 'Crack' in mat)
-                            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage))
+                            # 蒙皮标志 + 调色板节点名（Korabli 渲染集项布局）：
+                            #   +0x0C u8 skinned / +0x0D u8 nodes_count /
+                            #   +0x28 u64 node_name_ids relptr（**item-relative**）
+                            #   → u32 名ID 数组[nodes_count]
+                            skinned = data[o + 0x0C]
+                            ncnt = data[o + 0x0D]
+                            nodes: list[str] = []
+                            if skinned and ncnt:
+                                nrel = struct.unpack_from('<Q', data, o + 0x28)[0]
+                                if nrel:
+                                    nabs = o + nrel
+                                    if nabs + ncnt * 4 <= len(data):
+                                        for j in range(ncnt):
+                                            nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
+                                            nm = sdict.get(nid) or ''
+                                            if nm:
+                                                nodes.append(nm)
+                            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage,
+                                            int(skinned), json.dumps(nodes)))
             except Exception:  # noqa: BLE001
                 pass
             if rs_rows:
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO render_sets "
-                    "(bin_folder, geom_path, shape, material, mfm, damage) "
-                    "VALUES (?,?,?,?,?,?)", rs_rows)
+                    "(bin_folder, geom_path, shape, material, mfm, damage, "
+                    "skinned, nodes) VALUES (?,?,?,?,?,?,?,?)", rs_rows)
             counts["render_sets"] = len(rs_rows)
             del rs_rows
 
@@ -663,7 +687,8 @@ class AssetsCacheService:
     def get_render_sets(self, bin_folder: str, geom_paths: list[str]) -> list[dict]:
         """某批 geometry 路径的全部渲染集（含整合模型共享记录）。
 
-        返回 [{geom_path, shape, material, mfm, damage}]。
+        返回 [{geom_path, shape, material, mfm, damage, skinned, nodes}]。
+        nodes 为蒙皮调色板节点名列表（JSON 反序列化）。
         """
         out: list[dict] = []
         if not geom_paths:
@@ -671,14 +696,23 @@ class AssetsCacheService:
         try:
             ph = ",".join("?" * len(geom_paths))
             rows = self._conn.execute(
-                f"SELECT geom_path, shape, material, mfm, damage FROM render_sets "
+                f"SELECT geom_path, shape, material, mfm, damage, skinned, nodes "
+                f"FROM render_sets "
                 f"WHERE bin_folder=? AND geom_path IN ({ph}) "
                 f"ORDER BY geom_path, shape", (bin_folder, *geom_paths)).fetchall()
             for r in rows:
+                nodes: list[str] = []
+                if r["nodes"]:
+                    try:
+                        nodes = json.loads(r["nodes"])
+                    except (ValueError, TypeError):
+                        nodes = []
                 out.append({
                     "geom_path": r["geom_path"], "shape": r["shape"],
                     "material": r["material"], "mfm": r["mfm"],
                     "damage": bool(r["damage"]),
+                    "skinned": bool(r["skinned"]),
+                    "nodes": nodes,
                 })
         except sqlite3.OperationalError:
             out = []

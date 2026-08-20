@@ -7,9 +7,15 @@ collision_materials.py —— 碰撞材质名表、装甲厚度颜色映射、�
 - `collision_material_name(id)`：材质 ID → 名称（未收录的 ID 回退 "mat_{id}"）
 - `thickness_to_color(mm)`：厚度 → RGBA（游戏 ArmorConstants.py 的 10 色桶）
 - `zone_from_material_name(name)`：材质名 → 命中区域分类
+- `zone_display(zone)`：命中区域 → 中文显示名
+
+材质编号映射表可外部维护：`resources/database/collision_materials.json`
+（文件系统优先 → QRC 回退 → 本文件硬编码兑底；JSON 条目覆盖同名硬编码）。
 """
 
 from __future__ import annotations
+
+import json
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -244,6 +250,44 @@ COLLISION_MATERIAL_NAMES: dict[int, str] = {
 }
 
 
+def _load_external_material_table() -> tuple[dict[int, str], dict[str, str]]:
+    """读取外部映射表 `resources/database/collision_materials.json`。
+
+    加载顺序：文件系统（源码模式热改即时生效）→ QRC（打包模式）→ 空（兜底）。
+    返回 (materials: {id: 名称}, zones: {英文区名: 中文名})。
+    """
+    try:
+        data = None
+        try:
+            from utils.path_utils import get_bundled_dir
+            p = get_bundled_dir() / "resources" / "database" / "collision_materials.json"
+            if p.is_file():
+                data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = None
+        if data is None:
+            try:
+                from PySide6.QtCore import QFile, QIODevice
+                qf = QFile(":/resources/database/collision_materials.json")
+                if qf.open(QIODevice.ReadOnly):
+                    data = json.loads(bytes(qf.readAll()).decode("utf-8"))
+                    qf.close()
+            except Exception:  # noqa: BLE001
+                data = None
+        if not isinstance(data, dict):
+            return {}, {}
+        materials = {int(k): str(v) for k, v in (data.get("materials") or {}).items()}
+        zones = {str(k): str(v) for k, v in (data.get("zones") or {}).items()}
+        return materials, zones
+    except Exception:  # noqa: BLE001
+        return {}, {}
+
+
+_EXT_MATERIALS, _EXT_ZONES = _load_external_material_table()
+if _EXT_MATERIALS:
+    COLLISION_MATERIAL_NAMES.update(_EXT_MATERIALS)
+
+
 def collision_material_name(material_id: int) -> str:
     return COLLISION_MATERIAL_NAMES.get(material_id, f"mat_{material_id}")
 
@@ -346,7 +390,28 @@ def armor_type_display(atype: str) -> str:
 
 # ────────────────────────────────────────────────────────────────────────────
 # 命中区域分类
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────#: 命中区域中文显示名（内部 key 保持英文；JSON zones 可覆盖/扩展）
+ZONE_CHINESE: dict[str, str] = {
+    "Citadel": "核心区",
+    "Casemate": "副炮区",
+    "Superstructure": "上层建筑",
+    "Bow": "舰艏",
+    "Stern": "舰艉",
+    "Turret": "炮塔",
+    "SteeringGear": "舵机舱",
+    "TorpedoProtection": "防雷突出部",
+    "Hull": "船体",
+    "Other": "其他",
+    "Default": "默认",
+}
+if _EXT_ZONES:
+    ZONE_CHINESE.update(_EXT_ZONES)
+
+
+def zone_display(zone: str) -> str:
+    """命中区域 → 中文显示名（未收录时原样返回英文）。"""
+    return ZONE_CHINESE.get(zone, zone)
+
 def zone_from_material_name(mat_name: str) -> str:
     """材质名 → 命中区域（与 wows-toolkit zone_from_material_name 语义一致）。"""
     if not mat_name:

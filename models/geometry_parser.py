@@ -83,6 +83,16 @@ class MeshPrimitive:
     uvs: np.ndarray | None = None  # (N,2) float32
     indices: np.ndarray | None = None  # (M,) uint32
     mapping_id: int = 0            # vertices_mapping[i].mapping_id（连接渲染集用）
+    #: 源顶点缓冲带骨骼语义（格式含 iiiww / i，即蒙皮网格）。
+    #: ⚠️ 不能用 VertexBuffer.is_skinned——Korabli 文件里该标志恒为 0，
+    #: 只能按顶点格式串判定（见 _build_primitives）。
+    is_skinned: bool = False
+    #: 蒙皮数据（仅 iiiww 8B 骨骼属性时非 None）：
+    #: bone_indices (N,4) uint8 原始索引（Korabli 实测 = 调色板 slot × 3）；
+    #: bone_weights (N,4) float32（4×u8/255，逐顶点和=1）。
+    #: 由 geometry_service._apply_skinning 按渲染集调色板施加 bind pose 混合。
+    bone_indices: np.ndarray | None = None
+    bone_weights: np.ndarray | None = None
 
 
 @dataclass
@@ -492,6 +502,20 @@ def _build_primitives(geom: ParsedGeometry):
 
         vraw = vb.data[v_start:v_start + v_count]
         positions, normals, uvs = unpack_vertices(vraw, vb.format_name)
+        # 蒙皮判定 + 数据：按顶点格式串是否含骨骼语义（iiiww / i）。
+        # ⚠️ VertexBuffer.is_skinned 在 Korabli 文件里恒为 0，不可用。
+        # iiiww 8B 属性 = 4×u8 骨骼索引（3 索引+1 pad）+ 4×u8 权重(/255，和=1)
+        # （PASA111 实测；wows-toolkit 同样只跳过该属性不做蒙皮）。
+        bone_attr = next((a for a in parse_vertex_format(vb.format_name)
+                          if a[0] == 'bone'), None)
+        is_skinned = bone_attr is not None
+        bone_indices = None
+        bone_weights = None
+        if is_skinned and bone_attr[2] == 8 and v_count > 0:
+            boff = bone_attr[1]
+            chunk = np.ascontiguousarray(vraw[:, boff:boff + 8])
+            bone_indices = chunk[:, :4].copy()
+            bone_weights = chunk[:, 4:8].astype(np.float32) / 255.0
 
         # 索引 mapping：优先按 unknown(td) 字段配对（BigWorld 权威方式）
         im = None
@@ -540,4 +564,7 @@ def _build_primitives(geom: ParsedGeometry):
             uvs=uvs,
             indices=indices,
             mapping_id=vm.mapping_id,
+            is_skinned=is_skinned,
+            bone_indices=bone_indices,
+            bone_weights=bone_weights,
         ))

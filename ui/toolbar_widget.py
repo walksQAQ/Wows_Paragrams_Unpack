@@ -87,13 +87,11 @@ class TopToolbar(QWidget):
         self.btn_lang = QPushButton("🌐  加载文本")
         self.btn_refresh = QPushButton("🔄  刷新界面")
         self.btn_ballistics = QPushButton("📊  穿深计算器")
-        self.btn_3d = QPushButton("⛵  3D 查看")
-        self.btn_3d.setToolTip("打开舰船 3D 模型 / 装甲查看器")
         # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
         self.btn_copy = QPushButton("📋  复制当前信息")
         self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
 
-        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_3d, self.btn_copy):
+        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_copy):
             layout.addWidget(b)
 
         layout.addStretch()
@@ -130,7 +128,6 @@ class TopToolbar(QWidget):
         self.btn_lang.clicked.connect(self._on_lang)
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_ballistics.clicked.connect(self._on_ballistics)
-        self.btn_3d.clicked.connect(self._on_3d_viewer)
         self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
         bus.task_progress.connect(self._on_progress)
         bus.localization_ready.connect(self._enable_all)
@@ -208,25 +205,6 @@ class TopToolbar(QWidget):
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开穿深计算器失败: {exc}")
 
-    def _on_3d_viewer(self):
-        """打开舰船 3D 模型查看器（独立顶层窗口，懒创建单实例）。
-
-        不传 parent：传主窗口为父会让 QOpenGLWidget 作为主窗口子窗口创建，
-        Windows 上 GL 上下文创建触发主窗口重绘闪烁。关闭联动由
-        MainWindow.closeEvent 显式关闭 _geometry_viewer 保证。
-        """
-        try:
-            from ui.geometry_viewer import GeometryViewerDialog
-            if not hasattr(self, "_geometry_viewer") or self._geometry_viewer is None:
-                self._geometry_viewer = GeometryViewerDialog()
-                if not getattr(self._geometry_viewer, "_restored_geometry", False):
-                    self._geometry_viewer.center_on_screen(self.window())
-            self._geometry_viewer.show()
-            self._geometry_viewer.raise_()
-            self._geometry_viewer.activateWindow()
-        except Exception as exc:
-            bus.log_message.emit(f"❌ 打开 3D 查看器失败: {exc}")
-
     def _on_server(self, btn):
         server = btn.text()
         if server == app_ctx.ctx.wows_type:
@@ -240,6 +218,9 @@ class TopToolbar(QWidget):
             bus.log_message.emit(f"🔄 已切换到 {server} 数据库")
             bus.folder_selected.emit("__REFRESH__")
             bus.can_process_data.emit(True)
+        elif db.schema_rebuilt():
+            bus.log_message.emit(f"⚠️ {server} 数据库结构已更新，需要重新加载数据")
+            bus.folder_selected.emit("__REFRESH__")
         else:
             bus.log_message.emit(f"ℹ️ {server} 数据库为空，请加载数据")
             bus.folder_selected.emit("__REFRESH__")
@@ -257,13 +238,11 @@ class TopToolbar(QWidget):
         self.btn_load.setEnabled(False)
         self.btn_lang.setEnabled(False)
         self.btn_ballistics.setEnabled(False)
-        self.btn_3d.setEnabled(False)
 
     def _enable_all(self):
         self.btn_load.setEnabled(True)
         self.btn_lang.setEnabled(True)
         self.btn_ballistics.setEnabled(True)
-        self.btn_3d.setEnabled(True)
         # 不隐藏进度条，由下个任务覆盖
 
     def _sync_server(self):

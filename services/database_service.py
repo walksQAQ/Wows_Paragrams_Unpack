@@ -48,6 +48,9 @@ class DatabaseManager:
         else:
             self._db_path = get_data_dir() / self._db_name(wows_type)
         self._local = threading.local()
+        #: 本次 initialize 是否因 schema 版本落后而整库重建（旧数据被清空）。
+        #: 供启动/切换服务器时提示「需要重新加载数据」而非「数据库为空」。
+        self._schema_rebuilt = False
 
     @staticmethod
     def _db_name(wows_type: str = "") -> str:
@@ -115,8 +118,11 @@ class DatabaseManager:
     def initialize(self) -> None:
         """创建所有表（使用 database_new.sql）"""
         current_ver = self.get_current_version()
+        # schema 版本落后 → 整库重建（旧数据被清空），标记以便提示「需要重新加载数据」
+        self._schema_rebuilt = False
         if 0 < current_ver < DB_SCHEMA_VERSION:
             self._drop_all_tables()
+            self._schema_rebuilt = True
 
         # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
         from PySide6.QtCore import QFile, QIODevice
@@ -604,6 +610,13 @@ class DatabaseManager:
             return row["version"] if row else 0
         except sqlite3.OperationalError:
             return 0
+
+    def schema_rebuilt(self) -> bool:
+        """本次 initialize 是否因 schema 版本落后而整库重建（旧数据被清空）。
+
+        供启动/切换服务器时区分「需要重新加载数据」与「数据库为空」。
+        """
+        return self._schema_rebuilt
 
     def _record_version(self, ver: int) -> None:
         self._conn.execute(

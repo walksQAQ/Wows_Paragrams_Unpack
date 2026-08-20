@@ -49,6 +49,10 @@ COMPONENT_RADAR = "雷达"
 COMPONENT_DECK = "甲板设备"
 COMPONENT_OTHER = "其他"
 
+#: 游戏内装甲查看器隐藏的「通用 Hull 材质」集合（wows-toolkit hidden 语义）：
+#: 这些板位于 Hull 父区且为通用材质（Trans/Deck/Belt 等），游戏查看器不显示。
+HIDDEN_GENERIC_MATERIALS = {"Trans", "Deck", "Belt", "Inclin", "ConstrSide", "Bottom"}
+
 #: GameParams 组件键 → 归属分类
 _COMPONENT_BY_KEY = {
     "A_Artillery": COMPONENT_MAIN,
@@ -167,6 +171,12 @@ class ArmorTriangleInfo:
     thickness_mm: float
     color: tuple[float, float, float, float]
     zone: str
+    #: 该材质所有非零层厚度（Dual 多层材质，升序；tooltip 展示堆叠）
+    layers: list[float] = field(default_factory=list)
+    #: 游戏内装甲查看器隐藏的板（Hull 区通用材质 Trans/Deck/Belt 等）
+    hidden: bool = False
+    #: 板块键 (zone, material_name, thickness_tenths)；高亮/显隐/描边判别
+    plate_key: tuple = ()
 
 
 @dataclass
@@ -265,6 +275,8 @@ class GeometryService:
         self._mount_model_cache: dict = {}
         #: 舰体骨架挂点变换缓存 {model_stem: {hp: matrix}}
         self._stem_mount_cache: dict = {}
+        #: 骨架骨骼世界矩阵缓存 {stem: {bone_name: (4,4)}}（蒙皮 bind pose 用，跨船复用）
+        self._skeleton_bones_cache: dict = {}
         #: 分段渲染集缓存 {geometry_path: [{shape, material, mfm}]}
         self._visual_rs_cache: dict = {}
         #: visual blob 一次性索引 {geometry_path: [record_index]}（避免每分段全量扫描）
@@ -431,6 +443,9 @@ class GeometryService:
             display_name=ship.display_name,
             model_folder=ship.model_folder,
         )
+
+        # 蒙皮 bind pose 骨架 stem（舰船模型目录；_apply_skinning 用它查骨骼矩阵）
+        self._current_skinning_stem = ship.model_folder
 
         bmin = np.full(3, np.inf, dtype=np.float32)
         bmax = np.full(3, -np.inf, dtype=np.float32)
@@ -623,6 +638,10 @@ class GeometryService:
             # 再 negz 共轭转渲染空间（等价于顶点几何 Z 取反）
             rb = self._mount_root_blend(folder)
             mtx = np.ascontiguousarray(_negz @ (m_raw @ rb) @ _negz, dtype=np.float32)
+            # ★ 装甲几何在制作时已与挂点对齐（wows-toolkit ship.rs：armor 用
+            # 原始 hp_transform，不做 Root_BlendBone 旋转修正）；若套用 mtx 会
+            # 多转一次 rb → 主炮塔装甲方向反转。装甲单独用原始挂点矩阵。
+            armor_mtx = np.ascontiguousarray(_negz @ m_raw @ _negz, dtype=np.float32)
             if folder not in model_cache:
                 model_cache[folder] = self._load_mount_model(
                     folder, extractor, armor_thickness, comp)
@@ -649,12 +668,12 @@ class GeometryService:
                     bmin = np.minimum(bmin, mn)
                     bmax = np.maximum(bmax, mx)
 
-            # 该模型的装甲（本地坐标 + 挂点矩阵定位 + 归属分类）
+            # 该模型的装甲（本地坐标 + 原始挂点矩阵定位 + 归属分类）
             for am in src["armor_meshes"]:
                 mesh = ArmorMesh(
                     name=am.name, positions=am.positions, normals=am.normals,
                     colors=am.colors, indices=am.indices, triangles=am.triangles,
-                    component=comp, model_matrix=mtx,
+                    component=comp, model_matrix=armor_mtx,
                 )
                 geom.armor_meshes.append(mesh)
                 if mesh.positions.size:
@@ -685,6 +704,8 @@ class GeometryService:
                 continue
             rb = self._mount_root_blend(folder)
             mtx = np.ascontiguousarray(_negz @ (m_raw @ rb) @ _negz, dtype=np.float32)
+            # 装甲用原始挂点矩阵（同 HP 挂载：不做 Root_BlendBone 修正）
+            armor_mtx = np.ascontiguousarray(_negz @ m_raw @ _negz, dtype=np.float32)
             if folder not in model_cache:
                 model_cache[folder] = self._load_mount_model(
                     folder, extractor, armor_thickness, COMPONENT_DECK)
@@ -710,7 +731,7 @@ class GeometryService:
                 mesh = ArmorMesh(
                     name=am.name, positions=am.positions, normals=am.normals,
                     colors=am.colors, indices=am.indices, triangles=am.triangles,
-                    component=COMPONENT_DECK, model_matrix=mtx,
+                    component=COMPONENT_DECK, model_matrix=armor_mtx,
                 )
                 geom.armor_meshes.append(mesh)
                 if mesh.positions.size:
@@ -918,9 +939,11 @@ class GeometryService:
             np.array(m, dtype=np.float32).reshape(4, 4).T, dtype=np.float32)
 
     def _mount_root_blend(self, folder: str) -> np.ndarray:
-        """挂载模型骨架的 `Root_BlendBone` 矩阵（静息朝向；实测恒 R_y(180)，fwd=-Z）。
+        """挂载模型骨架的 `Root_BlendBone` 矩阵（静息朝向修正，仅用于**视觉**网格）。
 
-        从 assets.bin 该模型的 SkeletonPrototype 读取；找不到回退 R_y(180)。按 folder 缓存。
+        从 assets_data.db 该模型的 SkeletonPrototype 读取；找不到回退恒等。按 folder 缓存。
+        实测值因模型而异（大和主炮塔 JGM178 = diag(1,1,-1,1) Z 镜像，自逆）。
+        ⚠️ 装甲几何不使用此修正（装甲已与挂点对齐，见 armor_mtx）。
         """
         key = f"rblend:{folder}"
         cached = self._mount_model_cache.get(key)
@@ -979,7 +1002,8 @@ class GeometryService:
 
         变换链（与舰体级 MP 同一规律：几何→自身骨架 = Root_BlendBone）：
           子设备骨架→船 = skel_to_ship_game @ W_sub（MP 节点世界矩阵）
-          子设备几何→船 = 上式 @ rb_sub，再 negz 共轭转渲染空间。
+          子设备几何→船（视觉）= 上式 @ rb_sub，再 negz 共轭转渲染空间。
+          子设备装甲 = 上式（不乘 rb_sub）再 negz 共轭（装甲已与挂点对齐）。
         返回 (放置数, bmin, bmax)。
         """
         if depth > 3 or folder in visited:
@@ -999,6 +1023,9 @@ class GeometryService:
             rb_sub = self._mount_root_blend(sub_folder)
             mtx = np.ascontiguousarray(
                 _negz @ (sub_skel_to_ship @ rb_sub) @ _negz, dtype=np.float32)
+            # 装甲用原始变换（不做 Root_BlendBone 修正，同 HP 挂载）
+            armor_mtx = np.ascontiguousarray(
+                _negz @ sub_skel_to_ship @ _negz, dtype=np.float32)
             if sub_folder not in model_cache:
                 model_cache[sub_folder] = self._load_mount_model(
                     sub_folder, extractor, armor_thickness, component)
@@ -1024,7 +1051,7 @@ class GeometryService:
                 mesh = ArmorMesh(
                     name=am.name, positions=am.positions, normals=am.normals,
                     colors=am.colors, indices=am.indices, triangles=am.triangles,
-                    component=component, model_matrix=mtx,
+                    component=component, model_matrix=armor_mtx,
                 )
                 geom.armor_meshes.append(mesh)
                 if mesh.positions.size:
@@ -1230,6 +1257,8 @@ class GeometryService:
         if not entries:
             self._mount_model_cache[folder] = None
             return None
+        # 蒙皮 bind pose 骨架 stem = 挂载模型目录（_apply_skinning 用它查骨骼矩阵）
+        self._current_skinning_stem = folder
 
         all_armor = []
         meshes: list = []
@@ -1517,12 +1546,15 @@ class GeometryService:
                         if fuz is not None:
                             mat = fuz.get('material') or ''
                             mfm = fuz.get('mfm') or ''
+                            self._apply_skinning(p, fuz)
                             g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
                             g['prims'].append(p)
                             continue
                 groups.setdefault(None, {'material': None, 'mfm': '', 'prims': []})['prims'].append(p)
             else:
                 mat, mfm = entry
+                rs = global_rs.get(p.mapping_id)
+                self._apply_skinning(p, rs)
                 g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
                 g['prims'].append(p)
         return groups
@@ -1637,7 +1669,7 @@ class GeometryService:
     def _ship_render_sets(self, model_folder: str) -> dict:
         """该船全部记录的渲染集索引（**只从 assets_data.db 读取**）。
 
-        {murmur3(shape.vertices): {shape, material, mfm, damage}}。
+        {murmur3(shape.vertices): {shape, material, mfm, damage, skinned, nodes}}。
         数据由「加载数据」时预提取入库（render_sets 表，含整合模型共享记录）；
         数据库缺失时返回空（不再从任何 assets.bin 现场扫描）。
         """
@@ -1657,14 +1689,15 @@ class GeometryService:
                 for r in rows:
                     mid = self._murmur3_32(r["shape"].encode())
                     mat, mfm, damage = r["material"], r["mfm"], r["damage"]
+                    entry = {'shape': r["shape"], 'material': mat, 'mfm': mfm,
+                             'damage': damage, 'skinned': r.get('skinned', False),
+                             'nodes': r.get('nodes') or []}
                     if mid in idx:
                         # 跨模型同名 shape（murmur3 冲突）：优先当前模型自己的 mfm
                         if mfm and model_folder in mfm:
-                            idx[mid] = {'shape': r["shape"], 'material': mat,
-                                        'mfm': mfm, 'damage': damage}
+                            idx[mid] = entry
                         continue
-                    idx[mid] = {'shape': r["shape"], 'material': mat,
-                                'mfm': mfm, 'damage': damage}
+                    idx[mid] = entry
         except Exception:  # noqa: BLE001
             idx = {}
         self._visual_rs_cache[key] = idx
@@ -1753,6 +1786,101 @@ class GeometryService:
         self._material_full_cache[mfm_path] = result
         return result
 
+    def _skeleton_bones(self, stem: str) -> dict:
+        """某模型骨架全部骨骼世界矩阵 {bone_name: (4,4)}（DB 读取，跨船缓存）。"""
+        cached = self._skeleton_bones_cache.get(stem)
+        if cached is not None:
+            return cached
+        out: dict = {}
+        try:
+            from services.assets_cache_service import AssetsCacheService
+            c = AssetsCacheService()
+            out = c.get_skeleton_bones(app_ctx.ctx.bin_folder or "", stem) or {}
+        except Exception:  # noqa: BLE001
+            out = {}
+        self._skeleton_bones_cache[stem] = out
+        return out
+
+    def _apply_skinning(self, prim, rs: dict | None) -> None:
+        """对蒙皮图元施加 bind pose 混合（原地修改 positions/normals）。
+
+        背景（PASA111 实证）：Korabli 的蒙皮网格（如 Bow_Antenna / Bow_Antenna_wire，
+        材质 *_skinned）顶点存于 **BlendBone 局部帧**，渲染集调色板节点（*_BlendBone /
+        Root_BlendBone）的 bind pose 世界矩阵多为 **原点 Z 镜像 diag(1,1,-1)**（det=-1）。
+        游戏引擎按权重混合这些矩阵把顶点摆到舰船空间；我们此前直接渲染原始坐标，
+        导致 Z 镜像骨骼的网格整体前后（艏艉）翻转 —— 即用户报告的 180° 朝向错误。
+
+        修正：按渲染集调色板 + 顶点骨骼索引/权重做标准线性混合蒙皮：
+            p' = Σ_j w_j · (R_j · p + t_j)
+        顶点骨骼索引 = 调色板 slot × 3（Korabli 实测），权重 4×u8/255（和=1）。
+
+        - 调色板缺失 / 骨骼缺失 / 全部骨骼为恒等 → 不修改（保持原样，安全回退）。
+        - 法线用旋转部分（忽略平移）混合后归一化。
+        - 反射骨骼（det=-1）会翻转三角形绕序，但渲染器不启用背面剔除，无碍。
+        """
+        if prim is None or not prim.is_skinned:
+            return
+        if prim.bone_indices is None or prim.bone_weights is None:
+            return
+        if rs is None or not rs.get('skinned'):
+            return
+        palette = rs.get('nodes') or []
+        if not palette:
+            return
+        # 骨架 stem：渲染集 shape 名 → 模型目录（如 Bow_AntennaShape → ASA031_...）
+        # 用当前舰船 model_folder 的骨架（调色板节点名在舰船骨架里）
+        stem = getattr(self, '_current_skinning_stem', None)
+        if not stem:
+            return
+        bones = self._skeleton_bones(stem)
+        if not bones:
+            return
+        # 收集调色板骨骼世界矩阵（缺失的跳过）
+        mats: list[np.ndarray | None] = []
+        any_non_identity = False
+        for nm in palette:
+            m = bones.get(nm)
+            mats.append(m)
+            if m is not None and not np.allclose(m, np.eye(4), atol=1e-4):
+                any_non_identity = True
+        if not any_non_identity:
+            return  # 全部恒等 → 无需变换
+
+        idx = prim.bone_indices  # (N,4) uint8
+        wts = prim.bone_weights  # (N,4) float32
+        pos = prim.positions
+        nrm = prim.normals
+        n = pos.shape[0]
+        # 顶点索引 → 调色板 slot（Korabli：slot × 3）
+        slots = (idx.astype(np.int32) // 3)
+        # 越界 slot 置 -1（权重归零，不参与混合）
+        valid = slots < len(mats)
+        slots = np.where(valid, slots, -1)
+
+        new_pos = np.zeros_like(pos, dtype=np.float64)
+        new_nrm = np.zeros_like(nrm, dtype=np.float64)
+        for j in range(4):
+            s = slots[:, j]
+            w = wts[:, j]
+            for slot in np.unique(s):
+                if slot < 0 or slot >= len(mats):
+                    continue
+                m = mats[slot]
+                if m is None:
+                    continue
+                mask = s == slot
+                if not mask.any():
+                    continue
+                R = m[:3, :3].astype(np.float64)
+                t = m[:3, 3].astype(np.float64)
+                wm = w[mask, None]
+                new_pos[mask] += wm * ((pos[mask].astype(np.float64) @ R.T) + t)
+                new_nrm[mask] += wm * (nrm[mask].astype(np.float64) @ R.T)
+        prim.positions = new_pos.astype(np.float32)
+        ln = np.linalg.norm(new_nrm, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        prim.normals = (new_nrm / ln).astype(np.float32)
+
     @staticmethod
     def _merge_hull(part_name: str, primitives) -> HullMesh:
         """把同一部件的所有 primitive 合并成单个网格。"""
@@ -1798,36 +1926,58 @@ class GeometryService:
 
         component 标记该装甲的归属分类（船体/主炮塔/副炮/...）；挂载装甲
         传入 model_matrix（挂点变换）用于定位到舰船空间。
+
+        ★ 厚度 ≤0（0mm）的三角形**直接剔除**（游戏内装甲查看器不显示无厚度
+        数据的碰撞面；保留会与有效装甲叠色干扰判读）。全部被剔除时返回 None。
         """
         tris = am.triangles
         if not tris:
             return None
-        n = len(tris)
-        positions = np.empty((n * 3, 3), dtype=np.float32)
-        normals = np.empty((n * 3, 3), dtype=np.float32)
-        colors = np.empty((n * 3, 4), dtype=np.float32)
-        indices = np.arange(n * 3, dtype=np.uint32)
         infos: list[ArmorTriangleInfo] = []
+        layers_cache: dict[int, list[float]] = {}
+        keep: list[int] = []   # 保留的三角形下标（thickness > 0）
 
         for t, tri in enumerate(tris):
             mat_id = tri.material_id
             layer = tri.layer_index
             thickness = GeometryService._match_thickness(armor_thickness, mat_id, layer)
+            if thickness <= 0.0:
+                continue   # 0mm：无厚度数据，彻底驱逐
+            keep.append(t)
             color = thickness_to_color(thickness)
             mat_name = collision_material_name(mat_id)
-            base = t * 3
-            positions[base:base + 3] = tri.vertices
-            normals[base:base + 3] = tri.normals
-            colors[base:base + 3] = color
             from models.collision_materials import zone_from_material_name
+            zone = zone_from_material_name(mat_name)
+            layers = layers_cache.get(mat_id)
+            if layers is None:
+                layers = GeometryService._material_layers(armor_thickness, mat_id)
+                layers_cache[mat_id] = layers
+            hidden = zone == "Hull" and mat_name in HIDDEN_GENERIC_MATERIALS
             infos.append(ArmorTriangleInfo(
                 material_id=mat_id,
                 material_name=mat_name,
                 layer_index=layer,
                 thickness_mm=thickness,
                 color=color,
-                zone=zone_from_material_name(mat_name),
+                zone=zone,
+                layers=layers,
+                hidden=hidden,
+                plate_key=(zone, mat_name, round(thickness * 10)),
             ))
+
+        if not keep:
+            return None
+        n = len(keep)
+        positions = np.empty((n * 3, 3), dtype=np.float32)
+        normals = np.empty((n * 3, 3), dtype=np.float32)
+        colors = np.empty((n * 3, 4), dtype=np.float32)
+        indices = np.arange(n * 3, dtype=np.uint32)
+        for i, t in enumerate(keep):
+            tri = tris[t]
+            base = i * 3
+            positions[base:base + 3] = tri.vertices
+            normals[base:base + 3] = tri.normals
+            colors[base:base + 3] = infos[i].color
 
         return ArmorMesh(
             name=am.name,
@@ -1852,6 +2002,17 @@ class GeometryService:
             if mat == material_id and thk and (best == 0.0 or thk < best):
                 best = thk
         return float(best)
+
+    @staticmethod
+    def _material_layers(armor: dict, material_id: int) -> list[float]:
+        """该材质跨 model_index 的所有非零层厚度（升序）。
+
+        Dual 多层材质同一 material_id 可有多个 model_index 层；tooltip
+        需要展示全部堆叠厚度（wows-toolkit lookup_all_layers 语义）。
+        """
+        vals = sorted({float(thk) for (mi, mat), thk in armor.items()
+                       if mat == material_id and thk})
+        return vals
 
     # ── 装甲厚度字典 ────────────────────────────────────
 
