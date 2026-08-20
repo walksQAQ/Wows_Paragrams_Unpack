@@ -2,18 +2,21 @@
 set _CL_=/utf-8
 chcp 65001 >nul
 
-:: ── 0. 重定向 Nuitka 编译缓存 / 临时构建目录到 D 盘（避免占用 C 盘） ──
-set NUITKA_CACHE_DIR=D:\nuitka_cache
-set TMPDIR=D:\nuitka_tmp
-set TEMP=D:\nuitka_tmp
-set TMP=D:\nuitka_tmp
+:: CI 模式：set CI_MODE=1 时跳过本地 D 盘重定向与 pause（GitHub Actions 用）
+if not defined CI_MODE set CI_MODE=0
 
-:: 自动创建这些文件夹（如果不存在）
-if not exist "D:\nuitka_cache" mkdir "D:\nuitka_cache"
-if not exist "D:\nuitka_tmp" mkdir "D:\nuitka_tmp"
+:: ── 0. 重定向 Nuitka 编译缓存 / 临时构建目录到 D 盘（避免占用 C 盘；仅本地构建） ──
+if "%CI_MODE%"=="0" (
+    set NUITKA_CACHE_DIR=D:\nuitka_cache
+    set TMPDIR=D:\nuitka_tmp
+    set TEMP=D:\nuitka_tmp
+    set TMP=D:\nuitka_tmp
+    if not exist "D:\nuitka_cache" mkdir "D:\nuitka_cache"
+    if not exist "D:\nuitka_tmp" mkdir "D:\nuitka_tmp"
+)
 
 :: 强行结束可能仍在运行的旧程序，防止文件锁死导致 Access is denied
-taskkill /f /im KorabliParagrams.exe 2>nul
+if "%CI_MODE%"=="0" taskkill /f /im KorabliParagrams.exe 2>nul
 
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
@@ -26,7 +29,7 @@ echo [QRC] 生成 resources.qrc ...
 %PYTHON% scripts/gen_qrc.py
 if %ERRORLEVEL% NEQ 0 (
     echo [! ERROR] QRC 生成失败
-    pause
+    if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
 echo [QRC] 编译 _resources.py ...
@@ -41,7 +44,7 @@ if exist "%RCC_TOOL%" (
 )
 if %ERRORLEVEL% NEQ 0 (
     echo [! ERROR] QRC 编译失败
-    pause
+    if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
 echo [QRC] 资源编译完成。
@@ -51,7 +54,7 @@ echo [VERSION] 从 Git Tag 生成 __about__.py ...
 %PYTHON% scripts/gen_version.py
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] 生成版本文件失败，中止打包。
-    pause
+    if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
 
@@ -71,7 +74,7 @@ if %ERRORLEVEL% NEQ 0 (
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [! ERROR] Nuitka build failed.
-    pause
+    if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
 
@@ -89,5 +92,5 @@ rd /s /q "%OUTDIR%\main.dist" 2>nul
 rd /s /q "%OUTDIR%\main.onefile-build" 2>nul
 
 echo Build Successful!
-timeout /t 3
+if "%CI_MODE%"=="0" timeout /t 3
 exit

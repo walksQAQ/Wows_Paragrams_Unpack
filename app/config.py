@@ -27,6 +27,8 @@ class AppConfig:
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 3859335）
     theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark"
+    auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
+    include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
     @classmethod
     def default(cls) -> AppConfig:
@@ -105,6 +107,24 @@ class ConfigManager:
         if value not in ("auto", "light", "dark"):
             value = "auto"
         self._config.theme_mode = value
+        self.save()
+
+    @property
+    def auto_check_update(self) -> bool:
+        return self._config.auto_check_update
+
+    @auto_check_update.setter
+    def auto_check_update(self, value: bool) -> None:
+        self._config.auto_check_update = bool(value)
+        self.save()
+
+    @property
+    def include_prerelease(self) -> bool:
+        return self._config.include_prerelease
+
+    @include_prerelease.setter
+    def include_prerelease(self, value: bool) -> None:
+        self._config.include_prerelease = bool(value)
         self.save()
 
     # ── 供 Application 内部使用 ─────────────────────────

@@ -33,3 +33,38 @@ jobs:
           name: ${{ github.ref_name }}  # Release 名直接用 tag（不带 "Release " 前缀）
           generate_release_notes: true  # 自动生成 Commit 变更日志
           prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
+
+  build-windows:
+    # tag 校验通过且 Release 创建后才打包，避免无效构建
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gen_version.py 需要完整 tag 历史推导版本号
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Create venv and install dependencies
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+      - name: Build exe (CI mode)
+        run: |
+          $env:CI_MODE = "1"
+          cmd /c "build.bat"
+
+      - name: Upload exe to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/KorabliParagrams.exe
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -146,6 +146,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._center_window)
         # 启动时自动选中舰船大类
         QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
+        # 启动后延迟 1s 自动检测版本更新（不阻塞启动；遵守 24h 缓存间隔）
+        QTimer.singleShot(1000, self._auto_check_update)
 
     # ── 菜单 ──────────────────────────────────────────────
 
@@ -323,3 +325,15 @@ class MainWindow(QMainWindow):
         x = (geo.width() - self.width()) // 2
         y = (geo.height() - self.height()) // 2
         self.move(x, y)
+
+    def _auto_check_update(self) -> None:
+        """启动后自动检测版本更新（受配置开关与 24h 缓存间隔控制）。"""
+        try:
+            if not app.config.auto_check_update:
+                return
+            from services.update_service import should_auto_check
+            if not should_auto_check():
+                return  # 缓存未过期，跳过
+            self.toolbar.check_update(force=False)
+        except Exception:  # noqa: BLE001
+            pass  # 版本检测失败不影响主流程

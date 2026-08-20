@@ -115,6 +115,20 @@ class AdvancedSettingsDialog(QDialog):
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_log)
 
+        # ── 版本检测 ──────────────────────────────────
+        grp_update = QGroupBox("版本检测")
+        ulay = QVBoxLayout(grp_update)
+        self._auto_check_cb = QCheckBox("启动时自动检测 GitHub 新版本")
+        self._auto_check_cb.setStyleSheet("font-size: 13px; spacing: 6px;")
+        ulay.addWidget(self._auto_check_cb)
+        self._include_pre_cb = QCheckBox("把预发布版本（pre-release）也视为可更新版本")
+        self._include_pre_cb.setStyleSheet("font-size: 13px; spacing: 6px;")
+        ulay.addWidget(self._include_pre_cb)
+        ulay.addWidget(QLabel("自动检测每 24 小时至多请求一次 GitHub API；"
+                              "「检查更新」按钮可随时手动强制刷新。",
+                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
+        layout.addWidget(grp_update)
+
         # ── 按钮 ──────────────────────────────────────
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
                                 QDialogButtonBox.StandardButton.Cancel)
@@ -133,6 +147,9 @@ class AdvancedSettingsDialog(QDialog):
         _mode = app_ctx.config.theme_mode or "auto"
         _idx = self._theme_combo.findData(_mode)
         self._theme_combo.setCurrentIndex(_idx if _idx >= 0 else 0)
+        # 版本检测
+        self._auto_check_cb.setChecked(app_ctx.config.auto_check_update)
+        self._include_pre_cb.setChecked(app_ctx.config.include_prerelease)
         self._version_label.setText(ctx.game_version or "未知")
         self._data_state_label.setText("是" if ctx.game_data_state else "否")
 
@@ -167,4 +184,7 @@ class AdvancedSettingsDialog(QDialog):
         _new_mode = self._theme_combo.currentData() or "auto"
         if _new_mode != (app_ctx.config.theme_mode or "auto"):
             app_ctx.set_theme_mode(_new_mode)
+        # 版本检测
+        app_ctx.config.auto_check_update = self._auto_check_cb.isChecked()
+        app_ctx.config.include_prerelease = self._include_pre_cb.isChecked()
         self.accept()
