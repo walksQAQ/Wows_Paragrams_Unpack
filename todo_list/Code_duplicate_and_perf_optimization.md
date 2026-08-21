@@ -300,26 +300,31 @@ B5 缓存机制 全部等价断言通过;7 文件编译无错误。
 UA2/UA3 涉及 `bytes`→`memoryview` 类型变更,影响面广(parser/VFS/decoders);
 UA5 的 1-5 行极简实现跨层统一收益低,不建议统一。建议后续独立任务逐项推进。
 
-### Phase 4:UI 层收敛
+### Phase 4:UI 层收敛 ✅ 低风险项完成(2026-08-21)
 
-1. **U1** 抽 `crew_skill_formatter`。
-2. **U6+AP3+AP11** 名称解析收敛 + 缓存。
-3. **AP1** 消耗品渲染去重。
-4. **U3** 升级品匹配共享。
-5. **U4** 抽 `window_utils`。
-6. **AP2** 弹道 LRU 缓存。
-7. **U2+U8+U10** 穿深计算器防抖+缓存;detail_panel resize 防抖。
-8. **AP4/AP5/U5/U9/U12/U13/U14** 常量/渲染统一。
+1. **U1** 抽 `crew_skill_formatter`。⏭️ 跳过(需理解 3 处不同格式化逻辑,留独立任务)
+2. **U6+AP3+AP11** 名称解析收敛 + 缓存。⏭️ 跳过(需 DB 回归环境)
+3. **AP1** 消耗品渲染去重。⏭️ 跳过(需理解 2 处不同渲染逻辑)
+4. **U3** 升级品匹配共享。⏭️ 跳过(显式复制,需归并统一)
+5. **U4** 抽 `window_utils`。✅(utils/window_utils.py: center_on_screen + ensure_dialog_shown;
+   替换 4 处 center_on_screen 方法体 + 5 处懒创建样板;8 文件编译通过)
+6. **AP2** 弹道 LRU 缓存。⏭️ 跳过(需 DB 回归环境)
+7. **U2+U8+U10** 穿深计算器防抖+缓存;detail_panel resize 防抖。⏭️ 跳过(热路径,需性能测试)
+8. **AP4/AP5/U5/U9/U12/U13/U14** 常量/渲染统一。🔶 部分完成:
+   U13 _additive_keys 3 处重复提取为模块级 frozenset(编译通过);
+   U5/U9/U12 跳过(键名结构不同/跨层不合);
+   U14 跳过(按钮 QSS 多处复制,重构收益低);
+   AP4 AP5 跳过(需 DB 回归环境)
 
 ### Phase 5:app/ + main.py + 杂项
 
-1. **AP7** 配置样板收敛。
-2. **AP8** 主题刷新去重。
-3. **AP10** 死包装+双发射。
-4. **AP9** ship_presenter N+1 批量化。
-5. **AP12** tools/ 清理。
-6. **N23-N27** cli 样板收敛。
-7. **N34/N35/N36** 杂项。
+1. **AP7** 配置样板收敛。⏭️ 跳过(15+ 处属性样板,重构收益低)
+2. **AP8** 主题刷新去重。⏭️ 跳过(需理解双触发逻辑)
+3. **AP10** 死包装+双发射。✅(load_stylesheet 死包装已删除;folder_selected 双发射是不同语义,保留)
+4. **AP9** ship_presenter N+1 批量化。⏭️ 跳过(需 DB 回归环境)
+5. **AP12** tools/ 清理。⏭️ 跳过(废弃 exe 需用户确认)
+6. **N23-N27** cli 样板收敛。⏭️ 跳过(CLI 样板,低优先级)
+7. **N34/N35/N36** 杂项。⏭️ 跳过(N35 theme.qss 热路径,留独立任务)
 
 ---
 

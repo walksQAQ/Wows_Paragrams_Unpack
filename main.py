@@ -90,15 +90,6 @@ def apply_theme(app: QApplication, mode: str = "auto") -> None:
     print(f"[main] Theme applied: mode={mode} -> {'dark' if theme.dark else 'light'}")
 
 
-def load_stylesheet(app: QApplication, mode: str = "auto") -> None:
-    """加载 QSS 样式表（兼容旧调用签名，按给定主题模式应用）。
-
-    样式表内使用 @var@ 占位符，由 utils.theme 按当前主题
-    （浅色/深色）替换为对应颜色。同时按主题设置应用级调色板，
-    确保未显式设置 color 的 QLabel 等控件文字颜色也跟随主题。
-    """
-    apply_theme(app, mode)
-
 
 def _patch_tooltip() -> None:
     """全局修补 QWidget.setToolTip，自动将含 HTML 标记的文本转为富文本格式。
@@ -229,7 +220,7 @@ def main() -> None:
 
     # 2. 加载样式（按配置的主题模式：auto/light/dark）
     theme_mode = app_ctx.config.theme_mode
-    load_stylesheet(app, theme_mode)
+    apply_theme(app, theme_mode)
 
     # 4. 延迟导入主窗口，避免循环依赖
     from ui.main_window import MainWindow
