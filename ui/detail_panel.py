@@ -27,6 +27,16 @@ from ui.ship_card_widget import ShipDetailGrid, ShipCardWidget, SECTION_ICONS
 from utils.theme import theme
 
 
+# U13: 加性修饰符键集（3 处重复 → 模块级常量）
+_ADDITIVE_KEYS_BASE = frozenset({
+    "additionalConsumables", "planeAdditionalConsumables", "planeExtraHangarSize",
+    "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
+    "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
+    "torpedoReloaderAdditionalConsumables",
+})
+_ADDITIVE_KEYS_CREW = _ADDITIVE_KEYS_BASE | {"crashCrewWorkTimeBonus"}
+
+
 class DetailPanel(QWidget):
     """右侧详情面板（数据库驱动）"""
 
@@ -1524,11 +1534,7 @@ class DetailPanel(QWidget):
                             else:
                                 try:
                                     ev_f, nv_f = float(all_mods[k]), float(v)
-                                    _additive_keys = {"additionalConsumables", "planeAdditionalConsumables", "planeExtraHangarSize",
-                                                      "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
-                                                      "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
-                                                      "torpedoReloaderAdditionalConsumables"}
-                                    if k in _additive_keys:
+                                    if k in _ADDITIVE_KEYS_BASE:
                                         all_mods[k] = ev_f + nv_f
                                     else:
                                         all_mods[k] = ev_f * nv_f
@@ -3477,12 +3483,7 @@ class DetailPanel(QWidget):
                         existing = existing.get(_cur_ship_type) or next((x for x in existing.values() if isinstance(x, (int, float))), 1.0)
                     try:
                         ev_f, nv_f = float(existing), float(v)
-                        _additive_keys = {"additionalConsumables", "planeAdditionalConsumables", "planeExtraHangarSize",
-                                          "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
-                                          "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
-                                          "torpedoReloaderAdditionalConsumables",
-                                          "crashCrewWorkTimeBonus"}
-                        if k in _additive_keys:
+                        if k in _ADDITIVE_KEYS_CREW:
                             all_mods[k] = ev_f + nv_f
                         else:
                             all_mods[k] = ev_f * nv_f
@@ -3545,10 +3546,6 @@ class DetailPanel(QWidget):
                               "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
                               "torpedoReloaderAdditionalConsumables"}
             for _pos, _m in getattr(self, '_selected_skill_mods', {}).items():
-                for k, v in _m.items():
-                    if k not in _combined:
-                        _combined[k] = v
-                    else:
                         try:
                             ev, nv = _combined[k], v
                             # dict 型修饰符（按舰种区分值）：按当前舰种提取标量
@@ -3561,7 +3558,7 @@ class DetailPanel(QWidget):
                             if isinstance(nv, dict):
                                 nv = nv.get(_cur_st) or next((x for x in nv.values() if isinstance(x, (int, float))), 1.0)
                             ev_f, nv_f = float(ev), float(nv)
-                            _add = k in _additive_keys
+                            _add = k in _ADDITIVE_KEYS_BASE
                             _combined[k] = ev_f + nv_f if _add else ev_f * nv_f
                         except (ValueError, TypeError):
                             _combined[k] = v
