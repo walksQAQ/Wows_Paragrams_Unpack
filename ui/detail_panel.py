@@ -3628,7 +3628,8 @@ class DetailPanel(QWidget):
                 bus.log_message.emit("⚠️ 当前无内容可复制")
                 return
             QApplication.clipboard().setText(text)
-            bus.log_message.emit(f"📋 已复制「{self._current_filename}」舰船数据到剪贴板")
+            _show_name = (self._current_analyzed or {}).get("title") or self._current_filename
+            bus.log_message.emit(f"📋 已复制「{_show_name}」舰船数据到剪贴板")
         except Exception as e:
             import traceback
             bus.log_message.emit(f"⚠️ 复制失败: {e}\n{traceback.format_exc()}")
@@ -3774,8 +3775,9 @@ class DetailPanel(QWidget):
                 bus.log_message.emit("⚠️ 截图失败: 无法渲染当前面板")
                 return
             QApplication.clipboard().setPixmap(pm)
+            _show_name = (self._current_analyzed or {}).get("title") or self._current_filename
             bus.log_message.emit(
-                f"📸 已复制「{self._current_filename}」面板截图到剪贴板 ({pm.width()}×{pm.height()}px)")
+                f"📸 已复制「{_show_name}」面板截图到剪贴板 ({pm.width()}×{pm.height()}px)")
         except Exception as e:
             import traceback
             bus.log_message.emit(f"⚠️ 截图失败: {e}\n{traceback.format_exc()}")
