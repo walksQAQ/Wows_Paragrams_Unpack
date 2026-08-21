@@ -142,11 +142,12 @@ def parse_dds(data: bytes) -> DdsTexture:
     mips: list[bytes] = []
     mw, mh = width, height
     n_mips = max(mip_count, 1)
+    # N36: block_bytes 在循环外预计算（避免每次迭代重算常数）
+    block_bytes = 16 if bc_kind in (2, 3, 6, 8) else 8 if bc_kind else None
     for i in range(n_mips):
         mw = max(width >> i, 1)
         mh = max(height >> i, 1)
-        if bc_kind:
-            block_bytes = 16 if bc_kind in (2, 3, 6, 8) else 8
+        if block_bytes is not None:
             size = ((mw + 3) // 4) * ((mh + 3) // 4) * block_bytes
         else:
             size = mw * mh * rgba_bpp

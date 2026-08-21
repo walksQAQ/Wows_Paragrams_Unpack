@@ -30,12 +30,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .errors import AssetsBinError
 from .service import AssetsBinService
 from .types import can_decode, list_types
+
+
+from contextlib import contextmanager
 
 
 def _make_service(source: str) -> AssetsBinService:
@@ -46,9 +50,18 @@ def _make_service(source: str) -> AssetsBinService:
     return AssetsBinService(assets_path=p)
 
 
-def cmd_info(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
+@contextmanager
+def _open_service(source: str):
+    """N23: context manager —— 统一 _make_service + close 样板。"""
+    svc = _make_service(source)
     try:
+        yield svc
+    finally:
+        svc.close()
+
+
+def cmd_info(args: argparse.Namespace) -> None:
+    with _open_service(args.source) as svc:
         info = svc.info()
         print("=== assets.bin (PrototypeDatabase) ===")
         print(f"  magic:        {info['magic']}")
@@ -60,26 +73,20 @@ def cmd_info(args: argparse.Namespace) -> None:
         print(f"  路径条目:     {info['paths_count']}")
         print(f"  数据库 blob:  {info['databases_count']}")
         print(f"  虚拟文件:     {info['file_count']}  目录: {info['dir_count']}")
-    finally:
-        svc.close()
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
-    try:
+    with _open_service(args.source) as svc:
         print("Databases:")
         for s in svc.database_stats():
             print(
                 f"  [{s['blob_index']:2d}] {s['type']:<26} magic={s['magic']} "
                 f"records={s['record_count']:>7} size={s['size']:>11} item=0x{s['item_size']:X}"
             )
-    finally:
-        svc.close()
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
-    try:
+    with _open_service(args.source) as svc:
         files = svc.find_files(args.keyword or "", max_results=args.max)
         if not files:
             print("(无匹配文件)")
@@ -88,13 +95,10 @@ def cmd_list(args: argparse.Namespace) -> None:
             tname = f.prototype_type.name if f.prototype_type else "?"
             print(f"  [{tname:<24}] {f.path}")
         print(f"\n总计: {len(files)} 个文件")
-    finally:
-        svc.close()
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
-    try:
+    with _open_service(args.source) as svc:
         entries = svc.list_dir(args.dir or "/")
         if not entries:
             print("(空目录)")
@@ -102,34 +106,28 @@ def cmd_ls(args: argparse.Namespace) -> None:
         for e in entries:
             print(f"  {e}")
         print(f"\n总计: {len(entries)} 个条目")
-    finally:
-        svc.close()
 
 
 def cmd_resolve(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
     try:
-        loc, full = svc.resolve(args.path)
-        print(f"Resolved: {full}")
-        print(f"  blob_index={loc['blob_index']} record_index={loc['record_index']}")
-        print(f"  type={loc['type']} item_size=0x{loc['item_size']:X}")
+        with _open_service(args.source) as svc:
+            loc, full = svc.resolve(args.path)
+            print(f"Resolved: {full}")
+            print(f"  blob_index={loc['blob_index']} record_index={loc['record_index']}")
+            print(f"  type={loc['type']} item_size=0x{loc['item_size']:X}")
     except AssetsBinError as e:
         print(f"❌ {e}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        svc.close()
 
 
 def cmd_decode(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
     try:
-        text = svc.decode_path_json(args.path)
-        print(text)
+        with _open_service(args.source) as svc:
+            text = svc.decode_path_json(args.path)
+            print(text)
     except AssetsBinError as e:
         print(f"❌ {e}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        svc.close()
 
 
 def cmd_types(args: argparse.Namespace) -> None:
@@ -143,26 +141,23 @@ def cmd_types(args: argparse.Namespace) -> None:
 
 def cmd_mfm(args: argparse.Namespace) -> None:
     """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material`）。"""
-    svc = _make_service(args.source)
     try:
-        if args.self_id:
-            mat = svc.decode_mfm_by_self_id(int(args.self_id, 0))
-            if mat is None:
-                print("❌ 未找到该 selfId 对应的 MFM 材质", file=sys.stderr)
-                sys.exit(1)
-        else:
-            mat = svc.decode_material_by_path(args.path)
-        print(__import__("json").dumps(mat, ensure_ascii=False, indent=2, allow_nan=False))
+        with _open_service(args.source) as svc:
+            if args.self_id:
+                mat = svc.decode_mfm_by_self_id(int(args.self_id, 0))
+                if mat is None:
+                    print("❌ 未找到该 selfId 对应的 MFM 材质", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                mat = svc.decode_material_by_path(args.path)
+            print(json.dumps(mat, ensure_ascii=False, indent=2, allow_nan=False))
     except AssetsBinError as e:
         print(f"❌ {e}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        svc.close()
 
 
 def cmd_dump(args: argparse.Namespace) -> None:
-    svc = _make_service(args.source)
-    try:
+    with _open_service(args.source) as svc:
         stats = svc.dump(
             args.output,
             type_filter=args.type,
@@ -173,19 +168,14 @@ def cmd_dump(args: argparse.Namespace) -> None:
         for name, n in sorted(stats.items()):
             print(f"  {name}: {n}")
         print(f"  输出目录: {Path(args.output).resolve()}")
-    finally:
-        svc.close()
 
 
 def cmd_extract(args: argparse.Namespace) -> None:
     out = Path(args.output) if args.output else Path("assets.bin")
-    svc = AssetsBinService(game_dir=args.game_dir)
-    try:
+    with _open_service(args.game_dir) as svc:
         data = svc.load_from_game(args.game_dir)
         out.write_bytes(data)
         print(f"✅ 已提取 assets.bin ({len(data)} 字节) → {out.resolve()}")
-    finally:
-        svc.close()
 
 
 def main() -> None:

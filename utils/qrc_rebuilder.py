@@ -24,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 与 scripts/gen_qrc.py 保持一致的排除清单（运行时读写、不进 QRC 的用户数据）
+# N34: 与 scripts/gen_qrc.py 共享排除清单；变更时需同步 gen_qrc.py 的 EXCLUDE
 _EXCLUDE = {"epic_skill_config.json"}
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
