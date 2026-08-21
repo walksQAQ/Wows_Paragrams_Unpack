@@ -137,9 +137,18 @@ def _ensure_about() -> None:
     template = _app_dir / "__about__.py.template"
     if template.exists():
         try:
-            sys.path.insert(0, str(_app_dir / "scripts"))
-            from gen_version import generate_version  # noqa: PLC0415
-            generate_version()
+            # 按绝对路径加载 scripts/gen_version.py，避免运行时改 sys.path
+            # （Pylance 无法静态解析该导入，故用 importlib 显式加载）
+            import importlib.util
+
+            gen_path = _app_dir / "scripts" / "gen_version.py"
+            spec = importlib.util.spec_from_file_location("gen_version", gen_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"无法加载版本生成脚本: {gen_path}")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["gen_version"] = mod
+            spec.loader.exec_module(mod)
+            mod.generate_version()
             return
         except Exception as e:  # noqa: BLE001
             print(f"[main] __about__.py 自动生成失败: {e}")
