@@ -182,23 +182,14 @@ class MainWindow(QMainWindow):
         或游戏目录，避免后台解析与模型查看器渲染争抢 GIL 造成卡顿。
         """
         from uncode_assets.gui import AssetsBinViewer
-        if not hasattr(self, "_assets_viewer") or self._assets_viewer is None:
-            # 独立顶层窗口：不挂在主窗口下，避免 Z 序被主窗口遮挡、样式混淆
-            self._assets_viewer = AssetsBinViewer()
-            self._assets_viewer.center_on_screen(self)
-        self._assets_viewer.show()
-        self._assets_viewer.raise_()
-        self._assets_viewer.activateWindow()
+        from utils.window_utils import ensure_dialog_shown
+        ensure_dialog_shown(self, "_assets_viewer", AssetsBinViewer, self)
 
     def _on_open_version_diff(self) -> None:
         """打开版本数据比对对话框（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
         from ui.version_diff_dialog import VersionDiffDialog
-        if not hasattr(self, "_version_diff_dlg") or self._version_diff_dlg is None:
-            self._version_diff_dlg = VersionDiffDialog()
-            self._version_diff_dlg.center_on_screen(self)
-        self._version_diff_dlg.show()
-        self._version_diff_dlg.raise_()
-        self._version_diff_dlg.activateWindow()
+        from utils.window_utils import ensure_dialog_shown
+        ensure_dialog_shown(self, "_version_diff_dlg", VersionDiffDialog, self)
 
     def _on_advanced_settings(self) -> None:
         from ui.advanced_settings import AdvancedSettingsDialog

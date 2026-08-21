@@ -2286,9 +2286,10 @@ class DetailPanel(QWidget):
         """打开炮塔射界查看窗口并定位到指定舰船/武器槽位。"""
         try:
             from ui.firing_arc_dialog import FiringArcDialog
+            from utils.window_utils import center_on_screen
             if not hasattr(self, "_arcs_dialog") or self._arcs_dialog is None:
                 self._arcs_dialog = FiringArcDialog()
-                self._arcs_dialog.center_on_screen(self.window())
+                center_on_screen(self._arcs_dialog, self.window())
             self._arcs_dialog.open_for(fa.get("ship_id", ""), fa.get("slot_type", ""))
             self._arcs_dialog.show()
             self._arcs_dialog.raise_()
@@ -2305,14 +2306,14 @@ class DetailPanel(QWidget):
         """
         try:
             from ui.geometry_viewer import GeometryViewerDialog
-            if not hasattr(self, "_geometry_viewer") or self._geometry_viewer is None:
-                self._geometry_viewer = GeometryViewerDialog()
-                if not getattr(self._geometry_viewer, "_restored_geometry", False):
-                    self._geometry_viewer.center_on_screen(self.window())
+            from utils.window_utils import ensure_dialog_shown
+            if not getattr(self, "_geometry_viewer", None) or not getattr(self._geometry_viewer, "_restored_geometry", False):
+                ensure_dialog_shown(self, "_geometry_viewer", GeometryViewerDialog, self.window())
+            else:
+                self._geometry_viewer.show()
+                self._geometry_viewer.raise_()
+                self._geometry_viewer.activateWindow()
             self._geometry_viewer.open_ship(ship_id)
-            self._geometry_viewer.show()
-            self._geometry_viewer.raise_()
-            self._geometry_viewer.activateWindow()
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开 3D 查看器失败: {exc}")
 

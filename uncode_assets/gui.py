@@ -166,19 +166,9 @@ class AssetsBinViewer(QMainWindow):
     # ── 窗口定位 ────────────────────────────────────────
 
     def center_on_screen(self, relative_to: Optional[QWidget] = None) -> None:
-        """把窗口居中到指定窗口（默认主屏）。作为独立顶层窗口时避免与主窗口重叠被遮挡。"""
-        from PySide6.QtGui import QGuiApplication
-        if relative_to is not None and relative_to.isVisible():
-            geo = relative_to.frameGeometry()
-            x = geo.x() + (geo.width() - self.width()) // 2
-            y = geo.y() + (geo.height() - self.height()) // 2
-            self.move(max(x, 0), max(y, 0))
-            return
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.availableGeometry()
-            self.move(geo.x() + (geo.width() - self.width()) // 2,
-                      geo.y() + (geo.height() - self.height()) // 2)
+        """把窗口居中到指定窗口（默认主屏）。"""
+        from utils.window_utils import center_on_screen
+        center_on_screen(self, relative_to)
 
     # ── 加载 ────────────────────────────────────────────
 

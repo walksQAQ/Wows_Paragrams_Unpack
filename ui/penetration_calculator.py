@@ -2400,19 +2400,9 @@ class PenetrationCalculatorDialog(QDialog):
         self._set_ellipse_text(f"当前设定射程：{shown_dist:.1f} km", "\n".join(info_parts))
 
     def center_on_screen(self, relative_to=None) -> None:
-        """把窗口居中到指定窗口（默认主屏），复刻 AssetsBinViewer.center_on_screen。"""
-        from PySide6.QtGui import QGuiApplication
-        if relative_to is not None and relative_to.isVisible():
-            geo = relative_to.frameGeometry()
-            x = geo.x() + (geo.width() - self.width()) // 2
-            y = geo.y() + (geo.height() - self.height()) // 2
-            self.move(max(x, 0), max(y, 0))
-            return
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.availableGeometry()
-            self.move(geo.x() + (geo.width() - self.width()) // 2,
-                      geo.y() + (geo.height() - self.height()) // 2)
+        """把窗口居中到指定窗口（默认主屏）。"""
+        from utils.window_utils import center_on_screen
+        center_on_screen(self, relative_to)
 
     def _save_geometry(self):
         try:

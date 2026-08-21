@@ -765,17 +765,8 @@ class GeometryViewerDialog(QDialog):
         pass
 
     def center_on_screen(self, relative_to=None):
-        from PySide6.QtGui import QGuiApplication
-        if relative_to is not None and relative_to.isVisible():
-            geo = relative_to.frameGeometry()
-            self.move(max(geo.x() + (geo.width() - self.width()) // 2, 0),
-                      max(geo.y() + (geo.height() - self.height()) // 2, 0))
-            return
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            geo = screen.availableGeometry()
-            self.move(geo.x() + (geo.width() - self.width()) // 2,
-                      geo.y() + (geo.height() - self.height()) // 2)
+        from utils.window_utils import center_on_screen
+        center_on_screen(self, relative_to)
 
     def showEvent(self, event):
         # 重新显示：清除关闭状态，按需重载舰船列表/兑现挂起请求
