@@ -245,7 +245,9 @@
 2. **A5**:抽 `find_latest_bin_folder()`。✅(utils/path_utils.py;extractor_service/
    data_extractor/localization_service 三处委托)
 3. **B3** skill_service 缓存 skill_key。✅(按 version_code 缓存,消除每次全表查询)
-4. **B5** diff_service 快照内存复用。⏭️ 未做
+4. **B5** diff_service 快照内存复用。✅(DiffService 加 _snap_cache LRU-2 +
+   _snap_id_index O(1) 查找;compare_entities 全量载入后 diff_entity_fields
+   命中内存,消除 2N 次逐实体重查;build_overview 用后清缓存;缓存机制断言通过)
 5. **A12+B7+N15+N16** 迁移 helper + `_resolve_vc()` + `_safe_query`。🔶 部分完成:
    N15 `_resolve_vc()` 已抽取(9 处样板替换,等价验证通过);
    N16 跳过(各处 except 返回值不同,抽取收益低);A12/B7 未做(schema 迁移样板,风险高)
@@ -257,11 +259,17 @@
    N18 跳过(MODIFIER_MAP/FORMAT_MAP 键集重构风险高,留独立任务);
    N20 跳过(get_modifier_color 不乘 VALUE_FACTOR 而 format_modifier 乘,
    强行抽取会改变颜色行为)
-10. **A15+B6** generate_full_table 处置。⏭️ 未做
-11. **A7/A13/A14/A16/B9** 小项收敛。⏭️ 未做
+10. **A15+B6** generate_full_table 处置。✅(全库无调用者,已删除;B6 循环内常量问题随之消失)
+11. **A7/A13/A14/A16/B9** 小项收敛。⏭️ 大部分跳过:
+    A16 `__lt__`/`sorted_items` 是两种等价排序接口(隐式 vs 显式 key)非重复;
+    A7/A13/A14/B9 收益低或涉及插值语义,留独立任务
 
-已验证: _resolve_vc/get_stats GROUP BY/skill 缓存/N19 派生/A5/join_po_multiline
-全部等价断言通过;6 文件编译无错误。
+已验证: _resolve_vc/get_stats GROUP BY/skill 缓存/N19 派生/A5/join_po_multiline/
+B5 缓存机制 全部等价断言通过;7 文件编译无错误。
+
+**Phase 2 收尾说明**:剩余 N5/N6/N7/N13(analysis 写入 N+1)、N1-N4(PROJECTILE_EXT_MAP
+重构)、A12/B7(schema 迁移样板)均属数据写入路径或结构重构,风险高于本轮"低风险"
+边界,建议作为独立任务逐项推进(每项需 DB 导入条数回归断言)。
 
 ### Phase 3:uncode_assets + assets_cache 性能与去重
 
