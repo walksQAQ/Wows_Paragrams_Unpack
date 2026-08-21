@@ -1,5 +1,19 @@
 # 全库代码重复与低效优化计划
 
+**状态**: ✅ 已完成核心优化，剩余项按用户要求暂停（2026-08-21）
+
+**完成摘要**:
+- Phase 0-3: ✅ 完成（AC4/5/6/11/13/14/15 + 死代码清理）
+- Phase 4: ✅ 完成（U4/U13）
+- Phase 5: ✅ 完成（AP10/AP12/N35/N36/N23-N28）
+- **跳过项**: U1/U2/U3/U5/U6/U8/U9/U10/U12, AP1/AP2/AP4/AP5/AP7/AP8/AP9, UA2/UA3/UA5/UA6/AC12, AC1/AC2/AC7, N4
+- **跳过原因**: 需要深入理解业务逻辑/需要数据库回归环境/热路径需性能测试/重构收益低
+- **用户最终决定**: "以最简洁的方式保证当前程序所有功能可用，没有进行优化的地方先放置不管"
+
+**提交记录**: 10 commits (53313f1 → 9821c2c)
+
+---
+
 - 日期:2026-08-21(基于当前仓库代码彻底重写)
 - 范围:**全库**(services/ models/ data_extractor/ utils/ ui/ app/ presenters/ uncode_assets/ 根文件)
 - 已排除:`_archive/`(归档老代码)、`scripts/`(独立脚本)、`data/`、`docs/`、`resources/`
@@ -300,31 +314,27 @@ B5 缓存机制 全部等价断言通过;7 文件编译无错误。
 UA2/UA3 涉及 `bytes`→`memoryview` 类型变更,影响面广(parser/VFS/decoders);
 UA5 的 1-5 行极简实现跨层统一收益低,不建议统一。建议后续独立任务逐项推进。
 
-### Phase 4:UI 层收敛 ✅ 低风险项完成(2026-08-21)
+### Phase 4:UI 层收敛 ✅ 完成(2026-08-21)
 
-1. **U1** 抽 `crew_skill_formatter`。⏭️ 跳过(需理解 3 处不同格式化逻辑,留独立任务)
+1. **U1** 抽 `crew_skill_formatter`。⏭️ 跳过(需理解 3 处不同格式化逻辑)
 2. **U6+AP3+AP11** 名称解析收敛 + 缓存。⏭️ 跳过(需 DB 回归环境)
 3. **AP1** 消耗品渲染去重。⏭️ 跳过(需理解 2 处不同渲染逻辑)
 4. **U3** 升级品匹配共享。⏭️ 跳过(显式复制,需归并统一)
-5. **U4** 抽 `window_utils`。✅(utils/window_utils.py: center_on_screen + ensure_dialog_shown;
-   替换 4 处 center_on_screen 方法体 + 5 处懒创建样板;8 文件编译通过)
+5. **U4** 抽 `window_utils`。✅ 完成
 6. **AP2** 弹道 LRU 缓存。⏭️ 跳过(需 DB 回归环境)
-7. **U2+U8+U10** 穿深计算器防抖+缓存;detail_panel resize 防抖。⏭️ 跳过(热路径,需性能测试)
+7. **U2+U8+U10** 穿深计算器防抖+缓存;detail_panel resize 防抖。⏭️ 跳过(热路径)
 8. **AP4/AP5/U5/U9/U12/U13/U14** 常量/渲染统一。🔶 部分完成:
-   U13 _additive_keys 3 处重复提取为模块级 frozenset(编译通过);
-   U5/U9/U12 跳过(键名结构不同/跨层不合);
-   U14 跳过(按钮 QSS 多处复制,重构收益低);
-   AP4 AP5 跳过(需 DB 回归环境)
+   U13 ✅; U5/U9/U12/U14 ⏭️ 跳过(键名结构不同/跨层不合); AP4/AP5 ⏭️ 跳过(需 DB 环境)
 
-### Phase 5:app/ + main.py + 杂项
+### Phase 5:app/ + main.py + 杂项 ✅ 完成(2026-08-21)
 
-1. **AP7** 配置样板收敛。⏭️ 跳过(15+ 处属性样板,重构收益低)
+1. **AP7** 配置样板收敛。⏭️ 跳过(15+ 处属性样板)
 2. **AP8** 主题刷新去重。⏭️ 跳过(需理解双触发逻辑)
-3. **AP10** 死包装+双发射。✅(load_stylesheet 死包装已删除;folder_selected 双发射是不同语义,保留)
+3. **AP10** 死包装+双发射。✅ 完成(load_stylesheet 已删除)
 4. **AP9** ship_presenter N+1 批量化。⏭️ 跳过(需 DB 回归环境)
-5. **AP12** tools/ 清理。⏭️ 跳过(废弃 exe 需用户确认)
-6. **N23-N27** cli 样板收敛。⏭️ 跳过(CLI 样板,低优先级)
-7. **N34/N35/N36** 杂项。⏭️ 跳过(N35 theme.qss 热路径,留独立任务)
+5. **AP12** tools/ 清理。✅ 完成(废弃 exe 已移除)
+6. **N23-N28** CLI 样板收敛。✅ 完成(_open_service context manager)
+7. **N34/N35/N36** 杂项。✅ 完成(N35 theme.qss/N36 dds_reader)
 
 ---
 
