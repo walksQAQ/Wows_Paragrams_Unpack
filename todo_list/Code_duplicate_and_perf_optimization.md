@@ -236,19 +236,32 @@
 
 验证: kraken 核心解码 API 完整(decompress/decompress_stream/_decode_bytes/_decode_rle/build_kraken_lut/_parse_kraken_header);D2/D4/D7 等价断言全部通过;3 文件编译无错误。
 
-### Phase 2:services 层收敛
+### Phase 2:services 层收敛（进行中，2026-08-21）
 
-1. **A2+B2**:抽 `utils/po_utils.py`;舰长名改查表。
-2. **A5**:抽 `find_latest_bin_folder()`。
-3. **B3** skill_service 缓存 skill_key。
-4. **B5** diff_service 快照内存复用。
-5. **A12+B7+N15+N16** 迁移 helper + `_resolve_vc()` + `_safe_query`。
-6. **N17** get_stats 改 GROUP BY。
-7. **N5/N6/N7/N13** analysis 写入 N+1 与重复扫描修复。
-8. **N1/N2/N3/N4** PROJECTILE_EXT_MAP 与 writer 收敛。
-9. **N18/N19/N20** name_mapping 派生/合并。
-10. **A15+B6** generate_full_table 处置。
-11. **A7/A13/A14/A16/B9** 小项收敛。
+1. **A2+B2**:抽 `utils/po_utils.py`;舰长名改查表。✅(join_po_multiline 共用;
+   附带修复 database_service 旧内联实现的潜在 bug——连续非空 msgstr 被误吞并,
+   共用版采用 localization 的守卫条件;等价性+回归断言通过。B2 舰长名 regex 优化
+   未做——需改 PO 解析为预编译索引,超出本轮低风险边界)
+2. **A5**:抽 `find_latest_bin_folder()`。✅(utils/path_utils.py;extractor_service/
+   data_extractor/localization_service 三处委托)
+3. **B3** skill_service 缓存 skill_key。✅(按 version_code 缓存,消除每次全表查询)
+4. **B5** diff_service 快照内存复用。⏭️ 未做
+5. **A12+B7+N15+N16** 迁移 helper + `_resolve_vc()` + `_safe_query`。🔶 部分完成:
+   N15 `_resolve_vc()` 已抽取(9 处样板替换,等价验证通过);
+   N16 跳过(各处 except 返回值不同,抽取收益低);A12/B7 未做(schema 迁移样板,风险高)
+6. **N17** get_stats 改 GROUP BY。✅(单条聚合替代逐类 COUNT,与逐类计数等价验证通过)
+7. **N5/N6/N7/N13** analysis 写入 N+1 与重复扫描修复。⏭️ 未做
+8. **N1/N2/N3/N4** PROJECTILE_EXT_MAP 与 writer 收敛。⏭️ 未做
+9. **N18/N19/N20** name_mapping 派生/合并。🔶 部分完成:
+   N19 RIBBON_MAP_CREW 改派生(仅 "13" 不同,等价验证通过);
+   N18 跳过(MODIFIER_MAP/FORMAT_MAP 键集重构风险高,留独立任务);
+   N20 跳过(get_modifier_color 不乘 VALUE_FACTOR 而 format_modifier 乘,
+   强行抽取会改变颜色行为)
+10. **A15+B6** generate_full_table 处置。⏭️ 未做
+11. **A7/A13/A14/A16/B9** 小项收敛。⏭️ 未做
+
+已验证: _resolve_vc/get_stats GROUP BY/skill 缓存/N19 派生/A5/join_po_multiline
+全部等价断言通过;6 文件编译无错误。
 
 ### Phase 3:uncode_assets + assets_cache 性能与去重
 

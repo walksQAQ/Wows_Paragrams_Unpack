@@ -73,3 +73,23 @@ def get_config_path() -> Path:
 def get_tools_dir() -> Path:
     """返回 tools/ 目录（存放 wowsunpack.exe 等）"""
     return get_bundled_dir() / "tools"
+
+
+# ── 游戏目录辅助 ────────────────────────────────────────
+
+def find_latest_bin_folder(game_path) -> str | None:
+    """在游戏目录 bin/ 下查找最大的数字版本号子目录，返回目录名（如 '3859335'）。
+
+    供 extractor_service / data_extractor / localization_service 共用，
+    消除三处"找最新 bin 目录"的重复实现。无 bin 目录或无版本文件夹返回 None。
+    """
+    import os
+    bin_path = os.path.join(str(game_path), "bin")
+    if not os.path.exists(bin_path):
+        return None
+    folders = [f for f in os.listdir(bin_path)
+               if f.isdigit() and os.path.isdir(os.path.join(bin_path, f))]
+    if not folders:
+        return None
+    folders.sort(key=int)
+    return folders[-1]

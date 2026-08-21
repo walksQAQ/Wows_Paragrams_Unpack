@@ -35,6 +35,8 @@ class SkillService:
         }
         self._reverse_type_map = {v: k for k, v in self._ship_type_map.items() if v}
         self._rarity_order = {"COMMON": 0, "REGULAR": 1, "RARE": 2, "EPIC": 3, "LEGENDARY": 4}
+        # skill_key 集合缓存（按 version_code），避免 _icon_to_skill_key 每次全表查询
+        self._skill_keys_cache: dict[str, list[str]] = {}
         self._grid_map = {
             "航母": {
                 "1-1": "planes_forsage_renewal", "1-2": "planes_forsage_duration",
@@ -188,20 +190,23 @@ class SkillService:
         # 去除下划线全小写
         candidates.append(icon_name.lower().replace("_", ""))
 
-        # 从 DB 查所有 skill_key，不区分大小写匹配
-        try:
-            cur = db._conn.execute(
-                "SELECT DISTINCT skill_key FROM crew_skill_definitions WHERE version_code=?",
-                (vc,)
-            )
-            for row in cur.fetchall():
-                db_sk = row["skill_key"]
-                db_lower = db_sk.lower().replace("_", "")
-                for c in candidates:
-                    if c.lower().replace("_", "") == db_lower:
-                        return db_sk
-        except Exception:
-            pass
+        # 从缓存/DB 取所有 skill_key，不区分大小写匹配（按 version_code 缓存）
+        keys = self._skill_keys_cache.get(vc)
+        if keys is None:
+            try:
+                cur = db._conn.execute(
+                    "SELECT DISTINCT skill_key FROM crew_skill_definitions WHERE version_code=?",
+                    (vc,)
+                )
+                keys = [row["skill_key"] for row in cur.fetchall()]
+            except Exception:
+                keys = []
+            self._skill_keys_cache[vc] = keys
+        for db_sk in keys:
+            db_lower = db_sk.lower().replace("_", "")
+            for c in candidates:
+                if c.lower().replace("_", "") == db_lower:
+                    return db_sk
         return None
 
     def get_grid_skills(self, ship_type_cn: str, container_id: str = "PCOL001_CommonCrewSkills",

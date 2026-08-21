@@ -25,15 +25,8 @@ def _assets_bin_path():
 
 
 def _get_latest_bin(game_path: str) -> str | None:
-    bin_path = os.path.join(game_path, "bin")
-    if not os.path.exists(bin_path):
-        return None
-    folders = [f for f in os.listdir(bin_path)
-               if f.isdigit() and os.path.isdir(os.path.join(bin_path, f))]
-    if not folders:
-        return None
-    folders.sort(key=int)
-    return folders[-1]
+    from utils.path_utils import find_latest_bin_folder
+    return find_latest_bin_folder(game_path)
 
 
 def _read_exe_version(game_path: str, latest_bin: str, wows_type: str) -> str:

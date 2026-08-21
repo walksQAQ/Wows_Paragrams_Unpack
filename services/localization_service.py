@@ -88,33 +88,8 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     raw = raw.replace('˙', '·')
 
     # 预处理：合并 PO 多行 msgstr（msgstr "" 后跟多个 "续行"）
-    def _join_po_multiline(text: str) -> str:
-        """将 msgstr 的多行续行格式合并为单行"""
-        lines = text.splitlines(keepends=True)
-        result = []
-        in_msgstr = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('msgstr '):
-                in_msgstr = True
-                result.append(line)
-            elif in_msgstr and stripped.startswith('"') and not stripped.startswith('msgid ') and not stripped.startswith('msgstr '):
-                # 续行：去掉首尾引号，内容追加到上一行
-                if result and result[-1].strip().startswith('msgstr ""'):
-                    # msgstr "" 后第一个续行：替换 msgstr "" 为 msgstr "内容"
-                    content = stripped[1:-1]
-                    result[-1] = f'msgstr "{content}"\n'
-                elif result:
-                    # 后续续行：追加内容到上一行的 msgstr 中
-                    content = stripped[1:-1]
-                    last = result[-1]
-                    if last.strip().startswith('msgstr "') and last.strip().endswith('"'):
-                        result[-1] = last.rstrip('\n')[:-1] + content + '"\n'
-            else:
-                in_msgstr = False
-                result.append(line)
-        return ''.join(result)
-    raw = _join_po_multiline(raw)
+    from utils.po_utils import join_po_multiline
+    raw = join_po_multiline(raw)
 
     def save(data, fn):
         p = os.path.join(out_dir, fn)
@@ -207,15 +182,11 @@ def run_localization() -> "_AppTask":
         bus.task_progress.emit(5, f"{action}语言文件")
         # ── 下载 / 复制 global.mo ────────────────────
         if wows_type == "Wargaming":
-            bin_root = os.path.join(game_path, "bin")
-            if not os.path.exists(bin_root):
-                raise Exception("找不到 bin 目录")
-            folders = [f for f in os.listdir(bin_root)
-                       if f.isdigit() and os.path.isdir(os.path.join(bin_root, f))]
-            if not folders:
-                raise Exception("未找到版本文件夹")
-            lb = sorted(folders, key=int)[-1]
-            src = os.path.join(bin_root, lb, "res/texts/zh_sg/LC_MESSAGES/global.mo")
+            from utils.path_utils import find_latest_bin_folder
+            lb = find_latest_bin_folder(game_path)
+            if not lb:
+                raise Exception("找不到 bin 目录或版本文件夹")
+            src = os.path.join(game_path, "bin", lb, "res/texts/zh_sg/LC_MESSAGES/global.mo")
             if not os.path.exists(src):
                 alt = os.path.join(bin_root, lb, "res/texts/zh_cn/LC_MESSAGES/global.mo")
                 if os.path.exists(alt):
