@@ -113,8 +113,7 @@ class TopToolbar(QWidget):
         sg = QButtonGroup(self)
         self.rb_lesta = QRadioButton("Lesta")
         self.rb_wg = QRadioButton("Wargaming")
-        # Wargaming 暂时禁用
-        self.rb_wg.setEnabled(False)
+        # WG 服按钮已启用（2026-08-21，wg 数据兼容开发中；切换后需保证 game_path 指向 WG 客户端）
         sg.addButton(self.rb_lesta)
         sg.addButton(self.rb_wg)
         layout.addWidget(self.rb_lesta)
@@ -223,6 +222,8 @@ class TopToolbar(QWidget):
         if server == app_ctx.ctx.wows_type:
             return  # 未变更
         app_ctx.set_wows_type(server)
+        # 切换服务器提醒：需更换游戏路径（wows_type 已切换，game_path 需用户手动改）
+        self._prompt_server_path(server)
         # 切换服务器时重置数据库单例，刷新界面
         from services.database_service import reset_db, get_db
         reset_db()
@@ -237,6 +238,34 @@ class TopToolbar(QWidget):
         else:
             bus.log_message.emit(f"ℹ️ {server} 数据库为空，请加载数据")
             bus.folder_selected.emit("__REFRESH__")
+
+    def _prompt_server_path(self, server: str) -> None:
+        """切换服务器后提醒：需要更换游戏路径。
+
+        服务器单选按钮切换后 game_path 不会自动变，用户需到「高级设置」手动指向
+        对应客户端，再点「加载数据」；否则会用当前路径加载错误客户端的数据。
+        """
+        from PySide6.QtWidgets import QMessageBox
+        cur = app_ctx.ctx.game_path
+        if server == "Wargaming":
+            hint = "Wargaming 客户端（如 D:\\World_of_Warships）"
+        else:
+            hint = "Lesta 客户端（如 D:\\World_of_Warships_RU\\Korabli_PT）"
+        box = QMessageBox(self.window())
+        box.setWindowTitle("切换服务器")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"已切换到 {server} 服务器")
+        box.setInformativeText(
+            "⚠️ 切换服务器后，请到「高级设置」把游戏路径指向对应客户端，再点「加载数据」。\n\n"
+            f"当前游戏路径：{cur}\n目标：{hint}"
+        )
+        btn_ok = box.addButton("知道了", QMessageBox.ButtonRole.AcceptRole)
+        btn_go = box.addButton("打开高级设置", QMessageBox.ButtonRole.ActionRole)
+        box.exec()
+        if box.clickedButton() is btn_go:
+            w = self.window()
+            if hasattr(w, "_on_advanced_settings"):
+                w._on_advanced_settings()
 
     def _on_progress(self, pct, msg):
         pct = max(0, min(100, pct))

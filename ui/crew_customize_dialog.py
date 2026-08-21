@@ -18,6 +18,7 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap, QFont
 
 from utils.theme import theme
+from utils.image_paths import pic_path
 
 
 class CrewCustomizeDialog(QDialog):
@@ -629,7 +630,7 @@ class CrewCustomizeDialog(QDialog):
             self._epic_checkboxes[sk] = cb
             hl.addWidget(cb)
             # 技能图标
-            icon_path = f":/resources/pictures/skills/{icon_name}.png"
+            icon_path = pic_path(f"skills/{icon_name}.png")
             pix = QPixmap(icon_path)
             if not pix.isNull():
                 icon_label = QLabel()

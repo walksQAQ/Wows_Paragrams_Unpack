@@ -11,8 +11,11 @@ import re
 from collections import Counter
 
 from services.database_service import DatabaseManager
+from services import wg_compat
 from utils.path_utils import get_split_dir
 from app.signals import bus
+from app.application import app as app_ctx
+from utils.image_paths import pic_path
 
 
 # ── 辅助函数 ────────────────────────────────────────────
@@ -1500,7 +1503,7 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
                 if unique_types:
                     trigger_type_str = (sv.get("triggerType") or "achievement").upper()
                     fname = f"{crew_index}_{trigger_type_str}_" + "_".join(str(t) for t in unique_types) + ".png"
-                    icon_path = f":/resources/pictures/talents/{fname}"
+                    icon_path = pic_path(f"talents/{fname}")
             except Exception:
                 pass
             conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1613,6 +1616,9 @@ class AnalysisService:
     def analyze_one(self, category: str, raw_data: dict, entity_id: str = "",
                     db: DatabaseManager | None = None, version_code: str = ""):
         version_code = str(version_code).strip() if version_code else ""
+        # WG 服数据格式差异预留：normalize 将 WG 实体 JSON 规范化为内部统一结构
+        # （wg_compat.WG_NORMALIZE_ENTITY 未实现时对 WG 原样返回，走 Lesta 读取路径）
+        raw_data = wg_compat.normalize_entity(app_ctx.ctx.wows_type, raw_data)
         from services.database_service import get_db as _get_db
         store = AnalysisStore(db or _get_db())
         func_map = {
@@ -1686,10 +1692,13 @@ class AnalysisService:
         results: dict[str, int] = {}
         total_processed = 0
         split_dir = get_split_dir()
-        categories = ["Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew", "Exterior", "Other"]
-        cat_labels = {"Projectile": "弹药", "Aircraft": "飞机", "Ability": "消耗品",
-                      "Ship": "舰船", "Modernization": "配件", "Crew": "舰长",
-                      "Exterior": "信号旗", "Other": "其他"}
+        # WG 服数据格式差异预留：分析类别列表/中文标签按服可配（wg_compat 填充后生效）
+        categories = wg_compat.get_categories(app_ctx.ctx.wows_type) or [
+            "Projectile", "Aircraft", "Ability", "Ship", "Modernization", "Crew", "Exterior", "Other"]
+        cat_labels = wg_compat.get_cat_labels(app_ctx.ctx.wows_type) or {
+            "Projectile": "弹药", "Aircraft": "飞机", "Ability": "消耗品",
+            "Ship": "舰船", "Modernization": "配件", "Crew": "舰长",
+            "Exterior": "信号旗", "Other": "其他"}
         raw_conn = db._conn
 
         def _process_batch(items, cat_label=""):

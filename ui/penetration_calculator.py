@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from utils.theme import theme
+from utils.image_paths import pic_path
 
 
 class CustomWeaponDialog(QDialog):
@@ -1494,7 +1495,7 @@ class PenetrationCalculatorDialog(QDialog):
         btn.setCheckable(True)
         btn.setStyleSheet(self._mod_btn_style())
         if kind == "modernization":
-            img = f":/resources/pictures/modernization/icon_modernization_{mod_id}.png"
+            img = pic_path(f"modernization/icon_modernization_{mod_id}.png")
             pix = QPixmap(img)
             if not pix.isNull():
                 btn.setIcon(QIcon(pix.scaled(26, 26, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
@@ -1554,7 +1555,7 @@ class PenetrationCalculatorDialog(QDialog):
         import re as _re
         m = _re.search(r"TITLE_(.+)$", str(rage_name or "").upper())
         tag = m.group(1).lower() if m else ""
-        return f":/resources/pictures/ragemode/rageMode_{tag}_preview_0.png" if tag else ""
+        return pic_path(f"ragemode/rageMode_{tag}_preview_0.png") if tag else ""
 
     def _load_special_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """加载该船提供对应炮种射程/精度加成的消耗品（侦察机，仅主炮）与战斗指令（rage_mode）。"""
@@ -1598,7 +1599,7 @@ class PenetrationCalculatorDialog(QDialog):
                     lines.append(f"主炮炮弹的最大误差: {NMM.format_modifier('GMIdealRadius', gm)}")
                 self._mod_items.append({"mod_id": cid, "gmmd": adc, "gm": gm, "kind": "consumable"})
                 self._add_mod_button(cid, adc, gm, kind="consumable", name="侦察机", bonus_lines=lines,
-                                     icon_path=f":/resources/pictures/consumables/consumable_{cid}_0.png")
+                                     icon_path=pic_path(f"consumables/consumable_{cid}_0.png"))
         # ── 战斗指令（rage_mode）：对应炮种射程、精度 ──
         for rm in conn.execute(
             "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=?",
@@ -1696,7 +1697,7 @@ class PenetrationCalculatorDialog(QDialog):
                                 lines.append(f"{NMM.MODIFIER_MAP.get(k, k)}: {fmt}")
                 self._mod_items.append({"mod_id": sk, "gmmd": gmmd, "gm": gm, "kind": "skill"})
                 self._add_mod_button(sk, gmmd, gm, kind="skill", name=sname, bonus_lines=lines,
-                                     icon_path=f":/resources/pictures/skills/{icon_name}.png" if icon_name else "")
+                                     icon_path=pic_path(f"skills/{icon_name}.png") if icon_name else "")
 
     def _load_ally_support_bonus(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """辅助机组（友军提供的支援侦察机 scout）射程/精度加成，无条件显示。
@@ -1760,7 +1761,7 @@ class PenetrationCalculatorDialog(QDialog):
                                 "kind": "ally_support"})
         self._add_mod_button(f"ally_{plane_id}", gmmd, gm, kind="ally_support",
                              name=sname or "支援侦察机", bonus_lines=lines,
-                             icon_path=":/resources/pictures/ammo_types/ammo_airsupport_scout_scout_0.png")
+                             icon_path=pic_path("ammo_types/ammo_airsupport_scout_scout_0.png"))
 
     def _mod_matches(self, mod_row, ship_type, ship_tier, ship_nation, ship_group, ship_id):
         try:

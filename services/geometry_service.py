@@ -306,6 +306,7 @@ class GeometryService:
         self._assets_tried = False
         # AC11: AssetsCacheService 单实例（替代 9 处每次 new → 新 sqlite 连接）
         self._assets_cache = None
+        self._assets_cache_wows_type = None  # 创建时服务器，切服后重建（分库隔离）
         self._mfm_index_cache: dict | None = None  # mfm 名(去 .mfm) -> 完整路径
         self._mfm_diffuse_cache: dict = {}       # stem -> 贴图基础名（.mfm 识别结果）
         #: 几何目录索引 {文件夹名: [VfsEntry]}，一次构建跨船复用（避免重复全树扫描）
@@ -1022,10 +1023,16 @@ class GeometryService:
         return self._assets_svc
 
     def _get_assets_cache(self):
-        """AC11: AssetsCacheService 单实例惰性缓存（替代 9 处每次 new 新 sqlite 连接）。"""
-        if self._assets_cache is None:
+        """AC11: AssetsCacheService 单实例惰性缓存（替代 9 处每次 new 新 sqlite 连接）。
+
+        按服务器分库：切服（Lesta↔WG）后缓存失效重建，避免读到上一服务器的 assets_data.db。
+        """
+        from app.application import app as app_ctx
+        cur = app_ctx.ctx.wows_type
+        if self._assets_cache is None or self._assets_cache_wows_type != cur:
             from services.assets_cache_service import AssetsCacheService
-            self._assets_cache = AssetsCacheService()
+            self._assets_cache = AssetsCacheService(wows_type=cur)
+            self._assets_cache_wows_type = cur
         return self._assets_cache
 
     @staticmethod
