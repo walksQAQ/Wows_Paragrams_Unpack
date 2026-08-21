@@ -28,13 +28,13 @@ from utils.theme import theme
 
 
 # U13: 加性修饰符键集（3 处重复 → 模块级常量）
+# crashCrewWorkTimeBonus（损害管制消耗品作用时间）在 ship_presenter 中按加算处理，属加性键
 _ADDITIVE_KEYS_BASE = frozenset({
     "additionalConsumables", "planeAdditionalConsumables", "planeExtraHangarSize",
     "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
     "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
-    "torpedoReloaderAdditionalConsumables",
+    "torpedoReloaderAdditionalConsumables", "crashCrewWorkTimeBonus",
 })
-_ADDITIVE_KEYS_CREW = _ADDITIVE_KEYS_BASE | {"crashCrewWorkTimeBonus"}
 
 
 class DetailPanel(QWidget):
@@ -933,23 +933,28 @@ class DetailPanel(QWidget):
 
                 def _trigger_signal_refresh():
                     """将信号旗修饰符合并到升级品修饰符中一起重算"""
+                    def _merge_one(mods):
+                        if not isinstance(mods, dict):
+                            return
+                        for k, v in mods.items():
+                            if isinstance(v, dict):
+                                v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
+                            if k not in all_mods:
+                                all_mods[k] = v
+                            else:
+                                try:
+                                    ev_f, nv_f = float(all_mods[k]), float(v)
+                                    all_mods[k] = ev_f + nv_f if k in _ADDITIVE_KEYS_BASE else ev_f * nv_f
+                                except (ValueError, TypeError):
+                                    all_mods[k] = v
+
                     all_mods = {}
                     _st = config.get("shiptype_en", "") or config.get("shiptype", "")
                     if hasattr(self, '_selected_mods'):
                         for m in self._selected_mods.values():
-                            mods = m.get("modifiers", {})
-                            if isinstance(mods, dict):
-                                for k, v in mods.items():
-                                    if isinstance(v, dict):
-                                        v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
-                                    all_mods[k] = v
+                            _merge_one(m.get("modifiers", {}))
                     for fd in self._selected_signal_flags.values():
-                        mods = fd.get("modifiers", {})
-                        if isinstance(mods, dict):
-                            for k, v in mods.items():
-                                if isinstance(v, dict):
-                                    v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
-                                all_mods[k] = v
+                        _merge_one(fd.get("modifiers", {}))
                     self._refresh_data_only(all_mods if all_mods else None)
 
                 cl.addStretch()
@@ -3483,7 +3488,7 @@ class DetailPanel(QWidget):
                         existing = existing.get(_cur_ship_type) or next((x for x in existing.values() if isinstance(x, (int, float))), 1.0)
                     try:
                         ev_f, nv_f = float(existing), float(v)
-                        if k in _ADDITIVE_KEYS_CREW:
+                        if k in _ADDITIVE_KEYS_BASE:
                             all_mods[k] = ev_f + nv_f
                         else:
                             all_mods[k] = ev_f * nv_f
@@ -3543,23 +3548,27 @@ class DetailPanel(QWidget):
             _combined = dict(modifiers or {})
             for _pos, _m in getattr(self, '_selected_skill_mods', {}).items():
                 for k, v in (_m.items() if isinstance(_m, dict) else []):
-                    try:
-                        ev = _combined.get(k, 0)
-                        nv = v
-                        # dict 型修饰符（按舰种区分值）：按当前舰种提取标量
-                        _cur_st = ""
-                        if hasattr(self, '_current_analyzed') and self._current_analyzed:
-                            _cb = self._current_analyzed.get("config_bar", {})
-                            _cur_st = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
-                        if isinstance(ev, dict):
-                            ev = ev.get(_cur_st) or next((x for x in ev.values() if isinstance(x, (int, float))), 1.0)
-                        if isinstance(nv, dict):
-                            nv = nv.get(_cur_st) or next((x for x in nv.values() if isinstance(x, (int, float))), 1.0)
-                        ev_f, nv_f = float(ev), float(nv)
-                        _add = k in _ADDITIVE_KEYS_BASE
-                        _combined[k] = ev_f + nv_f if _add else ev_f * nv_f
-                    except (ValueError, TypeError):
+                    if k not in _combined:
+                        # 首次出现：直接采用技能值（避免 0×v=0 清掉乘性加成）
                         _combined[k] = v
+                    else:
+                        try:
+                            ev = _combined[k]
+                            nv = v
+                            # dict 型修饰符（按舰种区分值）：按当前舰种提取标量
+                            _cur_st = ""
+                            if hasattr(self, '_current_analyzed') and self._current_analyzed:
+                                _cb = self._current_analyzed.get("config_bar", {})
+                                _cur_st = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
+                            if isinstance(ev, dict):
+                                ev = ev.get(_cur_st) or next((x for x in ev.values() if isinstance(x, (int, float))), 1.0)
+                            if isinstance(nv, dict):
+                                nv = nv.get(_cur_st) or next((x for x in nv.values() if isinstance(x, (int, float))), 1.0)
+                            ev_f, nv_f = float(ev), float(nv)
+                            _add = k in _ADDITIVE_KEYS_BASE
+                            _combined[k] = ev_f + nv_f if _add else ev_f * nv_f
+                        except (ValueError, TypeError):
+                            _combined[k] = v
             _eng_key = getattr(self, '_active_engine_key', '')
             _fc_key = getattr(self, '_active_fire_control_key', '')
             _sonar_key = getattr(self, '_active_sonar_key', '')
