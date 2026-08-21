@@ -58,6 +58,9 @@ jobs:
           .venv\Scripts\python.exe -m pip install -r requirements.txt
 
       - name: Build exe (CI mode)
+        env:
+          CI: "true"            # 声明非交互 CI 环境（Nuitka 等据此静默）
+          PYTHONUNBUFFERED: "1"  # Python 实时输出，避免 CI 日志看似卡住
         run: |
           $env:CI_MODE = "1"
           cmd /c "build.bat"
