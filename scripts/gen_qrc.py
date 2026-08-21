@@ -4,6 +4,7 @@
 输出: resources.qrc（项目根目录）
 """
 
+import sys
 from pathlib import Path
 
 RESOURCES_DIR = Path(__file__).resolve().parent.parent / "resources"
@@ -34,6 +35,8 @@ def _generate_qrc(files: list[str]) -> str:
 
 
 def main():
+    # CI 管道默认 cp1252 无法输出中文：强制 UTF-8（PYTHONUTF8 未设时的双保险）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     files = _scan_files(RESOURCES_DIR)
     print(f"发现 {len(files)} 个资源文件")
     qrc_content = _generate_qrc(files)

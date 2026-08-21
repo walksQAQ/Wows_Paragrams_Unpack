@@ -21,6 +21,11 @@ if "%CI_MODE%"=="0" taskkill /f /im KorabliParagrams.exe 2>nul
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
 
+:: Python 强制 UTF-8 模式：gen_qrc.py 等含中文输出，CI 管道默认 cp1252 会
+:: UnicodeEncodeError（chcp 65001 只改控制台代码页，不影响 runner 捕获的管道编码）
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
 :: 如果文件被杀毒软件等临时锁死，尝试强力删除旧 exe
 if exist "%OUTDIR%\KorabliParagrams.exe" del /f /q "%OUTDIR%\KorabliParagrams.exe" 2>nul
 
