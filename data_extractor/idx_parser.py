@@ -37,7 +37,12 @@ from typing import BinaryIO, Optional
 IDX_MAGIC: int = 0x50465349
 
 # 根节点父 ID 哨兵值
-ROOT_PARENT_ID: int = 0xDDB1A1D1B108B927
+#: 根节点父 ID 哨兵值。
+#: ⚠️ 2026-08-21 对照 WG 服实测（D:\World_of_Warships v13015811）与 wows-toolkit 源码，
+#: 正确值为 0xDBB1A1D1B108B927（第 2 位 DB，原为 DD 笔误）。
+#: Lesta 的 resolve_path 用「parent_id not in resources_map」判定根，不依赖此值；
+#: WG 用 parent_id == 本值 判定根（两法在实测数据上结果一致）。
+ROOT_PARENT_ID: int = 0xDBB1A1D1B108B927
 
 # 已知版本号
 VERSION_V20: int = 0x01010004  # 旧版 BigWorld

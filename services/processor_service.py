@@ -21,6 +21,7 @@ from utils.path_utils import get_data_dir, get_split_dir
 from services.database_service import DatabaseManager, get_db, reset_db
 
 from services import GameParams as _GameParamsModule
+from services import wg_compat
 sys.modules['GameParams'] = _GameParamsModule
 
 
@@ -161,13 +162,17 @@ def run_process() -> "_AppTask":
         "Other": "Other", "Exterior": "Exterior",
     }
 
+    # 当前服务器生效的类型→类别映射：WG 若在 wg_compat 已填充则用 WG 版，否则回退 Lesta 默认
+    # （WG 的 TypeInfo.type 集合/命名与 Lesta 可能有差异，差异由 wg_compat 预留，人工填充）
+    _cat_map = wg_compat.get_type_category_map(app_ctx.ctx.wows_type) or TYPE_CATEGORY_MAP
+
     def _collect_one(k: str, v: dict, index):
         """线程安全收集单实体：返回独立结果，不共享可变状态（供并行收集）。
 
         返回 (cat, k, v, db_item, snap_item)：主线程合并到分类/批量列表。
         """
         t = v.get('typeinfo', {}).get('type', 'UnknownType')
-        cat = TYPE_CATEGORY_MAP.get(t, None)
+        cat = _cat_map.get(t, None)
         db_item = (str(t), k, v)
         snap_item = (
             k,
@@ -344,7 +349,7 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
         if not path:
             bus.log_message.emit("⚠️ assets.bin 不可用，跳过 3D 数据缓存（3D 查看器将现场解析）")
             return False
-        cache = AssetsCacheService()
+        cache = AssetsCacheService(wows_type=wows_type)
         bus.log_message.emit("⏳ 步骤 3/3: 后台预提取 3D 数据（assets_data.db）...")
         counts = cache.populate(
             path, bin_folder=bin_folder or "",

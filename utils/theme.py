@@ -173,12 +173,17 @@ class _Theme:
         self.refresh(mode)
 
     def qss(self, template: str) -> str:
-        """将模板中 @var@ 占位符替换为当前主题颜色。"""
+        """将模板中 @var@ 占位符替换为当前主题颜色；图片路径按服务器目录重写。"""
         # N35: 一次遍历替换全部 key（避免 ~30 次 .replace 全量扫描）
         out = template
         for key, value in self.colors.items():
             placeholder = "@" + key + "@"
             out = out.replace(placeholder, value)
+        # 应用内图片按服务器目录（lesta/wargaming）重写 QSS 中的图片引用（如 combo_arrow）。
+        # 延迟 import 避免循环依赖；无图片引用的 QSS 直接跳过。
+        if ":/resources/pictures/" in out:
+            from utils.image_paths import pic_dir
+            out = out.replace(":/resources/pictures/", f":/resources/pictures/{pic_dir()}/")
         return out
 
     def bind(self, widget, template: str) -> str:

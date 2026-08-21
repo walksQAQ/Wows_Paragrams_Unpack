@@ -23,11 +23,22 @@ PKG 卷文件读取器。
     偏移 24-31: 压缩数据总大小 (u64)
     偏移 32+:   块描述符表 (4 字节 × N)
     之后:       Oodle Kraken 压缩数据流
+
+WG 服（Wargaming / World of Warships）存储模式（2026-08-21 实测 D:\\World_of_Warships v13015811）::
+
+    compression_info == 0x0            ("raw" 模式)
+        PKG 中直接存储文件原始数据，无压缩和额外头部。
+        size == unpacked_size
+
+    compression_info == 0x100000005   ("raw-deflate" 模式)
+        PKG 中存储单个 **raw-deflate** 流（zlib raw inflate，无 zlib 头/容器头）。
+        用 zlib.decompressobj(-15) 解压即可。WG 不用 Oodle Kraken / bc7prep。
 """
 
 from __future__ import annotations
 
 import struct
+import zlib
 from pathlib import Path
 from typing import Optional
 
@@ -36,8 +47,27 @@ from data_extractor.idx_parser import FileInfo
 
 # ── 压缩信息常量 ──────────────────────────────────────────
 
-STORED_FLAG: int = 0x6                # 原始存储（stored）
-CONTAINER_FLAG: int = 0x700000006     # 容器模式（Oodle Kraken 压缩）
+STORED_FLAG: int = 0x6                # Lesta 原始存储（stored）
+CONTAINER_FLAG: int = 0x700000006     # Lesta 容器模式（Oodle Kraken 压缩）
+WG_RAW_FLAG: int = 0x0                # WG 原始存储（raw）
+WG_DEFLATE_FLAG: int = 0x100000005    # WG raw-deflate（zlib raw inflate）
+
+
+def _deflate_raw(data: bytes, expected_size: int | None = None) -> bytes:
+    """解压 WG 服 raw-deflate 数据（zlib raw inflate, wbits=-15）。
+
+    WG 的 0x100000005 条目为单个 raw-deflate 流，无 zlib 头、无容器头。
+    """
+    try:
+        d = zlib.decompressobj(-15)
+        out = d.decompress(data) + d.flush()
+    except zlib.error as e:
+        raise PkgError(f"raw-deflate 解压失败: {e}") from e
+    if expected_size is not None and len(out) != expected_size:
+        raise PkgError(
+            f"raw-deflate 解压大小不匹配: 期望 {expected_size}, 实际 {len(out)}"
+        )
+    return out
 
 
 class PkgError(Exception):
@@ -138,11 +168,11 @@ class PkgReader:
                 f"超出范围"
             )
 
-        # ── stored 模式: 直接返回 ────────────────────────
-        if file_info.compression_info == STORED_FLAG:
+        # ── stored / raw 模式: 直接返回 ──────────────────
+        if file_info.compression_info in (STORED_FLAG, WG_RAW_FLAG):
             return entry_data
 
-        # ── container 模式: Kraken 解压 ──────────────────
+        # ── container 模式 (Lesta): Kraken 解压 ──────────
         if file_info.compression_info == CONTAINER_FLAG:
             if not self._kraken_available:
                 raise PkgError(
@@ -155,6 +185,12 @@ class PkgReader:
             data = kraken_decompress(
                 compressed, meta["unpacked_size"]
             )
+            data = self._decode_bc7prep(data)
+            return data
+
+        # ── raw-deflate 模式 (WG): zlib raw inflate ──────
+        if file_info.compression_info == WG_DEFLATE_FLAG:
+            data = _deflate_raw(entry_data, file_info.unpacked_size)
             data = self._decode_bc7prep(data)
             return data
 
@@ -201,8 +237,8 @@ class PkgReader:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # ── stored 模式: 分块拷贝 ────────────────────────
-        if file_info.compression_info == STORED_FLAG:
+        # ── stored / raw 模式: 分块拷贝 ──────────────────
+        if file_info.compression_info in (STORED_FLAG, WG_RAW_FLAG):
             CHUNK = 1 << 20  # 1MB
             with open(pkg_path, 'rb') as f, open(out_path, 'wb') as out:
                 f.seek(file_info.offset)
@@ -215,7 +251,7 @@ class PkgReader:
                     remaining -= len(chunk)
             return out_path
 
-        # ── container 模式: Kraken 逐块解压流式写 ────────
+        # ── container 模式 (Lesta): Kraken 逐块解压流式写 ─
         if file_info.compression_info == CONTAINER_FLAG:
             if not self._kraken_available:
                 raise PkgError(
@@ -244,6 +280,21 @@ class PkgReader:
                     compressed, meta["unpacked_size"]
                 )
                 out_path.write_bytes(data)
+            return out_path
+
+        # ── raw-deflate 模式 (WG): zlib raw inflate 流式写 ─
+        if file_info.compression_info == WG_DEFLATE_FLAG:
+            with open(pkg_path, 'rb') as f, open(out_path, 'wb') as out:
+                f.seek(file_info.offset)
+                d = zlib.decompressobj(-15)
+                remaining = file_info.size
+                while remaining > 0:
+                    chunk = f.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    out.write(d.decompress(chunk))
+                out.write(d.flush())
             return out_path
 
         # ── 未知模式 ────────────────────────────────────

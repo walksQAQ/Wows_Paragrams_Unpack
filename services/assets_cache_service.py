@@ -44,11 +44,21 @@ ASSETS_SCHEMA_VERSION = 7
 class AssetsCacheService:
     """assets.bin 数据缓存（独立数据库 assets_data.db，线程安全）。"""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, wows_type: str = ""):
         if db_path is None:
-            db_path = get_data_dir() / "assets_data.db"
+            if not wows_type:
+                from app.application import app as app_ctx
+                wows_type = app_ctx.ctx.wows_type
+            db_path = get_data_dir() / self._db_name(wows_type)
         self._db_path = Path(db_path)
         self._local = threading.local()
+
+    @staticmethod
+    def _db_name(wows_type: str = "") -> str:
+        """按服务器返回 3D 缓存库文件名（Lesta→assets_data.db, WG→assets_data_wg.db）。"""
+        if wows_type == "Wargaming":
+            return "assets_data_wg.db"
+        return "assets_data.db"
 
     # ── 连接 ────────────────────────────────────────────────
 

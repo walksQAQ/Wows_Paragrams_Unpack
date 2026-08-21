@@ -54,6 +54,13 @@ class DatabaseManager:
 
     @staticmethod
     def _db_name(wows_type: str = "") -> str:
+        """按服务器返回数据库文件名。
+
+        Lesta（默认/空）→ ``game_data.db``（保持旧数据兼容，不迁移）；
+        Wargaming → ``game_data_wg.db``（WG 数据独立分库，避免与 Lesta 串用）。
+        """
+        if wows_type == "Wargaming":
+            return "game_data_wg.db"
         return "game_data.db"
 
     _all_connections: set[sqlite3.Connection] = set()
