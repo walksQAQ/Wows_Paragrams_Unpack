@@ -683,16 +683,20 @@ class AnalysisStore:
                     all_module_ids.add(m)
 
         # 尝试从原始 JSON 中为模块 ID 提取名称
+        # 一次性取全部已有 name_mappings key_name 到内存集合，
+        # 替代逐 module id 单独 SELECT（N+1 → 1 次查询）
+        try:
+            existing_keys = {r[0] for r in self.conn.execute(
+                "SELECT key_name FROM name_mappings").fetchall()}
+        except Exception:
+            existing_keys = set()
         name_items = []
         for mid in all_module_ids:
             # 跳过系统内部名称
             if mid.endswith("Default") or mid in ("None", ""):
                 continue
             # 跳过已有映射的
-            existing = self.conn.execute(
-                "SELECT 1 FROM name_mappings WHERE key_name=?",
-                (mid.upper(),)).fetchone()
-            if existing:
+            if mid.upper() in existing_keys:
                 continue
             # 尝试从原始 JSON 的对应 key 中找 name 字段
             mod_data = raw_data.get(mid)
@@ -800,8 +804,11 @@ class AnalysisStore:
 
     def _write_engine(self, ship_id: str, raw_data: dict, version_code: str = ""):
         """从原始数据中提取所有引擎模块（含 EngineDefault 和 AB1_Engine 等）并入库"""
-        # 先读取默认引擎（如果有）
+        # 单次遍历同时收集：引擎模块键 / Hull 模块 base maxSpeed / 兜底 maxSpeed
+        # （原实现对 raw_data 全量扫描 3 次，合并为 1 次，语义不变）
         engine_keys = set()
+        base_max_speed = None
+        fallback_speed = None
         for mk, md in raw_data.items():
             if not isinstance(md, dict):
                 continue
@@ -810,20 +817,17 @@ class AnalysisStore:
             elif mk.endswith("_Engine") and MODULE_PATTERNS["Hull"].match(mk) is None:
                 # 匹配 AB1_Engine, AB2_Engine 等引擎模块 key
                 engine_keys.add(mk)
+            ms = md.get("maxSpeed")
+            if ms:
+                if base_max_speed is None and MODULE_PATTERNS["Hull"].match(mk):
+                    base_max_speed = ms
+                if fallback_speed is None:
+                    fallback_speed = ms
         if not engine_keys:
             return
-        # 找 hull 模块获取 base maxSpeed（用于计算航速修正）
-        base_max_speed = None
-        for mk, md in raw_data.items():
-            if isinstance(md, dict) and MODULE_PATTERNS["Hull"].match(mk):
-                if md.get("maxSpeed"):
-                    base_max_speed = md["maxSpeed"]
-                    break
+        # 找 hull 模块获取 base maxSpeed（用于计算航速修正）；无 Hull 航速时兜底任意模块航速
         if base_max_speed is None:
-            for mk, md in raw_data.items():
-                if isinstance(md, dict) and md.get("maxSpeed"):
-                    base_max_speed = md["maxSpeed"]
-                    break
+            base_max_speed = fallback_speed
         for ek in engine_keys:
             eng = raw_data[ek]
             if not isinstance(eng, dict):
@@ -1082,15 +1086,19 @@ class AnalysisStore:
             "DELETE FROM ship_module_aa WHERE version_code=? AND ship_id=? AND config_group=?",
             (version_code, ship_id, letter))
         ac, gc = Counter(), Counter()
+        # aura_name → 首个匹配 item（预构建，替代循环内 next(...) 线性扫描 O(n²)；
+        # 保持原语义：仅按 aura_name 匹配、取第一个）
+        first_aura_item: dict = {}
         for item in items:
             if item.get("aura_name"):
                 ac[(item["aura_name"], item["aura_type"], item["aura_dps"], item.get("bubble_damage"))] += 1
+                first_aura_item.setdefault(item["aura_name"], item)
             elif item.get("aa_gun_name"):
                 gc[item["aa_gun_name"]] += 1
         rows = []
         for (n, t, d, bd), c in ac.items():
             # 取第一个匹配项的扩展字段
-            src = next((i for i in items if i.get("aura_name") == n), {})
+            src = first_aura_item.get(n, {})
             rows.append((version_code, ship_id, letter, n, n, src.get("aura_type_raw", ""), t, d, bd,
                          src.get("explosion_count"), src.get("hit_chance"),
                          src.get("max_distance"), src.get("min_distance"),
@@ -1110,6 +1118,19 @@ class AnalysisStore:
         conn.execute(
             "DELETE FROM ship_module_depth_charge WHERE version_code=? AND ship_id=? AND config_group=?",
             (version_code, ship_id, letter))
+        # 批量预取弹药扩展数据（替代逐炮按 ammo_id 单独查询 N+1）
+        ammo_ids = [it.get("ammo_id") for it in items if it.get("ammo_id")]
+        dc_ext: dict = {}
+        if ammo_ids:
+            ph = ",".join(["?"] * len(ammo_ids))
+            try:
+                for r in conn.execute(
+                        "SELECT projectile_id, damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size "
+                        f"FROM projectile_depth_charge_ext WHERE version_code=? AND projectile_id IN ({ph})",
+                        [version_code, *ammo_ids]).fetchall():
+                    dc_ext[r["projectile_id"]] = r
+            except Exception:
+                dc_ext = {}
         rows = []
         for item in items:
             gn = item.get("gun_name")
@@ -1117,13 +1138,8 @@ class AnalysisStore:
                 continue
             cnt = item.get("count", 0) or 0
             aid = item.get("ammo_id")
-            # 查询弹药扩展数据
-            de = None
-            if aid:
-                de = conn.execute(
-                    "SELECT damage, dc_speed, dc_timer, dc_max_depth, depth_splash_size "
-                    "FROM projectile_depth_charge_ext WHERE version_code=? AND projectile_id=?",
-                    (version_code, aid)).fetchone()
+            # 查询弹药扩展数据（命中预取 dict）
+            de = dc_ext.get(aid) if aid else None
             rows.append((
                 version_code, ship_id, letter, gn, gn, gn, cnt,
                 _v(item.get("reload_time")), _v(item.get("shot_delay")),
