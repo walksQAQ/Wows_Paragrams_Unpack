@@ -304,6 +304,8 @@ class GeometryService:
         # assets.bin 骨架/材质服务（懒加载，跨船复用）
         self._assets_svc = None
         self._assets_tried = False
+        # AC11: AssetsCacheService 单实例（替代 9 处每次 new → 新 sqlite 连接）
+        self._assets_cache = None
         self._mfm_index_cache: dict | None = None  # mfm 名(去 .mfm) -> 完整路径
         self._mfm_diffuse_cache: dict = {}       # stem -> 贴图基础名（.mfm 识别结果）
         #: 几何目录索引 {文件夹名: [VfsEntry]}，一次构建跨船复用（避免重复全树扫描）
@@ -861,8 +863,7 @@ class GeometryService:
         if key not in self._mount_model_cache:
             world: dict = {}
             try:
-                from services.assets_cache_service import AssetsCacheService
-                c = AssetsCacheService()
+                c = self._get_assets_cache()
                 world = c.get_skeleton_bones(app_ctx.ctx.bin_folder or "", folder)
             except Exception:  # noqa: BLE001
                 world = {}
@@ -961,7 +962,7 @@ class GeometryService:
 
     # ── assets.bin 骨架挂点 ─────────────────────────────
 
-    def _locate_assets_bin(self) -> str | None:
+    def locate_assets_bin(self) -> str | None:
         """定位 assets.bin（3D 查看器骨架挂点权威来源）。
 
         只使用**当前加载客户端**的 assets.bin，绝不用别的客户端/来源不明的缓存：
@@ -1013,12 +1014,19 @@ class GeometryService:
         self._assets_tried = True
         try:
             from uncode_assets.service import AssetsBinService
-            path = self._locate_assets_bin()
+            path = self.locate_assets_bin()
             if path:
                 self._assets_svc = AssetsBinService(assets_path=path)
         except Exception:  # noqa: BLE001
             self._assets_svc = None
         return self._assets_svc
+
+    def _get_assets_cache(self):
+        """AC11: AssetsCacheService 单实例惰性缓存（替代 9 处每次 new 新 sqlite 连接）。"""
+        if self._assets_cache is None:
+            from services.assets_cache_service import AssetsCacheService
+            self._assets_cache = AssetsCacheService()
+        return self._assets_cache
 
     @staticmethod
     def _matrix_to_render(m: list) -> np.ndarray:
@@ -1046,8 +1054,7 @@ class GeometryService:
         # 否则这些模型整体翻转）
         rb = np.eye(4, dtype=np.float32)
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             bones = c.get_skeleton_bones(app_ctx.ctx.bin_folder or "", folder)
             if bones and "Root_BlendBone" in bones:
                 rb = bones["Root_BlendBone"]
@@ -1068,8 +1075,7 @@ class GeometryService:
             return cached
         world: dict = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            world = AssetsCacheService().get_skeleton_bones(
+            world = self._get_assets_cache().get_skeleton_bones(
                 app_ctx.ctx.bin_folder or "", folder)
         except Exception:  # noqa: BLE001
             world = {}
@@ -1207,8 +1213,7 @@ class GeometryService:
             return cached
         out: dict[str, np.ndarray] = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             out = c.get_skeleton_mounts(app_ctx.ctx.bin_folder or "", stem)
         except Exception:  # noqa: BLE001
             out = {}
@@ -1465,8 +1470,7 @@ class GeometryService:
         result = ""
         try:
             if self._mfm_textures_db is None:
-                from services.assets_cache_service import AssetsCacheService
-                c = AssetsCacheService()
+                c = self._get_assets_cache()
                 self._mfm_textures_db = c.get_mfm_textures(
                     app_ctx.ctx.bin_folder or "") or {}
             if self._mfm_textures_db:
@@ -1709,8 +1713,7 @@ class GeometryService:
         self._shape_names_tried = True
         out: dict = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             out = c.get_shape_names(app_ctx.ctx.bin_folder or "") or {}
         except Exception as exc:  # noqa: BLE001
             out = {}
@@ -1765,8 +1768,7 @@ class GeometryService:
             return cached
         idx: dict = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             ext = self._get_extractor()
             entries = self._geometry_folder_index(ext).get(model_folder) or []
             if entries:
@@ -1832,8 +1834,7 @@ class GeometryService:
             return cached
         result: dict = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             info = c.get_material_full(app_ctx.ctx.bin_folder or "", mfm_path)
             if info:
                 sid = info.get("shader_id") or "0x0"
@@ -1874,8 +1875,7 @@ class GeometryService:
             return cached
         out: dict = {}
         try:
-            from services.assets_cache_service import AssetsCacheService
-            c = AssetsCacheService()
+            c = self._get_assets_cache()
             out = c.get_skeleton_bones(app_ctx.ctx.bin_folder or "", stem) or {}
         except Exception:  # noqa: BLE001
             out = {}

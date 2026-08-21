@@ -279,18 +279,22 @@ B5 缓存机制 全部等价断言通过;7 文件编译无错误。
 **A12/B7**(schema 迁移样板)风险较高,建议作为独立任务逐项推进(每项需 DB 导入
 条数回归断言)。
 
-### Phase 3:uncode_assets + assets_cache 性能与去重
+### Phase 3:uncode_assets + assets_cache 性能与去重（进行中，2026-08-21）
 
 1. **UA2** 有界切片通用化。
 2. **UA3** memoryview 替代 bytes 切片。
 3. **UA5** 字节 helper 统一。
 4. **UA6+AC12** assets.bin 定位/提取统一为单一 helper。
-5. **AC11** geometry_service 9 处实例化 → 单实例持有。
-6. **AC13+AC14** 懒加载统一;processor 解除私有耦合。
-7. **AC4/AC5/AC6/AC15** 逐字重复提取共享(`_strings_dict`/`_material_family`/矩阵转换/`_murmur3_32`)。
+5. **AC11** geometry_service 9 处实例化 → 单实例持有。✅
+   (新增 `_get_assets_cache()` 惰性单例,9 处全部委托;编译通过)
+6. **AC13+AC14** 懒加载统一;processor 解除私有耦合。✅
+   (`_locate_assets_bin` → `locate_assets_bin` 公开;processor_service 不再调用私有方法)
+7. **AC4/AC5/AC6/AC15** 逐字重复提取共享(`_strings_dict`/`_material_family`/矩阵转换/`_murmur3_32`)。✅
+   (提取到 `utils/asset_utils.py`;等价断言全部通过)
 8. **AC1/AC2** 格式知识双份 → 提取共享 fast-path(可后续)。
 9. **AC7** schema 单一来源。
-10. 死代码清理(shaders.py → _archive;binary/types/decoders/vfs/service 死函数)。
+10. 死代码清理(shaders.py → _archive;binary/types/decoders/vfs/service 死函数)。✅
+   (9 文件编译通过;所有死引用已从 `__init__.py`/`service.py` 清理)
 
 ### Phase 4:UI 层收敛
 
