@@ -93,33 +93,9 @@ def type_from_name(name: str) -> Optional[PrototypeType]:
     return None
 
 
-def type_from_extension(ext: str) -> Optional[PrototypeType]:
-    """按文件扩展名推断类型（对齐 wows-toolkit `PrototypeType::from_extension`）。
-
-    Korabli 实测：`.visual` 二义（Visual 与 Skeleton 都用），这里返回 Visual 为主。
-    """
-    ext = ext.lower()
-    if not ext.startswith("."):
-        ext = "." + ext
-    for t in KORABLI_TYPES:
-        if ext in t.extensions and t.name != "SkeletonPrototype":
-            return t
-    # .visual 二义：优先 Visual（数量多）；Skeleton 路径带 '@' 前缀，需按 magic 判断
-    for t in KORABLI_TYPES:
-        if ext in t.extensions:
-            return t
-    return None
-
-
 def can_decode(proto_type: Optional[PrototypeType]) -> bool:
     """该类型是否有结构化解码器（对齐 wows-toolkit `can_decode_prototype`）。"""
     return proto_type is not None and proto_type.name in DECODABLE_TYPES
-
-
-def can_decode_name(name: str) -> bool:
-    """按类型名判断是否有结构化解码器。"""
-    t = type_from_name(name)
-    return can_decode(t)
 
 
 def list_types() -> List[PrototypeType]:

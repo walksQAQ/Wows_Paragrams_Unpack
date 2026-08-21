@@ -686,15 +686,6 @@ def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[Prot
     return decode_generic(data, db, name, item_size)
 
 
-def decode_record(db: PrototypeDatabase, location: PrototypeLocation) -> dict:
-    """解码指定位置的 prototype 记录。"""
-    db_entry = db.databases[location.blob_index]
-    proto_type = type_from_magic(db_entry.prototype_magic)
-    data = db.get_record(location)
-    record_base = 16 + location.record_index * db_entry.item_size
-    return decode_by_type(data, db, proto_type, record_base)
-
-
 def decode_prototype_to_json(data: bytes, db: PrototypeDatabase, proto_type: PrototypeType) -> str:
     """解码 prototype 记录为格式化 JSON 字符串。"""
     decoded = decode_by_type(data, db, proto_type)

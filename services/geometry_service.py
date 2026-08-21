@@ -1027,8 +1027,8 @@ class GeometryService:
         方向/位置匹配改由 **基于骨骼** 完成（_load_mounts 组合模型 Root_BlendBone
         并用 negz 共轭转渲染空间），这里仅转换矩阵布局。
         """
-        return np.ascontiguousarray(
-            np.array(m, dtype=np.float32).reshape(4, 4).T, dtype=np.float32)
+        from utils.asset_utils import mat_col_to_row_np
+        return mat_col_to_row_np(m)
 
     def _mount_root_blend(self, folder: str) -> np.ndarray:
         """挂载模型骨架的 `Root_BlendBone` 矩阵（静息朝向修正，仅用于**视觉**网格）。
@@ -1220,37 +1220,8 @@ class GeometryService:
     @staticmethod
     def _murmur3_32(data: bytes, seed: int = 0) -> int:
         """MurmurHash3_x86_32：Korabli 字符串哈希（渲染集 shape 名 ↔ geometry mapping_id）。"""
-        c1 = 0xCC9E2D51
-        c2 = 0x1B873593
-        length = len(data)
-        h1 = seed
-        for i in range(length // 4):
-            k1 = struct.unpack_from('<I', data, i * 4)[0]
-            k1 = (k1 * c1) & 0xFFFFFFFF
-            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
-            k1 = (k1 * c2) & 0xFFFFFFFF
-            h1 ^= k1
-            h1 = ((h1 << 13) | (h1 >> 19)) & 0xFFFFFFFF
-            h1 = (h1 * 5 + 0xE6546B64) & 0xFFFFFFFF
-        tail = data[length // 4 * 4:]
-        k1 = 0
-        if len(tail) >= 3:
-            k1 ^= tail[2] << 16
-        if len(tail) >= 2:
-            k1 ^= tail[1] << 8
-        if len(tail) >= 1:
-            k1 ^= tail[0]
-            k1 = (k1 * c1) & 0xFFFFFFFF
-            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
-            k1 = (k1 * c2) & 0xFFFFFFFF
-            h1 ^= k1
-        h1 ^= length
-        h1 ^= h1 >> 16
-        h1 = (h1 * 0x85EBCA6B) & 0xFFFFFFFF
-        h1 ^= h1 >> 13
-        h1 = (h1 * 0xC2B2AE35) & 0xFFFFFFFF
-        h1 ^= h1 >> 16
-        return h1
+        from utils.asset_utils import murmur3_32
+        return murmur3_32(data, seed)
 
     def _section_render_sets(self, section_geom_path: str) -> list[dict]:
         """从 assets.bin 提取某分段几何的渲染集（shape → material → mfm）。
@@ -1722,37 +1693,9 @@ class GeometryService:
         """
         if self._strings_dict_cache is not None:
             return self._strings_dict_cache
-        out: dict = {}
-        try:
-            from uncode_assets import binary as B
-            hmap = db.strings.offsets_map
-            cap = hmap.capacity
-            stride = hmap.bucket_stride
-            vstride = hmap.value_stride
-            buckets = hmap.buckets
-            values = hmap.values
-            sdata = db.strings.string_data
-            read64 = B.read_u64
-            read32 = B.read_u32
-            read_str = B.read_null_terminated_string
-            for idx in range(cap):
-                off = idx * stride
-                key = read64(buckets, off)
-                if stride >= 16:
-                    if read64(buckets, off + 8) == 0:
-                        continue
-                else:
-                    if key == 0:
-                        continue
-                str_off = read32(values, idx * vstride)
-                if str_off < len(sdata):
-                    s = read_str(sdata, str_off)
-                    if s:
-                        out[key & 0xFFFFFFFF] = s
-        except Exception:  # noqa: BLE001
-            pass
-        self._strings_dict_cache = out
-        return out
+        from utils.asset_utils import build_strings_dict
+        self._strings_dict_cache = build_strings_dict(db)
+        return self._strings_dict_cache
 
     def _shape_names_sdict(self) -> dict:
         """渲染 shape 名哈希表 {hash32: name}（**只从 assets_data.db 读取**）。
@@ -1869,17 +1812,10 @@ class GeometryService:
         """shader_id（0xHHHHLLLL）高 16 位 → 技术族。
 
         INDEXED 分块(0x0009, ship_material_indexed.fx) / 标准 ship PBS(0x0005,
-        PBS_ship_camo*.fx) / 其他。参考 uncode_assets/shaders.py 对 fxo 的逆向。
+        PBS_ship_camo*.fx) / 其他。
         """
-        try:
-            family = (int(shader_id, 16) >> 16) & 0xFFFF
-        except Exception:  # noqa: BLE001
-            family = 0
-        if family == 0x0009:
-            return "indexed"
-        if family == 0x0005:
-            return "pbs"
-        return "other"
+        from utils.asset_utils import material_family
+        return material_family(shader_id)
 
     def _resolve_material_full(self, mfm_path: str, extractor) -> dict:
         """完整解析材质渲染信息（**只从 assets_data.db 读取**）：技术族 + 贴图集 + INDEXED 分块参数。

@@ -22,13 +22,12 @@ from . import binary as _B
 from .decoders import (
     decode_material,
     decode_prototype_to_json,
-    decode_record,
     decode_skeleton,
     parse_mfm_from_db,
 )
 from .errors import AssetsBinError
 from .parser import PrototypeDatabase, parse_assets_bin
-from .types import PrototypeType, can_decode, type_from_magic
+from .types import PrototypeType, type_from_magic
 from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
@@ -281,10 +280,6 @@ class AssetsBinService:
             raise AssetsBinError(f"未知 prototype 类型: {path}")
         data = self.vfs.open_file(path)
         return decode_prototype_to_json(data, self.db, f.prototype_type)
-
-    def can_decode_path(self, path: str) -> bool:
-        """该虚拟文件是否有结构化解码器（对齐 wows-toolkit `can_decode_prototype`）。"""
-        return can_decode(self.vfs.prototype_type(path))
 
     def decode_material_by_path(self, path: str) -> dict:
         """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material` / `parse_mfm_from_db`）。"""

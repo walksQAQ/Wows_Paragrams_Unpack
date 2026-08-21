@@ -339,10 +339,6 @@ class AssetsBinVfs:
                 files.append(self._files[child_path])
         return sorted(subdirs), sorted(files, key=lambda f: f.filename)
 
-    def files_with_type(self) -> Iterator[Tuple[str, int, Optional[PrototypeType]]]:
-        for path, f in self._files.items():
-            yield path, f.byte_length, f.prototype_type
-
     def all_files(self) -> Iterator[VirtualFile]:
         return iter(self._files.values())
 

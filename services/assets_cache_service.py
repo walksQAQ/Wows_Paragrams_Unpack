@@ -247,38 +247,8 @@ class AssetsCacheService:
     @staticmethod
     def _murmur3_32(data: bytes, seed: int = 0) -> int:
         """MurmurHash3_x86_32：渲染集 shape 名 ↔ geometry mapping_id 归属校验用。"""
-        import struct as _s
-        c1 = 0xCC9E2D51
-        c2 = 0x1B873593
-        length = len(data)
-        h1 = seed
-        for i in range(length // 4):
-            k1 = _s.unpack_from('<I', data, i * 4)[0]
-            k1 = (k1 * c1) & 0xFFFFFFFF
-            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
-            k1 = (k1 * c2) & 0xFFFFFFFF
-            h1 ^= k1
-            h1 = ((h1 << 13) | (h1 >> 19)) & 0xFFFFFFFF
-            h1 = (h1 * 5 + 0xE6546B64) & 0xFFFFFFFF
-        tail = data[length // 4 * 4:]
-        k1 = 0
-        if len(tail) >= 3:
-            k1 ^= tail[2] << 16
-        if len(tail) >= 2:
-            k1 ^= tail[1] << 8
-        if len(tail) >= 1:
-            k1 ^= tail[0]
-            k1 = (k1 * c1) & 0xFFFFFFFF
-            k1 = ((k1 << 15) | (k1 >> 17)) & 0xFFFFFFFF
-            k1 = (k1 * c2) & 0xFFFFFFFF
-            h1 ^= k1
-        h1 ^= length
-        h1 ^= h1 >> 16
-        h1 = (h1 * 0x85EBCA6B) & 0xFFFFFFFF
-        h1 ^= h1 >> 13
-        h1 = (h1 * 0xC2B2AE35) & 0xFFFFFFFF
-        h1 ^= h1 >> 16
-        return h1
+        from utils.asset_utils import murmur3_32
+        return murmur3_32(data, seed)
 
     def populate(self, assets_path: str, bin_folder: str,
                  game_version: str = "", wows_type: str = "",
@@ -768,15 +738,8 @@ class AssetsCacheService:
     @staticmethod
     def _material_family(shader_id: str) -> str:
         """shader_id（0xHHHHLLLL）高 16 位 → 技术族（INDEXED/PBS/其他）。"""
-        try:
-            family = (int(shader_id, 16) >> 16) & 0xFFFF
-        except Exception:  # noqa: BLE001
-            family = 0
-        if family == 0x0009:
-            return "indexed"
-        if family == 0x0005:
-            return "pbs"
-        return "other"
+        from utils.asset_utils import material_family
+        return material_family(shader_id)
 
     @staticmethod
     def _norm_vfs_path(p: str) -> str:
@@ -902,44 +865,14 @@ class AssetsCacheService:
     @staticmethod
     def _strings_dict(db) -> dict:
         """字符串表 → {hash: name}（渲染集 shape 反查）。"""
-        out: dict = {}
-        try:
-            from uncode_assets import binary as B
-            hmap = db.strings.offsets_map
-            cap = hmap.capacity
-            stride = hmap.bucket_stride
-            vstride = hmap.value_stride
-            buckets = hmap.buckets
-            values = hmap.values
-            sdata = db.strings.string_data
-            read64 = B.read_u64
-            read32 = B.read_u32
-            read_str = B.read_null_terminated_string
-            for idx in range(cap):
-                off = idx * stride
-                key = read64(buckets, off)
-                if stride >= 16:
-                    if read64(buckets, off + 8) == 0:
-                        continue
-                else:
-                    if key == 0:
-                        continue
-                str_off = read32(values, idx * vstride)
-                if str_off < len(sdata):
-                    s = read_str(sdata, str_off)
-                    if s:
-                        out[key & 0xFFFFFFFF] = s
-        except Exception:  # noqa: BLE001
-            pass
-        return out
+        from utils.asset_utils import build_strings_dict
+        return build_strings_dict(db)
 
     @staticmethod
     def _to_render_row(mat: list) -> bytes | None:
         """列主序 16 float → 行主序 4x4 的 64 字节（与 geometry_service._matrix_to_render 一致）。"""
+        from utils.asset_utils import mat_col_to_row_np
         try:
-            import numpy as np
-            m = np.ascontiguousarray(
-                np.array(mat, dtype=np.float32).reshape(4, 4).T, dtype=np.float32)
-            return m.tobytes()
+            return mat_col_to_row_np(mat).tobytes()
         except Exception:  # noqa: BLE001
             return None
