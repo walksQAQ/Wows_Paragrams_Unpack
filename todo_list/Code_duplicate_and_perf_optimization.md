@@ -252,8 +252,14 @@
    N15 `_resolve_vc()` 已抽取(9 处样板替换,等价验证通过);
    N16 跳过(各处 except 返回值不同,抽取收益低);A12/B7 未做(schema 迁移样板,风险高)
 6. **N17** get_stats 改 GROUP BY。✅(单条聚合替代逐类 COUNT,与逐类计数等价验证通过)
-7. **N5/N6/N7/N13** analysis 写入 N+1 与重复扫描修复。⏭️ 未做
-8. **N1/N2/N3/N4** PROJECTILE_EXT_MAP 与 writer 收敛。⏭️ 未做
+7. **N5/N6/N7/N13** analysis 写入 N+1 与重复扫描修复。✅ 已完成
+   (_write_upgrade_info/_write_engine/_write_aa/_write_depth_charge 批量修复,
+   N+1→单查询/单扫描,等价验证通过)
+8. **N1/N2/N3/N4** PROJECTILE_EXT_MAP 与 writer 收敛。🔶 部分完成:
+   N1/N2 配置收敛(Mine/PlaneSeaMine 共享 _MINE_BASE;Bomb/SkipBomb 共享 _BOMB_BASE,
+   仅末尾 is_bomb lambda 不同,等价断言通过);
+   N3 store_ship 枪炮分支合并(_GUN_DATA_KEY,Artillery/SecondaryArtillery 字段块去重);
+   N4 三个 gun writer 合并留独立任务(3 套不同列集 SQL 表,需 DB 回归断言)
 9. **N18/N19/N20** name_mapping 派生/合并。🔶 部分完成:
    N19 RIBBON_MAP_CREW 改派生(仅 "13" 不同,等价验证通过);
    N18 跳过(MODIFIER_MAP/FORMAT_MAP 键集重构风险高,留独立任务);
@@ -267,9 +273,11 @@
 已验证: _resolve_vc/get_stats GROUP BY/skill 缓存/N19 派生/A5/join_po_multiline/
 B5 缓存机制 全部等价断言通过;7 文件编译无错误。
 
-**Phase 2 收尾说明**:剩余 N5/N6/N7/N13(analysis 写入 N+1)、N1-N4(PROJECTILE_EXT_MAP
-重构)、A12/B7(schema 迁移样板)均属数据写入路径或结构重构,风险高于本轮"低风险"
-边界,建议作为独立任务逐项推进(每项需 DB 导入条数回归断言)。
+**Phase 2 收尾说明**:N5/N6/N7/N13(analysis 写入 N+1)与 N1/N2/N3(PROJECTILE_EXT_MAP
+配置收敛/枪炮分支合并)已作为独立任务完成(2026-08-21,编译+等价断言通过)。
+剩余 **N4**(三个 gun writer 合并——3 套不同列集的 SQL 表,无 DB 回归环境)与
+**A12/B7**(schema 迁移样板)风险较高,建议作为独立任务逐项推进(每项需 DB 导入
+条数回归断言)。
 
 ### Phase 3:uncode_assets + assets_cache 性能与去重
 
