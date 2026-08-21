@@ -126,6 +126,49 @@ def _extract_letter(mod_key: str) -> str:
     return "A"
 
 
+# N3 收敛：store_ship 里 Artillery/SecondaryArtillery 字段块逐字相同，仅收集目标 list 名不同
+_GUN_DATA_KEY = {
+    "Artillery": "artillery",
+    "SecondaryArtillery": "secondary_artillery",
+}
+
+
+# N1/N2 收敛：Bomb/SkipBomb 共享 21 列配置（仅末尾 is_bomb lambda 不同）；
+# Mine/PlaneSeaMine 完全一致（共享同一配置）。
+_BOMB_BASE = {
+    "table": "projectile_bomb_ext",
+    "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
+             "alpha_piercing_he, burn_prob, explosion_radius, alpha_piercing_cs, "
+             "flight_time_coef, skip_effect, max_skip_angle, skips_json, "
+             "bullet_krupp, bullet_always_ricochet_at, bullet_ricochet_at, "
+             "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max, is_bomb"),
+    "phs": 21,
+    "fields": (
+        "alphaDamage", "damage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
+        "alphaPiercingHE", "burnProb", "explosionRadius", "alphaPiercingCS",
+        "flightTimeCoef", "skipEffect", "maxSkipAngle",
+        lambda r: _json_dumps(r.get("skips") or r.get("skipParams")),
+        "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
+        "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
+    ),
+}
+
+_MINE_BASE = {
+    "table": "projectile_mine_ext",
+    "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
+             "flood_generation, uw_critical, health, max_depth, fall_time, "
+             "affected_by_ptz, apply_ptz_coeff"),
+    "phs": 11,
+    "fields": (
+        "alphaDamage", "damage", "explosionRadius", "burnProb",
+        lambda r: _bn(r.get("floodGeneration")),
+        "uwCritical", "health", "maxDepth", "fallTime",
+        lambda r: _bn(r.get("affectedByPTZ")),
+        lambda r: _bn(r.get("applyPTZCoeff")),
+    ),
+}
+
+
 PROJECTILE_EXT_MAP = {
     "Artillery": {
         "table": "projectile_bullet_ext",
@@ -169,70 +212,10 @@ PROJECTILE_EXT_MAP = {
         "phs": 6,
         "fields": ("alphaDamage", "speed", "timer", "maxDepth", "depthSplashSize", "depthSplashSizeToTorpedo"),
     },
-    "Bomb": {
-        "table": "projectile_bomb_ext",
-        "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
-                 "alpha_piercing_he, burn_prob, explosion_radius, alpha_piercing_cs, "
-                 "flight_time_coef, skip_effect, max_skip_angle, skips_json, "
-                 "bullet_krupp, bullet_always_ricochet_at, bullet_ricochet_at, "
-                 "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max, is_bomb"),
-        "phs": 21,
-        "fields": (
-            "alphaDamage", "damage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
-            "alphaPiercingHE", "burnProb", "explosionRadius", "alphaPiercingCS",
-            "flightTimeCoef", "skipEffect", "maxSkipAngle",
-            lambda r: _json_dumps(r.get("skips") or r.get("skipParams")),
-            "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
-            "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
-            lambda r: 1,
-        ),
-    },
-    "SkipBomb": {
-        "table": "projectile_bomb_ext",
-        "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
-                 "alpha_piercing_he, burn_prob, explosion_radius, alpha_piercing_cs, "
-                 "flight_time_coef, skip_effect, max_skip_angle, skips_json, "
-                 "bullet_krupp, bullet_always_ricochet_at, bullet_ricochet_at, "
-                 "bullet_detonator, bullet_detonator_threshold, bullet_cap_normalize_max, is_bomb"),
-        "phs": 21,
-        "fields": (
-            "alphaDamage", "damage", "bulletMass", "bulletSpeed", "bulletDiametr", "bulletAirDrag",
-            "alphaPiercingHE", "burnProb", "explosionRadius", "alphaPiercingCS",
-            "flightTimeCoef", "skipEffect", "maxSkipAngle",
-            lambda r: _json_dumps(r.get("skips") or r.get("skipParams")),
-            "bulletKrupp", "bulletAlwaysRicochetAt", "bulletRicochetAt",
-            "bulletDetonator", "bulletDetonatorThreshold", "bulletCapNormalizeMaxAngle",
-            lambda r: 0,
-        ),
-    },
-    "Mine": {
-        "table": "projectile_mine_ext",
-        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
-                 "flood_generation, uw_critical, health, max_depth, fall_time, "
-                 "affected_by_ptz, apply_ptz_coeff"),
-        "phs": 11,
-        "fields": (
-            "alphaDamage", "damage", "explosionRadius", "burnProb",
-            lambda r: _bn(r.get("floodGeneration")),
-            "uwCritical", "health", "maxDepth", "fallTime",
-            lambda r: _bn(r.get("affectedByPTZ")),
-            lambda r: _bn(r.get("applyPTZCoeff")),
-        ),
-    },
-    "PlaneSeaMine": {
-        "table": "projectile_mine_ext",
-        "cols": ("alpha_damage, damage, explosion_radius, burn_prob, "
-                 "flood_generation, uw_critical, health, max_depth, fall_time, "
-                 "affected_by_ptz, apply_ptz_coeff"),
-        "phs": 11,
-        "fields": (
-            "alphaDamage", "damage", "explosionRadius", "burnProb",
-            lambda r: _bn(r.get("floodGeneration")),
-            "uwCritical", "health", "maxDepth", "fallTime",
-            lambda r: _bn(r.get("affectedByPTZ")),
-            lambda r: _bn(r.get("applyPTZCoeff")),
-        ),
-    },
+    "Bomb": {**_BOMB_BASE, "fields": _BOMB_BASE["fields"] + (lambda r: 1,)},
+    "SkipBomb": {**_BOMB_BASE, "fields": _BOMB_BASE["fields"] + (lambda r: 0,)},
+    "Mine": {**_MINE_BASE},
+    "PlaneSeaMine": {**_MINE_BASE},
     "Rocket": {
         "table": "projectile_rocket_ext",
         "cols": ("alpha_damage, damage, bullet_mass, bullet_speed, bullet_diameter, bullet_air_drag, "
@@ -437,7 +420,8 @@ class AnalysisStore:
                             cs = combined_stats[lt]
                             entry = {"gun_name": gn, "count": 1, "num_barrels": br, "reload_time": rt,
                                      "max_dist": gmd, "ammo_list": sv.get("ammoList", [])}
-                            if hp_cat == "Artillery":
+                            if hp_cat in ("Artillery", "SecondaryArtillery"):
+                                # N3 收敛：Artillery/SecondaryArtillery 字段块逐字相同，仅 append 目标 list 不同
                                 entry.update({
                                     "caliber": _v(sv.get("caliber"), 0),
                                     "ideal_radius": _v(sv.get("idealRadius"), 0),
@@ -450,21 +434,7 @@ class AnalysisStore:
                                     "rotation_speed_h": _v((sv.get("rotationSpeed") or [None, None])[0]),
                                     "rotation_speed_v": _v((sv.get("rotationSpeed") or [None, None])[1]),
                                 })
-                                cs.setdefault("artillery", []).append(entry)
-                            elif hp_cat == "SecondaryArtillery":
-                                entry.update({
-                                    "caliber": _v(sv.get("caliber"), 0),
-                                    "ideal_radius": _v(sv.get("idealRadius"), 0),
-                                    "min_radius": _v(sv.get("minRadius"), 0),
-                                    "ideal_distance": _v(sv.get("idealDistance"), 0),
-                                    "radius_zero": _v(sv.get("radiusOnZero"), 0),
-                                    "radius_delim": _v(sv.get("radiusOnDelim"), 0),
-                                    "radius_max": _v(sv.get("radiusOnMax"), 0),
-                                    "delim": _v(sv.get("delim"), 0),
-                                    "rotation_speed_h": _v((sv.get("rotationSpeed") or [None, None])[0]),
-                                    "rotation_speed_v": _v((sv.get("rotationSpeed") or [None, None])[1]),
-                                })
-                                cs.setdefault("secondary_artillery", []).append(entry)
+                                cs.setdefault(_GUN_DATA_KEY[hp_cat], []).append(entry)
                             elif hp_cat == "ATBA":
                                 entry.update({
                                     "ideal_radius": _v(sv.get("idealRadius"), 0),
