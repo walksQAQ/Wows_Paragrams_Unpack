@@ -340,7 +340,7 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
         from services.assets_cache_service import AssetsCacheService
         from services.geometry_service import GeometryService
         gsvc = GeometryService.instance()
-        path = gsvc._locate_assets_bin()
+        path = gsvc.locate_assets_bin()
         if not path:
             bus.log_message.emit("⚠️ assets.bin 不可用，跳过 3D 数据缓存（3D 查看器将现场解析）")
             return False
