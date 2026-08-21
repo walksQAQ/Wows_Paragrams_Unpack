@@ -1,20 +1,23 @@
-name: Create Release on Tag Push
+name: Build and Create Release on Tag Push
 
 on:
   push:
     tags:
       - 'v*'  # 匹配 v3.2.3-beta1, v1.0.0 等
 
+# 单 job：先完成构建（含 tag 校验、版本一致性校验），全部成功后
+# 才创建 Release / Pre-release 并上传 exe —— 避免「先建空 Release、
+# build 失败却留下无产物发布」的问题。
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0  # 完整历史，用于校验 tag 是否在 master 上
+          fetch-depth: 0  # 完整历史：校验 tag + gen_version.py 推导版本号
 
       - name: Verify tag is on master
         run: |
@@ -25,26 +28,6 @@ jobs:
             echo "::error::Tag ${{ github.ref_name }} 不在 master 分支上，拒绝创建 Release（请先合并到 master 再打 Tag）。"
             exit 1
           fi
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}  # Release 名直接用 tag（不带 "Release " 前缀）
-          generate_release_notes: true  # 自动生成 Commit 变更日志
-          prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
-
-  build-windows:
-    # tag 校验通过且 Release 创建后才打包，避免无效构建
-    needs: release
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0  # gen_version.py 需要完整 tag 历史推导版本号
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -62,8 +45,7 @@ jobs:
           CI: "true"            # 声明非交互 CI 环境（Nuitka 等据此静默）
           PYTHONUNBUFFERED: "1"  # Python 实时输出，避免 CI 日志看似卡住
         run: |
-          $env:CI_MODE = "1"
-          cmd /c "build.bat"
+          cmd /c "build_ci.bat"
 
       - name: Verify built version matches tag
         shell: pwsh
@@ -75,9 +57,11 @@ jobs:
             Write-Output "::warning::Built version ($ver) differs from tag ($tag) — 发布与 build 版本不一致"
           }
 
-      - name: Upload exe to Release
+      - name: Create Release and upload exe
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          files: release/KorabliParagrams.exe
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: ${{ github.ref_name }}  # Release 名直接用 tag（不带 "Release " 前缀）
+          generate_release_notes: true  # 自动生成 Commit 变更日志
+          prerelease: ${{ contains(github.ref_name, '-') }}  # 带后缀自动设为 Pre-release
+          files: release/KorabliParagrams.exe  # 构建产物随 Release 一并上传
