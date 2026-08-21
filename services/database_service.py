@@ -664,6 +664,25 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             return None
 
+    def _resolve_vc(self, version_code: str) -> str:
+        """空 version_code → 取最新版本；仍无则返回空串（调用方据此早退）。
+
+        统一"空 vc → 取最新版本"回退样板（原在 9+ 个查询方法中逐字重复）。
+        """
+        if version_code:
+            return version_code
+        return self.get_latest_version_code() or ""
+
+    def _resolve_vc(self, version_code: str = "") -> str:
+        """解析 version_code：为空时取最新版本；无可用版本返回 ''。
+
+        统一各查询方法重复的"空 vc → 取最新版本"回退样板（N15）。
+        调用方在拿到 '' 时按各自语义返回默认值（[] / None / False / 0）。
+        """
+        if not version_code:
+            version_code = self.get_latest_version_code() or ""
+        return version_code
+
     def list_versions(self) -> list[dict]:
         try:
             cur = self._conn.execute(
@@ -745,8 +764,7 @@ class DatabaseManager:
 
     def load_ship_models(self, version_code: str = "") -> list[dict]:
         """读取可载入舰船列表（最新版本，空则返回空列表）。"""
-        if not version_code:
-            version_code = self.get_latest_version_code() or ""
+        version_code = self._resolve_vc(version_code)
         if not version_code:
             return []
         try:
@@ -765,8 +783,7 @@ class DatabaseManager:
         DB-first：3D 查看器的装甲厚度 / HP 挂载引用在显示阶段只走数据库，
         不读 data/split JSON（快照在加载数据入库时写入）。缺失返回 None。
         """
-        if not version_code:
-            version_code = self.get_latest_version_code() or ""
+        version_code = self._resolve_vc(version_code)
         if not version_code:
             return None
         try:
@@ -786,11 +803,9 @@ class DatabaseManager:
     def get_entity(self, category: str, key: str,
                    version_code: str = "") -> Optional[dict]:
         etype = self._entity_type(category)
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return None
-            version_code = vc
+            return None
         try:
             cur = self._conn.execute(
                 "SELECT * FROM entity_registry WHERE version_code=? AND entity_id=? AND entity_type=?",
@@ -808,11 +823,9 @@ class DatabaseManager:
         每行含 slot_type(artillery/atba/torpedoes/...)、hp_key、gun_index、
         horiz_sector_json / vert_sector_json / dead_zone_json / pitch_dead_zones_json 等。
         """
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return []
-            version_code = vc
+            return []
         try:
             cur = self._conn.execute(
                 "SELECT * FROM ship_turret_arcs "
@@ -824,11 +837,9 @@ class DatabaseManager:
 
     def has_turret_arcs(self, ship_id: str, version_code: str = "") -> bool:
         """射界表是否有该舰船数据（用于判断是否需要从快照回填）"""
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return False
-            version_code = vc
+            return False
         try:
             r = self._conn.execute(
                 "SELECT 1 FROM ship_turret_arcs WHERE version_code=? AND ship_id=? LIMIT 1",
@@ -841,11 +852,9 @@ class DatabaseManager:
                       limit: int = 0, offset: int = 0,
                       version_code: str = "") -> list[dict]:
         etype = self._entity_type(category)
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return []
-            version_code = vc
+            return []
         conn = self._conn
         if keyword:
             p = f"%{keyword}%"
@@ -869,11 +878,9 @@ class DatabaseManager:
     def count_entities(self, category: str, keyword: str = "",
                        version_code: str = "") -> int:
         etype = self._entity_type(category)
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return 0
-            version_code = vc
+            return 0
         conn = self._conn
         if keyword:
             p = f"%{keyword}%"
@@ -887,11 +894,9 @@ class DatabaseManager:
         return cur.fetchone()[0]
 
     def get_categories(self, version_code: str = "") -> list[str]:
+        version_code = self._resolve_vc(version_code)
         if not version_code:
-            vc = self.get_latest_version_code()
-            if not vc:
-                return []
-            version_code = vc
+            return []
         rev = {"ship": "Ship", "gun": "Gun", "projectile": "Projectile",
                "plane": "Aircraft", "consumable": "Ability",
                "modernization": "Modernization", "crew": "Crew"}
@@ -904,21 +909,21 @@ class DatabaseManager:
             return []
 
     def get_stats(self, version_code: str = "") -> dict:
-        if not version_code:
-            vc = self.get_latest_version_code()
-            version_code = vc or ""
+        version_code = self._resolve_vc(version_code)
         conn = self._conn
         cats, total = {}, 0
         try:
+            # 单条 GROUP BY 聚合，替代逐类型 COUNT(*)（N+1）
+            if version_code:
+                cur = conn.execute(
+                    "SELECT entity_type, COUNT(*) FROM entity_registry "
+                    "WHERE version_code=? GROUP BY entity_type", (version_code,))
+            else:
+                cur = conn.execute(
+                    "SELECT entity_type, COUNT(*) FROM entity_registry GROUP BY entity_type")
+            counts = {r[0]: r[1] for r in cur.fetchall()}
             for et in ENTITY_TYPES:
-                if version_code:
-                    c = conn.execute(
-                        "SELECT COUNT(*) FROM entity_registry WHERE version_code=? AND entity_type=?",
-                        (version_code, et)).fetchone()
-                else:
-                    c = conn.execute(
-                        "SELECT COUNT(*) FROM entity_registry WHERE entity_type=?", (et,)).fetchone()
-                cnt = c[0] or 0
+                cnt = counts.get(et, 0)
                 cats[et] = cnt; total += cnt
         except sqlite3.OperationalError:
             pass
@@ -992,28 +997,9 @@ class DatabaseManager:
             return 0
         text = fp.read_text(encoding="utf-8")
         fp.unlink(missing_ok=True)
-        # 合并多行 msgstr 续行格式
-        lines = text.splitlines(keepends=True)
-        merged = []
-        in_msgstr = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('msgstr '):
-                in_msgstr = True
-                merged.append(line)
-            elif in_msgstr and stripped.startswith('"') and not stripped.startswith('msgid '):
-                if merged and merged[-1].strip().startswith('msgstr ""'):
-                    content = stripped[1:-1]
-                    merged[-1] = f'msgstr "{content}"\n'
-                elif merged:
-                    content = stripped[1:-1]
-                    last = merged[-1]
-                    if last.strip().startswith('msgstr "') and last.strip().endswith('"'):
-                        merged[-1] = last.rstrip('\n')[:-1] + content + '"\n'
-            else:
-                in_msgstr = False
-                merged.append(line)
-        text = ''.join(merged)
+        # 合并多行 msgstr 续行格式（共用 utils.po_utils）
+        from utils.po_utils import join_po_multiline
+        text = join_po_multiline(text)
         items = []
         blocks = re.split(r'\n(?=msgid)', text)
         _Q = re.compile(r'^msgstr\s+"((?:[^"\\]|\\.)*)"\s*$', re.MULTILINE)

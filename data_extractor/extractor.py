@@ -178,19 +178,11 @@ class GameExtractor:
 
     def _find_latest_bin(self) -> str:
         """在 bin/ 下查找最大的版本号目录"""
-        bin_path = self._game_dir / "bin"
-        if not bin_path.exists():
-            raise ExtractorError(f"bin 目录不存在: {bin_path}")
-
-        folders = [
-            d.name for d in bin_path.iterdir()
-            if d.is_dir() and d.name.isdigit()
-        ]
-        if not folders:
-            raise ExtractorError(f"bin 目录下没有版本文件夹: {bin_path}")
-
-        folders.sort(key=int)
-        return folders[-1]
+        from utils.path_utils import find_latest_bin_folder
+        result = find_latest_bin_folder(self._game_dir)
+        if result is None:
+            raise ExtractorError(f"bin 目录不存在或没有版本文件夹: {self._game_dir / 'bin'}")
+        return result
 
     # ── 高级接口 ──────────────────────────────────────────
 
