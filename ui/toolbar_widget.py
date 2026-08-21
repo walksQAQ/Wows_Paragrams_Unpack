@@ -208,13 +208,13 @@ class TopToolbar(QWidget):
         """打开穿深/散布计算器（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
         try:
             from ui.penetration_calculator import PenetrationCalculatorDialog
-            if not hasattr(self, "_ballistics_dialog") or self._ballistics_dialog is None:
-                self._ballistics_dialog = PenetrationCalculatorDialog()
-                if not getattr(self._ballistics_dialog, "_restored_geometry", False):
-                    self._ballistics_dialog.center_on_screen(self.window())
-            self._ballistics_dialog.show()
-            self._ballistics_dialog.raise_()
-            self._ballistics_dialog.activateWindow()
+            from utils.window_utils import ensure_dialog_shown
+            if not getattr(self, "_ballistics_dialog", None) or not getattr(self._ballistics_dialog, "_restored_geometry", False):
+                ensure_dialog_shown(self, "_ballistics_dialog", PenetrationCalculatorDialog, self.window())
+            else:
+                self._ballistics_dialog.show()
+                self._ballistics_dialog.raise_()
+                self._ballistics_dialog.activateWindow()
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开穿深计算器失败: {exc}")
 
