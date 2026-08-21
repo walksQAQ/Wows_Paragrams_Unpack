@@ -71,6 +71,7 @@ if %ERRORLEVEL% NEQ 0 (
     --windows-console-mode=attach ^
     --enable-plugin=pyside6 ^
     --assume-yes-for-downloads ^
+    --remove-output ^
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
