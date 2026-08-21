@@ -174,9 +174,11 @@ class _Theme:
 
     def qss(self, template: str) -> str:
         """将模板中 @var@ 占位符替换为当前主题颜色。"""
+        # N35: 一次遍历替换全部 key（避免 ~30 次 .replace 全量扫描）
         out = template
         for key, value in self.colors.items():
-            out = out.replace("@" + key + "@", value)
+            placeholder = "@" + key + "@"
+            out = out.replace(placeholder, value)
         return out
 
     def bind(self, widget, template: str) -> str:

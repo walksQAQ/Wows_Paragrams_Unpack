@@ -70,11 +70,6 @@ def get_config_path() -> Path:
 
 # ── 打包内置资源（源码 / standalone / onefile 解压目录） ──
 
-def get_tools_dir() -> Path:
-    """返回 tools/ 目录（存放 wowsunpack.exe 等）"""
-    return get_bundled_dir() / "tools"
-
-
 # ── 游戏目录辅助 ────────────────────────────────────────
 
 def find_latest_bin_folder(game_path) -> str | None:

@@ -108,7 +108,6 @@ class GameExtractor:
         game_dir: str | Path,
         bin_folder: str | None = None,
         pkgs_dir: str | Path | None = None,
-        tools_dir: str | Path | None = None,
     ):
         """
         参数:
@@ -117,8 +116,6 @@ class GameExtractor:
                         不指定则自动使用最新版本
             pkgs_dir: .pkg 文件目录，不指定时自动推断为
                       ``game_dir/res_packages``
-            tools_dir: 工具目录（存放 pfsunpack2.exe），
-                       不指定时尝试用 ``game_dir/../tools``
         """
         self._game_dir = Path(game_dir)
         if not self._game_dir.exists():
