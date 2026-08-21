@@ -63,15 +63,20 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
+:: 编译器策略：本地沿用 Nuitka 默认工具链（MSVC，历史成功路径）；
+:: CI（runner 自带 VS 导致 MSVC 全量编译慢）时切换 MinGW gcc + 关闭 LTO 尝试加速
+set EXTRA_NUITKA_ARGS=
+if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--mingw64 --lto=no
+
 :: ── 步骤 2: 编译 onefile 可执行文件 ──
 %PYTHON% -m nuitka ^
     --standalone ^
     --onefile ^
+    %EXTRA_NUITKA_ARGS% ^
     --output-dir="%OUTDIR%" ^
     --windows-console-mode=attach ^
     --enable-plugin=pyside6 ^
     --assume-yes-for-downloads ^
-    --remove-output ^
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
@@ -85,12 +90,14 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-:: 将 config.json 复制到 exe 同级目录下
-if exist "config.json" (
-    copy /y "config.json" "%OUTDIR%\config.json" >nul
-    echo [OK] config.json 已成功部署到外部 release 目录。
-) else (
-    echo [WARN] 未在根目录找到 config.json 模板，程序首次运行时会自动创建默认配置。
+:: 将 config.json 复制到 exe 同级目录下（仅本地；CI 由 build_ci.bat 负责，无需 config）
+if "%CI_MODE%"=="0" (
+    if exist "config.json" (
+        copy /y "config.json" "%OUTDIR%\config.json" >nul
+        echo [OK] config.json 已成功部署到外部 release 目录。
+    ) else (
+        echo [WARN] 未在根目录找到 config.json 模板，程序首次运行时会自动创建默认配置。
+    )
 )
 
 :: 精准清理 Nuitka 产生的所有中间缓存文件夹
