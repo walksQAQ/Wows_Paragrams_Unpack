@@ -106,6 +106,12 @@ class DiffService:
 
     def __init__(self, db):
         self.db = db
+        # 快照 map 缓存（version_code → {(entity_id, entity_type): data_json}）：
+        # build_overview 里 compare_entities 已全量载入，diff_entity_fields
+        # 逐实体重查 DB 属 N+1；缓存后命中内存。LRU-2，用完即清。
+        self._snap_cache: dict[str, dict] = {}
+        # entity_id → data_json 索引（按 version_code 惰性构建，O(1) 查找）
+        self._snap_id_index: dict[str, dict] = {}
 
     # ── 版本侧信息 ────────────────────────────────────────
 
@@ -128,14 +134,27 @@ class DiffService:
     # ── 数据读取 ──────────────────────────────────────────
 
     def _load_snapshot_map(self, version_code: str) -> dict[tuple[str, str], str]:
-        """返回 {(entity_id, entity_type): data_json}（全量读入内存做集合 diff）。"""
+        """返回 {(entity_id, entity_type): data_json}（全量读入内存做集合 diff）。
+
+        结果写入 _snap_cache（LRU-2），供 _get_snapshot 复用，避免逐实体重查。
+        """
+        cached = self._snap_cache.get(version_code)
+        if cached is not None:
+            return cached
         try:
             cur = self.db._conn.execute(
                 "SELECT entity_id, entity_type, data_json FROM entity_snapshots WHERE version_code=?",
                 (version_code,))
-            return {(r["entity_id"], r["entity_type"]): r["data_json"] for r in cur.fetchall()}
+            result = {(r["entity_id"], r["entity_type"]): r["data_json"] for r in cur.fetchall()}
         except sqlite3.OperationalError:
-            return {}
+            result = {}
+        # LRU-2：最多保留两个版本的快照 map（base+target），超出淘汰最早
+        self._snap_cache[version_code] = result
+        if len(self._snap_cache) > 2:
+            oldest = next(iter(self._snap_cache))
+            del self._snap_cache[oldest]
+            self._snap_id_index.pop(oldest, None)
+        return result
 
     def _load_entity_keys(self, version_code: str) -> set[tuple[str, str]]:
         """从 entity_registry 读取 (entity_id, entity_type) 键集合（无快照时的兜底）。"""
@@ -208,6 +227,16 @@ class DiffService:
     # ── 字段级 Diff（仅 modified 实体，需快照） ─────────────
 
     def _get_snapshot(self, version_code: str, entity_id: str) -> Optional[str]:
+        # 优先命中 _snap_cache（compare_entities 已全量载入），避免逐实体重查 DB。
+        # 首次访问某版本时惰性构建 entity_id → data_json 索引（O(1) 查找，
+        # 避免对 N 个 modified 实体做 O(N) 线性扫描退化成 O(N²)）。
+        cached = self._snap_cache.get(version_code)
+        if cached is not None:
+            idx = self._snap_id_index.get(version_code)
+            if idx is None:
+                idx = {eid: dj for (eid, _etype), dj in cached.items()}
+                self._snap_id_index[version_code] = idx
+            return idx.get(entity_id)
         try:
             cur = self.db._conn.execute(
                 "SELECT data_json FROM entity_snapshots WHERE version_code=? AND entity_id=?",
@@ -376,4 +405,7 @@ class DiffService:
         for eid, _etype in result.modified:
             diffs = self.diff_entity_fields(base_vc, target_vc, eid)
             field_counts[eid] = len(diffs) if diffs else 0
+        # 释放快照缓存（build_overview 为一次性批量操作，不需长期驻留内存）
+        self._snap_cache.clear()
+        self._snap_id_index.clear()
         return {"result": result, "field_counts": field_counts}
