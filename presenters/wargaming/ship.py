@@ -21,120 +21,6 @@ class WargamingShipPresenter(WargamingBasePresenter):
     #: 炮位安装朝向缓存（ship_id → {hp_key: (yaw, [x,y,z])}），惰性初始化
     _mount_yaw_cache: dict | None = None
 
-    MODIFIER_MAP = {
-        # ── 主炮/副炮 ──
-        "GMShotDelay": "装填时间", "GSShotDelay": "装填时间", "GMSShotDelay": "装填时间",
-        "GTShotDelay": "装填时间",
-        "GSMaxDist": "最大射程", "GMMaxDist": "最大射程", "GMSMaxDist": "最大射程",
-        "GMIdealRadius": "横向散步公式", "GMSIdealRadius": "横向散步公式",
-        "GSIdealRadius": "横向散步公式",
-        "GMRotationSpeed": "垂直回转速度", "GMSRotationSpeed": "水平回转速度",
-        "GTRotationSpeed": "垂直回转速度",
-        "GSAlphaFactor": "标伤",
-        "GMDamageCoeff": "标伤", "GMSDamageCoeff": "标伤", "GMAPDamageCoeff": "标伤",
-        "GMHeavyCruiserCaliberDamageCoeff": "标伤",
-        # ── 鱼雷 ──
-        "torpedoDamageCoeff": "标伤",
-        "torpedoSpeedMultiplier": "航速",
-        "torpedoVisibilityFactor": "被发现距离",
-        "planeTorpedoArmingTimeCoeff": "鱼雷上浮时间",
-        # ── 船体/机动 ──
-        "maxSpeed": "最大航速",
-        "speedCoef": "最大航速",
-        "rudderTime": "转舵时间",
-        "healthHullCoeff": "基础血量",
-        "healthPerLevel": "基础血量",
-        "visibilityDistCoeff": "水面隐蔽",
-        "planeVisibilityFactor": "被侦测距离",
-        "burnProb": "起火的风险",
-        "floodProb": "进水的风险",
-        "batteryCapacityCoeff": "电池容量",
-        "batteryRegenCoeff": "电力恢复",
-        "buoyancyRudderTimeCoeff": "水平舵转舵时间",
-        "buoyancyRudderResetTimeCoeff": "水平舵转舵时间",
-        "hydrophoneUpdateFrequencyCoeff": "水听器更新周期",
-        "hydrophoneWaveSpeedCoeff": "水听器更新周期",
-        "SGRudderTime": "转舵时间",
-        # ── 起火/进水 ──
-        "burnTime": "灭火时间", "floodTime": "进水恢复时间",
-        # ── 防空 ──
-        "AAAuraDamage": "伤害", "AAAuraDamageBonus": "远程伤害",
-        "AABubbleDamage": "爆炸伤害", "AABubbleDamageBonus": "爆炸伤害",
-        "AAExtraBubbles": "一次齐射数量",
-        # ── 飞机（舰载机/支援） ──
-        "planeMaxSpeed": "最大速度",
-        "planeCruiseSpeed": "巡航速度",
-        "planeHp": "单架飞机血量", "planeHealthCoeff": "单架飞机血量",
-        "asMaxHealthCoeff": "单架飞机血量",
-        "planeAttackCooldown": "攻击冷却时间",
-        "planeVisibility": "被侦测距离",
-        "planeHangarMax": "最大可用数量",
-        "planeHangarRestoreAmount": "每次整备数量",
-        "planeHangarTimeToRestore": "每次整备时间",
-        "planeSpawnTime": "每次整备时间",
-        "planeForsageTimeCoeff": "引擎加速时间",
-        "planeHealthPerLevel": "单架飞机血量",
-        "planeSpreadMultiplier": "最大散布",
-        "planeSpeed": "航速",
-        "planeTorpedoSpeedMultiplier": "航速",
-        "planeAlphaDamageCoeff": "标伤",
-        "bombAlphaDamageMultiplier": "标伤",
-        "torpedoBomberHealth": "单架飞机血量",
-        "diveBomberHealth": "单架飞机血量",
-        "skipBomberHealth": "单架飞机血量",
-        "fighterHealth": "单架飞机血量",
-        "mineBomberHealth": "单架飞机血量",
-        "diveBomberSpeedMultiplier": "最大速度",
-        "diveBomberMinSpeedMultiplier": "最小速度",
-        "planeMaxSpeedMultiplier": "最大速度",
-        "diveBomberMaxSpeedMultiplier": "最大速度",
-        "planeExtraHangarSize": "最大可用数量",
-        "skipBomberAimingTime": "瞄准时间",
-        "torpedoBomberAimingTime": "瞄准时间",
-        "fighterAimingTime": "瞄准时间",
-        # ── 消耗品 ──
-        "ConsumableReloadTime": "冷却时间",
-        "ConsumablesWorkTime": "持续时间",
-        "smokeGeneratorReloadCoeff": "冷却时间",
-        "smokeGeneratorWorkTimeCoeff": "持续时间",
-        "speedBoostersWorkTimeCoeff": "持续时间",
-        "sonarWorkTimeCoeff": "持续时间",
-        "scoutReloadCoeff": "冷却时间",
-        "scoutWorkTimeCoeff": "持续时间",
-        "regenCrewReloadCoeff": "冷却时间",
-        "crashCrewWorkTimeBonus": "持续时间",
-        "massHealReloadCoeff": "冷却时间",
-        "vampireDamageReloadCoeff": "冷却时间",
-        "dcReloadTimeCoeff": "装填时间",
-        "dcAlphaDamageMultiplier": "标伤",
-        "asReloadTimeCoeff": "装填时间",
-        "airDefenseDispReloadCoeff": "冷却时间",
-        "airDefenseDispWorkTimeCoeff": "持续时间",
-        "planeSmokeGeneratorWorkTimeCoeff": "持续时间",
-        "smokeGeneratorLifeTime": "持续时间",
-        "rlsWorkTimeCoeff": "持续时间",
-        "prioritySectorCooldownMultiplier": "冷却时间",
-        "pingerReloadCoeff": "冷却时间",
-        "planeAdditionalConsumables": "额外消耗品",
-        "smokeGeneratorAdditionalConsumables": "额外消耗品",
-        "speedBoostersAdditionalConsumables": "额外消耗品",
-        "additionalConsumables": "额外消耗品",
-        # ── 深弹（反潜） ──
-        "dcAlphaDamageMultiplier": "标伤",
-        "dcReloadTimeCoeff": "装填时间",
-        # ── 维修 ──
-        "GMRepairTime": "维修时间",
-        "GMSRepairTime": "维修时间",
-        "GTRepairTime": "维修时间",
-        "PMRepairTime": "配件维修时间",
-        "AARepairTime": "维修时间",
-        "SGRepairTime": "维修时间",
-        "pingerRepairTime": "维修时间",
-        "engineRepairTime": "配件维修时间",
-        "GSRepairTime": "维修时间",
-        "GSMaxHP": "维修时间",
-    }
-
     def build(self, ship_id: str, version_code: str = "", modifiers: dict | None = None,
               engine_letter: str = "", fire_control_key: str = "", sonar_key: str = "",
               active_module_keys: dict | None = None) -> dict | None:
@@ -234,7 +120,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     if field != name.strip():
                         continue
                 else:
-                    field = self.MODIFIER_MAP.get(mod_key)
+                    field = Mapping.MODIFIER_FIELD_MAP.get(mod_key)
                 if field and (field == name.strip() or name.strip().endswith(field)):
                     try:
                         cur_str = item.get("value", "")
@@ -603,6 +489,178 @@ class WargamingShipPresenter(WargamingBasePresenter):
         except Exception:
             return ""
 
+    @staticmethod
+    def format_distance_of_preparation(dop) -> list[str]:
+        """解析战术战斗机消耗品特殊词条 distanceOfPreparation 为可读段列表。
+
+        数据结构：[[距离, 准备时间], ...]（WG 数据在 logic 下，入库后随 extra_json
+        合并到顶层供显示层读取）。距离 ×0.03 = km（与 workRange 同单位：
+        BR_10 的 666.67×0.03=20.00km == 最大攻击距离 20000m），值为该距离下的
+        攻击准备时间（秒）。无数据/解析失败返回空列表 []。
+        """
+        if not dop:
+            return []
+        segs: list[str] = []
+        for pair in dop:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                try:
+                    dist_km = float(pair[0]) * 0.03
+                    val = pair[1]
+                    if not isinstance(val, (int, float)):
+                        continue
+                    segs.append(f"{dist_km:.2f}km → {val:g}s")
+                except (ValueError, TypeError):
+                    continue
+        return segs
+
+    @staticmethod
+    def is_time_based(cfgd: dict) -> bool:
+        """时间制消耗品判定：lifeCycleType == 1（以总容量/总时间计数，非次数制）。
+
+        仅限 WG 服模式：本类即 WG presenter；detail_panel 共用入口在调用
+        format_time_based 前先用 self.is_wg() 限定，Lesta 不受影响。
+        """
+        return str(cfgd.get('lifeCycleType', 0)) == '1'
+
+    @staticmethod
+    def format_time_based(cfgd: dict) -> list[tuple[str, str]]:
+        """生成时间制消耗品特殊显示行 [(标签, 值), ...]（lifeCycleType==1）。
+
+        显示 maxCapacity（最大可用时间）、minWorkTime（最低持续时间）、
+        capacityRegenCoeff（可用容量回复率，仅非 0 时显示）。
+        非时间制返回空列表 []。
+        """
+        if not WargamingShipPresenter.is_time_based(cfgd):
+            return []
+        rows: list[tuple[str, str]] = []
+        _cap = cfgd.get('maxCapacity')
+        if _cap is not None:
+            try:
+                _capf = float(_cap)
+                if _capf > 0:
+                    rows.append(("最大可用时间", f"{_capf:g}s"))
+            except (ValueError, TypeError):
+                pass
+        _mwt = cfgd.get('minWorkTime')
+        if _mwt:
+            try:
+                rows.append(("最低持续时间", f"{float(_mwt):g}s"))
+            except (ValueError, TypeError):
+                pass
+        _crc = cfgd.get('capacityRegenCoeff')
+        if _crc is not None:
+            try:
+                _crcf = float(_crc)
+                if _crcf != 0.0:
+                    rows.append(("可用容量回复率", f"{_crcf:g}"))
+            except (ValueError, TypeError):
+                pass
+        return rows
+
+    @staticmethod
+    def format_aux_torp_buff(conn, vc: str, cfgd: dict) -> list[tuple[str, str, str]]:
+        """读取 auxTorpBooster 消耗品引用的 PCOM buff（logic.buff），返回效果词条。"""
+        return WargamingShipPresenter.format_pcom_buff(conn, vc, cfgd.get('buff', ''))
+
+    @staticmethod
+    def format_pcom_buff(conn, vc: str, buff_id: str) -> list[tuple[str, str, str]]:
+        """读取 PCOM 实体（consumable_buff）的 buff 效果词条，返回 [(标签, 格式化值), ...]。
+
+        扁平 buff（无 level_*，入库为 consumable_buff buff_level=0 单行，整份存 buff_json）
+        读其 modifier 中**有实际效果**的词条：跳过全 1.0 的分舰种 dict，以及
+        GMMaxDistAbsoluteCap / healthPerLevel / artilleryBurnChanceBonus / aimRange /
+        BuffStatsList 等噪音键。无数据或全部无效返回 []。
+        """
+        if not buff_id:
+            return []
+        try:
+            row = conn.execute(
+                "SELECT buff_json FROM consumable_buff WHERE version_code=? AND buff_id=? "
+                "ORDER BY buff_level LIMIT 1",
+                (vc, buff_id)).fetchone()
+        except Exception:
+            return []
+        if not row:
+            return []
+        try:
+            mods = (json.loads(row['buff_json'] or '{}') or {}).get('modifier') or {}
+        except (json.JSONDecodeError, TypeError):
+            return []
+        SKIP = {"GMMaxDistAbsoluteCap", "healthPerLevel", "artilleryBurnChanceBonus",
+                "aimRange", "BuffStatsList"}
+        BOOL_GREEN = "#1b8a1b"
+        rows: list[tuple[str, str, str]] = []
+        for bk, bv in sorted(mods.items()):
+            if bk in SKIP:
+                continue
+            if isinstance(bv, bool):
+                # 布尔词条：true → 描述文本放右列数据区（绿色），左列留空
+                if bv:
+                    label = Mapping.MODIFIER_MAP.get(bk, bk)
+                    rows.append(("", label, BOOL_GREEN))
+                continue
+            if isinstance(bv, dict):
+                # 分舰种 dict：全 1.0 → 无实际效果；否则取首个非 1.0 值
+                nums = [x for x in bv.values() if isinstance(x, (int, float))]
+                if not nums or all(abs(x - 1.0) < 1e-9 for x in nums):
+                    continue
+                bv = next((x for x in nums if abs(x - 1.0) >= 1e-9), 1.0)
+            if not isinstance(bv, (int, float)):
+                continue
+            if abs(bv - 1.0) < 1e-9:
+                continue  # coeff 1.0 无效果
+            label = Mapping.MODIFIER_MAP.get(bk, bk)
+            ft = Mapping.format_modifier(bk, bv)
+            if ft:
+                rows.append((label, ft, Mapping.get_modifier_color(bk, bv)))
+        return rows
+
+    @staticmethod
+    def format_support_drop(conn, vc: str, cfgd: dict,
+                            resolve_plane=None) -> list[tuple[str, str, str]]:
+        """支援飞机投掷类消耗品详情，返回 [(标签, 值, 颜色), ...]。
+
+        适用于 tacticalFireExtinguishing / tacticalBuffHeal /
+        tacticalBuffHealConsumableReload（结构相同）。显示：
+        部署飞机（logic.planeName）、落地时间（logic.timeFromHeaven）、
+        离开时间（logic.flyAwayTime），以及两个 PCOM buff 的效果词条：
+        logic.buff（对友军生效）与 logic.buffOnSelf（对自身生效）。
+        对友军/对自身为独立分组标题行（右列无信息），其下方每行是各条加成
+        （左列=加成标题，右列=数值，参与颜色判定；布尔状态词条描述放右列数据区、绿色）。
+        buff 无有效词条时分组行下方回退显示 buff 实体 ID。
+        resolve_plane 可选回调：传入解析飞机名（detail_panel 用 bp.resolve_name，
+        presenter 用 self.resolve_name）；不传则显示原始 planeName。
+        """
+        rows: list[tuple[str, str, str]] = []
+        pn = cfgd.get('planeName') or ""
+        if pn:
+            fname = resolve_plane(pn) if resolve_plane else pn
+            rows.append(("部署飞机", fname, ""))
+        tfh = cfgd.get('timeFromHeaven', 0)
+        if tfh:
+            rows.append(("落地时间", f"{tfh}s", ""))
+        fa = cfgd.get('flyAwayTime', 0)
+        if fa:
+            rows.append(("离开时间", f"{fa}s", ""))
+
+        def _append_buff_group(label, buff_id):
+            # 分组标题行（对友军/对自身，右列无信息）
+            # + 各加成独立行：左列=加成标题，右列=数值（参与颜色判定）；布尔状态词条描述放右列数据区+绿色
+            rows.append((label, "", ""))
+            eff = WargamingShipPresenter.format_pcom_buff(conn, vc, buff_id)
+            if eff:
+                rows.extend(eff)
+            else:
+                rows.append(("增益", buff_id, ""))
+
+        buff_id = cfgd.get('buff', '')
+        if buff_id:
+            _append_buff_group("对友军", buff_id)
+        self_id = cfgd.get('buffOnSelf', '')
+        if self_id:
+            _append_buff_group("对自身", self_id)
+        return rows
+
     def _append_consumables(self, conn, vc, ship_id, sections):
         slots = conn.execute(
             "SELECT * FROM ship_consumable_slots WHERE version_code=? AND ship_id=? ORDER BY slot_index, item_index",
@@ -658,6 +716,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     items.append(self.make_item(f"        冷却时间", f"{cd_time:.0f}", len(items), unit="s"))
                 if wt:
                     items.append(self.make_item(f"        持续时间", f"{wt:.0f}", len(items), unit="s"))
+                # WG 时间制消耗品（lifeCycleType==1）：以总容量/总时间计数，无次数与固定作用时间
+                for _tb_lbl, _tb_val in self.format_time_based(cfgd):
+                    items.append(self.make_item(f"        {_tb_lbl}: {_tb_val}", "", len(items)))
                 items.append(self.make_item(f"        消耗品效果:", "", len(items)))
                 # WG 使用方式（tacticalParams）
                 _tp = cfgd.get('tacticalParams') or {}
@@ -671,20 +732,17 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         pass
                     else:
                         if _wr:
-                            items.append(self.make_item(f"        作用范围: {float(_wr)/1000:.2f}km", "", len(items)))
+                            items.append(self.make_item(f"        最大部署距离: {float(_wr)/1000:.2f}km", "", len(items)))
                         elif _ar:
                             items.append(self.make_item(f"        瞄准范围: {float(_ar):.0f}m", "", len(items)))
                 # 按类型显示特有属性
                 if ct == "crashCrew":
                     items.append(self.make_item(f"          扑灭起火、清除进水、并修复受损配件。", "", len(items)))
                 elif ct == "fighter":
-                    fn = cfgd.get('fightersName') or ""
-                    if fn:
-                        fname = self.resolve_name('plane', fn) or fn
-                        items.append(self.make_item(f"          战斗机名称: {fname}", "", len(items)))
-                    fn2 = cfgd.get('fightersNum') or 0
                     is_inter = cfgd.get('isInterceptor') or 0
-                    items.append(self.make_item(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}", "", len(items)))
+                    items.append(self.make_item(f"          战斗机类型: {'截击机' if is_inter else '战斗机'}", "", len(items)))
+                    fn2 = cfgd.get('fightersNum') or 0
+                    items.append(self.make_item(f"          飞机数量: {fn2}", "", len(items)))
                     dog = cfgd.get('dogFightTime', 0)
                     if isinstance(dog, dict):
                         dog = next((x for x in dog.values() if isinstance(x, (int, float))), 0)
@@ -755,10 +813,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     if bdm: items.append(self.make_item(f"          黑云伤害: {bdm*100:+.2f}%", "", len(items)))
                 elif ct == "hydrophone":
                     zlt = cfgd.get('zoneLifeTime', 0)
-                    huf = cfgd.get('hydrophoneUpdateFrequency', 0)
                     hwr = cfgd.get('hydrophoneWaveRadius', 0)
                     if zlt: items.append(self.make_item(f"          虚影存留: {zlt}s", "", len(items)))
-                    if huf: items.append(self.make_item(f"          刷新: {huf}s", "", len(items)))
                     if hwr: items.append(self.make_item(f"          视野距离: {hwr*0.001:.2f}km", "", len(items)))
                 elif ct == "fastRudders":
                     brt = (float(cfgd.get('buoyancyRudderTimeCoeff', 0) or 1) - 1)
@@ -793,31 +849,40 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     wp = cfgd.get('workPreparationTime', 0)
                     if wp:
                         items.append(self.make_item(f"          准备时间: {wp}s", "", len(items)))
-                elif ct == "supportBuoy":
-                    bdv = cfgd.get('battleDropVisualName', 'Unknown')
-                    bda = cfgd.get('battleDropActivationTime', 0)
-                    zlt = cfgd.get('zoneLifetime', 0)
-                    items.append(self.make_item(f"          区域: {bdv}", "", len(items)))
-                    if bda: items.append(self.make_item(f"          布置时间: {bda}s", "", len(items)))
-                    if zlt: items.append(self.make_item(f"          持续时间: {zlt}s", "", len(items)))
-                elif ct == "vampireDamage":
-                    dgm = cfgd.get('damageGMHealCoeff', 0)
-                    if dgm: items.append(self.make_item(f"          伤害转化系数: {dgm*100:.2f}%", "", len(items)))
-                elif ct == "massHeal":
-                    ohp = cfgd.get('ownHealPart', 0)
-                    if ohp: items.append(self.make_item(f"          自身每秒回复: {ohp*100:.2f}%", "", len(items)))
-                    wr = cfgd.get('workRadius', 0)
-                    if wr: items.append(self.make_item(f"          回复作用半径: {wr*3/100:.2f} km", "", len(items)))
-                    abn = cfgd.get('allyBuffName', '')
-                    abl = cfgd.get('allyBuffLevel', 1)
-                    if abn:
-                        items.append(self.make_item(f"          友军增益: {abn} (等级{abl})", "", len(items)))
+                    if ct == "planeTacticalFighters":
+                        rd = cfgd.get('radius', 0)
+                        items.append(self.make_item(f"          可部署距离: {rd*0.03:.2f}km", "", len(items)))
+                        # 特殊词条：准备时间随攻击距离线性变化（distanceOfPreparation）
+                        _prep_segs = self.format_distance_of_preparation(
+                            cfgd.get('distanceOfPreparation') or [])
+                        if _prep_segs:
+                            items.append(self.make_item(
+                                "          准备时间随距离变化: " + " / ".join(_prep_segs), "", len(items)))
+                elif ct == "auxTorpBooster":
+                    # 逻辑：为玩家操纵舰船添加 buff（logic.buff → PCOM 实体）
+                    for _blbl, _bval, _bcol in self.format_aux_torp_buff(conn, vc, cfgd):
+                        # 左列为空（布尔状态词条描述在右列）时只显示值，不带前导冒号
+                        _txt = f"{_blbl}: {_bval}" if _blbl else _bval
+                        items.append(self.make_item(f"          {_txt}", "", len(items)))
+                elif ct in ("tacticalFireExtinguishing", "tacticalBuffHeal",
+                            "tacticalBuffHealConsumableReload"):
+                    # 支援飞机投掷类：部署飞机/落地时间/离开时间 + logic.buff(buffOnSelf) PCOM buff
+                    for _blbl, _bval, _bcol in self.format_support_drop(
+                            conn, vc, cfgd, lambda pid: self.resolve_name('plane', pid)):
+                        # 分组标题行（对友军/对自身）右列无信息，不带冒号；左列为空行只显示值
+                        if _blbl and _bval:
+                            _txt = f"{_blbl}: {_bval}"
+                        elif _bval:
+                            _txt = _bval
+                        else:
+                            _txt = _blbl
+                        items.append(self.make_item(f"          {_txt}", "", len(items)))
         if last_slot is not None:
             items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
         # 收集原始消耗品数据供 UI 构建按钮
         raw_slots: list[dict] = []
         for s in slots:
-            _aam, _dam = [], ""
+            _aam, _dam, _ej = [], "", {}
             if conn:
                 try:
                     _cfg_r = conn.execute(
@@ -832,7 +897,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         _aam = _ej.get('availableActivationModes') or []
                         _dam = _ej.get('defaultActivationMode') or ""
                 except Exception:
-                    _aam, _dam = [], ""
+                    _aam, _dam, _ej = [], "", {}
             raw_slots.append({
                 "slot_index": s['slot_index'],
                 "item_index": s['item_index'],
@@ -843,6 +908,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 ) or s['consumable_id'] or "",
                 "available_activation_modes": _aam,
                 "default_activation_mode": _dam,
+                "time_based": self.is_time_based(_ej),
             })
         sections.append({
             "label": "消耗品数据", "items": items, "icon": "💊",
@@ -867,9 +933,6 @@ class WargamingShipPresenter(WargamingBasePresenter):
         # 跳过 === dname === 重复标题
         boost_dur = float(rage['boost_duration'] or 0)
         items.append(self.make_item("持续时间", "即时" if boost_dur == 0 else f"{boost_dur}s", o)); o += 1
-        max_ac = rage['max_activation_count']
-        if max_ac != '-1':
-            items.append(self.make_item("最大激活次数", f'{max_ac} 次', o)); o += 1
         items.append(self.make_item("自动激活", '是' if rage['is_auto_usage'] else '否', o)); o += 1
         items.append(self.make_item("常驻生效", '是' if rage['is_modifier_works_always'] else '否', o)); o += 1
 
@@ -2897,6 +2960,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             "detail_items": con_detail,
                             "available_activation_modes": cd.get('availableActivationModes') or [] if cfg else [],
                             "default_activation_mode": cd.get('defaultActivationMode') or "" if cfg else "",
+                            "time_based": self.is_time_based(cd) if cfg else False,
                         })
                 config_contents[key] = {
                     "items": items,

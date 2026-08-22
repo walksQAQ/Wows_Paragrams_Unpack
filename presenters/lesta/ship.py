@@ -663,9 +663,10 @@ class LestaShipPresenter(LestaBasePresenter):
                     if fn:
                         fname = self.resolve_name('plane', fn) or fn
                         items.append(self.make_item(f"          战斗机名称: {fname}", "", len(items)))
-                    fn2 = cfgd.get('fightersNum') or 0
                     is_inter = cfgd.get('isInterceptor') or 0
-                    items.append(self.make_item(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}", "", len(items)))
+                    items.append(self.make_item(f"          战斗机类型: {'截击机' if is_inter else '战斗机'}", "", len(items)))
+                    fn2 = cfgd.get('fightersNum') or 0
+                    items.append(self.make_item(f"          飞机数量: {fn2}", "", len(items)))
                     dog = cfgd.get('dogFightTime', 0)
                     fly = cfgd.get('flyAwayTime', 0)
                     if dog or fly:

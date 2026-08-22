@@ -76,8 +76,9 @@ class MainWindow(QMainWindow):
         self.module_select.setVisible(False)  # 默认隐藏，有模块数据时再显示
         content_layout.addWidget(self.module_select)
 
-        # 详情面板（StackedWidget, 展开）
-        self.detail = DetailPanel()
+        # 详情面板（StackedWidget, 展开）——方案 C：按服务器选子类
+        _wows_type = getattr(app.ctx, "wows_type", "") or "Lesta"
+        self.detail = DetailPanel.for_server(_wows_type)()
         content_layout.addWidget(self.detail, stretch=1)
 
         middle_layout.addWidget(content_area, stretch=1)
@@ -131,10 +132,10 @@ class MainWindow(QMainWindow):
         # ── 信号连接 ────────────────────────────────────
         bus.log_message.connect(self._on_log)
         self.browser.file_selected.connect(bus.file_selected.emit)
-        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐
-        self.detail.modules_available.connect(self._on_modules_available)
-        # 模块选择 → 详情页切换
-        self.module_select.module_selected.connect(self.detail.switch_page)
+        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐；模块选择 → 详情页切换
+        self._wire_detail_signals()
+        # 切换服务器 → 重建详情面板（方案 C：按服务器选子类），保证整界面跟随新服务器模式
+        bus.wows_type_changed.connect(self._on_server_changed)
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
         bus.folder_selected.connect(self._on_category_changed)
 
@@ -262,6 +263,44 @@ class MainWindow(QMainWindow):
         """模块列表可用时更新 ModuleSelect 并控制显隐"""
         self.module_select.set_modules(section_labels)
         self.module_select.setVisible(section_labels is not None)
+
+    def _wire_detail_signals(self) -> None:
+        """连接详情面板相关信号（重建面板后需重新调用）。"""
+        self.detail.modules_available.connect(self._on_modules_available)
+        self.module_select.module_selected.connect(self.detail.switch_page)
+
+    def _on_server_changed(self, server: str) -> None:
+        """切换服务器后重建详情面板子类实例，保证整个界面跟随新的服务器模式。
+
+        ⚠️ 关键：DetailPanel.for_server 只在启动时调用过一次，此前切换服务器只发
+        folder_selected("__REFRESH__") 而未替换面板实例，导致 self.detail.wows_type、
+        is_wg()、消耗品类型分支树、图片命名（_consumable_icon_name/_module_icon_name/
+        _rage_preview_icon/_ammo_icon_candidates）等全部停留在启动时的服务器模式。
+        此处按新服务器重建实例并重新接线。
+        """
+        # 1. 断开旧实例信号（module_selected 唯一连接为 detail.switch_page）
+        try:
+            self.module_select.module_selected.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            self.detail.modules_available.disconnect(self._on_modules_available)
+        except (RuntimeError, TypeError):
+            pass
+        # 2. 从布局移除旧实例并释放（deleteLater 排队删除，信号连接随之移除）
+        layout = self.detail.parentWidget().layout() if self.detail.parentWidget() else None
+        if layout is not None:
+            layout.removeWidget(self.detail)
+        # 立即脱离父容器，避免模态事件循环（如切服弹窗 box.exec）期间布局/事件
+        # 仍引用已删除对象触发 RuntimeError: Internal C++ object already deleted
+        self.detail.setParent(None)
+        self.detail.deleteLater()
+        # 3. 创建新服务器对应的子类实例，保持 browser → module_select → detail 布局顺序
+        self.detail = DetailPanel.for_server(server)()
+        if layout is not None:
+            layout.addWidget(self.detail, stretch=1)
+        self._wire_detail_signals()
+        bus.log_message.emit(f"🔄 详情面板已切换为 {server} 模式")
 
     def clear_all_selections(self) -> None:
         """取消界面上所有选中项"""

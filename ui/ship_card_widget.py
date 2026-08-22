@@ -276,17 +276,21 @@ class ShipCardWidget(QGroupBox):
         unit = item.get("unit", "")
         details = item.get("details", [])
 
+        # 显式颜色优先（value 空时的描述行：颜色作用于左列名称，如布尔状态词条）
+        color = item.get("color", "")
+
         # 左列：名称
         name_item = QTableWidgetItem(name)
-        name_item.setForeground(QColor(label_color()))
+        if color and not (value or unit):
+            name_item.setForeground(QColor(color))
+        else:
+            name_item.setForeground(QColor(label_color()))
         name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 0, name_item)
 
         # 右列：数值 + 单位
         display_value = f"{value} {unit}" if unit and value else (value or unit or "")
         value_item = QTableWidgetItem(display_value)
-        # 显式颜色优先
-        color = item.get("color", "")
         if color:
             value_item.setForeground(QColor(color))
         else:

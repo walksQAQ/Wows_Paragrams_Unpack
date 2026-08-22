@@ -15,18 +15,17 @@ from functools import partial
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
     QTextEdit, QPushButton, QLabel, QFrame, QButtonGroup,
-    QScrollArea, QSizePolicy, QGridLayout, QComboBox, QListView,
+    QScrollArea, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QFont, QIcon, QPixmap, QColor
+from PySide6.QtGui import QFont, QIcon, QPixmap
 
 from app.signals import bus
 from services.database_service import get_db
 from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
-from ui.ship_card_widget import ShipDetailGrid, ShipCardWidget, SECTION_ICONS
+from ui.ship_card_widget import ShipCardWidget
 from utils.theme import theme
 from utils.image_paths import pic_path
-from services import wg_compat
 
 
 # U13: 加性修饰符键集（3 处重复 → 模块级常量）
@@ -95,6 +94,7 @@ class DetailPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.wows_type = self._current_server()  # 方案 C：服务器标识（Lesta/Wargaming）
         self._current_category: str = ""
         self._current_filename: str = ""
         self._current_raw: dict | None = None
@@ -112,6 +112,12 @@ class DetailPanel(QWidget):
         self._ship_rebuilding: bool = False
         # 子面板控制器映射：section_label → (stack, [buttons])
         self._subwidget_controllers: dict[str, tuple] = {}
+        # 消耗品详情选中态：id(详情stack) → 当前激活的 "cid::ckey"（舰船/飞机各自独立）
+        self._active_con_keys: dict[int, str] = {}
+        # 当前选中的消耗品按钮引用（跨槽位/跨区域唯一高亮）
+        self._active_con_btn = None
+        # WG 信号旗选中态：mod_id → flag_data（多选可叠加，默认全选参与计算）
+        self._selected_wg_signal_flags: dict[str, dict] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -168,7 +174,9 @@ class DetailPanel(QWidget):
                     self._build_ship_pages(self._ship_sections, self._ship_extra)
                 except Exception:  # noqa: BLE001
                     pass
-            QTimer.singleShot(0, _rebuild_all)
+            # 绑定 receiver=self：面板被 deleteLater 后 Qt 自动取消该挂起回调，
+            # 避免访问已删除 C++ 对象触发 RuntimeError: already deleted
+            QTimer.singleShot(0, self, _rebuild_all)
 
     def resizeEvent(self, event) -> None:
         """窗口尺寸变化时重建舰船网格（带防重入锁）"""
@@ -263,9 +271,9 @@ class DetailPanel(QWidget):
         self._ship_column_layouts: list[QVBoxLayout] = []
         self._ship_column_layouts: list[QVBoxLayout] = []
 
-        # 延迟重建，等布局完成后获取真实宽度
+        # 延迟重建，等布局完成后获取真实宽度（绑定 receiver=self，面板删除时自动取消）
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._rebuild_ship_grid)
+        QTimer.singleShot(0, self, self._rebuild_ship_grid)
 
         # 唯一页面
         self._section_page_indices = {"全部": 0}
@@ -292,7 +300,6 @@ class DetailPanel(QWidget):
     @staticmethod
     def _refresh_epic_overlays(skill_btns: list, grid_skills: list, SKILL_BTN: str):
         """统一刷新所有技能按钮的 EPIC 叠加标记和 tooltip"""
-        from pathlib import Path
         from PySide6.QtGui import QPixmap
         from PySide6.QtWidgets import QLabel
         _OVERLAY_PATH = pic_path("icon_epic_skill.png")
@@ -347,14 +354,6 @@ class DetailPanel(QWidget):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(0)
 
-        ITEM_STYLE = theme.qss("""
-            QPushButton {
-                background: @panel_alt@; border: 1px solid @border@;
-                border-radius: 4px; padding: 3px 10px;
-                font-size: 11px; color: @text@; text-align: left;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
-        """)
         COL_TITLE = theme.qss("font-size:11px; font-weight:bold; color:@text_muted@; padding:0 0 3px 0;")
 
         def _col(title: str) -> tuple[QWidget, QVBoxLayout]:
@@ -369,8 +368,6 @@ class DetailPanel(QWidget):
         col1, l1 = _col("配件")
         upgrades = config.get("upgrades", [])
 
-        UC_ORDER = ["_Artillery", "_Torpedoes", "_Hull", "_Engine",
-                    "_Suo", "_Fighter", "_DiveBomber", "_TorpedoBomber", "_SkipBomber", "_MineBomber", "_FlightControl"]
         UC_ICONS = {"_Artillery": "🔫", "_Torpedoes": "💣", "_Hull": "🚢",
                     "_Engine": "⚙", "_Suo": "📡",
                     "_Fighter": "✈", "_DiveBomber": "💥", "_TorpedoBomber": "⚓",
@@ -507,7 +504,6 @@ class DetailPanel(QWidget):
                 # 用 upgrade_key 作为显示标识，保留 component_id 用于 letter 提取
                 mid = mod.get("key", mod["id"])
                 display_name = mod.get("name", mid)
-                letter = _mod_to_letter(mod["id"])
                 btn = QPushButton("")
                 btn.setFixedSize(40, 40)
                 btn.setCheckable(True)
@@ -519,8 +515,7 @@ class DetailPanel(QWidget):
                 # 加载模块图片作为按钮图标（WG：icon_module_X.png；Lesta：module_X.png）
                 img_file = UC_IMAGE_MAP.get(ut)
                 if img_file:
-                    if self._is_wg_server():
-                        img_file = f"icon_{img_file}"
+                    img_file = self._module_icon_name(img_file)
                     _qp = f"{MODULES_IMAGE_DIR}/{img_file}"
                     pixmap = QPixmap(_qp)
                     if not pixmap.isNull():
@@ -707,1745 +702,15 @@ class DetailPanel(QWidget):
                 layout.addWidget(col, stretch=1)
 
             elif section_key == "signal":  # 第3列：信号旗（6槽位，图片按钮）
-                # WG 服暂无数信号旗数据
-                try:
-                    from app.application import app as _app_ctx2
-                    _is_wg_sig = _app_ctx2.ctx.wows_type == "Wargaming"
-                except Exception:
-                    _is_wg_sig = False
-
-                col, cl = _col("信号旗")
-
-                if _is_wg_sig:
-                    # WG 服：14 种信号旗同时显示（PCEF010 无加成不显示），每种显示加成属性
-                    from models.name_mapping import Mapping as _NM_WG
-                    wg_flags = config.get("signal_flags", [])
-                    if wg_flags:
-                        wg_sig_dir = pic_path("signal_flags")
-                        WG_SIG_BTN = """
-                            QPushButton { background: #3a3a3a; border: 1px solid #555;
-                            border-radius: 4px; padding: 0; }
-                            QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                        """
-                        def _fmt_wg(mk, mv):
-                            cn = _NM_WG.MODIFIER_MAP.get(mk, mk)
-                            if isinstance(mv, dict):
-                                _st2 = config.get("shiptype_en", "") or config.get("shiptype", "")
-                                mv = mv.get(_st2) or next((v for v in mv.values() if isinstance(v, (int, float))), 1.0)
-                            try:
-                                ft = _NM_WG.format_modifier(mk, float(mv), color=True)
-                                return f"{cn}: {ft}" if ft else f"{cn}: {mv}"
-                            except (ValueError, TypeError):
-                                return f"{cn}: {mv}"
-                        wg_grid = QWidget()
-                        wgl = QGridLayout(wg_grid)
-                        wgl.setContentsMargins(0, 0, 0, 0); wgl.setSpacing(4)
-                        wgl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        for idx, f in enumerate(wg_flags):
-                            b = QPushButton()
-                            b.setFixedSize(36, 36)
-                            b.setStyleSheet(WG_SIG_BTN)
-                            img2 = f"{wg_sig_dir}/{f.get('image_key', f['mod_id'])}.png"
-                            pixf = QPixmap(img2)
-                            if not pixf.isNull():
-                                b.setIcon(QIcon(pixf.scaled(30, 30, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
-                                b.setIconSize(QSize(30, 30))
-                            else:
-                                b.setText(f['mod_id'])
-                            lines = [f"<div style='font-weight:bold;'>{f.get('name', f['mod_id'])}（{f['mod_id']}）</div>"]
-                            fl = f.get("flags", [])
-                            if fl:
-                                lines.append("<div style='color:#aaa;'>信号旗: " + " / ".join(fl) + "</div>")
-                            mod_lines = []
-                            for mk, mv in f.get("modifiers", {}).items():
-                                s = _fmt_wg(mk, mv)
-                                if s:
-                                    mod_lines.append(f"<div style='white-space:nowrap;'>{s}</div>")
-                            if mod_lines:
-                                lines.append('<hr style="border-color:#555;">')
-                                lines.extend(mod_lines)
-                            b.setToolTip(_NM_WG.rich_tooltip("".join(lines)))
-                            wgl.addWidget(b, idx // 7, idx % 7, Qt.AlignmentFlag.AlignCenter)
-                        cl.addWidget(wg_grid)
-                        hint = QLabel("14 种信号旗同时生效，悬停查看加成")
-                        hint.setStyleSheet(theme.qss("font-size:9px;color:@text_hint@;"))
-                        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        cl.addWidget(hint)
-                    else:
-                        _wg_ph = QLabel(wg_compat.signal_flag_placeholder())
-                        _wg_ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        _wg_ph.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:20px 8px;"))
-                        cl.addWidget(_wg_ph)
-                    cl.addStretch()
-                    layout.addWidget(col, stretch=1)
+                if self.is_wg():
+                    self._build_wg_signal_column(config, _col, layout)
                     continue
-
-                signal_flags_dir = pic_path("signal_flags")
-                slot_types_dir = pic_path("signal_flags/slot_types")
-                signal_slots = config.get("signal_slots", [])
-                # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-                SIG_BTN = """
-                    QPushButton { background: #3a3a3a; border: 1px solid #555;
-                    border-radius: 4px; padding: 0; }
-                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                    QPushButton:checked { background: #4a4a4a; border: 2px solid #1a73e8; }
-                """
-                RARITY_NAMES = {1: "标准", 2: "特殊", 3: "稀有", 4: "精英"}
-                from models.name_mapping import Mapping as _NM
-
-                def _fmt_mod(mk, mv):
-                    """格式化修饰符显示值"""
-                    cn = _NM.MODIFIER_MAP.get(mk, mk)
-                    if isinstance(mv, dict):
-                        _st = config.get("shiptype_en", "") or config.get("shiptype", "")
-                        mv = mv.get(_st) or next((v for v in mv.values() if isinstance(v, (int, float))), 0)
-                    if isinstance(mv, (int, float)):
-                        ft = _NM.format_modifier(mk, mv, color=True)
-                        if ft:
-                            return f"{cn}: {ft}"
-                    return f"{cn}: {mv}"
-
-                # 恢复信号旗选择的辅助函数
-                def _restore_flag(btn, flag_data, fd_dir):
-                    img_key = flag_data.get("image_key", flag_data['mod_id'])
-                    flag_img = f"{fd_dir}/{img_key}.png"
-                    btn.setChecked(True)
-                    pix = QPixmap(flag_img)
-                    if not pix.isNull():
-                        btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
-                        btn.setIconSize(QSize(36,36))
-                    btn.setText("")
-                    mods_str = ""
-                    if flag_data.get("modifiers"):
-                        items = []
-                        for mk, mv in flag_data["modifiers"].items():
-                            items.append(_fmt_mod(mk, mv))
-                        if items:
-                            mods_str = "\n" + "\n".join(items)
-                    btn.setToolTip(_NM.rich_tooltip(f"{flag_data.get('name','')}{mods_str}\n{flag_data.get('label','')}"))
-
-                # 顶部：6个槽位按钮
-                slot_grid = QWidget()
-                grid = QGridLayout(slot_grid)
-                grid.setContentsMargins(0,0,0,0); grid.setSpacing(4)
-                slot_btns: list[QPushButton] = []
-                for si, slot in enumerate(signal_slots):
-                    slot_label = slot.get('label', '')
-                    slot_img = f"{slot_types_dir}/Param{si:03d}_SlotType.png"
-                    btn = QPushButton()
-                    btn.setFixedSize(40, 40)
-                    btn.setCheckable(True)
-                    btn.setStyleSheet(SIG_BTN)
-                    btn.setToolTip(f"槽{si+1}: {slot_label}")
-                    pix = QPixmap(slot_img)
-                    if not pix.isNull():
-                        btn.setIcon(QIcon(pix.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
-                        btn.setIconSize(QSize(36,36))
-                    else:
-                        btn.setText("⬜")
-                    slot_btns.append(btn)
-                    grid.addWidget(btn, 0, si, Qt.AlignmentFlag.AlignCenter)
-                    lbl = QLabel(f"槽{si+1}")
-                    lbl.setStyleSheet(theme.qss("font-size:8px;color:@text_hint@;"))
-                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    grid.addWidget(lbl, 1, si, Qt.AlignmentFlag.AlignCenter)
-                cl.addWidget(slot_grid)
-
-                # 信号旗选择面板：预先为每个槽位创建一页
-                flag_stack = QStackedWidget()
-                flag_stack.setVisible(False)
-                flag_stack.setStyleSheet(theme.qss("QStackedWidget{background:@panel_alt@;border:1px solid @border@;border-radius:4px;max-height:300px;}"))
-                flag_stack.setMaximumWidth(220)
-                flag_stack.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-                _active_slot = [-1]  # 当前展开的槽位索引，-1=无
-                # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-                MENU_BTN = """
-                    QPushButton { background: #3a3a3a; border: none;
-                    border-radius: 3px; padding: 1px 4px; text-align: left;
-                    font-size: 10px; color: #ddd; min-height: 18px; }
-                    QPushButton:hover { background: #4a4a4a; }
-                    QPushButton:checked { background: #1a73e8; }
-                """
-                from models.name_mapping import Mapping as _NM
-
-                # 恢复之前保存的信号旗选择状态
-                self._signal_slot_btns = slot_btns
-                for si, btn in enumerate(slot_btns):
-                    if si in self._selected_signal_flags:
-                        fd = self._selected_signal_flags[si]
-                        _restore_flag(btn, fd, signal_flags_dir)
-
-                # 每个槽位一页（纵排菜单）
-                for si, slot in enumerate(signal_slots):
-                    page = QWidget()
-                    pl = QVBoxLayout(page)
-                    pl.setContentsMargins(2,2,2,2); pl.setSpacing(1)
-                    flags = slot.get("flags", [])
-                    slot_label = slot.get("label", "")
-                    slot_btn = slot_btns[si]
-
-                    # "不使用" 选项
-                    none_btn = QPushButton()
-                    none_btn.setStyleSheet(MENU_BTN)
-                    none_btn.setIcon(QIcon())  # 清除图标
-                    none_btn.setText("  ✕  不使用")
-                    none_btn.setToolTip("清除该槽位的信号旗")
-                    none_btn.clicked.connect(lambda checked=False, b=slot_btn, idx=si, st_dir=slot_types_dir, lb=slot_label: (
-                        _clear_signal_flag(b, idx, st_dir, lb),
-                        flag_stack.setVisible(False),
-                        _active_slot.__setitem__(0, -1)
-                    ))
-                    pl.addWidget(none_btn)
-
-                    for f in flags:
-                        flag_img = f"{signal_flags_dir}/{f.get('image_key', f['mod_id'])}.png"
-                        disp_name = f.get("name", f['mod_id'])
-                        rarity_label = RARITY_NAMES.get(f.get("rarity", 0), str(f.get("rarity", 0)))
-                        # tooltip：加成效果
-                        mods_str = ""
-                        if f.get("modifiers"):
-                            items = []
-                            for mk, mv in f["modifiers"].items():
-                                items.append(_fmt_mod(mk, mv))
-                            if items:
-                                mods_str = "\n" + "\n".join(items)
-                        mitem = QPushButton()
-                        mitem.setStyleSheet(MENU_BTN)
-                        pixf = QPixmap(flag_img)
-                        if not pixf.isNull():
-                            mitem.setIcon(QIcon(pixf.scaled(24,24,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
-                            mitem.setIconSize(QSize(24,24))
-                        # 显示名称 + 稀有度
-                        mitem.setText(f"  {disp_name}")
-                        mitem.setToolTip(_NM.rich_tooltip(f"{disp_name}\n{mods_str}" if mods_str else disp_name))
-                        fd = f
-                        mitem.clicked.connect(lambda checked=False, b=slot_btn, fdata=fd, lb=slot_label, fd_dir=signal_flags_dir: (
-                            _apply_signal_flag(b, fdata, lb, fd_dir),
-                            flag_stack.setVisible(False),
-                            _active_slot.__setitem__(0, -1)
-                        ))
-                        pl.addWidget(mitem)
-                    pl.addStretch()
-                    flag_stack.addWidget(page)
-
-                # 点击槽位切换选择面板（再次点击同一个关闭，点击其他自动切换）
-                def _on_slot_click(idx):
-                    # 取消其他槽位的选中状态
-                    for bi, b in enumerate(slot_btns):
-                        if bi != idx:
-                            b.setChecked(False)
-                    if _active_slot[0] == idx and flag_stack.isVisible():
-                        flag_stack.setVisible(False)
-                        _active_slot[0] = -1
-                        slot_btns[idx].setChecked(False)
-                    else:
-                        flag_stack.setCurrentIndex(idx)
-                        # 在按钮下方弹出
-                        btn = slot_btns[idx]
-                        pos = btn.mapToGlobal(btn.rect().bottomLeft())
-                        flag_stack.move(pos)
-                        flag_stack.setVisible(True)
-                        _active_slot[0] = idx
-                for si in range(len(signal_slots)):
-                    slot_btns[si].clicked.connect(lambda checked, idx=si: _on_slot_click(idx))
-
-                # 点击外部关闭弹出菜单
-                flag_stack.installEventFilter(self)
-                self._flag_stack = flag_stack
-
-                def _apply_signal_flag(btn, flag_data, slot_label, fd_dir):
-                    btn.setChecked(True)
-                    img_key = flag_data.get("image_key", flag_data['mod_id'])
-                    flag_img = f"{fd_dir}/{img_key}.png"
-                    pix2 = QPixmap(flag_img)
-                    if not pix2.isNull():
-                        btn.setIcon(QIcon(pix2.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
-                        btn.setIconSize(QSize(36,36))
-                    btn.setText("")
-                    mods_str = ""
-                    if flag_data.get("modifiers"):
-                        items = []
-                        for mk, mv in flag_data["modifiers"].items():
-                            items.append(_fmt_mod(mk, mv))
-                        if items:
-                            mods_str = "\n" + "\n".join(items)
-                    btn.setToolTip(_NM.rich_tooltip(f"{flag_data.get('name','')}{mods_str}\n{slot_label}"))
-                    # 存储选择并触发重算
-                    si = next((i for i, b in enumerate(slot_btns) if b is btn), -1)
-                    if si >= 0:
-                        self._selected_signal_flags[si] = flag_data
-                        _trigger_signal_refresh()
-
-                def _clear_signal_flag(btn, slot_idx, st_dir, slot_label):
-                    btn.setChecked(False)
-                    slot_img = f"{st_dir}/Param{slot_idx:03d}_SlotType.png"
-                    pix3 = QPixmap(slot_img)
-                    if not pix3.isNull():
-                        btn.setIcon(QIcon(pix3.scaled(36,36,Qt.KeepAspectRatio,Qt.SmoothTransformation)))
-                        btn.setIconSize(QSize(36,36))
-                    btn.setText("")
-                    btn.setToolTip(f"槽{slot_idx+1}: {slot_label}")
-                    # 清除选择并触发重算
-                    if slot_idx in self._selected_signal_flags:
-                        del self._selected_signal_flags[slot_idx]
-                        _trigger_signal_refresh()
-
-                def _trigger_signal_refresh():
-                    """将信号旗修饰符合并到升级品修饰符中一起重算"""
-                    def _merge_one(mods):
-                        if not isinstance(mods, dict):
-                            return
-                        for k, v in mods.items():
-                            if isinstance(v, dict):
-                                v = v.get(_st) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
-                            if k not in all_mods:
-                                all_mods[k] = v
-                            else:
-                                try:
-                                    ev_f, nv_f = float(all_mods[k]), float(v)
-                                    all_mods[k] = ev_f + nv_f if k in _ADDITIVE_KEYS_BASE else ev_f * nv_f
-                                except (ValueError, TypeError):
-                                    all_mods[k] = v
-
-                    all_mods = {}
-                    _st = config.get("shiptype_en", "") or config.get("shiptype", "")
-                    if hasattr(self, '_selected_mods'):
-                        for m in self._selected_mods.values():
-                            _merge_one(m.get("modifiers", {}))
-                    for fd in self._selected_signal_flags.values():
-                        _merge_one(fd.get("modifiers", {}))
-                    self._refresh_data_only(all_mods if all_mods else None)
-
-                cl.addStretch()
-                layout.addWidget(col, stretch=1)
-
+                self._build_lesta_signal_column(config, _col, layout)
             elif section_key == "commander":  # 第4列：舰长技能
-                # WG 服暂无舰长系统占位
-                try:
-                    from app.application import app as _app_ctx
-                    _is_wg = _app_ctx.ctx.wows_type == "Wargaming"
-                except Exception:
-                    _is_wg = False
-
-                col, cl = _col("舰长技能")
-
-                if _is_wg:
-                    # WG 服舰长技能架构：潜艇 4×5、其他舰种 4×6；数据按舰长技能组（crew_skill_groups）直接调取
-                    from services.skill_service import SkillService as _WG_SkillSvc
-                    _wsvc = _WG_SkillSvc()
-                    _cur_st = config.get("shiptype_en", "") or config.get("shiptype", "") or ""
-                    _ship_cn = _wsvc.get_ship_type_cn(_cur_st)
-                    _wg_cols = 5 if _cur_st == "Submarine" else 6
-                    _wg_db = _wsvc._get_db()
-                    _wg_vc = (_wg_db.get_latest_version_code() or "") if (_wg_db and _wg_db._conn) else ""
-                    # 当前舰船原始 nation（entity_registry）
-                    _nat_raw = ""
-                    if _wg_db and _wg_db._conn and _wg_vc and config.get("ship_id"):
-                        try:
-                            _nr = _wg_db._conn.execute(
-                                "SELECT nation FROM entity_registry WHERE version_code=? AND entity_id=?",
-                                (_wg_vc, config.get("ship_id"))).fetchone()
-                            _nat_raw = _nr["nation"] if _nr else ""
-                        except Exception:
-                            _nat_raw = ""
-                    # 舰长列表（该国 + Common，排除 Template/无名字），
-                    # 分类：is_unique→传奇、有强化技能(has_epic)→强化、其余→普通
-                    _crew_list: list = []
-                    _def_crew = ""
-                    if _wg_db and _wg_db._conn and _wg_vc:
-                        try:
-                            _q = ("SELECT c.crew_id, c.person_name, c.is_unique, "
-                                  "COALESCE(n.lang_zh, c.person_name, c.crew_id) AS disp, "
-                                  "(SELECT COUNT(*) FROM crew_unique_skills us "
-                                  " WHERE us.version_code=c.version_code AND us.crew_id=c.crew_id) AS us_cnt, "
-                                  "EXISTS(SELECT 1 FROM crew_skill_groups g "
-                                  "WHERE g.version_code=c.version_code AND g.crew_id=c.crew_id AND g.is_epic=1) AS has_epic "
-                                  "FROM crew_basic_info c "
-                                  "LEFT JOIN name_mappings n ON n.id = c.display_name_id "
-                                  "WHERE c.version_code=? AND c.person_name!='' "
-                                  "AND c.crew_id NOT LIKE '%Template%' AND (c.nation=? OR c.nation='Common') "
-                                  "ORDER BY c.nation, c.crew_id")
-                            _crew_list = [(r["crew_id"], r["disp"], bool(r["is_unique"]), int(r["us_cnt"]), bool(r["has_epic"]))
-                                          for r in _wg_db._conn.execute(_q, (_wg_vc, _nat_raw)).fetchall()]
-                            _dr = _wg_db._conn.execute(
-                                "SELECT crew_id FROM crew_basic_info WHERE version_code=? AND nation=? "
-                                "AND person_name='' AND crew_id LIKE '%DefaultCrew%' LIMIT 1",
-                                (_wg_vc, _nat_raw)).fetchone()
-                            _def_crew = _dr["crew_id"] if _dr else ""
-                            if not _def_crew and _crew_list:
-                                _def_crew = _crew_list[0][0]
-                        except Exception:
-                            _crew_list, _def_crew = [], ""
-                    WG_SKILL_BTN = """
-                        QPushButton { background:#2a2a2a; border:1px solid #444; border-radius:4px;
-                                      min-width:30px; min-height:30px; max-width:30px; max-height:30px;
-                                      font-size:8px; color:#ccc; padding:0px; }
-                        QPushButton:hover { background:#3a3a3a; border-color:#1a73e8; }
-                    """
-                    wg_grid = QWidget()
-                    wgl = QGridLayout(wg_grid)
-                    wgl.setContentsMargins(0, 0, 0, 0); wgl.setSpacing(3)
-                    wgl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    from models.name_mapping import Mapping as _NM_WG2
-                    from PySide6.QtGui import QPixmap as _QPixmap
-                    from PySide6.QtGui import QIcon as _QI
-                    from PySide6.QtCore import QSize as _QS
-                    from PySide6.QtWidgets import QLabel as _Qlbl
-                    from PySide6.QtWidgets import QComboBox as _QComboBox
-                    _WG_TRIGGER_COND = {
-                        "activeAirDefense": "当防空炮开火时",
-                        "entityIsVisibleTrigger": "当战舰被敌方发现时",
-                        "entityIsInvisibleTrigger": "当战舰未被敌方发现时",
-                        "activationOnBurnFlood": "战舰上每个活跃的火源和进水点",
-                        "activationOnConsumable": "当消耗品激活时",
-                        "activationOnBattery": "当使用电池动力时",
-                        "potentialDamageRatio": "每积累潜在伤害时",
-                        "visibleEnemyWithinGsTrigger": "当副炮射程内存在敌军战舰时",
-                        "atbaHeat": "存在手动选择的副炮优先目标时",
-                        "enemyWithinVisibilityTrigger": "当标准被侦查范围内有敌方战舰时",
-                        "EnemiesNotLessThanAlliesWithinGMTrigger": "当主炮射程内友方战舰不多于敌方战舰时",
-                        "activationOnDetectTrigger": "被敌方发现时",
-                    }
-
-                    # 天赋区域（传奇舰长 UniqueSkills）
-                    _wg_talent_container = QWidget()
-                    _wg_talent_layout = QHBoxLayout(_wg_talent_container)
-                    _wg_talent_layout.setContentsMargins(0, 0, 0, 0); _wg_talent_layout.setSpacing(4)
-                    _wg_talent_layout.addStretch()
-                    _WG_UNIQUE_BTN = """
-                        QPushButton { background:#1a1a1a; border:2px solid #ffc107;
-                                      border-radius:6px; min-width:52px; min-height:52px;
-                                      max-width:52px; max-height:52px;
-                                      font-size:9px; color:#ffc107; padding:0px; }
-                        QPushButton:hover { background:#2a2a2a; border-color:#ffd54f; }
-                    """
-
-                    def _wg_rebuild(crew_id: str):
-                        """按所选舰长重建技能网格（数据取自该舰长技能组）"""
-                        while wgl.count():
-                            _it = wgl.takeAt(0)
-                            if _it and _it.widget():
-                                _it.widget().deleteLater()
-                        # ── 传奇舰长天赋（UniqueSkills → crew_unique_skills）──
-                        while _wg_talent_layout.count():
-                            _tw = _wg_talent_layout.takeAt(0)
-                            if _tw and _tw.widget():
-                                _tw.widget().deleteLater()
-                        if crew_id and _wg_db and _wg_db._conn and _wg_vc:
-                            try:
-                                _ts = _wg_db._conn.execute(
-                                    "SELECT skill_key, trigger_type, max_trigger_num, effects_json, icon_path "
-                                    "FROM crew_unique_skills WHERE version_code=? AND crew_id=? ORDER BY sort_index",
-                                    (_wg_vc, crew_id)).fetchall()
-                            except Exception:
-                                _ts = []
-                            if _ts:
-                                _trig_map = getattr(_NM_WG2, 'TRIGGER_TYPE_MAP', {})
-                                _skip_trig = ("GameLogicTrigger", "Action", "Activator", "EventTrigger")
-                                _skip_meta = {"uniqueType", "percentTalent", "levelDependent", "workTime",
-                                              "fakeUniqueType", "useShipTierAsWorkTime", "speedCoefUI", "type",
-                                              "battleGroup", "isUnlimited", "maxTriggerNum", "sortIndex",
-                                              "startEnabled", "triggerAllowedShips", "triggerJoinRibbons",
-                                              "triggerRibbonsNum", "triggerRibbonsTypes", "triggerType",
-                                              "uiFeedbackMessages", "uiTriggerName"}
-                                for _tsk in _ts:
-                                    _tkey = _tsk["skill_key"]
-                                    _ttype = _tsk["trigger_type"] or ""
-                                    _icon = _tsk["icon_path"] or ""
-                                    _tbtn = QPushButton()
-                                    _tbtn.setStyleSheet(_WG_UNIQUE_BTN)
-                                    _short = _tkey.split("_")[-1] if "_" in _tkey else _tkey[:6]
-                                    if _icon:
-                                        _tp = _QPixmap(_icon)
-                                        if not _tp.isNull():
-                                            _tbtn.setIcon(_QI(_tp.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
-                                            _tbtn.setIconSize(_QS(24, 24))
-                                        else:
-                                            _tbtn.setText(_short)
-                                    else:
-                                        _tbtn.setText(_short)
-                                    # tooltip：触发条件 + 效果
-                                    _tip = ['<div style="font-size:12px;line-height:1.5;">']
-                                    _tcond = _trig_map.get(_ttype, "获得特定勋带时触发" if _ttype == "ribbons" else (_ttype or "触发"))
-                                    _tip.append(f'<div style="color:#ffc107;font-weight:bold;margin-bottom:4px;">▸ {_tcond}</div>')
-                                    try:
-                                        _eff = json.loads(_tsk["effects_json"]) if _tsk["effects_json"] else {}
-                                    except Exception:
-                                        _eff = {}
-                                    _eff_lines = []
-                                    for _ek, _ev in _eff.items():
-                                        if not isinstance(_ev, dict) or _ek.startswith(_skip_trig) or _ek in _skip_meta:
-                                            continue
-                                        _lvs = sorted(k for k in _ev if k.startswith("level_"))
-                                        _pairs = []
-                                        if _lvs:
-                                            for _lv in _lvs:
-                                                _lv_d = _ev[_lv] if isinstance(_ev[_lv], dict) else {}
-                                                for _k2, _v2 in _lv_d.items():
-                                                    if _k2 not in _skip_meta:
-                                                        _pairs.append((_k2, _v2))
-                                        else:
-                                            for _k2, _v2 in _ev.items():
-                                                if _k2 not in _skip_meta:
-                                                    _pairs.append((_k2, _v2))
-                                        for _k2, _v2 in _pairs:
-                                            _zh2 = _NM_WG2.MODIFIER_MAP.get(_k2, _k2)
-                                            if isinstance(_v2, bool):
-                                                if _v2:
-                                                    _eff_lines.append(_zh2)
-                                            elif isinstance(_v2, float):
-                                                _ft = _NM_WG2.format_modifier(_k2, _v2, color=True)
-                                                if _ft:
-                                                    _eff_lines.append(f"{_zh2}: {_ft}")
-                                            elif isinstance(_v2, int):
-                                                _ft = _NM_WG2.format_modifier(_k2, _v2, color=True)
-                                                _eff_lines.append(f"{_zh2}: {_ft}" if _ft else _zh2)
-                                    if _eff_lines:
-                                        _tip.append('<div style="color:#aaa;margin-top:4px;">效果：</div>')
-                                        for _el in _eff_lines:
-                                            _tip.append(f'<div style="color:#ddd;padding-left:8px;">{_el}</div>')
-                                    _mt = _tsk["max_trigger_num"]
-                                    if _mt:
-                                        _tip.append(f'<div style="color:#888;font-size:11px;margin-top:4px;">每场最多触发 {_mt} 次</div>')
-                                    _tip.append('</div>')
-                                    _tbtn.setToolTip(_NM_WG2.rich_tooltip("".join(_tip)))
-                                    _wg_talent_layout.insertWidget(_wg_talent_layout.count() - 1, _tbtn)
-                        _grid = (_wsvc.get_grid_skills(_ship_cn, container_id="PCOL001_CommonCrewSkills",
-                                                       ship_type_en=_cur_st, wows_type="Wargaming",
-                                                       crew_id=crew_id) if _ship_cn else [])
-                        _has = False
-                        for _r in range(4):
-                            for _c in range(_wg_cols):
-                                _b = QPushButton()
-                                _b.setFixedSize(30, 30)
-                                _b.setStyleSheet(WG_SKILL_BTN)
-                                _sk = None
-                                if _r < len(_grid) and _c < len(_grid[_r]):
-                                    _sk = _grid[_r][_c]
-                                if _sk:
-                                    _has = True
-                                    _skn = _sk.get("skill_key", "")
-                                    _icon_name = _sk.get("icon_name", "")
-                                    # 图标映射：skills/<icon_name>.png，加载失败回退文字缩写
-                                    _sicon = _QPixmap(pic_path(f"skills/{_icon_name}.png")) if _icon_name else _QPixmap()
-                                    if not _sicon.isNull():
-                                        _b.setIcon(_QI(_sicon.scaled(28, 28, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
-                                        _b.setIconSize(_QS(28, 28))
-                                    else:
-                                        _b.setText(_skn[:3])
-                                    _tt = [f"<div style='font-weight:bold;'>{_skn}</div>"]
-                                    _rar = _sk.get("rarity", "")
-                                    if _rar in ("EPIC", "LEGENDARY"):
-                                        _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(_rar, "")
-                                        _tt.append(f"<div style='color:#ff6600;'>{_tag}</div>")
-                                    # 词条属性：中文名 + 格式化数值（bool 项只显示开启名称，list/dict 等非数值跳过）
-                                    _mods = _sk.get("modifiers") or {}
-                                    if _mods:
-                                        _tt.append("<hr style='border-color:#444;margin:4px 0;'>")
-                                        for _mk, _mv in _mods.items():
-                                            _zh = _NM_WG2.MODIFIER_MAP.get(_mk, _mk)
-                                            if isinstance(_mv, bool):
-                                                if _mv:
-                                                    _tt.append(f"<div style='white-space:nowrap;'>{_zh}</div>")
-                                                continue
-                                            if not isinstance(_mv, (int, float)):
-                                                continue  # excludedConsumables 等 list 值不显示
-                                            _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
-                                            if _val:
-                                                _tt.append(f"<div style='white-space:nowrap;'>{_zh}: {_val}</div>")
-                                    # 触发条件（WG LogicTrigger.triggerType）及触发段加成
-                                    _trig = _sk.get("trigger") or {}
-                                    _ttype = _trig.get("triggerType", "")
-                                    if _ttype:
-                                        _tcond = _WG_TRIGGER_COND.get(_ttype, _ttype)
-                                        _tt.append(f"<div style='color:#ffa;margin-top:2px;font-style:italic;'>◇ {_tcond}</div>")
-                                        for _mk, _mv in (_trig.get("modifiers") or {}).items():
-                                            _zh = _NM_WG2.MODIFIER_MAP.get(_mk, _mk)
-                                            _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
-                                            if _val:
-                                                _tt.append(f"<div style='white-space:nowrap;padding-left:10px;'>{_zh}: {_val}</div>")
-                                    _b.setToolTip(_NM_WG2.rich_tooltip("".join(_tt)))
-                                    if _rar in ("EPIC", "LEGENDARY"):
-                                        _pix = _QPixmap(pic_path("icon_epic_skill.png"))
-                                        if not _pix.isNull():
-                                            _el = _Qlbl(_b)
-                                            _el.setPixmap(_pix.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                                            _el.setStyleSheet("background:transparent;")
-                                            _el.setGeometry(0, 0, 14, 14)
-                                else:
-                                    _b.setEnabled(False)
-                                wgl.addWidget(_b, _r, _c)
-                        _hint = f"{_cur_st or '通用'} · 4×{_wg_cols}"
-                        if not _has:
-                            _hint += "（该舰长无此舰种技能）"
-                        _wg_hint.setText(_hint)
-
-                    # 舰长下拉：分类组（传奇/强化/普通，标准舰长并入普通），按分类配色（同 Lesta）
-                    from PySide6.QtGui import QStandardItemModel as _QSIM, QStandardItem as _QSIt, QColor as _QCol
-                    _wg_crew_combo = _QComboBox()
-                    _wg_model = _QSIM(_wg_crew_combo)
-                    _cat_order = [("legendary", "传奇舰长", "#ffc107", "★ "),
-                                  ("epic", "强化舰长", "#26c6da", "◈ "),
-                                  ("normal", "普通舰长", None, "")]
-                    _cat_items = {k: [] for k, *_ in _cat_order}
-                    for _cid, _pname, _uniq, _us_cnt, _epic in _crew_list:
-                        if _uniq and _us_cnt > 0:
-                            _cat_items["legendary"].append((_cid, _pname))
-                        elif _epic:
-                            _cat_items["epic"].append((_cid, _pname))
-                        # 其余无强化技能的普通舰长不显示
-                    for _k, _label, _color, _prefix in _cat_order:
-                        _items = _cat_items[_k]
-                        # 普通舰长分类：只保留标准舰长（DefaultCrew），其余无强化技能普通舰长不显示
-                        if _k == "normal":
-                            _items = [(_def_crew, "普通舰长")] if _def_crew else []
-                        # 同 Lesta：无分类标题/分隔线，直接以彩色前缀分组
-                        for _cid, _pname in _items:
-                            _it = _QSIt(f"{_prefix}{_pname}")
-                            if _color:
-                                _it.setForeground(_QCol(_color))
-                            _it.setData(_cid, Qt.ItemDataRole.UserRole)
-                            _wg_model.appendRow(_it)
-                    _wg_crew_combo.setModel(_wg_model)
-                    if _def_crew:
-                        _di = _wg_crew_combo.findData(_def_crew)
-                        if _di >= 0:
-                            _wg_crew_combo.setCurrentIndex(_di)
-                    _wg_crew_combo.setStyleSheet(theme.qss("QComboBox{font-size:11px;min-height:22px;}"))
-                    _wg_crew_combo.currentIndexChanged.connect(
-                        lambda _i: _wg_rebuild(_wg_crew_combo.itemData(_i) or ""))
-                    cl.addWidget(_wg_crew_combo)
-                    cl.addWidget(_wg_talent_container)
-                    cl.addWidget(wg_grid)
-                    _wg_hint = QLabel()
-                    _wg_hint.setStyleSheet(theme.qss("font-size:9px;color:@text_hint@;"))
-                    _wg_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    cl.addWidget(_wg_hint)
-                    _wg_rebuild(_wg_crew_combo.itemData(_wg_crew_combo.currentIndex()) or "")
-                    cl.addStretch()
-                    layout.addWidget(col, stretch=1)
+                if self.is_wg():
+                    self._build_wg_commander_column(config, _col, layout)
                     continue
-
-                # ── 按国籍查询可用舰长 ──
-                ship_nation = config.get("nation", "")
-                # nation映射：中文名→数据库nation code
-                from models.name_mapping import Mapping as _NM
-                _rev_nation = {v: k for k, v in _NM.NATION_MAP.items()}
-                db_nation = _rev_nation.get(ship_nation, ship_nation)
-
-                from PySide6.QtWidgets import QComboBox
-                # ── 舰长选择行：下拉框 + 自定义按钮 ──
-                crew_row = QWidget()
-                crew_row_layout = QHBoxLayout(crew_row)
-                crew_row_layout.setContentsMargins(0,0,0,0); crew_row_layout.setSpacing(4)
-
-                self._crew_combo = QComboBox()
-                # 关键步骤：显式设置 QListView，确保滚轮事件与滚动条响应正常
-                self._crew_combo.setView(QListView())
-                self._crew_combo.setMaxVisibleItems(6)
-
-                # 现代化下拉框样式：圆角 + 主题色 + 圆角下拉箭头按钮（与全局 QComboBox 风格一致）
-                self._crew_combo.setStyleSheet(theme.qss("""
-                    QComboBox {
-                        font-size: 11px;
-                        padding: 3px 6px;
-                        background: @input_bg@;
-                        color: @text@;
-                        border: 1px solid @border@;
-                        border-radius: 3px;
-                        selection-background-color: @selected_bg@;
-                        selection-color: @selected_fg@;
-                    }
-                    QComboBox::drop-down {
-                        subcontrol-origin: padding;
-                        subcontrol-position: top right;
-                        width: 18px;
-                        border-left: 1px solid @border@;
-                        border-top-right-radius: 3px;
-                        border-bottom-right-radius: 3px;
-                        background: @panel_alt@;
-                    }
-                    QComboBox::down-arrow {
-                        image: url(:/resources/pictures/ui/combo_arrow.png);
-                        width: 10px;
-                        height: 10px;
-                    }
-                    QComboBox QAbstractItemView {
-                        min-width: 200px;
-                        background: @panel_bg@;
-                        color: @text@;
-                        selection-background-color: @selected_bg@;
-                        selection-color: @selected_fg@;
-                        border: 1px solid @border@;
-                        outline: none;
-                        padding: 2px;
-                    }
-                    /* 明确指定垂直滚动条样式与宽度 */
-                    QComboBox QAbstractItemView QScrollBar:vertical {
-                        width: 10px;
-                        background: @panel_alt@;
-                        border: none;
-                        margin: 0px;
-                        border-radius: 5px;
-                    }
-                    QComboBox QAbstractItemView QScrollBar::handle:vertical {
-                        background: @scroll_handle@;
-                        min-height: 20px;
-                        border-radius: 5px;
-                        margin: 2px;
-                    }
-                    QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {
-                        background: @scroll_handle_hover@;
-                    }
-                    QComboBox QAbstractItemView QScrollBar::add-line:vertical,
-                    QComboBox QAbstractItemView QScrollBar::sub-line:vertical {
-                        height: 0px;
-                        background: none;
-                    }
-                    QComboBox QAbstractItemView QScrollBar::add-page:vertical,
-                    QComboBox QAbstractItemView QScrollBar::sub-page:vertical {
-                        background: none;
-                    }
-                """))
-                self._crew_data: list[dict] = []  # 存储所有舰长条目
-
-                self._crew_customize_btn = QPushButton("✎")
-                self._crew_customize_btn.setToolTip("自定义舰长技能/天赋")
-                # 老版本(v3.2.2-test1)样式：固定深色底+黄色文字
-                self._crew_customize_btn.setStyleSheet("""
-                    QPushButton { background:#3a3a3a; border:1px solid #ffc107; border-radius:3px;
-                                  min-width:24px; max-width:24px; min-height:24px; max-height:24px;
-                                  font-size:13px; color:#ffc107; padding:0px; }
-                    QPushButton:hover { background:#4a4a4a; border-color:#ffd54f; }
-                    QPushButton:disabled { background:#2a2a2a; border-color:#555; color:#555; }
-                """)
-                self._crew_customize_btn.setEnabled(False)
-
-                crew_row_layout.addWidget(self._crew_combo, 1)
-                crew_row_layout.addWidget(self._crew_customize_btn)
-                cl.addWidget(crew_row)
-
-                # 查库：该国 + 通用的非模板舰长
-                from services.database_service import get_db
-                _db = get_db()
-                _crew_list = []
-                if _db and _db._conn:
-                    try:
-                        cur = _db._conn.execute("""
-                            SELECT c.crew_id, c.nation, c.is_unique, c.is_person, c.is_elite,
-                                   c.skills_container,
-                                   COALESCE(n.lang_zh, c.person_name, c.crew_id) as disp,
-                                   (SELECT COUNT(*) FROM crew_unique_skills us
-                                    WHERE us.version_code=c.version_code AND us.crew_id=c.crew_id) as unique_skill_count
-                            FROM crew_basic_info c
-                            LEFT JOIN name_mappings n ON n.id=c.display_name_id
-                                                       OR (n.category='crew' AND n.key_name='IDS_' || UPPER(c.person_name))
-                            WHERE c.nation IN (?, 'Common') AND c.person_name != ''
-                              AND c.crew_id NOT LIKE '%Template%'
-                            ORDER BY c.is_unique DESC, c.is_elite DESC, c.is_person DESC
-                        """, (db_nation,))
-                        _crew_list = [dict(r) for r in cur.fetchall()]
-                    except Exception as exc:
-                        try:
-                            from app.signals import bus
-                            bus.log_message.emit(f"⚠️ 舰长列表查询失败: {exc}")
-                        except Exception:  # noqa: BLE001
-                            pass
-
-                # 填充下拉框：按分类分组
-                self._crew_data = []
-                from PySide6.QtGui import QStandardItemModel, QStandardItem, QColor
-                _model = QStandardItemModel(self._crew_combo)
-
-                def _colored_item(text: str, color: str) -> QStandardItem:
-                    it = QStandardItem(text)
-                    it.setForeground(QColor(color))
-                    return it
-
-
-                # ── 传奇舰长（有国家天赋） ──
-                legends = [cd for cd in _crew_list if cd['is_unique'] and cd['unique_skill_count'] > 0]
-                # ── 特殊舰长（is_unique 但有独立技能组） ──
-                specials = [cd for cd in _crew_list if cd['is_unique'] and cd['unique_skill_count'] == 0]
-                # ── 有独立技能容器的通用舰长（如 PCW 系列自定义 PCOL） ──
-                named_regulars = [cd for cd in _crew_list if not cd['is_unique'] and cd.get('skills_container')
-                                  and cd['skills_container'] != 'PCOL001_CommonCrewSkills']
-                # ── 普通舰长（默认技能组） ──
-                generic_regulars = [cd for cd in _crew_list if not cd['is_unique']
-                                    and (not cd.get('skills_container') or cd['skills_container'] == 'PCOL001_CommonCrewSkills')]
-                
-                if legends:
-                    for cd in legends:
-                        self._crew_data.append(cd)
-                        _model.appendRow(_colored_item(f"★ {cd['disp']}", "#ffc107"))
-
-                # ── 精英舰长（自定义入口，红色） ──
-                elite_entry = {
-                    'crew_id': '__elite__',
-                    'nation': db_nation,
-                    'is_unique': 0,
-                    'is_person': 0,
-                    'is_elite': 0,
-                    'disp': '精英舰长',
-                    'unique_skill_count': 0,
-                }
-                self._crew_data.append(elite_entry)
-                _model.appendRow(_colored_item("♦ 精英舰长", "#e53935"))
-                
-                if specials:
-                    for cd in specials:
-                        self._crew_data.append(cd)
-                        _model.appendRow(_colored_item(f"◆ {cd['disp']}", "#42a5f5"))
-
-                # ── 有独立 PCOL 的通用舰长（特殊通用舰长，青色标识） ──
-                if named_regulars:
-                    for cd in named_regulars:
-                        self._crew_data.append(cd)
-                        _model.appendRow(_colored_item(f"◈ {cd['disp']}", "#26c6da"))
-
-                # 自定义稀有舰长（蓝色，始终显示）
-                custom_entry = {
-                    'crew_id': '__custom__',
-                    'nation': db_nation,
-                    'is_unique': 0,
-                    'is_person': 0,
-                    'is_elite': 0,
-                    'disp': '自定义稀有舰长',
-                    'unique_skill_count': 0,
-                }
-                self._crew_data.append(custom_entry)
-                _model.appendRow(_colored_item("◆ ✎ 自定义稀有舰长", "#42a5f5"))
-
-                # ── 标准舰长（默认技能组） ──
-                if generic_regulars:
-                    std_entry = {
-                        'crew_id': '__standard__',
-                        'nation': db_nation,
-                        'is_unique': 0,
-                        'is_person': 0,
-                        'is_elite': 0,
-                        'disp': '标准舰长',
-                        'unique_skill_count': 0,
-                    }
-                    self._crew_data.append(std_entry)
-                    _model.appendRow(QStandardItem("标准舰长"))
-
-                self._crew_combo.setModel(_model)
-
-                # ── 传奇舰长天赋按钮区域 ──
-                self._unique_skill_container = QWidget()
-                self._us_layout = QHBoxLayout(self._unique_skill_container)
-                self._us_layout.setContentsMargins(0,0,0,0); self._us_layout.setSpacing(4)
-                self._us_layout.addStretch()
-                cl.addWidget(self._unique_skill_container)
-
-                # ── 技能点数 ──
-                self._skill_pts_label = QLabel("技能点数: 0 / 21")
-                self._skill_pts_label.setStyleSheet(theme.qss("font-size:10px; color:@text_muted@; padding:2px 0;"))
-                cl.addWidget(self._skill_pts_label)
-
-                # ── 技能按钮网格：以当前舰船舰种为准 ──
-                cur_shiptype = config.get("shiptype_en", "") or config.get("shiptype", "") or "通用"
-                from services.skill_service import SkillService
-                _skill_svc = SkillService()
-                ship_cn = _skill_svc.get_ship_type_cn(cur_shiptype)
-
-                # 技能容器默认使用标准舰长配置，切换舰长时 _on_crew_changed 会自动更新
-                _default_pcol = "PCOL001_CommonCrewSkills"
-                _db_vc = _db.get_latest_version_code() if _db else ""
-
-                grid_skills = _skill_svc.get_grid_skills(ship_cn, container_id=_default_pcol, ship_type_en=cur_shiptype) if ship_cn else []
-                # 如果默认选中 elite/custom，加载 EPIC 配置
-                if self._crew_data and len(self._crew_data) > 0:
-                    _first = self._crew_data[0]
-                    if _first and _first['crew_id'] in ('__elite__', '__custom__'):
-                        _cached_init = DetailPanel._crew_custom_cache.get(_first['crew_id'], {})
-                        self._apply_epic_overrides(grid_skills, _cached_init.get("epic", []),
-                                                    skill_svc=_skill_svc, ship_type_en=cur_shiptype)
-
-                TIER_COST = {0: 1, 1: 2, 2: 3, 3: 4}  # 每层花费点数 = 层数
-                MAX_POINTS = 21
-                skill_btns: list[list[QPushButton]] = [[], [], [], []]  # 按行(层)分组
-                selected_tier_spent = [0, 0, 0, 0]  # 每层已花点数
-
-                # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-                SKILL_BTN = """
-                    QPushButton { background:#2a2a2a; border:1px solid #444; border-radius:4px;
-                                  min-width:32px; min-height:32px; max-width:32px; max-height:32px;
-                                  font-size:9px; color:#ccc; padding:0px; }
-                    QPushButton:hover { background:#3a3a3a; border-color:#1a73e8; }
-                    QPushButton:checked { background:#1a73e8; color:#fff; border-color:#1a73e8; }
-                """
-
-                from models.name_mapping import Mapping as _NM
-                _MODIFIER_MAP = getattr(_NM, 'MODIFIER_MAP', {})
-                _MM = _MODIFIER_MAP
-                _RIBBON_NAMES = getattr(_NM, 'RIBBON_MAP_CREW', {})
-
-                def _format_trigger_cond(ttype: str, divider: float, trigger: dict | None = None) -> str:
-                    """格式化触发条件描述（trigger 可选，用于补充具体细节，避免重复显示）"""
-                    cond_map = {
-                        "potentialDamageRatio": f"每积累 {divider:.0f} 潜在伤害时触发1次",
-                        "entityIsInvisibleTrigger": "当战舰未被敌方发现时",
-                        "activeAirDefense": "当防空炮开火时",
-                        "visibleEnemyWithinGsTrigger": "当副炮射程内存在敌军战舰时",
-                        "activationOnBurnFlood": "战舰上每个活跃的火源和进水点",
-                        "atbaHeat": "存在手动选择的副炮优先目标时",
-                        "enemyWithinVisibilityTrigger": "当战舰的标准被侦查范围内有敌方战舰时",
-                        "EnemiesNotLessThanAlliesWithinGMTrigger": "当主炮射程范围内的友方战舰不多于敌方战舰时",
-                        "entityIsVisibleTrigger": "当战舰被敌方发现时",
-                        "activationOnDetectTrigger": "被敌方发现时",
-                        "assistDamageRatio": f"每积累 {divider:.0f} 团队协助伤害时触发1次",
-                        "torpedoHit": "当鱼雷命中时触发",
-                        "mainCaliberHit": "当主炮命中时触发",
-                        "secondaryCaliberHit": "当副炮命中时触发",
-                        "planeAttack": "当飞机攻击时触发",
-                        "fireChance": "当起火时触发",
-                        "floodChance": "当进水时触发",
-                    }
-                    if ttype == "activationOnRibbons":
-                        # 合并勋带类型/次数/持续时间到同一行，避免重复显示
-                        _tr = trigger or {}
-                        _rib_types = _tr.get("triggerRibbonsTypes", [])
-                        _rib_num = _tr.get("triggerRibbonsNum", 1)
-                        _dur = _tr.get("duration", 0)
-                        _rib_labels = [_RIBBON_NAMES.get(str(t), f"勋带{t}") for t in _rib_types]
-                        if _rib_labels:
-                            _cond = "获得" + "、".join(_rib_labels)
-                            if _rib_num > 1:
-                                _cond += f" {_rib_num}次"
-                            if _dur > 0:
-                                _cond += f"后 {_dur:.0f} 秒内"
-                            return _cond
-                        return "获得特定勋带时触发"
-                    if ttype == "activationOnPingTargetsCount":
-                        return "每用声呐标记一艘敌舰时"
-                    if ttype == "activationOnEntityVisibilityFlags":
-                        return "当被敌人发现或被敌方潜艇的被动声呐探测时"
-                    if ttype == "submarineHydrophone":
-                        return "当战舰位于潜望镜深度或工作深度时"
-                    if ttype == "activationOnBuoyancyState":
-                        # 合并具体深度状态到同一行，避免重复显示
-                        _tr = trigger or {}
-                        _states = _tr.get("buoyancyStates", [])
-                        if _states:
-                            _depth_names = getattr(_NM, 'DEPTH_MAP', {})
-                            _labels = [_depth_names.get(s, s) for s in _states]
-                            return f"当战舰位于{'或'.join(_labels)}时"
-                        return "处于特定深度状态时"
-                    return cond_map.get(ttype, f"触发条件: {ttype} ({divider})")
-
-                def _format_skill_mod(mods: dict, st: str) -> list[str]:
-                    """格式化技能加成描述，返回每行一条的列表"""
-                    _mm = _MM
-                    # 特殊修饰符覆盖描述
-                    _desc_override = {
-                        "restoreForsage": "完全恢复舰载机中队飞机最后一个攻击编队的引擎加力",
-                        "fireResistanceEnabled": "最大火灾次数 <span style=\"color:#4caf50;\">-1</span>",
-                    }
-                    # 隐藏的修饰符（不在技能提示中显示）
-                    _hidden_mods = {"torpedoDetectionCoefficientByPlane"}
-                    _hidden_prefixes = ("massHeal", "vampireDamage")
-                    # 按战舰等级区分的修饰符
-                    _tier_based_keys = {
-                        "callFightersAdditionalPlanesHighLevel",
-                        "callFightersAdditionalPlanesLowLevel",
-                    }
-                    _ship_tier = config.get("tier", 0) or 0
-                    # 合并显示的修饰符
-                    _burn_chance_shown = False
-                    # 检查当前舰船是否携带截击机
-                    _is_interceptor = None
-                    _ship_id = config.get("ship_id", "")
-                    if _db and _db._conn and _ship_id:
-                        try:
-                            _vc = _db.get_latest_version_code() or ""
-                            _rows = _db._conn.execute("""
-                                SELECT DISTINCT 1 FROM ship_consumable_slots scs
-                                JOIN consumable_configs cc ON cc.version_code=scs.version_code
-                                    AND cc.consumable_id=scs.consumable_id AND cc.config_key=scs.config_key
-                                WHERE scs.version_code=? AND scs.ship_id=?
-                                  AND cc.consumable_type IN ('fighter','callFighters')
-                                  AND json_extract(cc.extra_json, '$.isInterceptor') = 1
-                                LIMIT 1
-                            """, (_vc, _ship_id)).fetchone()
-                            _is_interceptor = _rows is not None
-                        except Exception:
-                            pass
-                    lines = []
-                    for mk, mv in mods.items():
-                        if mk in _desc_override:
-                            lines.append(_desc_override[mk])
-                            continue
-                        if mk in _hidden_mods:
-                            continue
-                        if mk.startswith(_hidden_prefixes):
-                            continue
-                        # 等级区分修饰符：按当前舰船等级过滤
-                        if mk == "callFightersAdditionalPlanesHighLevel" and _ship_tier < 8:
-                            continue
-                        if mk == "callFightersAdditionalPlanesLowLevel" and _ship_tier >= 8:
-                            continue
-                        # burnChanceFactor 高低级合并显示
-                        # 「造成起火的几率」为进攻属性：降低=减益(红)，升高=增益(绿)，不取反
-                        if mk in ("burnChanceFactorHighLevel", "burnChanceFactorLowLevel"):
-                            if not _burn_chance_shown:
-                                _burn_chance_shown = True
-                                _add_mod_line(lines, "应用加成前，造成起火的几率", mv)
-                            continue
-                        # 按截击机/巡逻战斗机动态调整标签
-                        if mk in ("callFightersWorkTimeCoeff", "callFightersAdditionalConsumables"):
-                            if _is_interceptor is True:
-                                zh = "截击机消耗品作用时间" if mk == "callFightersWorkTimeCoeff" else "截击机消耗品装载数"
-                            elif _is_interceptor is False:
-                                zh = "巡逻战斗机消耗品作用时间" if mk == "callFightersWorkTimeCoeff" else "巡逻战斗机消耗品装载数"
-                            else:
-                                zh = _mm.get(mk, mk)
-                        elif mk in ("uwCoeffBonus", "prioritySectorStrengthBonus", "ignorePTZBonus"):
-                            zh = _mm.get(mk, mk)
-                            # 整数百分比（如 7 = +7%，25 = +25%）
-                            _add_mod_line(lines, zh, mv, _force_pct=True, mod_key=mk)
-                            continue
-                        elif mk == "dcSplashSizeMultiplier":
-                            # 同时显示两条描述
-                            _add_mod_line(lines, "攻击潜艇时炮弹的爆炸半径", mv)
-                            _add_mod_line(lines, "深水炸弹对战舰、鱼雷和水雷的爆炸半径", mv)
-                            continue
-                        elif mk == "lastChanceReloadCoefficient":
-                            # 每失去1%生命值的变化（按舰种区分）
-                            _pct = f"{mv:.2f}%"
-                            if st == "Submarine":
-                                _weapons = [
-                                    "鱼雷发射管装填时间",
-                                    "深水炸弹装填时间",
-                                ]
-                            else:
-                                _weapons = [
-                                    "主炮装填时间",
-                                    "鱼雷发射管装填时间",
-                                    "深水炸弹装填时间",
-                                    "空袭和支援中队装填时间",
-                                    "副炮装填时间",
-                                    "防空持续伤害",
-                                ]
-                            for i, _w in enumerate(_weapons):
-                                _sign = "+" if i == len(_weapons) - 1 else "-"
-                                # 装填时间降低/防空持续伤害提升均视为增益 → 绿色
-                                _clr = "#4caf50"
-                                lines.append(f'{_w}  <span style="color:{_clr};">{_sign}{_pct}</span>')
-                            continue
-                        elif mk == "shootShiftBatteryLastChanceCoeff":
-                            # 每消耗1%下潜能力的变化
-                            _pct = f"+{mv:.2f}%"
-                            # 敌方对我炮击误差增大 → 增益 → 绿色
-                            lines.append(f'被敌方炮弹攻击的误差  <span style="color:#4caf50;">{_pct}</span>')
-                            continue
-                        elif mk == "batteryRegenBatteryLastChanceCoeff":
-                            # 每消耗1%下潜能力的变化
-                            _pct = f"+{mv:.2f}%"
-                            # 下潜能力恢复提升 → 增益 → 绿色
-                            lines.append(f'每秒下潜能力恢复  <span style="color:#4caf50;">{_pct}</span>')
-                            continue
-                        elif mk in ("GMHECSDamageCoeff", "GMSHECSDamageCoeff"):
-                            # 高爆和半穿甲弹分开显示
-                            if isinstance(mv, dict):
-                                _he = mv.get("HE", mv.get("he", None))
-                                _cs = mv.get("CS", mv.get("cs", mv.get("SAP", None)))
-                                if _he is not None:
-                                    _add_mod_line(lines, "高爆弹伤害", _he, mod_key=mk)
-                                if _cs is not None:
-                                    _add_mod_line(lines, "半穿甲弹伤害", _cs, mod_key=mk)
-                            else:
-                                _add_mod_line(lines, _mm.get(mk, mk), mv, mod_key=mk)
-                            continue
-                        else:
-                            zh = _mm.get(mk, mk)
-                        # 小数值百分比加成（如起火率 0.05 = +5.00%）
-                        _pct_keys = {"bombBurnChanceBonus", "rocketBurnChanceBonus",
-                                     "artilleryBurnChanceBonus", "burnChanceBonus"}
-                        if isinstance(mv, dict):
-                            # 按当前舰种过滤
-                            if st and st in mv:
-                                v = mv[st]
-                                _add_mod_line(lines, zh, v, _force_pct=(mk in _pct_keys), mod_key=mk)
-                            else:
-                                for k, v in mv.items():
-                                    if isinstance(v, (int, float)):
-                                        _add_mod_line(lines, f"{zh} ({k})", v, _force_pct=(mk in _pct_keys), mod_key=mk)
-                                        break
-                        else:
-                            _add_mod_line(lines, zh, mv, _force_pct=(mk in _pct_keys), mod_key=mk)
-                    return lines
-
-                def _add_mod_line(lines, label, v, _force_pct=False, mod_key="", _neg=False):
-                    """添加一行修饰符描述（统一：标签 + 带颜色数值，增益绿/减益红）
-                    _neg=True 时方向取反（负值=增益，如起火率降低）。"""
-                    def _c(text, gain):
-                        clr = "#4caf50" if gain else "#f44336"
-                        return f'<span style="color:{clr};">{text}</span>'
-                    if isinstance(v, bool):
-                        lines.append(f"启用 {label}" if v else label)
-                    elif isinstance(v, (int, float)):
-                        if mod_key:
-                            from models.name_mapping import Mapping as _NMAP_FMT2
-                            ft = _NMAP_FMT2.format_modifier(mod_key, v, color=True)
-                            if ft:
-                                lines.append(f"{label} {ft}")
-                        elif _force_pct:
-                            text = f"+{v:.2f}%" if v >= 0 else f"{v:.2f}%"
-                            lines.append(f"{label} {_c(text, (v >= 0) != _neg)}")
-                        elif isinstance(v, float) and v < 2.0:
-                            pct = (v - 1.0) * 100
-                            lines.append(f"{label} {_c(f'{pct:+.2f}%', (pct >= 0) != _neg)}")
-                        elif isinstance(v, int) or (isinstance(v, float) and v == int(v)):
-                            _iv = int(v)
-                            lines.append(f"{label} {_c(f'{_iv:+.0f}', (_iv >= 0) != _neg)}")
-                        else:
-                            lines.append(f"{label} {_c(f'{v:+.2f}', (v >= 0) != _neg)}")
-                    return lines
-                    return "\n".join(lines)
-
-                def _update_skill_state():
-                    remaining = MAX_POINTS - sum(selected_tier_spent)
-                    # 逐层检查解锁状态
-                    for tier in range(4):
-                        tier_locked = False
-                        if tier > 0 and selected_tier_spent[tier - 1] < TIER_COST[tier - 1]:
-                            tier_locked = True  # 上层未点至少1个技能
-                        if tier_locked:
-                            # 锁定层：清除已选
-                            for ci, btn in enumerate(skill_btns[tier]):
-                                if btn.isChecked():
-                                    btn.setChecked(False)
-                                    _pos_key = f"{tier}-{ci}"
-                                    if hasattr(self, '_selected_skill_mods'):
-                                        self._selected_skill_mods.pop(_pos_key, None)
-                                btn.setEnabled(False)
-                            selected_tier_spent[tier] = 0
-                            continue
-                        for btn in skill_btns[tier]:
-                            cost = TIER_COST[tier]
-                            if btn.isChecked():
-                                btn.setEnabled(True)  # 已选的保持可选
-                            elif remaining >= cost:
-                                btn.setEnabled(True)
-                            else:
-                                btn.setEnabled(False)
-                    total_spent = sum(selected_tier_spent)
-                    self._skill_pts_label.setText(f"技能点数: {total_spent} / {MAX_POINTS}")
-
-                def _make_skill_click(tier: int, col: int, btn: QPushButton, sk_mods: dict, sk_trigger: dict):
-                    def _on_click(checked: bool):
-                        cost = TIER_COST[tier]
-                        if checked:
-                            selected_tier_spent[tier] += cost
-                        else:
-                            selected_tier_spent[tier] -= cost
-                        _update_skill_state()
-                        # 跟踪技能修饰符，触发数据重算
-                        _pos_key = f"{tier}-{col}"
-                        if not hasattr(self, '_selected_skill_mods'):
-                            self._selected_skill_mods = {}
-                        if checked:
-                            # 合并 trigger 段 modifiers
-                            _merged = dict(sk_mods)
-                            if sk_trigger:
-                                _tmods = sk_trigger.get("modifiers", {})
-                                if _tmods:
-                                    _merged.update(_tmods)
-                            self._selected_skill_mods[_pos_key] = _merged
-                        else:
-                            self._selected_skill_mods.pop(_pos_key, None)
-                        # 合并升级品+技能所有修饰符
-                        if not hasattr(self, '_skill_debounce_timer'):
-                            from PySide6.QtCore import QTimer
-                            self._skill_debounce_timer = QTimer(self)
-                            self._skill_debounce_timer.setSingleShot(True)
-                            self._skill_debounce_timer.setInterval(80)
-                            self._skill_debounce_timer.timeout.connect(_rebuild_with_skills)
-                        if self._skill_debounce_timer.isActive():
-                            self._skill_debounce_timer.stop()
-                        self._skill_debounce_timer.start()
-                    return _on_click
-
-                def _rebuild_with_skills():
-                    """合并升级品和技能修饰符并触发数据重算（仅刷新下方数据区）"""
-                    _cur_ship_type = ""
-                    if hasattr(self, '_current_analyzed') and self._current_analyzed:
-                        _cb = self._current_analyzed.get("config_bar", {})
-                        _cur_ship_type = _cb.get("shiptype_en", "") if isinstance(_cb, dict) else ""
-                    all_mods: dict = {}
-                    # 升级品修饰符
-                    for m in getattr(self, '_selected_mods', {}).values():
-                        mod_dict = m.get("modifiers", {})
-                        for k, v in mod_dict.items():
-                            if isinstance(v, dict):
-                                v = v.get(_cur_ship_type) or next((x for x in v.values() if isinstance(x, (int, float))), 1.0)
-                            if k not in all_mods:
-                                all_mods[k] = v
-                            else:
-                                try:
-                                    ev_f, nv_f = float(all_mods[k]), float(v)
-                                    if k in _ADDITIVE_KEYS_BASE:
-                                        all_mods[k] = ev_f + nv_f
-                                    else:
-                                        all_mods[k] = ev_f * nv_f
-                                except (ValueError, TypeError):
-                                    all_mods[k] = v
-                    self._refresh_data_only(all_mods if all_mods else None)
-
-                skill_grid = QWidget()
-                grid = QGridLayout(skill_grid)
-                grid.setContentsMargins(2,2,2,2); grid.setSpacing(2)
-
-                def _rebuild_buttons():
-                    """完全重建所有技能按钮（清除旧按钮 + 重新创建）"""
-                    # 清除旧按钮
-                    while grid.count():
-                        _item = grid.takeAt(0)
-                        if _item and _item.widget():
-                            _item.widget().deleteLater()
-                    for _r in range(4):
-                        skill_btns[_r].clear()
-                    for _r in range(4):
-                        selected_tier_spent[_r] = 0
-
-                    for row in range(4):
-                        for col_idx in range(6):
-                            skill_data = grid_skills[row][col_idx] if row < len(grid_skills) and col_idx < len(grid_skills[row]) else None
-                            sk_key = ""
-                            mods = {}
-                            icon_name = ""
-                            trigger = {}
-                            rarity = ""
-                            if skill_data:
-                                sk_key = skill_data.get('skill_key', '')
-                                mods = skill_data.get('modifiers', {})
-                                icon_name = skill_data.get('icon_name', '')
-                                trigger = skill_data.get('trigger', {})
-                                rarity = skill_data.get('rarity', '')
-                            else:
-                                # 无 DB 数据时从网格映射取图标名
-                                for st, skills in _skill_svc._grid_map.items():
-                                    pos_key = f"{row+1}-{col_idx+1}"
-                                    if pos_key in skills:
-                                        icon_name = skills[pos_key]
-                                        break
-                            # 尝试加载图标
-                            pix = None
-                            if icon_name:
-                                icon_path = pic_path(f"skills/{icon_name}.png")
-                                pix = QPixmap(icon_path)
-                                if pix.isNull():
-                                    pix = None
-                            btn = QPushButton()
-                            if pix and not pix.isNull():
-                                btn.setIcon(QIcon(pix))
-                                btn.setIconSize(QSize(28, 28))
-                            else:
-                                short = sk_key[:6] if sk_key else f"{row*6+col_idx+1}"
-                                btn.setText(short)
-                            btn.setCheckable(True)
-                            if rarity in ("EPIC", "LEGENDARY"):
-                                btn.setStyleSheet(SKILL_BTN)
-                                # 左上角 EPIC 标记
-                                _epic_pix = QPixmap(pic_path("icon_epic_skill.png"))
-                                if not _epic_pix.isNull():
-                                    _epic_label = QLabel(btn)
-                                    _epic_pix_scaled = _epic_pix.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                                    _epic_label.setPixmap(_epic_pix_scaled)
-                                    _epic_label.setStyleSheet("background:transparent;")
-                                    _epic_label.setGeometry(0, 0, 14, 14)
-                            else:
-                                btn.setStyleSheet(SKILL_BTN)
-                            # tooltip：查询本地化标题和描述
-                            skill_name = ""
-                            skill_desc = ""
-                            if icon_name and _db:
-                                try:
-                                    lookup_key = icon_name.lower()
-                                    cur = _db._conn.execute(
-                                        "SELECT lang_zh FROM name_mappings WHERE category=? AND key_name=?",
-                                        ("skill_title", lookup_key)
-                                    )
-                                    db_row = cur.fetchone()
-                                    if db_row:
-                                        skill_name = db_row["lang_zh"]
-                                    cur = _db._conn.execute(
-                                        "SELECT lang_zh FROM name_mappings WHERE category=? AND key_name=?",
-                                        ("skill_desc", lookup_key)
-                                    )
-                                    db_row = cur.fetchone()
-                                    if db_row:
-                                        skill_desc = db_row["lang_zh"]
-                                except Exception:
-                                    pass
-                            if sk_key:
-                                title = skill_name if skill_name else sk_key
-                                if rarity in ("EPIC", "LEGENDARY"):
-                                    _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(rarity, "")
-                                    title = f'{title} <span style="color:#ff6600; font-weight:normal;">{_tag}</span>'
-                                tip_lines = [f'<div style="font-size:11px; line-height:1.4;"><b>{title}</b>']
-                                if skill_desc:
-                                    # 字面 \n（未解析转义）与真实换行符 → 富文本换行
-                                    _desc = skill_desc.replace("\\n", "<br/>").replace("\n", "<br/>")
-                                    tip_lines.append(f'<div style="color:#ccc; margin-top:2px;">{_desc}</div>')
-                                # 特定技能不做加成词条显示
-                                _skip_mod_skills = {"detection_alert", "detection_aiming", "planes_forsage_renewal", "maneuverability", "detection_direction", "depth_charge_bomber_alert", "submarine_danger_alert"}
-                                _trig_mods = (trigger or {}).get("modifiers", {}) or {}
-                                if mods and icon_name not in _skip_mod_skills:
-                                    tip_lines.append('<hr style="border-color:#444; margin:4px 0;">')
-                                    for _ml in _format_skill_mod(mods, cur_shiptype):
-                                        tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
-                                # 触发条件与触发段加成
-                                if trigger and trigger.get("triggerType"):
-                                    ttype = trigger.get("triggerType", "")
-                                    divider = trigger.get("dividerValue", 1.0)
-                                    tmods = trigger.get("modifiers", {})
-                                    if tmods:
-                                        cond_text = _format_trigger_cond(ttype, divider, trigger)
-                                        tip_lines.append(f'<div style="color:#ffa; margin-top:2px; font-style:italic;">◇ {cond_text}</div>')
-                                        for _tl in _format_skill_mod(tmods, cur_shiptype):
-                                            tip_lines.append(f'<div style="color:#aaa; margin-top:1px; padding-left:10px;">{_tl}</div>')
-                                        # atbaHeat：显示升温/冷却详细描述
-                                        if ttype == "atbaHeat":
-                                            heat = trigger.get("heatInterpolator", [])
-                                            cool = trigger.get("coolingInterpolator", [])
-                                            cdelay = trigger.get("coolingDelay", 0)
-                                            penalty = trigger.get("changePriorityTargetPenalty", 1.0)
-                                            if len(heat) >= 2:
-                                                _full_time = heat[-1][0]
-                                                _full_pct = int(heat[-1][1] * 100)
-                                                tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">对副炮优先目标连续射击逐渐提升准度</div>')
-                                                tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  达到最高效率需 {_full_time:.0f} 秒（{_full_pct}%）</div>')
-                                                if cdelay > 0:
-                                                    tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  停火 {cdelay:.0f} 秒后开始降温</div>')
-                                                if penalty < 1.0:
-                                                    tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  切换目标保留 {penalty*100:.0f}% 累积准度</div>')
-                                        # activationOnDetectTrigger：显示持续时间
-                                        if ttype == "activationOnDetectTrigger":
-                                            _dur = trigger.get("duration", 0)
-                                            if _dur > 0:
-                                                tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">被发现后 {_dur:.0f} 秒内，降低敌人对您的射击准度</div>')
-                                        # activationOnRibbons / activationOnBuoyancyState 的具体细节
-                                        # 已合并进 _format_trigger_cond 的触发条件行，避免重复显示
-                                tip_lines.append('</div>')
-                                btn.setToolTip("".join(tip_lines))
-                                btn.setToolTipDuration(10000)
-                            else:
-                                btn.setToolTip(f"{cur_shiptype} 第{row+1}层 第{col_idx+1}列 (消耗{row+1}点)")
-                            btn.clicked.connect(_make_skill_click(row, col_idx, btn, mods, trigger))
-                            skill_btns[row].append(btn)
-                            grid.addWidget(btn, row, col_idx)
-
-                    # 初始状态：1层可选，2/3/4层锁定
-                    _update_skill_state()
-                    # 恢复之前选中的技能状态
-                    if hasattr(self, '_selected_skill_mods'):
-                        for _r in range(4):
-                            for _c in range(6):
-                                _pos = f"{_r}-{_c}"
-                                if _pos in self._selected_skill_mods and _r < len(skill_btns) and _c < len(skill_btns[_r]):
-                                    skill_btns[_r][_c].setChecked(True)
-                                    selected_tier_spent[_r] += TIER_COST[_r]
-                    _update_skill_state()
-
-                cl.addWidget(skill_grid)
-                skill_grid.setMaximumWidth(380)
-                _rebuild_buttons()
-
-                # ── 舰长切换：更新天赋显示 ──
-                def _on_crew_changed(idx: int):
-                    nonlocal _default_pcol
-                    # 如果选到分隔项，跳到下一个有效项
-                    if 0 <= idx < len(self._crew_data) and self._crew_data[idx] is None:
-                        # 尝试向后找有效项
-                        for ni in range(idx + 1, len(self._crew_data)):
-                            if self._crew_data[ni] is not None:
-                                self._crew_combo.blockSignals(True)
-                                self._crew_combo.setCurrentIndex(ni)
-                                self._crew_combo.blockSignals(False)
-                                return
-                        # 向后没有，向前找
-                        for pi in range(idx - 1, -1, -1):
-                            if self._crew_data[pi] is not None:
-                                self._crew_combo.blockSignals(True)
-                                self._crew_combo.setCurrentIndex(pi)
-                                self._crew_combo.blockSignals(False)
-                                return
-                        return
-                    # ── 根据所选舰长更新技能网格稀有度 ──
-                    _new_pcol = "PCOL001_CommonCrewSkills"
-                    if _db and _db._conn and 0 <= idx < len(self._crew_data):
-                        _cd = self._crew_data[idx]
-                        if _cd is not None and _cd['crew_id'] not in ('__elite__', '__custom__', '__standard__'):
-                            try:
-                                _r = _db._conn.execute(
-                                    "SELECT skills_container FROM crew_basic_info WHERE version_code=? AND crew_id=?",
-                                    (_db.get_latest_version_code() or "", _cd['crew_id'])
-                                ).fetchone()
-                                if _r and _r['skills_container']:
-                                    _new_pcol = _r['skills_container']
-                            except Exception:
-                                pass
-                    if _new_pcol != _default_pcol:
-                        _default_pcol = _new_pcol
-                        # 重建 grid_skills
-                        _new_grid = _skill_svc.get_grid_skills(ship_cn, container_id=_default_pcol, ship_type_en=cur_shiptype) if ship_cn else []
-                        grid_skills[:] = _new_grid
-                        # 对 elite/custom 应用 EPIC 覆盖
-                        if 0 <= idx < len(self._crew_data):
-                            _cd = self._crew_data[idx]
-                            if _cd and _cd['crew_id'] in ('__elite__', '__custom__'):
-                                _cached_cfg = DetailPanel._crew_custom_cache.get(_cd['crew_id'], {})
-                                self._apply_epic_overrides(grid_skills, _cached_cfg.get("epic", []),
-                                                            skill_svc=_skill_svc, ship_type_en=cur_shiptype)
-                        # 重建按钮（tooltip 数据已变）
-                        _rebuild_buttons()
-                    else:
-                        # PCOL 未变但仍需刷新按钮样式（如首次选中传奇舰长时）
-                        DetailPanel._refresh_epic_overlays(skill_btns, grid_skills, SKILL_BTN)
-                    # 清除旧天赋按钮
-                    while self._us_layout.count():
-                        w = self._us_layout.takeAt(0)
-                        if w and w.widget():
-                            w.widget().deleteLater()
-                    if idx < 0 or idx >= len(self._crew_data):
-                        return
-                    cd = self._crew_data[idx]
-                    if cd is None:
-                        return
-                    if cd['crew_id'] in ('__elite__', '__custom__'):
-                        self._crew_customize_btn.setEnabled(True)
-                        self._crew_customize_btn.setToolTip("自定义舰长技能/天赋")
-                        return  # 精英统一/自定义不显示天赋
-                    else:
-                        self._crew_customize_btn.setEnabled(False)
-                        self._crew_customize_btn.setToolTip("仅精英舰长和自定义稀有舰长可自定义技能")
-                    if not (cd['is_unique'] and cd.get('unique_skill_count', 0) > 0):
-                        return
-                    # 查询该传奇舰长的天赋
-                    if _db and _db._conn:
-                        try:
-                            cur = _db._conn.execute("""
-                                SELECT skill_key, trigger_type, max_trigger_num,
-                                       effects_json, icon_path,
-                                       trigger_achievement, trigger_damage_num,
-                                       trigger_damage_type, trigger_ribbon_types, trigger_ribbons_num,
-                                       damage_percent_threshold
-                                FROM crew_unique_skills
-                                WHERE version_code=? AND crew_id=?
-                                ORDER BY sort_index
-                            """, (_db.get_latest_version_code() or "", cd['crew_id']))
-                            skills = cur.fetchall()
-                            if skills:
-                                from models.name_mapping import Mapping as NMAP
-                                # 取MODIFIER_MAP方便效果翻译
-                                _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
-                                _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
-                                _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
-                                _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
-                                _damage_map = getattr(NMAP, 'DAMAGE_TYPE_MAP', {})
-
-                                def _build_trigger_desc(sk_row, trig_type, trig_map, rib_map):
-                                    """构建触发条件说明"""
-                                    tzh = trig_map.get(trig_type, trig_type or "?")
-                                    if trig_type == "achievement":
-                                        ach = sk_row['trigger_achievement'] or ""
-                                        # 尝试从成就映射取中文名
-                                        ach_zh = _achievement_map.get(ach, ach)
-                                        return f"获得 {ach_zh} 成就触发"
-                                    elif trig_type == "ribbons":
-                                        try:
-                                            types = json.loads(sk_row['trigger_ribbon_types']) if isinstance(sk_row['trigger_ribbon_types'], str) else (sk_row['trigger_ribbon_types'] or [])
-                                        except Exception:
-                                            types = []
-                                        rnames = [rib_map.get(str(t), str(t)) for t in types]
-                                        num = sk_row['trigger_ribbons_num'] or ""
-                                        return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
-                                    elif trig_type == "damage":
-                                        dmg = sk_row['trigger_damage_num'] or ""
-                                        dmg_zh = _damage_map.get(str(sk_row['trigger_damage_type'] or ""), "")
-                                        label = f"受到 {dmg/10000:.0f}万"
-                                        if dmg_zh:
-                                            label += f" ({dmg_zh})"
-                                        return label + " 伤害时触发"
-                                    elif trig_type == "health":
-                                        thr = sk_row['damage_percent_threshold']
-                                        if thr:
-                                            return f"战舰血量低于 {thr*100:.0f}% 时触发"
-                                        return "受到伤害导致血量降低时触发"
-                                    elif trig_type == "enemyVehiclesDead":
-                                        return f"敌方舰艇被击沉时触发"
-                                    elif trig_type == "rageMode":
-                                        return f"激活作战指令时触发"
-                                    return tzh
-
-                                def _format_effect(effect_key, effect_val, mod_map, cur_st):
-                                    """格式化一条效果描述（cur_st=当前舰船种类）"""
-                                    lines = []
-                                    is_level = effect_val.get("levelDependent", False)
-                                    for k, v in effect_val.items():
-                                        if k in ("uniqueType", "percentTalent", "levelDependent", "workTime"):
-                                            continue
-                                        zh = mod_map.get(k, k)
-                                        is_pct = effect_val.get("percentTalent", False)
-                                        if isinstance(v, dict):
-                                            # 按舰种区分（如 visibilityDistCoeff）
-                                            if cur_st and cur_st in v:
-                                                sv = v[cur_st]
-                                                _add_talent_line(lines, zh, sv, is_pct, mod_key=k)
-                                            else:
-                                                for skey, sv in v.items():
-                                                    if isinstance(sv, (int, float)):
-                                                        _add_talent_line(lines, f"{zh} ({skey})", sv, is_pct, mod_key=k)
-                                                        break
-                                        else:
-                                            _add_talent_line(lines, zh, v, is_pct, mod_key=k)
-                                    if is_level:
-                                        lines.insert(0, '<div style="color:#888; font-size:11px;">该天赋作用时间等于战舰等级</div>')
-                                    return "\n".join(lines) if lines else None
-
-                                def _add_talent_line(ln, label, v, is_pct, mod_key=""):
-                                    if isinstance(v, bool):
-                                        ln.append(f"{'启用' if v else ''} {label}")
-                                    elif isinstance(v, (int, float)):
-                                        if is_pct:
-                                            from models.name_mapping import Mapping as _NMAP_FMT
-                                            ft = _NMAP_FMT.format_modifier(mod_key or "", v, color=True)
-                                            if ft:
-                                                ln.append(ft + " " + label)
-                                        elif isinstance(v, float) and 0.5 <= v <= 2.0:
-                                            ft = _NMAP_FMT.format_modifier(mod_key or "", v, color=True)
-                                            if ft:
-                                                ln.append(ft + " " + label)
-                                        else:
-                                            ln.append(f"{label} {v:+.0f}" if v else f"{label} {v:.0f}")
-
-                                # 老版本(v3.2.2-test1)样式：固定深色底+黄色文字
-                                UNIQUE_BTN = """
-                                    QPushButton { background:#1a1a1a; border:2px solid #ffc107;
-                                                  border-radius:6px; min-width:52px; min-height:52px;
-                                                  max-width:52px; max-height:52px;
-                                                  font-size:9px; color:#ffc107; padding:0px; }
-                                    QPushButton:hover { background:#2a2a2a; border-color:#ffd54f; }
-                                """
-                                for sk in skills:
-                                    skey = sk['skill_key']
-                                    ttype = sk['trigger_type']
-                                    icon_path = sk['icon_path'] or ""
-                                    btn = QPushButton()
-                                    btn.setStyleSheet(UNIQUE_BTN)
-                                    btn.setCheckable(False)
-                                    # 如果有图标，显示图片
-                                    if icon_path:
-                                        pix = QPixmap(icon_path)
-                                        if pix.isNull(): pix = None
-                                        if not pix.isNull():
-                                            btn.setIcon(QIcon(pix))
-                                            btn.setIconSize(QSize(22, 22))
-                                    else:
-                                        # 无图标时显示文字缩写
-                                        short = skey.split('_')[-1] if '_' in skey else skey[:6]
-                                        label = short
-                                        if sk['max_trigger_num']:
-                                            label += f"\n×{sk['max_trigger_num']}"
-                                        btn.setText(label)
-
-                                    # ── 构建富文本 tooltip ──
-                                    tip_lines = ['<div style="font-size:12px; line-height:1.5;">']
-
-                                    # 触发条件
-                                    trigger_line = _build_trigger_desc(
-                                        sk, ttype, _trigger_map, _ribbon_map
-                                    )
-                                    tip_lines.append(
-                                        f'<div style="color:#ffc107; font-weight:bold; '
-                                        f'margin-bottom:4px;">▸ {trigger_line}</div>'
-                                    )
-
-                                    # 效果列表
-                                    try:
-                                        eff = json.loads(sk['effects_json']) if sk['effects_json'] else {}
-                                    except Exception:
-                                        eff = {}
-                                    if eff:
-                                        tip_lines.append(
-                                            '<div style="color:#aaa; margin-top:4px;">效果：</div>'
-                                        )
-                                        for ek, ev in eff.items():
-                                            if not isinstance(ev, dict):
-                                                continue
-                                            desc = _format_effect(ek, ev, _mod_map, cur_shiptype)
-                                            if desc:
-                                                for _line in desc.split("\n"):
-                                                    tip_lines.append(
-                                                        f'<div style="color:#ddd; padding-left:8px;">{_line}</div>'
-                                                    )
-
-                                    # 触发次数
-                                    if sk['max_trigger_num']:
-                                        tip_lines.append(
-                                            f'<div style="color:#888; font-size:11px; '
-                                            f'margin-top:4px;">每场最多触发 {sk["max_trigger_num"]} 次</div>'
-                                        )
-
-                                    tip_lines.append('</div>')
-                                    btn.setToolTip("".join(tip_lines))
-                                    self._us_layout.insertWidget(self._us_layout.count() - 1, btn)
-                        except Exception as _tal_e:
-                            import traceback
-                            from app.signals import bus
-                            bus.log_message.emit(f"[天赋] {cd.get('crew_id','?')}: {_tal_e} | {traceback.format_exc()}")
-
-                # 保存基础样式表，选中颜色变更时重设
-                _combo_base_qss = self._crew_combo.styleSheet()
-                def _sync_combo_color():
-                    _idx = self._crew_combo.currentIndex()
-                    _item = _model.item(_idx)
-                    if _item:
-                        _brush = _item.foreground()
-                        _is_default = _item.data(Qt.ItemDataRole.ForegroundRole) is None
-                        if _is_default:
-                            # 未显式设置前景色的项（如"标准舰长"）→ 使用主题文字色，避免深色下变黑
-                            _color = theme["text"]
-                        elif _brush is not None:
-                            _color = _brush.color().name()
-                        else:
-                            _color = theme["text"]
-                        self._crew_combo.setStyleSheet(_combo_base_qss + f"\nQComboBox {{ color: {_color}; }}")
-                self._crew_combo.currentIndexChanged.connect(_on_crew_changed)
-                self._crew_combo.currentIndexChanged.connect(_sync_combo_color)
-                # 默认选中标准舰长
-                if self._crew_combo.count() > 0:
-                    _default_idx = 0
-                    for _i, _cd in enumerate(self._crew_data):
-                        if _cd is not None and _cd['crew_id'] == '__standard__':
-                            _default_idx = _i
-                            break
-                    self._crew_combo.setCurrentIndex(_default_idx)
-
-                # ── 自定义按钮 ──
-                def _open_customize():
-                    try:
-                        from ui.crew_customize_dialog import CrewCustomizeDialog
-                        idx = self._crew_combo.currentIndex()
-                        if idx < 0 or idx >= len(self._crew_data):
-                            return
-                        cd = self._crew_data[idx]
-                        if cd is None:
-                            return
-                        # 读取已有配置（内存缓存优先，文件作为持久化后备）
-                        _cfg_key = cd['crew_id'] if cd['crew_id'] in ('__elite__', '__custom__') else self._current_filename
-                        _cached = DetailPanel._crew_custom_cache.get(_cfg_key)
-                        if _cached is not None:
-                            _existing_epic = _cached.get("epic", [])
-                            _existing_talent = _cached.get("talent")
-                        else:
-                            _existing_epic = []
-                            _existing_talent = None
-                        dlg = CrewCustomizeDialog(cd, db_nation, self,
-                                                  ship_type_cn=ship_cn, ship_type_en=cur_shiptype,
-                                                  epic_skills=_existing_epic,
-                                                  selected_talent=tuple(_existing_talent) if _existing_talent else None)
-                        if dlg.exec():
-                            # 仅保存到内存缓存（切换舰船时自动清空，不持久化到文件）
-                            _entry = {"epic": dlg.epic_skills, "talent": dlg.selected_talent}
-                            DetailPanel._crew_custom_cache[_cfg_key] = _entry
-                            # 重建技能网格
-                            _default_pcol = "PCOL001_CommonCrewSkills"
-                            _new_grid = _skill_svc.get_grid_skills(ship_cn, container_id=_default_pcol, ship_type_en=cur_shiptype) if ship_cn else []
-                            grid_skills[:] = _new_grid
-                            if cd['crew_id'] in ('__elite__', '__custom__'):
-                                self._apply_epic_overrides(grid_skills, dlg.epic_skills,
-                                                            skill_svc=_skill_svc, ship_type_en=cur_shiptype)
-                            # 完全重建技能按钮（tooltip 跟随 EPIC 数据自动更新）
-                            _rebuild_buttons()
-                            DetailPanel._refresh_epic_overlays(skill_btns, grid_skills, SKILL_BTN)
-                            # 刷新数据显示（含天赋修饰符）
-                            _talent_mods: dict = {}
-                            if dlg.selected_talent and _db and _db._conn:
-                                _t_crew, _t_skill = dlg.selected_talent[0], dlg.selected_talent[1]
-                                try:
-                                    _tcur = _db._conn.execute(
-                                        "SELECT effects_json FROM crew_unique_skills WHERE version_code=? AND crew_id=? AND skill_key=?",
-                                        (_db_vc, _t_crew, _t_skill)
-                                    )
-                                    _trow = _tcur.fetchone()
-                                    if _trow and _trow['effects_json']:
-                                        import json
-                                        _teff = json.loads(_trow['effects_json'])
-                                        for _ek, _ev in _teff.items():
-                                            if not isinstance(_ev, dict):
-                                                continue
-                                            _is_pct = _ev.get('percentTalent', False)
-                                            for _sk, _sv in _ev.items():
-                                                if _sk in ('percentTalent', 'uniqueType', 'levelDependent', 'planeSpawnTime', 'value', 'v'):
-                                                    continue
-                                                if isinstance(_sv, dict):
-                                                    if cur_shiptype and _sv.get(cur_shiptype) is not None:
-                                                        _sv = _sv[cur_shiptype]
-                                                    else:
-                                                        for _x in _sv.values():
-                                                            if isinstance(_x, (int, float)):
-                                                                _sv = _x
-                                                                break
-                                                            else:
-                                                                continue
-                                                if not isinstance(_sv, (int, float)):
-                                                    continue
-                                                if _is_pct:
-                                                    _pct = (_sv - 1.0) * 100 if _sv < 2.0 else _sv * 100
-                                                    _talent_mods[_sk] = 1.0 + _pct / 100.0
-                                                else:
-                                                    _talent_mods[_sk] = _sv
-                                except Exception:
-                                    pass
-                            self._refresh_data_only(_talent_mods if _talent_mods else None)
-                            # 刷新天赋显示按钮
-                            while self._us_layout.count():
-                                _w = self._us_layout.takeAt(0)
-                                if _w and _w.widget():
-                                    _w.widget().deleteLater()
-                            if dlg.selected_talent and _db and _db._conn:
-                                try:
-                                    _t_crew2, _t_skill2 = dlg.selected_talent[0], dlg.selected_talent[1]
-                                    _tcur2 = _db._conn.execute("""
-                                        SELECT skill_key, trigger_type, max_trigger_num, effects_json, icon_path
-                                        FROM crew_unique_skills WHERE version_code=? AND crew_id=? AND skill_key=?
-                                    """, (_db_vc, _t_crew2, _t_skill2))
-                                    _trow2 = _tcur2.fetchone()
-                                    if _trow2:
-                                        from pathlib import Path as _P
-                                        from PySide6.QtGui import QPixmap as _QP, QIcon as _QI
-                                        from PySide6.QtCore import QSize as _QS
-                                        _tbtn = QPushButton()
-                                        _tbtn.setStyleSheet(theme.qss("""
-                                            QPushButton { background:@panel_alt@; border:2px solid #ffc107;
-                                                          border-radius:6px; min-width:52px; min-height:52px;
-                                                          max-width:52px; max-height:52px;
-                                                          font-size:9px; color:#ffc107; padding:0px; }
-                                            QPushButton:hover { background:@hover_bg@; border-color:#ffd54f; }
-                                        """))
-                                        _tpath = _trow2['icon_path'] or ""
-                                        if _tpath and _P(_tpath).exists():
-                                            _tpix = _QP(_tpath)
-                                            if not _tpix.isNull():
-                                                _tbtn.setIcon(_QI(_tpix))
-                                                _tbtn.setIconSize(_QS(22, 22))
-                                        _tbtn.setToolTip(f"已选天赋：{_trow2['skill_key']}")
-                                        self._us_layout.addWidget(_tbtn)
-                                except Exception:
-                                    pass
-                    except Exception as e:
-                        import traceback
-                        from app.signals import bus
-                        bus.log_message.emit(f"⚠️ 自定义配置异常: {e}\n{traceback.format_exc()}")
-
-                self._crew_customize_btn.clicked.connect(_open_customize)
-                cl.addStretch()
-                layout.addWidget(col, stretch=1)
-
+                self._build_lesta_commander_column(config, _col, layout)
         return bar
 
     def _on_aircraft_module_click(self, ut: str, part_id: str) -> None:
@@ -2740,11 +1005,9 @@ class DetailPanel(QWidget):
                         # 本组弹药
                         ac = sum(1 for it in grp if it.get("name")=="弹药" and it.get("value"))
                         if ac > 0 and raw_ammo:
-                            from pathlib import Path
                             from PySide6.QtGui import QPixmap, QIcon
                             from PySide6.QtCore import QSize
                             from PySide6.QtWidgets import QPushButton, QLabel
-                            ammo_dir = pic_path("ammo_types")
                             ga = raw_ammo[ammo_idx:ammo_idx+ac]; ammo_idx += ac
                             br = QWidget(); bl = QHBoxLayout(br); bl.setContentsMargins(4,0,4,0); bl.setSpacing(6); bl.setAlignment(Qt.AlignmentFlag.AlignLeft)
                             st = QStackedWidget(); st.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum); st.setVisible(False)
@@ -2806,7 +1069,6 @@ class DetailPanel(QWidget):
         """构建舰载机面板：每个机种为 QGroupBox，各配置用 QStackedWidget 切换"""
         from ui.ship_card_widget import ShipCardWidget, card_style
         from PySide6.QtWidgets import QGroupBox, QStackedWidget
-        from pathlib import Path
         from PySide6.QtGui import QPixmap, QIcon
         from PySide6.QtCore import QSize
         from PySide6.QtWidgets import QLabel
@@ -2840,7 +1102,6 @@ class DetailPanel(QWidget):
                 background: @selected_bg@; border-color: @selected_bg@;
             }
         """)
-        ammo_dir = pic_path("ammo_types")
 
         for sl in labels:
             content = contents.get(sl, {})
@@ -2856,7 +1117,6 @@ class DetailPanel(QWidget):
 
             config_labels = content.get("config_labels", [])
             config_contents = content.get("config_contents", {})
-            config_label_map = content.get("config_label_map", {})
 
             def _lookup_cfg(mk: str) -> dict:
                 """通过内部 key 查找配置数据"""
@@ -2983,22 +1243,24 @@ class DetailPanel(QWidget):
                     cbr_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
                     con_stack = QStackedWidget()
                     con_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-                    con_stack.setVisible(False)
+                    # 索引 0 = 提示页（与舰船 _con_detail_stack 一致），点击后由
+                    # _on_consumable_btn_click 动态添加详情卡片
+                    _con_prompt = QLabel("点击上方消耗品按钮查看详细数据")
+                    _con_prompt.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:20px;"))
+                    _con_prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    con_stack.addWidget(_con_prompt)
                     con_btns: list[QPushButton] = []
                     for con_info in raw_con:
                         dname = con_info.get("display_name", "?")
-                        detail_items = con_info.get("detail_items", [])
                         cid = con_info.get("consumable_id", "")
+                        ckey = con_info.get("config_key", "")
                         btn = QPushButton("")
                         btn.setFixedSize(40, 40)
                         btn.setCheckable(True)
                         btn.setStyleSheet(CON_BTN_STYLE)
                         btn.setToolTip(dname)
-                        # WG 命名差异：consumable_X.png；Lesta 为 consumable_X_0.png
-                        if self._is_wg_server():
-                            img_path = f"{consumables_dir}/consumable_{cid}.png"
-                        else:
-                            img_path = f"{consumables_dir}/consumable_{cid}_0.png"
+                        # 消耗品图片命名（WG：consumable_X.png；Lesta：consumable_X_0.png）
+                        img_path = f"{consumables_dir}/{self._consumable_icon_name(cid)}"
                         pixmap = QPixmap(img_path)
                         if not pixmap.isNull():
                             scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -3018,15 +1280,24 @@ class DetailPanel(QWidget):
                                 _aa_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                                 _aa_badge.setStyleSheet("background: transparent;")
                                 _aa_badge.setGeometry(0, 0, 40, 40)  # 强制拉伸填满整按钮，与消耗品图完全覆盖
+                        # WG 时间制消耗品 → 叠加时间制角标（time_based.png，整图覆盖同 AUTO）
+                        if con_info.get("time_based"):
+                            _tb_pix = QPixmap(pic_path("consumables/features/time_based.png"))
+                            if not _tb_pix.isNull():
+                                _tb_badge = QLabel(btn)
+                                _tb_badge.setScaledContents(True)
+                                _tb_badge.setPixmap(_tb_pix)
+                                _tb_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                                _tb_badge.setStyleSheet("background: transparent;")
+                                _tb_badge.setGeometry(0, 0, 40, 40)  # 强制拉伸填满整按钮，与消耗品图完全覆盖
                         cbr_layout.addWidget(btn)
                         con_btns.append(btn)
-                        if detail_items:
-                            con_stack.addWidget(ShipCardWidget({"label": dname, "items": detail_items}))
-                        else:
-                            lbl = QLabel("无详细数据"); lbl.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:8px;")); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                            con_stack.addWidget(lbl)
-                        ci = con_stack.count() - 1
-                        btn.clicked.connect(lambda checked, i=ci, s=con_stack, b=btn, btns=con_btns: self._on_aircraft_con_btn_click(i, s, b, btns))
+                        # 点击与舰船消耗品共用 _on_consumable_btn_click：
+                        # 查数据库 + 走完整类型分支树（WG/Lesta 特有类型、时间制等）
+                        btn.clicked.connect(
+                            lambda checked=False, cid=cid, dname=dname, ckey=ckey, b=btn,
+                                   btns=con_btns, st=con_stack:
+                                self._on_consumable_btn_click(cid, dname, ckey, w, 0, b, btns, st))
                     cbr_layout.addStretch()
                     wl.addWidget(con_btn_row)
                     wl.addWidget(con_stack)
@@ -3076,7 +1347,6 @@ class DetailPanel(QWidget):
     def _build_support_widget(self, section: dict) -> QWidget:
         """构建支援机组面板：按机组分开显示，各自 tooltip 独立"""
         from ui.ship_card_widget import ShipCardWidget, card_style
-        from pathlib import Path
         from PySide6.QtGui import QPixmap, QIcon
         from PySide6.QtCore import QSize
         from PySide6.QtWidgets import QGroupBox, QStackedWidget, QPushButton, QLabel
@@ -3111,7 +1381,6 @@ class DetailPanel(QWidget):
         layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        ammo_dir = pic_path("ammo_types")
         BTN_STYLE = theme.qss("""
             QPushButton {
                 background: @panel_alt@;
@@ -3269,10 +1538,7 @@ class DetailPanel(QWidget):
                 btns_in_slot.append(btn)
 
                 # 加载消耗品图片（WG：consumable_X.png；Lesta：consumable_X_0.png）
-                if self._is_wg_server():
-                    img_path = f"{consumables_dir}/consumable_{cid}.png"
-                else:
-                    img_path = f"{consumables_dir}/consumable_{cid}_0.png"
+                img_path = f"{consumables_dir}/{self._consumable_icon_name(cid)}"
                 pixmap = QPixmap(img_path)
                 if not pixmap.isNull():
                     scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -3294,6 +1560,16 @@ class DetailPanel(QWidget):
                         _aa_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                         _aa_badge.setStyleSheet("background: transparent;")
                         _aa_badge.setGeometry(0, 0, 40, 40)  # 强制拉伸填满整按钮，与消耗品图完全覆盖
+                # WG 时间制消耗品 → 叠加时间制角标（time_based.png，整图覆盖同 AUTO）
+                if rs.get("time_based"):
+                    _tb_pix = QPixmap(pic_path("consumables/features/time_based.png"))
+                    if not _tb_pix.isNull():
+                        _tb_badge = QLabel(btn)
+                        _tb_badge.setScaledContents(True)
+                        _tb_badge.setPixmap(_tb_pix)
+                        _tb_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                        _tb_badge.setStyleSheet("background: transparent;")
+                        _tb_badge.setGeometry(0, 0, 40, 40)  # 强制拉伸填满整按钮，与消耗品图完全覆盖
 
                 ckey = rs.get('config_key', 'Default')
                 # 计算 additionalConsumables 修饰符值（升级品 + 技能）
@@ -3356,12 +1632,8 @@ class DetailPanel(QWidget):
         rname = raw.get("rage_mode_name", "")
         dname = raw.get("display_name", "战斗指令")
 
-        # WG：rageMode/{rname}_preview.png（无 rageMode_ 前缀、无 _0 后缀）
-        # Lesta：ragemode/rageMode_{rname}_preview_0.png
-        if self._is_wg_server():
-            preview_path = pic_path(f"ragemode/{rname}_preview.png")
-        else:
-            preview_path = pic_path(f"ragemode/rageMode_{rname}_preview_0.png")
+        # 战斗指令预览图（WG：ragemode/{rname}_preview.png；Lesta：ragemode/rageMode_{rname}_preview_0.png）
+        preview_path = pic_path(self._rage_preview_icon(rname))
 
         btn = QPushButton("")
         btn.setFixedSize(32, 32)
@@ -3462,65 +1734,58 @@ class DetailPanel(QWidget):
         return container
 
     @staticmethod
-    def _is_wg_server() -> bool:
-        """当前是否为 WG（Wargaming）服务器（图片/文件命名按服务器区分）。"""
+    def _current_server() -> str:
+        """当前服务器标识（Lesta / Wargaming），从 app_ctx 读取。"""
         try:
             from app.application import app as _app_ctx
-            return _app_ctx.ctx.wows_type == "Wargaming"
+            return getattr(_app_ctx.ctx, "wows_type", "") or "Lesta"
         except Exception:
-            return False
+            return "Lesta"
 
-    @staticmethod
-    def _ammo_icon_candidates(atype_lower: str, species_lower: str,
+    @classmethod
+    def for_server(cls, wows_type: str):
+        """按服务器返回对应面板子类（方案 C）。"""
+        if (wows_type or "").lower() == "wargaming":
+            from ui.wargaming.detail_panel import WargamingDetailPanel
+            return WargamingDetailPanel
+        from ui.lesta.detail_panel import LestaDetailPanel
+        return LestaDetailPanel
+
+    def is_wg(self) -> bool:
+        """当前面板是否为 WG 服（实例级判断）。"""
+        return self.wows_type == "Wargaming"
+
+    def _module_icon_name(self, img_file: str) -> str:
+        """模块图片文件名（Lesta 默认 module_X.png；WG 覆盖为 icon_module_X.png）。"""
+        return img_file
+
+    def _consumable_icon_name(self, cid: str) -> str:
+        """消耗品图片文件名（Lesta 默认 consumable_X_0.png；WG 覆盖为 consumable_X.png）。"""
+        return f"consumable_{cid}_0.png"
+
+    def _rage_preview_icon(self, rname: str) -> str:
+        """战斗指令预览图路径（Lesta 默认；WG 覆盖）。"""
+        return f"ragemode/rageMode_{rname}_preview_0.png"
+
+    def _wg_ammo_icon_candidates(self, atype_lower: str, species_lower: str,
+                                 ammo_info: dict | None = None, is_sec: bool = False) -> list[str]:
+        """WG 弹药图标候选（由 WargamingDetailPanel 覆盖）。"""
+        return []
+
+    def _ammo_icon_candidates(self, atype_lower: str, species_lower: str,
                               ammo_info: dict | None = None, is_sec: bool = False) -> list[str]:
         """生成弹药图标候选文件名（按服务器区分命名）。
 
         Lesta：resources/pictures/lesta/ammo_types/（ammo_ap_0.png …）
         WG   ：resources/pictures/wargaming/ammo_types/（ap.png；可切换副弹药 ap_sec.png …）
         """
-        is_wg = DetailPanel._is_wg_server()
+        if self.is_wg():
+            return self._wg_ammo_icon_candidates(atype_lower, species_lower, ammo_info, is_sec)
+
         at = (atype_lower or "").lower()
         sp = (species_lower or "").lower()
         info = ammo_info or {}
         cand: list[str] = []
-
-        if is_wg:
-            # 修改型/可切换副弹药：ap_sec.png / he_sec.png / cs_sec.png
-            if is_sec and at:
-                cand.append(f"{at}_sec.png")
-            # 飞机弹药 species → WG 图片前缀（species 仅 Bomb/SkipBomb/Rocket/Torpedo/DepthCharge）
-            # WG 命名：Bomb→bomb_he.png、SkipBomb→skip_bomb_he.png、Rocket→projectile.png/projectile_ap.png
-            _wg_air = {"bomb": "bomb", "skipbomb": "skip_bomb", "rocket": "rocket"}
-            _wbase = next((v for k, v in _wg_air.items() if sp.startswith(k)), None)
-            if _wbase:
-                if _wbase == "rocket":
-                    if at == "he":
-                        cand.append("projectile.png")
-                    elif at == "ap":
-                        cand.append("projectile_ap.png")
-                else:
-                    if at:
-                        cand.append(f"{_wbase}_{at}.png")
-                        cand.append(f"{_wbase}_{at}_alt.png")
-                    cand.append(f"{_wbase}.png")
-            # 鱼雷
-            if sp in ("torpedo", "torpedobomber"):
-                if "deepwater" in str(info.get("raw_ammo_type", "")).lower():
-                    cand.insert(0, "torpedo_deepwater.png")
-                    cand.insert(0, "bomber_torpedo_deepwater.png")
-                else:
-                    tp = info.get("torpedo_postfix", "")
-                    if tp == "_subBurn":
-                        cand.insert(0, "torpedo_alternative_subburn.png")
-                    elif tp:
-                        cand.insert(0, "torpedo_subdefault.png")
-                cand.extend(["torpedo.png", "bomber_torpedo.png"])
-            if "depthcharge" in sp:
-                cand.extend(["depthcharge.png", "airsupport_depthcharge.png"])
-            # 兜底：常规 {at}.png（he/ap/cs 等）
-            if at:
-                cand.append(f"{at}.png")
-            return cand
 
         # ── Lesta 命名（保持各渲染路径原逻辑） ──
         _proj_to_air = {"rocket": "projectile", "bomb": "bomb", "skipbomb": "skip_bomb", "mine": "mine"}
@@ -3561,7 +1826,6 @@ class DetailPanel(QWidget):
         """构建武器面板（主炮/副炮）：每座炮独立显示 + 下方弹药按钮 + 点击切换详情"""
         from ui.ship_card_widget import ShipCardWidget, card_style
         from PySide6.QtWidgets import QGroupBox, QStackedWidget
-        from pathlib import Path
 
         label = section.get("label", "武器")
         all_items = section.get("items", [])
@@ -3590,8 +1854,6 @@ class DetailPanel(QWidget):
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(6)
 
-        ammo_dir = pic_path("ammo_types")
-        last_card = None
 
         BTN_STYLE = theme.qss("""
             QPushButton {
@@ -3656,7 +1918,6 @@ class DetailPanel(QWidget):
             if valid_items:
                 grp_section = {"label": "", "items": display_items}
                 card = ShipCardWidget(grp_section)
-                last_card = card
 
                 # 提取 Tooltip
                 tip_parts = []
@@ -3839,23 +2100,6 @@ class DetailPanel(QWidget):
             w = btn_layout.itemAt(i).widget()
             if isinstance(w, QPushButton):
                 w.setChecked(w is clicked_btn)
-
-    def _on_aircraft_con_btn_click(self, stack_idx: int, stack: QStackedWidget, clicked_btn: QPushButton, all_btns: list[QPushButton]) -> None:
-        """飞机消耗品按钮点击：切换详情页并更新按钮高亮"""
-        if clicked_btn.isChecked() and stack.isVisible() and stack.currentIndex() == stack_idx:
-            stack.setVisible(False)
-            stack.setMaximumHeight(0)
-            clicked_btn.setChecked(False)
-            return
-        stack.setVisible(True)
-        stack.setCurrentIndex(stack_idx)
-        # 调整堆栈高度匹配当前页面，防止长短页切换时留白
-        current = stack.currentWidget()
-        if current:
-            stack.setMaximumHeight(current.sizeHint().height())
-            stack.updateGeometry()
-        for btn in all_btns:
-            btn.setChecked(btn is clicked_btn)
 
     def _on_mod_opt_click(self, slot_idx: int, mod: dict, btn):
         """升级品选项点击：同槽位单选 + 再次点击取消 + 触发数据重算"""
@@ -4171,8 +2415,8 @@ class DetailPanel(QWidget):
         try:
             self._expand_all_collapsible()
             from PySide6.QtCore import QTimer
-            # 展开按钮后布局会变化，等下一轮事件循环再渲染
-            QTimer.singleShot(0, self._do_panel_screenshot)
+            # 展开按钮后布局会变化，等下一轮事件循环再渲染（绑定 receiver=self）
+            QTimer.singleShot(0, self, self._do_panel_screenshot)
         except Exception as e:
             bus.log_message.emit(f"⚠️ 截图准备失败: {e}")
 
@@ -4308,33 +2552,64 @@ class DetailPanel(QWidget):
             lines.append("")
         return "\n".join(lines).rstrip()
 
+    def _consumable_detail_items(self, items: list, bp, cfgd: dict, conn, vc: str, kv,
+                                  *, num_raw, prep, cd_time, wt, auto, ct) -> None:
+        """渲染消耗品详情条目（由服务器子类各自实现，本基类不保留分支内容）。
+
+        公共调用入口在 _on_consumable_btn_click；Lesta 版实现位于
+        ui/lesta/detail_panel.py，WG 版实现位于 ui/wargaming/detail_panel.py。
+        """
+        raise NotImplementedError("_consumable_detail_items 由服务器子类实现")
+
     def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget,
-                                  extra_count: int = 0, btn=None, all_btns=None) -> None:
-        """消耗品按钮点击：查询数据库并展示详情卡片"""
+                                  extra_count: int = 0, btn=None, all_btns=None,
+                                  stack: QStackedWidget | None = None) -> None:
+        """消耗品按钮点击：查询数据库并展示详情卡片（舰船/飞机消耗品共用）。
+
+        stack：目标详情堆栈。舰船消耗品默认 self._con_detail_stack；飞机消耗品传入
+        各自 con_stack，使飞机消耗品卡片同样走完整类型分支树（WG/Lesta 特有类型、
+        时间制等），而非 presenter 的简化 detail_items。
+        """
         from ui.ship_card_widget import ShipCardWidget
         from services.database_service import get_db
 
         # 再次点击当前选中按钮 → 取消选中并收起详情（回到提示页）
-        _stack = getattr(self, '_con_detail_stack', None)
+        _stack = stack if stack is not None else getattr(self, '_con_detail_stack', None)
+        if _stack is None:
+            return
+        _act = getattr(self, '_active_con_keys', {})
+        _sid = id(_stack)
         _key = f"{cid}::{ckey}"
-        if _stack is not None and getattr(self, '_active_con_key', '') == _key and _stack.currentIndex() != 0:
-            self._active_con_key = ""
+        if _act.get(_sid) == _key and _stack.currentIndex() != 0:
+            _act[_sid] = ""
             _stack.setCurrentIndex(0)
             if all_btns:
                 for b in all_btns:
                     b.setChecked(False)
+            if getattr(self, '_active_con_btn', None) is btn:
+                self._active_con_btn = None
             return
 
+        # 跨槽位/跨消耗品区唯一高亮：先取消上一个选中按钮
+        _prev_btn = getattr(self, '_active_con_btn', None)
+        if _prev_btn is not None and _prev_btn is not btn:
+            from shiboken6 import isValid
+            if isValid(_prev_btn):
+                _prev_btn.setChecked(False)
+            else:
+                # 旧按钮所属面板已被重建销毁，丢弃失效引用
+                self._active_con_btn = None
         # 同槽位互斥高亮（与飞机消耗品/弹药按钮一致）
         if all_btns:
             for b in all_btns:
                 b.setChecked(b is btn)
-        self._active_con_key = _key
+        self._active_con_btn = btn
+        _act[_sid] = _key
 
         # 移除旧详情页（保留索引 0 的提示页）
-        while self._con_detail_stack.count() > 1:
-            w = self._con_detail_stack.widget(1)
-            self._con_detail_stack.removeWidget(w)
+        while _stack.count() > 1:
+            w = _stack.widget(1)
+            _stack.removeWidget(w)
             w.deleteLater()
 
         # 查询消耗品配置
@@ -4378,8 +2653,8 @@ class DetailPanel(QWidget):
                 from presenters.base_presenter import BasePresenter
                 bp = BasePresenter(conn)
 
-                def kv(name, value, unit=""):
-                    items.append(bp.make_item(name, value, len(items), unit=unit))
+                def kv(name, value, unit="", color=""):
+                    items.append(bp.make_item(name, value, len(items), unit=unit, color=color))
 
                 kv("名称", dname)
                 num_raw = cfgd.get('numConsumables') or cfgd.get('num_consumables') or "0"
@@ -4409,284 +2684,11 @@ class DetailPanel(QWidget):
                                 cd_time = cd_time * _mv_f if _fmt == "coeff" else cd_time + _mv_f
                             elif _field == _duration_label and wt:
                                 wt = wt * _mv_f if _fmt == "coeff" else wt + _mv_f
-                if num_raw not in ('0', 0):
-                    kv("数量", '无限' if str(num_raw) == '-1' else str(num_raw))
-                is_auto = cfgd.get('isAutoConsumable', False)
-                if is_auto:
-                    kv("自动使用", "是")
-                if prep:
-                    kv("准备时间", f"{prep:.2f}s")
-                if cd_time:
-                    kv("冷却时间", f"{cd_time:.2f}s")
-                if wt:
-                    kv("持续时间", f"{wt:.2f}s")
-                # WG：可用激活方式与默认激活方式
-                _aam = cfgd.get('availableActivationModes') or []
-                if _aam:
-                    _modes_zh = []
-                    for _m in _aam:
-                        _mu = str(_m).upper()
-                        _modes_zh.append("手动" if _mu == "MANUAL" else ("自动" if _mu == "AUTO" else str(_m)))
-                    kv("可用激活方式", '/'.join(_modes_zh))
-                _dam = cfgd.get('defaultActivationMode') or ""
-                if _dam:
-                    _du = str(_dam).upper()
-                    kv("默认激活方式", "手动" if _du == "MANUAL" else ("自动" if _du == "AUTO" else str(_dam)))
-
-                items.append(bp.make_item("消耗品效果", "", row_type="header", order=len(items)))
-                # WG 使用方式（tacticalParams）
-                _tp = cfgd.get('tacticalParams') or {}
-                if isinstance(_tp, dict) and _tp:
-                    _ut = _tp.get('usageType', '')
-                    _ut_zh = {"default": "常规", "position": "指定位置", "entity": "以目标为中心"}.get(_ut, _ut)
-                    kv("使用方式", _ut_zh)
-                    _wr = _tp.get('workRange')
-                    _ar = _tp.get('aimRange')
-                    if _ut == "default":
-                        pass
-                    else:
-                        if _wr:
-                            kv("作用范围", f"{float(_wr)/1000:.2f} km")
-                        elif _ar:
-                            kv("瞄准范围", f"{float(_ar):.0f} m")
                 ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
-
-                if ct == "crashCrew":
-                    kv("", "扑灭起火、清除进水、并修复受损配件。")
-                elif ct == "fighter":
-                    fn = cfgd.get('fightersName') or ""
-                    if fn:
-                        fname = bp.resolve_name('plane', fn) or fn
-                        kv("战斗机名称", fname)
-                    fn2 = cfgd.get('fightersNum') or 0
-                    is_inter = cfgd.get('isInterceptor') or 0
-                    if fn2 or is_inter:
-                        kv("数量", f"{fn2}{' | 截击机' if is_inter else ''}")
-                    dog = cfgd.get('dogFightTime', 0)
-                    if isinstance(dog, dict):
-                        dog = next((x for x in dog.values() if isinstance(x, (int, float))), 0)
-                    fly = cfgd.get('flyAwayTime', 0)
-                    if dog or fly:
-                        kv("交战时间", f"狗斗 {dog}s | 离开 {fly}s")
-                    rk = cfgd.get('distanceToKill', 0)
-                    if isinstance(rk, dict):
-                        rk = next((x for x in rk.values() if isinstance(x, (int, float))), 0)
-                    if rk:
-                        kv("巡逻半径", f"{rk/10:.2f}km")
-                elif ct == "scout":
-                    dc = (float(cfgd.get('artilleryDistCoeff', 0) or 1) - 1)
-                    kv("主炮射程", f"{dc*100:+.0f}%")
-                    modifiers = cfgd.get('modifiers')
-                    if modifiers and isinstance(modifiers, dict):
-                        from models.name_mapping import Mapping as NM2
-                        for mk, mv in sorted(modifiers.items()):
-                            label = NM2.MODIFIER_MAP.get(mk, mk)
-                            kv(label, f"{(mv-1)*100:+.0f}%")
-                elif ct == "smokeGenerator":
-                    r = float(cfgd.get('radius', 0) or 0)
-                    kv("烟雾半径", f"{r*3:.2f}m")
-                    h = cfgd.get('height', 0)
-                    if h:
-                        kv("烟雾高度", f"{h}m")
-                    sp = cfgd.get('speedLimit', 0)
-                    lt = cfgd.get('lifeTime', 0)
-                    if sp or lt:
-                        kv("限制/扩散", f"速度 {sp}kts / {lt}s")
-                elif ct == "speedBoosters":
-                    # boostCoeff 已是小数加成（0.08 = +8%）；forwardEngineForsag/backwardEngineForsag 为倍率
-                    bc = float(cfgd.get('boostCoeff', 0) or 0)
-                    kv("最高航速", f"{bc*100:+.0f}%")
-                    fef = float(cfgd.get('forwardEngineForsag', 0) or 1)
-                    bef = float(cfgd.get('backwardEngineForsag', 0) or 1)
-                    kv("推力", f"前进 ×{fef:g} / 后退 ×{bef:g}")
-                elif ct == "sonar":
-                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
-                    dt = float(cfgd.get('distTorpedo', 0) or 0) * 0.03
-                    dm = float(cfgd.get('distMine', 0) or 0) * 0.03
-                    kv("舰船探测", f"{ds:.2f} km")
-                    if dt:
-                        kv("鱼雷探测", f"{dt:.2f} km")
-                    if dm:
-                        kv("水雷探测", f"{dm:.2f} km")
-                elif ct == "torpedoReloader":
-                    trt = cfgd.get('torpedoReloadTime', 0)
-                    if trt:
-                        kv("鱼雷装填时间", f"{trt}s")
-                elif ct == "rls":
-                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
-                    kv("舰船探测", f"{ds:.2f} km")
-                    ac_classes = cfgd.get('affectedClasses', [])
-                    if ac_classes:
-                        kv("限制探测舰种", ', '.join(ac_classes))
-                elif ct == "artilleryBoosters":
-                    bc = (float(cfgd.get('boostCoeff', 0) or 1) - 1)
-                    kv("主炮装填时间", f"{bc*100:+.0f}%")
-                elif ct == "depthCharges":
-                    r = float(cfgd.get('radius', 0) or 0) * 0.003
-                    kv("半径", f"{r:.2f}km")
-                elif ct == "regenCrew":
-                    rr = cfgd.get('regenerationHPSpeed', 0) or cfgd.get('regenerationRate', 0)
-                    if rr:
-                        # 查询该船血量（按当前配置字母），计算实际每秒回复量
-                        try:
-                            ship_id = self._current_filename or ""
-                            _letter = getattr(self, '_active_config_letter', 'A')
-                            h_hp = conn.execute(
-                                "SELECT health FROM ship_module_hulls "
-                                "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
-                                (vc, ship_id, f"{_letter}%")).fetchone()
-                            if h_hp and h_hp['health']:
-                                actual_hp = rr * h_hp['health']
-                                kv("每秒回复血量", f"+{actual_hp:.0f} HP")
-                                kv("每秒回复比例", f"+{rr*100:.2f}%")
-                                # 单次总回复比例 = 每秒回复比例 × 持续时间
-                                if wt:
-                                    total_pct = rr * wt * 100
-                                    kv("单次总回复比例", f"+{total_pct:.2f}%")
-                            else:
-                                kv("每秒回复比例", f"+{rr*100:.2f}%")
-                        except Exception:
-                            kv("每秒回复比例", f"+{rr*100:.2f}%")
-                    # 从 ship_module_hulls 查询该船的回复率数据
-                    try:
-                        ship_id = self._current_filename or ""
-                        h = conn.execute(
-                            "SELECT hull_regen_part, citadel_regen_part FROM ship_module_hulls "
-                            "WHERE version_code=? AND ship_id=? LIMIT 1",
-                            (vc, ship_id)).fetchone()
-                        if h and (h['hull_regen_part'] is not None or h['citadel_regen_part'] is not None):
-                            hrp_str = f"{h['hull_regen_part']*100:.0f}%" if h['hull_regen_part'] is not None else "N/A"
-                            crp_str = f"{h['citadel_regen_part']*100:.0f}%" if h['citadel_regen_part'] is not None else "N/A"
-                            kv("回复率 (船体/核心区)", f"{hrp_str}/{crp_str}")
-                    except Exception:
-                        pass
-                elif ct == "airDefenseDisp":
-                    adm = cfgd.get('areaDamageMultiplier', 0)
-                    bdm = cfgd.get('bubbleDamageMultiplier', 0)
-                    if adm:
-                        kv("防空区域秒伤", f"{adm*100:+.0f}%")
-                    if bdm:
-                        kv("黑云伤害", f"{bdm*100:+.0f}%")
-                elif ct == "hydrophone":
-                    zlt = cfgd.get('zoneLifeTime', 0)
-                    huf = cfgd.get('hydrophoneUpdateFrequency', 0)
-                    hwr = cfgd.get('hydrophoneWaveRadius', 0)
-                    if zlt:
-                        kv("虚影存留", f"{zlt}s")
-                    if huf:
-                        kv("刷新间隔", f"{huf}s")
-                    if hwr:
-                        kv("视野距离", f"{hwr*0.001:.2f}km")
-                elif ct == "fastRudders":
-                    brt = (float(cfgd.get('buoyancyRudderTimeCoeff', 0) or 1) - 1)
-                    bsc = (float(cfgd.get('maxBuoyancySpeedCoeff', 0) or 1) - 1)
-                    kv("水平舵换挡", f"{brt*100:+.0f}%")
-                    if bsc:
-                        kv("上浮/下潜速度", f"{bsc*100:+.0f}%")
-                elif ct == "subsEnergyFreeze":
-                    kv("", "启用后下潜能力将停止消耗")
-                    cue = cfgd.get('canUseOnEmpty', False)
-                    kv("电池耗尽时启用", "是" if cue else "否")
-                elif ct == "submarineLocator":
-                    ds = float(cfgd.get('distShip', 0) or 0) * 0.03
-                    if ds:
-                        kv("潜艇探测", f"{ds:.2f} km")
-                    ac = cfgd.get('affectedClasses', [])
-                    if ac:
-                        kv("限制探测舰种", ', '.join(ac))
-                elif ct == "planeSmokeGenerator":
-                    r = float(cfgd.get('radius', 0) or 0)
-                    h = cfgd.get('height', 0)
-                    lt = cfgd.get('lifeTime', 0)
-                    sd = cfgd.get('startDelayTime', 0) or cfgd.get('activationDelay', 0)
-                    if r:
-                        kv("烟雾半径", f"{r*3:.2f}m")
-                    if h:
-                        kv("烟雾高度", f"{h}m")
-                    if lt:
-                        kv("持续时间", f"{lt}s")
-                    if sd:
-                        kv("起效延迟", f"{sd}s")
-                elif ct in ("planeTacticalFighters", "callFighters"):
-                    fn = cfgd.get('fightersName') or ""
-                    if fn:
-                        fname = bp.resolve_name('plane', fn) or fn
-                        kv("战斗机名称", fname)
-                    tda = cfgd.get('timeDelayAttack', 0)
-                    fly = cfgd.get('flyAwayTime', 0)
-                    if tda or fly:
-                        kv("交战时间", f"攻击延迟 {tda}s | 离开 {fly}s")
-                    wp = cfgd.get('workPreparationTime', 0)
-                    if wp:
-                        kv("准备时间", f"{wp}s")
-                elif ct == "supportBuoy":
-                    bdv = cfgd.get('battleDropVisualName', 'Unknown')
-                    bda = cfgd.get('battleDropActivationTime', 0)
-                    zlt = cfgd.get('zoneLifetime', 0)
-                    kv("区域", bdv)
-                    if bda:
-                        kv("布置时间", f"{bda}s")
-                    if zlt:
-                        kv("持续时间", f"{zlt}s")
-                elif ct == "vampireDamage":
-                    dgm = cfgd.get('damageGMHealCoeff', 0)
-                    if dgm:
-                        kv("伤害转化系数", f"{dgm*100:.2f}%")
-                elif ct == "massHeal":
-                    ohp = cfgd.get('ownHealPart', 0)
-                    if ohp:
-                        # 查询该船血量（按当前配置字母），计算实际每秒回复量（同维修小组）
-                        try:
-                            ship_id = self._current_filename or ""
-                            _letter = getattr(self, '_active_config_letter', 'A')
-                            h_hp = conn.execute(
-                                "SELECT health FROM ship_module_hulls "
-                                "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
-                                (vc, ship_id, f"{_letter}%")).fetchone()
-                            if h_hp and h_hp['health']:
-                                actual_hp = ohp * h_hp['health']
-                                kv("每秒回复血量", f"+{actual_hp:.0f} HP")
-                                kv("每秒回复比例", f"+{ohp*100:.2f}%")
-                                # 单次总回复比例 = 每秒回复比例 × 持续时间
-                                if wt:
-                                    total_pct = ohp * wt * 100
-                                    kv("单次总回复比例", f"+{total_pct:.2f}%")
-                            else:
-                                kv("每秒回复比例", f"+{ohp*100:.2f}%")
-                        except Exception:
-                            kv("每秒回复比例", f"+{ohp*100:.2f}%")
-                        # 从 ship_module_hulls 查询该船的回复率数据
-                        try:
-                            ship_id = self._current_filename or ""
-                            h = conn.execute(
-                                "SELECT hull_regen_part, citadel_regen_part FROM ship_module_hulls "
-                                "WHERE version_code=? AND ship_id=? LIMIT 1",
-                                (vc, ship_id)).fetchone()
-                            if h and (h['hull_regen_part'] is not None or h['citadel_regen_part'] is not None):
-                                hrp_str = f"{h['hull_regen_part']*100:.0f}%" if h['hull_regen_part'] is not None else "N/A"
-                                crp_str = f"{h['citadel_regen_part']*100:.0f}%" if h['citadel_regen_part'] is not None else "N/A"
-                                kv("回复率 (船体/核心区)", f"{hrp_str}/{crp_str}")
-                        except Exception:
-                            pass
-                    wr = cfgd.get('workRadius', 0)
-                    if wr:
-                        kv("友军回复作用半径", f"{wr*3/100:.2f} km")
-                    abn = cfgd.get('allyBuffName', '')
-                    abl = cfgd.get('allyBuffLevel', 1)
-                    if abn:
-                        try:
-                            buff_row = conn.execute(
-                                "SELECT ally_health_regen_percent FROM consumable_buff "
-                                "WHERE version_code=? AND buff_id=? AND buff_level=?",
-                                (vc, abn, abl)).fetchone()
-                            if buff_row and buff_row['ally_health_regen_percent']:
-                                kv("友军每秒回复", f"+{buff_row['ally_health_regen_percent']*100:.2f}%")
-                            else:
-                                kv("友军增益", f"{abn} (等级{abl})")
-                        except Exception:
-                            kv("友军增益", f"{abn} (等级{abl})")
-                else:
-                    kv("", "该消耗品类型未知，请催促作者更新解析逻辑，谢谢。")
+                is_auto = cfgd.get('isAutoConsumable', False)
+                self._consumable_detail_items(
+                    items, bp, cfgd, conn, vc, kv,
+                    num_raw=num_raw, prep=prep, cd_time=cd_time, wt=wt, auto=is_auto, ct=ct)
             else:
                 items = [{"row_type": "header", "label": "  无详细数据", "value": ""}]
         except Exception as e:
@@ -4694,8 +2696,8 @@ class DetailPanel(QWidget):
 
         # 构建详情卡片并添加到 stack
         detail_card = ShipCardWidget({"items": items, "label": f"消耗品详情 - {dname}"})
-        self._con_detail_stack.addWidget(detail_card)
-        self._con_detail_stack.setCurrentWidget(detail_card)
+        _stack.addWidget(detail_card)
+        _stack.setCurrentWidget(detail_card)
 
     def _build_config_widget(self, config_data: dict) -> QWidget:
         """构建带配置选择按钮的二级面板"""
@@ -4819,6 +2821,13 @@ class DetailPanel(QWidget):
         self._active_sonar_key = ""
         self._active_hull_key = ""
         self._active_module_keys: dict[str, str] = {}
+        # 切换文件：旧面板/按钮将被销毁，清空消耗品选中态避免残留引用（C++ 对象已删除崩溃）
+        self._active_con_keys = {}
+        self._active_con_btn = None
+        # 信号旗选中态：构建信号旗面板时会按此恢复上一艘船的选中（Lesta），必须随船清空
+        self._selected_signal_flags = {}
+        # WG 信号旗选中态：随船重置（构建列时按新船全选填充）
+        self._selected_wg_signal_flags = {}
 
         db = get_db()
         if db.exists:
