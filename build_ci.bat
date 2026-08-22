@@ -4,7 +4,7 @@ chcp 65001 >nul
 
 :: ============================================================
 :: GitHub Actions dedicated clean build script
-::   Only job: produce release\KorabliParagrams.exe for Release upload.
+::   Only job: produce release\WowsKorabliDataViewer.exe for Release upload.
 ::   No local-only steps (D: temp redirect, taskkill old process,
 ::   config.json copy, pause, timeout); decoupled from build.bat (local).
 ::   Invoked by: Build exe step in .github/workflows/release.yml
@@ -55,7 +55,7 @@ if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
-    --output-filename=KorabliParagrams.exe ^
+    --output-filename=WowsKorabliDataViewer.exe ^
     main.py
 
 if %ERRORLEVEL% NEQ 0 (
