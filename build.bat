@@ -63,10 +63,11 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-:: Compiler strategy: local keeps Nuitka default toolchain (MSVC, known good);
-:: CI uses MinGW gcc + disables LTO (MSVC full compile is slow on CI runners)
+:: Compiler strategy: local and CI both use Nuitka default toolchain (MSVC).
+:: Nuitka 2.x removed --mingw64 (MinGW) on Python 3.13+, so CI no longer
+:: passes --mingw64; keeps --lto=no to reduce build time on CI runners.
 set EXTRA_NUITKA_ARGS=
-if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--mingw64 --lto=no
+if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--lto=no
 
 :: Step 2: compile onefile executable
 %PYTHON% -m nuitka ^
