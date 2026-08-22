@@ -40,13 +40,13 @@ echo [VERSION] Generating __about__.py from Git tag ...
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
 :: Step 2: compile onefile executable
-:: CI uses MinGW gcc (--mingw64) + disabled LTO (--lto=no) to avoid slow
-:: MSVC full compile on runners; --assume-yes-for-downloads lets Nuitka
-:: auto-download gcc etc.
+:: Nuitka 2.x removed --mingw64 (MinGW) support on Python 3.13+, so CI now
+:: uses the default MSVC toolchain (windows-latest ships VS Build Tools).
+:: --lto=no keeps build time down; --assume-yes-for-downloads lets Nuitka
+:: auto-download MSVC components if not already present.
 %PYTHON% -m nuitka ^
     --standalone ^
     --onefile ^
-    --mingw64 ^
     --lto=no ^
     --output-dir="%OUTDIR%" ^
     --windows-console-mode=attach ^
