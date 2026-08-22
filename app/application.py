@@ -156,6 +156,17 @@ class Application(QObject):
 
     def _on_wows_type_changed(self, value: str) -> None:
         bus.log_message.emit(f"切换服务器: {value}")
+        # 碰撞材质映射表按服务器分文件（resources/database/{lesta|wargaming}/collision_materials.json），
+        # 模块导入时只加载一次 → 切服需重载（WG 表独立演进后此步生效）
+        try:
+            import models.collision_materials as _cm
+            _cm._EXT_MATERIALS, _cm._EXT_ZONES = _cm._load_external_material_table()
+            if _cm._EXT_MATERIALS:
+                _cm.COLLISION_MATERIAL_NAMES.update(_cm._EXT_MATERIALS)
+            if _cm._EXT_ZONES:
+                _cm.ZONE_CHINESE.update(_cm._EXT_ZONES)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_game_path_changed(self, value: str) -> None:
         bus.log_message.emit(f"设置游戏目录: {value}")

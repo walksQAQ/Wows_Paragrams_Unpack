@@ -43,7 +43,10 @@ def _log(msg: str) -> None:
 
 def _run(cmd: list[str]) -> bool:
     """运行外部命令；成功返回 True，失败返回 False（不抛异常）。"""
-    kwargs: dict = {"capture_output": True, "text": True, "timeout": 300}
+    # text=True 在中文 Windows 上按 GBK 解码，gen_qrc.py 输出 UTF-8 中文会触发
+    # UnicodeDecodeError（子进程 reader 线程 traceback 噪音）→ 显式 UTF-8 + errors=replace
+    kwargs: dict = {"capture_output": True, "encoding": "utf-8",
+                    "errors": "replace", "text": True, "timeout": 300}
     if os.name == "nt":
         # 从 GUI 进程调用时不弹出控制台窗口
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)

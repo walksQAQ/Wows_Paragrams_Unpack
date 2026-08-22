@@ -26,6 +26,7 @@ from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
 from ui.ship_card_widget import ShipDetailGrid, ShipCardWidget, SECTION_ICONS
 from utils.theme import theme
 from utils.image_paths import pic_path
+from services import wg_compat
 
 
 # U13: 加性修饰符键集（3 处重复 → 模块级常量）
@@ -714,7 +715,7 @@ class DetailPanel(QWidget):
                 col, cl = _col("信号旗")
 
                 if _is_wg_sig:
-                    _wg_ph = QLabel("Wargaming 服务器\n暂不支持信号旗系统")
+                    _wg_ph = QLabel(wg_compat.signal_flag_placeholder())
                     _wg_ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     _wg_ph.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:20px 8px;"))
                     cl.addWidget(_wg_ph)
@@ -972,7 +973,7 @@ class DetailPanel(QWidget):
                 col, cl = _col("舰长技能")
 
                 if _is_wg:
-                    _wg_placeholder = QLabel("Wargaming 服务器\n暂不支持舰长技能系统")
+                    _wg_placeholder = QLabel(wg_compat.commander_placeholder())
                     _wg_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     _wg_placeholder.setStyleSheet(theme.qss("color:@text_hint@; font-size:11px; padding:20px 8px;"))
                     cl.addWidget(_wg_placeholder)
@@ -2407,29 +2408,7 @@ class DetailPanel(QWidget):
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
                                 btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;border:1px solid @border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@hover_bg@;border-color:@selected_bg@;}QPushButton:checked{background:@selected_bg@;border-color:@selected_bg@;}"))
                                 btn.setToolTip(an)
-                                cand = []
-                                _proj_to_air = {"rocket": "projectile", "bomb": "bomb", "skipbomb": "skip_bomb", "mine": "mine"}
-                                _ap = next((v for k,v in _proj_to_air.items() if sp.startswith(k)), None)
-                                if _ap:
-                                    if at and _ap != "mine": cand.append(f"ammo_{_ap}_{at}_0.png")
-                                    cand.append(f"ammo_{_ap}_0.png")
-                                if at: cand.append(f"ammo_{at}_0.png")
-                                if sp in ("torpedo","torpedobomber"):
-                                    if "deepwater" in ai.get("raw_ammo_type", "").lower():
-                                        if sp == "torpedobomber":
-                                            cand.insert(0, "ammo_torpedo_deepwater_0.png")
-                                            cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                        else:
-                                            cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                            cand.insert(0, "ammo_torpedo_deepwater_0.png")
-                                    else:
-                                        tp = ai.get("torpedo_postfix", "")
-                                        if tp == "_subBurn":
-                                            cand.insert(0, "ammo_torpedo_subburn_0.png")
-                                        elif tp:
-                                            cand.insert(0, "ammo_torpedo_subdefault_improve_0.png")
-                                    cand.extend(["ammo_torpedo_0.png","ammo_bomber_torpedo_0.png"])
-                                if "depthcharge" in sp: cand.extend(["ammo_depthcharge_0.png","ammo_airsupport_depthcharge_0.png"])
+                                cand = self._ammo_icon_candidates(at, sp, ai, bool(ai.get("switchable")))
                                 ip = next((p for c in cand if not (p:=QPixmap(pic_path(f"ammo_types/{c}"))).isNull()), None)
                                 if ip: btn.setIcon(QIcon(ip.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
                                 else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;", f"padding:2px;font-size:8px;color:{theme['text_muted']};"))
@@ -2599,34 +2578,7 @@ class DetailPanel(QWidget):
                         btn.setCheckable(True)
                         btn.setStyleSheet(BTN_STYLE)
                         btn.setToolTip(aname)
-                        candidates = []
-                        _proj_to_air = {"rocket": "projectile", "bomb": "bomb", "skipbomb": "skip_bomb", "mine": "mine"}
-                        _ap = next((v for k,v in _proj_to_air.items() if sp.startswith(k)), None)
-                        if _ap:
-                            if at and _ap != "mine": candidates.append(f"ammo_{_ap}_{at}_0.png")
-                            candidates.append(f"ammo_{_ap}_0.png")
-                        if at: candidates.append(f"ammo_{at}_0.png")
-                        # 鱼雷回退
-                        if sp in ("torpedo", "torpedobomber"):
-                            if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
-                                if sp == "torpedobomber":
-                                    candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                                    candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                else:
-                                    candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                    candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                            else:
-                                tp = ammo_info.get("torpedo_postfix", "")
-                                if tp == "_subBurn":
-                                    candidates.insert(0, "ammo_torpedo_subburn_0.png")
-                                elif tp:
-                                    candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
-                            candidates.append("ammo_torpedo_0.png")
-                            candidates.append("ammo_bomber_torpedo_0.png")
-                        # 深水炸弹回退
-                        if "depthcharge" in sp:
-                            candidates.append("ammo_depthcharge_0.png")
-                            candidates.append("ammo_airsupport_depthcharge_0.png")
+                        candidates = self._ammo_icon_candidates(at, sp, ammo_info, bool(ammo_info.get("switchable")))
                         img_path = None
                         for c in candidates:
                             p = QPixmap(pic_path(f"ammo_types/{c}"))
@@ -2855,32 +2807,7 @@ class DetailPanel(QWidget):
                     btn.setCheckable(True)
                     btn.setStyleSheet(BTN_STYLE)
                     btn.setToolTip(aname)
-                    candidates = []
-                    _proj_to_air = {"rocket": "projectile", "bomb": "bomb", "skipbomb": "skip_bomb", "mine": "mine"}
-                    _ap = next((v for k,v in _proj_to_air.items() if sp.startswith(k)), None)
-                    if _ap:
-                        if at and _ap != "mine": candidates.append(f"ammo_{_ap}_{at}_0.png")
-                        candidates.append(f"ammo_{_ap}_0.png")
-                    if at: candidates.append(f"ammo_{at}_0.png")
-                    if sp in ("torpedo", "torpedobomber"):
-                        if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
-                            if sp == "torpedobomber":
-                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                            else:
-                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                        else:
-                            tp = ammo_info.get("torpedo_postfix", "")
-                            if tp == "_subBurn":
-                                candidates.insert(0, "ammo_torpedo_subburn_0.png")
-                            elif tp:
-                                candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
-                        candidates.append("ammo_torpedo_0.png")
-                        candidates.append("ammo_bomber_torpedo_0.png")
-                    if "depthcharge" in sp:
-                        candidates.append("ammo_depthcharge_0.png")
-                        candidates.append("ammo_airsupport_depthcharge_0.png")
+                    candidates = self._ammo_icon_candidates(at, sp, ammo_info, bool(ammo_info.get("switchable")))
                     img_path = None
                     for c in candidates:
                         p = QPixmap(pic_path(f"ammo_types/{c}"))
@@ -3140,6 +3067,91 @@ class DetailPanel(QWidget):
         layout.addWidget(data_widget)
         return container
 
+    @staticmethod
+    def _ammo_icon_candidates(atype_lower: str, species_lower: str,
+                              ammo_info: dict | None = None, is_sec: bool = False) -> list[str]:
+        """生成弹药图标候选文件名（按服务器区分命名）。
+
+        Lesta：resources/pictures/lesta/ammo_types/（ammo_ap_0.png …）
+        WG   ：resources/pictures/wargaming/ammo_types/（ap.png；可切换副弹药 ap_sec.png …）
+        """
+        from app.application import app as _app_ctx
+        is_wg = _app_ctx.ctx.wows_type == "Wargaming"
+        at = (atype_lower or "").lower()
+        sp = (species_lower or "").lower()
+        info = ammo_info or {}
+        cand: list[str] = []
+
+        if is_wg:
+            # 修改型/可切换副弹药：ap_sec.png / he_sec.png / cs_sec.png
+            if is_sec and at:
+                cand.append(f"{at}_sec.png")
+            # 飞机类映射（WG 命名：dive_he.png / fighter_he.png / skip_he.png / missiles.png …）
+            _wg_air = {"bomb": "dive", "skipbomb": "skip", "skip": "skip",
+                       "fighter": "fighter", "dive": "dive", "rocket": "missile"}
+            _wbase = next((v for k, v in _wg_air.items() if sp.startswith(k)), None)
+            if _wbase:
+                if _wbase == "missile":
+                    cand.append("missiles.png")
+                else:
+                    if at:
+                        cand.append(f"{_wbase}_{at}.png")
+                        cand.append(f"{_wbase}_{at}_alt.png")
+                    cand.append(f"{_wbase}.png")
+            # 鱼雷
+            if sp in ("torpedo", "torpedobomber"):
+                if "deepwater" in str(info.get("raw_ammo_type", "")).lower():
+                    cand.insert(0, "torpedo_deepwater.png")
+                    cand.insert(0, "bomber_torpedo_deepwater.png")
+                else:
+                    tp = info.get("torpedo_postfix", "")
+                    if tp == "_subBurn":
+                        cand.insert(0, "torpedo_alternative_subburn.png")
+                    elif tp:
+                        cand.insert(0, "torpedo_subdefault.png")
+                cand.extend(["torpedo.png", "bomber_torpedo.png"])
+            if "depthcharge" in sp:
+                cand.extend(["depthcharge.png", "airsupport_depthcharge.png"])
+            # 兜底：常规 {at}.png（he/ap/cs 等）
+            if at:
+                cand.append(f"{at}.png")
+            return cand
+
+        # ── Lesta 命名（保持各渲染路径原逻辑） ──
+        _proj_to_air = {"rocket": "projectile", "bomb": "bomb", "skipbomb": "skip_bomb", "mine": "mine"}
+        _ap = next((v for k, v in _proj_to_air.items() if sp.startswith(k)), None)
+        if is_sec and at:
+            cand.append(f"ammo_{at}_sec_0.png")
+        # 飞机类：映射前缀
+        if _ap:
+            if at and _ap != "mine":
+                cand.append(f"ammo_{_ap}_{at}_0.png")
+            cand.append(f"ammo_{_ap}_0.png")
+        # 常规武器：species 直拼
+        if sp and not _ap:
+            cand.append(f"ammo_{sp}_{at}_0.png" if at else f"ammo_{sp}_0.png")
+        if at:
+            cand.append(f"ammo_{at}_0.png")
+        if sp in ("torpedo", "torpedobomber"):
+            if "deepwater" in str(info.get("raw_ammo_type", "")).lower():
+                if sp == "torpedobomber":
+                    cand.insert(0, "ammo_torpedo_deepwater_0.png")
+                    cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                else:
+                    cand.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
+                    cand.insert(0, "ammo_torpedo_deepwater_0.png")
+            else:
+                tp = info.get("torpedo_postfix", "")
+                is_guided = info.get("is_guided", False)
+                if tp == "_subBurn":
+                    cand.insert(0, "ammo_torpedo_subburn_0.png")
+                elif tp and is_guided:
+                    cand.insert(0, "ammo_torpedo_subdefault_improve_0.png")
+            cand.extend(["ammo_torpedo_0.png", "ammo_bomber_torpedo_0.png"])
+        if "depthcharge" in sp:
+            cand.extend(["ammo_depthcharge_0.png", "ammo_airsupport_depthcharge_0.png"])
+        return cand
+
     def _build_weapon_widget(self, section: dict) -> QWidget:
         """构建武器面板（主炮/副炮）：每座炮独立显示 + 下方弹药按钮 + 点击切换详情"""
         from ui.ship_card_widget import ShipCardWidget, card_style
@@ -3273,34 +3285,14 @@ class DetailPanel(QWidget):
                     detail_items = ammo_info.get("detail_items", [])
                     atype_lower = ammo_info.get("ammo_type", "").lower()
                     species_lower = ammo_info.get("species", "").lower()
+                    is_sec = ammo_info.get("switchable")  # 可切换副弹药（switchable_ammo）
 
-                    candidates = []
-                    if species_lower:
-                        candidates.append(f"ammo_{species_lower}_{atype_lower}_0.png" if atype_lower else f"ammo_{species_lower}_0.png")
-                    if atype_lower and atype_lower != species_lower:
-                        candidates.append(f"ammo_{atype_lower}_0.png")
-                    if species_lower in ("torpedo", "torpedobomber"):
-                        if "deepwater" in ammo_info.get("raw_ammo_type", "").lower():
-                            if species_lower == "torpedobomber":
-                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                            else:
-                                candidates.insert(0, "ammo_bomber_torpedo_deepwater_0.png")
-                                candidates.insert(0, "ammo_torpedo_deepwater_0.png")
-                        else:
-                            tp = ammo_info.get("torpedo_postfix", "")
-                            is_guided = ammo_info.get("is_guided", False)
-                            if tp == "_subBurn":
-                                candidates.insert(0, "ammo_torpedo_subburn_0.png")
-                            elif tp and is_guided:
-                                candidates.insert(0, "ammo_torpedo_subdefault_improve_0.png")
-                        candidates.extend(["ammo_torpedo_0.png", "ammo_bomber_torpedo_0.png"])
-                    if "depthcharge" in species_lower:
-                        candidates.extend(["ammo_depthcharge_0.png", "ammo_airsupport_depthcharge_0.png"])
+                    candidates = self._ammo_icon_candidates(atype_lower, species_lower, ammo_info, is_sec)
 
                     btn = QPushButton("")
                     btn.setFixedSize(36, 36)
                     btn.setCheckable(True)
+                    # 可切换副弹药：无特殊边框，仅使用特殊图标（_ammo_icon_candidates 生成 {at}_sec.png）
                     btn.setStyleSheet(BTN_STYLE)
                     btn.setToolTip(aname)
 
@@ -3312,7 +3304,24 @@ class DetailPanel(QWidget):
                         btn.setText(aname[:2] if aname else "?")
                         btn.setStyleSheet(BTN_STYLE + f"QPushButton {{ font-size: 8px; color: {theme['text_muted']}; }}")
 
-                    bl.addWidget(btn)
+                    _trend = ammo_info.get("dmg_dist_trend")
+                    if _trend in ("increase", "decrease"):
+                        _wrap = QWidget()
+                        _wrap.setFixedSize(36, 36)
+                        _wl = QVBoxLayout(_wrap)
+                        _wl.setContentsMargins(0, 0, 0, 0)
+                        _wl.setSpacing(0)
+                        _wl.addWidget(btn)
+                        _badge = QLabel(_wrap)
+                        _bp = QPixmap(pic_path(f"ammo_types/unique_features/indicators/torpedo_damage_by_dist_{_trend}.png"))
+                        if not _bp.isNull():
+                            _badge.setPixmap(_bp.scaled(14, 14, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                            _badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                            _badge.setStyleSheet("background: transparent;")
+                            _badge.setGeometry(22, 0, 14, 14)
+                        bl.addWidget(_wrap)
+                    else:
+                        bl.addWidget(btn)
 
                     if detail_items:
                         detail_card = ShipCardWidget({"label": aname, "items": detail_items})

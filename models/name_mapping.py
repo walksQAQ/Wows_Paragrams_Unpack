@@ -22,6 +22,9 @@ class Mapping:
         "GMHECSDamageCoeff": "主炮高爆和半穿甲弹伤害",
         "GMSHECSDamageCoeff": "中口径炮高爆和半穿甲弹伤害",
         "GSIdealRadius": "副炮炮弹的最大误差",
+        "GSMIdealRadius": "手动模式最大误差",
+        "GSMMaxDist": "手动模式最大射程",
+        "GSMShotDelay": "手动模式装填时间",
         "GSMaxDist": "副炮射程",
         "GSCritProb": "副炮瘫痪的风险",
         "GSRepairTime": "副炮修理时间",
@@ -302,7 +305,10 @@ class Mapping:
         "GMSwitchAmmoReloadCoef": "coeff",
         # ── 副炮 ──
         "GSIdealRadius": "coeff",
+        "GSMIdealRadius": "coeff",
         "GSMaxDist": "coeff",
+        "GSMMaxDist": "coeff",
+        "GSMShotDelay": "coeff",
         "GSCritProb": "coeff",
         "GSRepairTime": "coeff",
         "GSShotDelay": "coeff",
@@ -529,6 +535,7 @@ class Mapping:
         # ── 副炮 ──
         "GSShotDelay", "GSIdealRadius", "GSRepairTime", "GSCritProb",
         "GSPriorityTargetIdealRadius",
+        "GSMIdealRadius", "GSMShotDelay",   # 手动模式：散布/装填越低越好（增益）
         # ── 防空 ──
         "AARepairTime", "AACritProb",
         "prioritySectorCooldownMultiplier",

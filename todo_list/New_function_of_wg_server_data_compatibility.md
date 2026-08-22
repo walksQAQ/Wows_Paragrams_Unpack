@@ -34,6 +34,36 @@
 >   crew_customize / analysis_service 的图片引用改为 `pic_path()`；QSS 侧 combo_arrow 由
 >   `utils/theme.qss()` 统一按服重写 `:/resources/pictures/` 前缀。验证：Lesta 加载 lesta/ 正常、
 >   WG 无图返回空、qrc 重编译自动生效。
+> - 连发射击模式兼容（2026-08-22）：确认 WG 与 Lesta 均用 `SwitchableModeArtilleryModule` 识别连发模式
+>   （机制通用，老代码 `_archive/analyzers/ship_analyzer.py` 本就是两服兼容基准）；`analysis_service._write_artillery`
+>   修复连发间隔读取——`shotDelay` 缺失时兜底 `burstReloadTime`（WG 实测用此字段）。WG 独有
+>   `shotIntensity` / `secondaryAmmoList` 词条现有分析器未入库，见 4.x 清单。
+> - WG 代码收拢为检修模块（2026-08-22）：`services/wg_compat.py` 成为 WG 兼容**唯一检修入口**——
+>   数据差异（类型映射/类别/规范化）、展示占位（信号旗/舰长技能文案）、机制适配预留均收拢于此；
+>   新增 `is_wg()` / `signal_flag_placeholder()` / `commander_placeholder()`；`detail_panel` 占位文案
+>   改用 wg_compat。检修 WG 兼容只看 wg_compat + 少量接入点（见模块 docstring 检修指南）。
+> - 弹夹炮识别双分支化（2026-08-22）：原散在 `analysis_service` 的弹夹炮识别（`store_ship` 收集 +
+>   `_write_artillery` 写库，含 `shotDelay or burstReloadTime` 混合判断）收拢为
+>   `wg_compat.recognize_burst_gun(module_data, wows_type)` **双分支**——`_recognize_burst_lesta`（原逻辑，
+>   勿动）+ `_recognize_burst_wg`（**当前复制 Lesta 版**，带 `TODO(手动)` 标注，供逐点调整 WG 差异：
+>   模块键、连发间隔字段 shotDelay/burstReloadTime、字段名语义）。`analysis_service` 改为按服务器调用。
+>   验证：两服 Drum→shotDelay=0.8 / Switchable→burstReloadTime=1.5 / chargeTimeParams=[1,2,3] 解析正确。
+> - ✅ 写入+展示按服务器文件级分离（2026-08-22）：**Lesta / Wargaming 两个平级大分类直接分开**（非继承）——
+>   - 写入层：`services/lesta/analysis.py`（LestaAnalysisStore/Service）+ `services/wargaming/analysis.py`
+>     （WargamingAnalysisStore/Service，复制 Lesta 逐点调）；顶层 `services/analysis_service.py` 保留 Lesta 兼容转发。
+>   - 展示层：`presenters/lesta/`（LestaBasePresenter/LestaShipPresenter/LestaPresenterRegistry）+
+>     `presenters/wargaming/`（Wargaming 三件套，复制 Lesta 逐点调）；顶层 `presenters/registry.py` 按 `is_wg()` 分发，
+>     `base_presenter.py`/`ship_presenter.py` 保留 Lesta 兼容转发（detail_panel 等直接 import 不受影响）。
+>   - 调用点：`processor_service._run_analysis` 按 `is_wg()` 选 AnalysisService 类。
+>   - `processor_service`（拆分 JSON）**不分离**（用户指定，天然双服分流已够用）。
+>   - 验证：全导入链通畅、registry 分发 Lesta/WG 正确、临时库两服建表 52 表 + assets 8 表全通过。
+> - ✅ SQL 架构按服务器分离（2026-08-22）：`resources/database/` 下 `lesta/` 与 `wargaming/` 各含
+>   `database_new.sql` + `assets_database.sql`（WG 版复制 Lesta 并加「独立架构」头注释，逐点调 game_data 结构差异）；
+>   顶层旧文件保留作兼容回退。`database_service.initialize` / `assets_cache_service.initialize` 按服务器
+>   选子目录 SQL（子目录缺失回退顶层）；`resources.qrc` 已重生成包含子目录，qrc 自动重编译验证通过。
+> - ✅ WG 模式跳过 assets.bin（2026-08-22）：`processor_service` 在 WG 服下**不启动** assets 后台缓存任务
+>   （`assets_done` 直接置位、标记成功，主流程不等待不终止），`_populate_assets_cache` 开头 WG 直接返回 True
+>   （双保险）。原因：WG 的 assets.bin 格式（10 类型表）尚未适配（见 M1.6）。Lesta 路径不受影响。
 >
 > 本计划针对「对 wg 服版本的数据兼容」，覆盖 **数据提取 → 数据解析 → 数据存储 → 数据展示 → 本地化** 全链路，
 > 目标是让程序在 WG 服客户端上同样能「加载数据 → 解析入库 → 浏览舰船/火炮/炮弹/消耗品/升级品/舰长 → 3D 查看 → 跨版本比对」。
@@ -87,7 +117,7 @@
 | G6 | 解析 | `uncode_assets/types.py` 仅 `KORABLI_TYPES`（12 类型），WG 只有 10 类型且 blob index 映射不同 | `uncode_assets/types.py` |
 | G7 | 解析 | 3D 几何/装甲/材质解码（`.geometry` 布局、装甲 BVH、碰撞材质 id、MaterialPrototype 布局）全部按 Korabli 实测 | `models/geometry_parser.py`、`models/armor_scene.py`、`models/collision_materials.py`、`services/assets_cache_service.py` |
 | G8 | 解析 | GameParams 字段结构：WG 与 Lesta 的实体字段/`TypeInfo.type`/`TYPE_CATEGORY_MAP` 可能不同 | `services/processor_service.py`、`services/analysis_service.py` |
-| G9 | 本地化 | `run_localization` WG 分支 `alt = os.path.join(bin_root, ...)` 中 **`bin_root` 未定义（bug）** | `services/localization_service.py` L184 |
+| G9 | 本地化 | ✅ 已解决（2026-08-22）：WG 分支从 `bin/<版本>/res/texts/zh_sg/LC_MESSAGES/global.mo` 复制（优先 `ctx.bin_folder`，回退最新版本目录、回退 zh_cn）→ polib 转 PO → 提取；`bin_root` 未定义 bug 已修复 | `services/localization_service.py` |
 | G10 | 展示 | 信号旗槽位模型（Lesta 6 槽 `SIGNAL_SLOTS`）与 WG 是否一致待实证；`signal_flags` 表按 Lesta `PCEF` 前缀入库 | `presenters/ship_presenter.py`、`services/analysis_service.py` L1516 |
 | G11 | 展示 | 舰长技能布局 `skill_service._grid_map` 为 Lesta 4x4 + rarity（COMMON/REGULAR/RARE/EPIC/LEGENDARY）硬编码；WG 无 rarity、布局不同 | `services/skill_service.py`、`services/analysis_service.py` L1560 |
 | G12 | 展示 | `MODIFIER_MAP` / `NATION_MAP` 等静态映射可能缺 WG 特有字段/国籍 | `models/name_mapping.py`、`presenters/ship_presenter.py` |
@@ -256,7 +286,7 @@ flowchart LR
 
 | # | 任务 | 说明 | 相关文件 |
 |---|------|------|----------|
-| M1.1 | 修复 `run_localization` WG 分支 `bin_root` 未定义 bug | `bin_root` → `game_path`（或按 `find_latest_bin_folder` 拼接） | `services/localization_service.py` |
+| M1.1 | ✅ 已完成（2026-08-22）：`run_localization` WG 分支 `bin_root` 未定义 bug 已修复（改用 `ctx.bin_folder` 优先，回退 `find_latest_bin_folder`）；真实 global.mo 实测通过（PO 54194 条） | `services/localization_service.py` |
 | M1.2 | ✅ 数据库分库（2026-08-21）：`_db_name` 按 `wows_type` 返回（Lesta→`game_data.db`，WG→`game_data_wg.db`）；`get_db`/`reset_db` 联动原已按 server 传参，分库后自动生效 | 分库不改表结构，无需递增 `DB_SCHEMA_VERSION`（当前 44） | `services/database_service.py` |
 | M1.3 | ✅ `assets_data.db` 分库（2026-08-21）：`AssetsCacheService` 构造按 `wows_type` 派生（`assets_data.db`/`assets_data_wg.db`），`_populate_assets_cache` 显式传；`geometry_service._get_assets_cache` 切服重建 | `ASSETS_SCHEMA_VERSION` 无需递增（不改表结构） | `services/assets_cache_service.py`、`services/geometry_service.py` |
 | M1.4 | ✅ GameParams 解析适配 WG（2026-08-21）：`processor_service` 的 WG 分支（`[::-1]`+zlib+pickle+`{'':...}`）**直接复用，无需改动**；桩类注入已验证跑通 23585 实体 | 复用确认 | `services/processor_service.py` |
@@ -300,6 +330,7 @@ flowchart LR
 | `WG_CAT_LABELS` | WG 类别中文标签（若类别变化） | 同上 |
 | `WG_NORMALIZE_ENTITY` | 函数 `(raw: dict) -> dict`，把 WG 实体 JSON 字段重命名/结构对齐到内部统一结构 | 对比 WG/Lesta 同一实体（Ship/Gun/Projectile 等）JSON 字段差异 |
 | （后续 M2.x） | 信号旗槽位、舰长技能布局、`MODIFIER_MAP` 补 WG 特有字段 | M0.6/M0.7 实证 + 展示层适配 |
+| 连发射击模式词条（2026-08-22 已确认） | WG `SwitchableModeArtilleryModule` 连发间隔用 `burstReloadTime`（已修复兜底）；WG 独有 `shotIntensity` / `secondaryAmmoList` / `secondaryAmmoPool` 现有分析器未入库 | WG 舰船 JSON（PASC720_Hawaii / PFSC111_Conde） |
 
 ### 4.x WG 实测 split 类型分布（2026-08-21，供填充 wg_compat 参考）
 

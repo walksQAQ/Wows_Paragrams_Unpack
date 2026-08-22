@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 44
+DB_SCHEMA_VERSION = 47
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -43,6 +43,7 @@ class DatabaseManager:
 
     def __init__(self, db_path: str | Path | None = None,
                  wows_type: str = ""):
+        self._wows_type = wows_type or ""
         if db_path:
             self._db_path = Path(db_path)
         else:
@@ -51,6 +52,17 @@ class DatabaseManager:
         #: 本次 initialize 是否因 schema 版本落后而整库重建（旧数据被清空）。
         #: 供启动/切换服务器时提示「需要重新加载数据」而非「数据库为空」。
         self._schema_rebuilt = False
+
+    def _schema_subdir(self) -> str:
+        """按服务器返回 SQL 架构子目录（lesta / wargaming）。"""
+        wt = self._wows_type
+        if not wt:
+            try:
+                from app.application import app as app_ctx
+                wt = app_ctx.ctx.wows_type
+            except Exception:  # noqa: BLE001
+                wt = ""
+        return "wargaming" if wt == "Wargaming" else "lesta"
 
     @staticmethod
     def _db_name(wows_type: str = "") -> str:
@@ -132,15 +144,20 @@ class DatabaseManager:
             self._schema_rebuilt = True
 
         # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
+        # 架构按服务器分离：lesta/database_new.sql 与 wargaming/database_new.sql
+        # （子目录缺失时回退顶层旧路径，兼容旧 QRC/文件系统）
         from PySide6.QtCore import QFile, QIODevice
-        qf = QFile(":/resources/database/database_new.sql")
+        sub = self._schema_subdir()
+        qf = QFile(f":/resources/database/{sub}/database_new.sql")
         if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
             sql_text = str(qf.readAll(), encoding="utf-8")
             qf.close()
             self._conn.executescript(sql_text)
         else:
             # 回退到文件系统（源码模式或 standalone 无 QRC 的备用路径）
-            sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
+            sql_path = get_bundled_dir() / "resources" / "database" / sub / "database_new.sql"
+            if not sql_path.exists():
+                sql_path = get_bundled_dir() / "resources" / "database" / "database_new.sql"
             if sql_path.exists():
                 sql_text = sql_path.read_text(encoding="utf-8")
                 self._conn.executescript(sql_text)
@@ -195,7 +212,10 @@ class DatabaseManager:
         # ── 迁移：补齐 ship_module_air_support 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_air_support)").fetchall()}
-            for col_name, col_type in [("support_type", "TEXT"), ("min_time_to_attack", "REAL"), ("max_time_to_attack", "REAL")]:
+            for col_name, col_type in [("support_type", "TEXT"), ("min_time_to_attack", "REAL"), ("max_time_to_attack", "REAL"),
+                                       ("ammo_list_json", "TEXT"), ("ammo_switch_coeff", "REAL"),
+                                       ("fly_away_time", "REAL"), ("time_from_heaven", "REAL"),
+                                       ("auto_use", "INTEGER"), ("available_buoyancy_states_json", "TEXT")]:
                 if col_name not in existing:
                     try:
                         self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
@@ -339,6 +359,21 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：创建 ship_module_atba_config 表（WG 副炮控制组 + 手动模式修饰符） ──
+        try:
+            self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_atba_config (
+                version_code TEXT NOT NULL,
+                ship_id TEXT NOT NULL,
+                config_group TEXT NOT NULL,
+                control_groups_json TEXT,
+                manual_mode_modifiers_json TEXT,
+                PRIMARY KEY (version_code, ship_id, config_group),
+                FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+            )""")
+            self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：清理废弃的 mod_concealment_config 表 ──
         try:
             self._conn.execute("DROP TABLE IF EXISTS mod_concealment_config")
@@ -346,10 +381,20 @@ class DatabaseManager:
         except Exception:
             pass
 
+        # ── 迁移：补齐 projectile_torpedo_sub_guidance_ext 缺少的 params_json 列（WG 完整 SubmarineTorpedoParams） ──
+        try:
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_torpedo_sub_guidance_ext)").fetchall()}
+            if "params_json" not in existing:
+                self._conn.execute("ALTER TABLE projectile_torpedo_sub_guidance_ext ADD COLUMN params_json TEXT")
+                self._conn.commit()
+        except Exception:
+            pass
+
         # ── 迁移：补齐 projectile_torpedo_ext 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_torpedo_ext)").fetchall()}
-            for col, typ in [("burn_prob", "REAL DEFAULT 0"), ("uw_critical", "REAL DEFAULT 0")]:
+            for col, typ in [("burn_prob", "REAL DEFAULT 0"), ("uw_critical", "REAL DEFAULT 0"),
+                             ("distance_of_damage_json", "TEXT")]:
                 if col not in existing:
                     self._conn.execute(f"ALTER TABLE projectile_torpedo_ext ADD COLUMN {col} {typ}")
             self._conn.commit()

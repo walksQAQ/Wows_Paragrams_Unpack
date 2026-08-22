@@ -253,25 +253,39 @@ COLLISION_MATERIAL_NAMES: dict[int, str] = {
 def _load_external_material_table() -> tuple[dict[int, str], dict[str, str]]:
     """读取外部映射表 `resources/database/collision_materials.json`。
 
-    加载顺序：文件系统（源码模式热改即时生效）→ QRC（打包模式）→ 空（兜底）。
+    架构按服务器分离（lesta/ 与 wargaming/ 子目录），加载顺序：
+      1. 文件系统子目录（源码模式热改即时生效）
+      2. 文件系统顶层（兼容旧布局）
+      3. QRC 子目录（打包模式）
+      4. QRC 顶层（兼容旧打包）
+      5. 空（兜底）
     返回 (materials: {id: 名称}, zones: {英文区名: 中文名})。
     """
     try:
+        from services import wg_compat
+        sub = "wargaming" if wg_compat.is_wg() else "lesta"
         data = None
         try:
             from utils.path_utils import get_bundled_dir
-            p = get_bundled_dir() / "resources" / "database" / "collision_materials.json"
-            if p.is_file():
-                data = json.loads(p.read_text(encoding="utf-8"))
+            # 子目录优先，回退顶层（兼容旧布局）
+            for rel in (f"resources/database/{sub}/collision_materials.json",
+                        "resources/database/collision_materials.json"):
+                p = get_bundled_dir() / rel
+                if p.is_file():
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    break
         except Exception:  # noqa: BLE001
             data = None
         if data is None:
             try:
                 from PySide6.QtCore import QFile, QIODevice
-                qf = QFile(":/resources/database/collision_materials.json")
-                if qf.open(QIODevice.ReadOnly):
-                    data = json.loads(bytes(qf.readAll()).decode("utf-8"))
-                    qf.close()
+                for res in (f":/resources/database/{sub}/collision_materials.json",
+                            ":/resources/database/collision_materials.json"):
+                    qf = QFile(res)
+                    if qf.open(QIODevice.ReadOnly):
+                        data = json.loads(bytes(qf.readAll()).decode("utf-8"))
+                        qf.close()
+                        break
             except Exception:  # noqa: BLE001
                 data = None
         if not isinstance(data, dict):
