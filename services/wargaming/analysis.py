@@ -1446,11 +1446,26 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
     def store_consumable_buff(self, buff_id: str, raw_data: dict, version_code: str = ""):
         """存入消耗品增益（buff）实体各等级数据（如 PCOM065 MassHealAllyBuff）。
 
-        raw_data 结构：{"level_1": {...allyHealthRegenPercent...}, "level_2": ..., ...}
+        raw_data 结构：
+          - 分级 buff：{"level_1": {...allyHealthRegenPercent...}, "level_2": ...} → 每级一行
+          - 扁平 buff（如 PCOM915/916/917 AuxiliaryTorpedoArmamentBooster，顶层直接含
+            modifier、无 level_*）：存为 buff_level=0 单行，整份进 buff_json。
         """
         conn = self.conn
         if hasattr(raw_data, "__dict__"):
             raw_data = raw_data.__dict__
+        if not isinstance(raw_data, dict):
+            return
+        has_levels = any(isinstance(k, str) and k.startswith("level_") for k in raw_data)
+        if not has_levels:
+            # 扁平 buff：无等级，存 buff_level=0 单行（整份含 modifier 进 buff_json）
+            conn.execute(
+                "INSERT OR REPLACE INTO consumable_buff "
+                "(version_code, buff_id, buff_level, ally_health_regen_percent, buff_json) "
+                "VALUES (?,?,?,?,?)",
+                (version_code, buff_id, 0, None,
+                 json.dumps(raw_data, default=str, ensure_ascii=False)))
+            return
         for key, val in raw_data.items():
             if not isinstance(key, str) or not key.startswith("level_"):
                 continue

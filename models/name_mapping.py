@@ -103,6 +103,7 @@ class Mapping:
         "asMaxHealthCoeff": "空袭和支援中队飞机生命值",
         "asReloadTimeCoeff": "空袭和支援中队装填时间",
         "asNumPacksBonus": "空袭和支援次数",
+        "aimedFireProgressBonus": "瞄准进度加成",
         "dcReloadTimeCoeff": "深水炸弹装填时间",
         "dcAlphaDamageMultiplier": "深水炸弹伤害",
         "dcSplashSizeMultiplier": "深水炸弹和攻击潜艇时炮弹的爆炸半径",
@@ -219,6 +220,14 @@ class Mapping:
         "submarineLocatorReloadCoeff": "潜艇定位器冷却时间",
         "auxTorpBoosterReloadCoeff": "备用鱼雷增程器冷却时间",
         "smokeGeneratorCapacityCoeff": "发烟器容量",
+        # ── 支援飞机投掷 buff 词条（tacticalFireExtinguishing/tacticalBuffHeal/...）──
+        "fireImmunityEnabled": "立即扑灭火灾，并在作用期间防止起火",
+        "healthRegenPercentAbsolute": "每秒回复血量",
+        "allConsumableReloadTimeAbsolute": "消耗品装填时间",
+        "GMShotDelayAbsolute": "主炮装填时间",
+        "GTShotDelayAbsolute": "鱼雷发射管装填时间",
+        "GSShotDelayAbsolute": "副炮装填时间",
+        "AAAuraDamageAbsolute": "防空持续伤害",
         # ── WG 舰长技能词条（2026-08-22）──
         "switchAmmoReloadCoef": "炮弹类型切换时间",
         "ammoSplashRadiusMultiplier": "炮弹爆炸半径",
@@ -323,6 +332,122 @@ class Mapping:
     # coeff: 乘数（0.6=-40%, 1.1=+10%），数值>0 即正收益
     # raw_pct: 原始百分比（0.01=+1%）
     # raw_int: 原始整型（25=+25）
+    # ── 字段匹配短名（升级品/加成应用用，presenters 复用）──
+    # 与 MODIFIER_MAP（显示名）不同：短名用于 _apply_modifiers_to_items 匹配 section items 字段名
+    MODIFIER_FIELD_MAP = {
+        # ── 主炮/副炮 ──
+        "GMShotDelay": "装填时间", "GSShotDelay": "装填时间", "GMSShotDelay": "装填时间",
+        "GTShotDelay": "装填时间",
+        "GSMaxDist": "最大射程", "GMMaxDist": "最大射程", "GMSMaxDist": "最大射程",
+        "GMIdealRadius": "横向散步公式", "GMSIdealRadius": "横向散步公式",
+        "GSIdealRadius": "横向散步公式",
+        "GMRotationSpeed": "垂直回转速度", "GMSRotationSpeed": "水平回转速度",
+        "GTRotationSpeed": "垂直回转速度",
+        "GSAlphaFactor": "标伤",
+        "GMDamageCoeff": "标伤", "GMSDamageCoeff": "标伤", "GMAPDamageCoeff": "标伤",
+        "GMHeavyCruiserCaliberDamageCoeff": "标伤",
+        # ── 鱼雷 ──
+        "torpedoDamageCoeff": "标伤",
+        "torpedoSpeedMultiplier": "航速",
+        "torpedoVisibilityFactor": "被发现距离",
+        "planeTorpedoArmingTimeCoeff": "鱼雷上浮时间",
+        # ── 船体/机动 ──
+        "maxSpeed": "最大航速",
+        "speedCoef": "最大航速",
+        "rudderTime": "转舵时间",
+        "healthHullCoeff": "基础血量",
+        "healthPerLevel": "基础血量",
+        "visibilityDistCoeff": "水面隐蔽",
+        "planeVisibilityFactor": "被侦测距离",
+        "burnProb": "起火的风险",
+        "floodProb": "进水的风险",
+        "batteryCapacityCoeff": "电池容量",
+        "batteryRegenCoeff": "电力恢复",
+        "buoyancyRudderTimeCoeff": "水平舵转舵时间",
+        "buoyancyRudderResetTimeCoeff": "水平舵转舵时间",
+        "hydrophoneUpdateFrequencyCoeff": "水听器更新周期",
+        "hydrophoneWaveSpeedCoeff": "水听器更新周期",
+        "SGRudderTime": "转舵时间",
+        # ── 起火/进水 ──
+        "burnTime": "灭火时间", "floodTime": "进水恢复时间",
+        # ── 防空 ──
+        "AAAuraDamage": "伤害", "AAAuraDamageBonus": "远程伤害",
+        "AABubbleDamage": "爆炸伤害", "AABubbleDamageBonus": "爆炸伤害",
+        "AAExtraBubbles": "一次齐射数量",
+        # ── 飞机（舰载机/支援） ──
+        "planeMaxSpeed": "最大速度",
+        "planeCruiseSpeed": "巡航速度",
+        "planeHp": "单架飞机血量", "planeHealthCoeff": "单架飞机血量",
+        "asMaxHealthCoeff": "单架飞机血量",
+        "planeAttackCooldown": "攻击冷却时间",
+        "planeVisibility": "被侦测距离",
+        "planeHangarMax": "最大可用数量",
+        "planeHangarRestoreAmount": "每次整备数量",
+        "planeHangarTimeToRestore": "每次整备时间",
+        "planeSpawnTime": "每次整备时间",
+        "planeForsageTimeCoeff": "引擎加速时间",
+        "planeHealthPerLevel": "单架飞机血量",
+        "planeSpreadMultiplier": "最大散布",
+        "planeSpeed": "航速",
+        "planeTorpedoSpeedMultiplier": "航速",
+        "planeAlphaDamageCoeff": "标伤",
+        "bombAlphaDamageMultiplier": "标伤",
+        "torpedoBomberHealth": "单架飞机血量",
+        "diveBomberHealth": "单架飞机血量",
+        "skipBomberHealth": "单架飞机血量",
+        "fighterHealth": "单架飞机血量",
+        "mineBomberHealth": "单架飞机血量",
+        "diveBomberSpeedMultiplier": "最大速度",
+        "diveBomberMinSpeedMultiplier": "最小速度",
+        "planeMaxSpeedMultiplier": "最大速度",
+        "diveBomberMaxSpeedMultiplier": "最大速度",
+        "planeExtraHangarSize": "最大可用数量",
+        "skipBomberAimingTime": "瞄准时间",
+        "torpedoBomberAimingTime": "瞄准时间",
+        "fighterAimingTime": "瞄准时间",
+        # ── 消耗品 ──
+        "ConsumableReloadTime": "冷却时间",
+        "ConsumablesWorkTime": "持续时间",
+        "smokeGeneratorReloadCoeff": "冷却时间",
+        "smokeGeneratorWorkTimeCoeff": "持续时间",
+        "speedBoostersWorkTimeCoeff": "持续时间",
+        "sonarWorkTimeCoeff": "持续时间",
+        "scoutReloadCoeff": "冷却时间",
+        "scoutWorkTimeCoeff": "持续时间",
+        "regenCrewReloadCoeff": "冷却时间",
+        "crashCrewWorkTimeBonus": "持续时间",
+        "massHealReloadCoeff": "冷却时间",
+        "vampireDamageReloadCoeff": "冷却时间",
+        "dcReloadTimeCoeff": "装填时间",
+        "dcAlphaDamageMultiplier": "标伤",
+        "asReloadTimeCoeff": "装填时间",
+        "airDefenseDispReloadCoeff": "冷却时间",
+        "airDefenseDispWorkTimeCoeff": "持续时间",
+        "planeSmokeGeneratorWorkTimeCoeff": "持续时间",
+        "smokeGeneratorLifeTime": "持续时间",
+        "rlsWorkTimeCoeff": "持续时间",
+        "prioritySectorCooldownMultiplier": "冷却时间",
+        "pingerReloadCoeff": "冷却时间",
+        "planeAdditionalConsumables": "额外消耗品",
+        "smokeGeneratorAdditionalConsumables": "额外消耗品",
+        "speedBoostersAdditionalConsumables": "额外消耗品",
+        "additionalConsumables": "额外消耗品",
+        # ── 深弹（反潜） ──
+        "dcAlphaDamageMultiplier": "标伤",
+        "dcReloadTimeCoeff": "装填时间",
+        # ── 维修 ──
+        "GMRepairTime": "维修时间",
+        "GMSRepairTime": "维修时间",
+        "GTRepairTime": "维修时间",
+        "PMRepairTime": "配件维修时间",
+        "AARepairTime": "维修时间",
+        "SGRepairTime": "维修时间",
+        "pingerRepairTime": "维修时间",
+        "engineRepairTime": "配件维修时间",
+        "GSRepairTime": "维修时间",
+        "GSMaxHP": "维修时间",
+    }
+
     MODIFIER_FORMAT_MAP: dict[str, str] = {
         # ── 主炮 ──
         "GMRotationSpeed": "coeff",
@@ -499,6 +624,12 @@ class Mapping:
         "lastChanceReloadCoefficient": "coeff",
         # ── 消耗品 ──
         "allConsumableReloadTime": "coeff",
+        "allConsumableReloadTimeAbsolute": "coeff",
+        "GMShotDelayAbsolute": "coeff",
+        "GTShotDelayAbsolute": "coeff",
+        "GSShotDelayAbsolute": "coeff",
+        "AAAuraDamageAbsolute": "coeff",
+        "healthRegenPercentAbsolute": "raw",
         "speedBoostersWorkTimeCoeff": "coeff",
         "planeSmokeGeneratorWorkTimeCoeff": "coeff",
         "smokeGeneratorWorkTimeCoeff": "coeff",
@@ -599,6 +730,7 @@ class Mapping:
         "visionXRayMineDist": "km",
         "visionXRayTorpedoDist": "km",
         "artilleryAlertMinDistance": "km",
+        "healthRegenPercentAbsolute": "%",
     }
 
     # ── 颜色方向：哪些词条是"负值=增益" ─────────────────
@@ -664,11 +796,15 @@ class Mapping:
         "switchAmmoReloadCoef", "activeManeuveringReloadCoeff",
         "callFightersAppearDelay", "visibilityForSubmarineCoeff",
         "reloadFactor", "scoutReloadCoeff",
+        "allConsumableReloadTimeAbsolute",
+        "GMShotDelayAbsolute", "GTShotDelayAbsolute", "GSShotDelayAbsolute",
     }
 
     @staticmethod
     def get_modifier_color(key: str, value: float | int) -> str:
         """根据词条规则返回数值颜色 CSS 字符串，空字符串表示不指定颜色。"""
+        if not isinstance(value, (int, float)):
+            return ""  # dict/list 等非数值修饰符不参与颜色判定
         fmt = Mapping.MODIFIER_FORMAT_MAP.get(key, "coeff")
         av = abs(value)
         if av < 0.001:
@@ -694,11 +830,10 @@ class Mapping:
           - pos方向：正数绿色(#4caf50)、负数红色(#f44336)
           - neg方向：负数绿色(#4caf50)、正数红色(#f44336)
         """
-        # 防御：非数值（list/dict/str 等）无法格式化，返回空
-        if not isinstance(value, (int, float)):
-            return ""
         if key in Mapping.MODIFIER_HIDDEN:
             return ""
+        if not isinstance(value, (int, float)):
+            return ""  # dict/list 等非数值修饰符（如分舰种表）无法单值显示，跳过
         fmt = Mapping.MODIFIER_FORMAT_MAP.get(key, "coeff")
         av = abs(value)
         if av < 0.001:
