@@ -16,7 +16,7 @@ if "%CI_MODE%"=="0" (
 )
 
 :: Kill old running program to avoid file-lock Access is denied
-if "%CI_MODE%"=="0" taskkill /f /im KorabliParagrams.exe 2>nul
+if "%CI_MODE%"=="0" taskkill /f /im WowsKorabliDataViewer.exe 2>nul
 
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
@@ -27,7 +27,7 @@ set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
 :: Force-delete old exe if it is temporarily locked (antivirus etc.)
-if exist "%OUTDIR%\KorabliParagrams.exe" del /f /q "%OUTDIR%\KorabliParagrams.exe" 2>nul
+if exist "%OUTDIR%\WowsKorabliDataViewer.exe" del /f /q "%OUTDIR%\WowsKorabliDataViewer.exe" 2>nul
 
 :: Step 1: generate and compile Qt resources (QRC -> _resources.py)
 echo [QRC] Generating resources.qrc ...
@@ -80,7 +80,7 @@ if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--mingw64 --lto=no
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
-    --output-filename=KorabliParagrams.exe ^
+    --output-filename=WowsKorabliDataViewer.exe ^
     main.py
 
 if %ERRORLEVEL% NEQ 0 (
