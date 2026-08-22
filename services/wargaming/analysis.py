@@ -1552,6 +1552,60 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
                           str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
                           _json_dumps(eff), icon_path))
 
+        # ── WG：舰长技能直接写在舰长文件的 Skills 字段（无 PCOK 分级）──
+        # 每个技能：modifiers / LogicTrigger(触发) / tier(按舰种 1-4 层数)
+        # isEpic=true → 该技能为该舰长的 EPIC 加强型（存 rarity='EPIC'，默认存 REGULAR）；
+        # tier 存入 available_ship_types 列。
+        skills = raw_data.get("Skills", {}) or {}
+        for sk, sv in skills.items():
+            if not isinstance(sv, dict):
+                continue
+            mods = dict(sv.get("modifiers", {}) or {})
+            trigger_data = {}
+            trigger = sv.get("LogicTrigger", {}) or {}
+            if isinstance(trigger, dict):
+                tmods = trigger.get("modifiers", {}) or {}
+                trigger_data = {
+                    "triggerType": trigger.get("triggerType", ""),
+                    "dividerValue": trigger.get("dividerValue", 1.0),
+                    "dividerType": trigger.get("dividerType", ""),
+                    "duration": trigger.get("duration", 0.0),
+                    "triggerRibbonsTypes": trigger.get("triggerRibbonsTypes", []),
+                    "triggerRibbonsNum": trigger.get("triggerRibbonsNum", 0),
+                    "triggerIsSubRibbons": trigger.get("triggerIsSubRibbons", False),
+                    "buffParamsName": trigger.get("buffParamsName", ""),
+                    "buoyancyStates": trigger.get("buoyancyStates", []),
+                    "burnCount": trigger.get("burnCount", 0),
+                    "floodCount": trigger.get("floodCount", 0),
+                    "coolingDelay": trigger.get("coolingDelay", 0.0),
+                    "changePriorityTargetPenalty": trigger.get("changePriorityTargetPenalty", 1.0),
+                    "heatInterpolator": trigger.get("heatInterpolator", []),
+                    "coolingInterpolator": trigger.get("coolingInterpolator", []),
+                    "consumableType": trigger.get("consumableType", ""),
+                    "countToModifier": trigger.get("countToModifier", {}),
+                    "firstTimeModifiers": trigger.get("firstTimeModifiers", {}),
+                    "damageValue": trigger.get("damageValue", 1.0),
+                    "energyCoeff": trigger.get("energyCoeff", 0.0),
+                    "modifiers": dict(tmods),
+                }
+            rarity = "EPIC" if sv.get("isEpic") else "REGULAR"
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_definitions
+                (version_code, skill_key, rarity, modifiers_json, trigger_json, available_ship_types)
+                VALUES (?,?,?,?,?,?)""",
+                         (version_code, sk, rarity,
+                          _json_dumps(mods),
+                          _json_dumps(trigger_data),
+                          _json_dumps(sv.get("tier", {}))))
+            # ── 舰长技能组：按 crew_id 记录该舰长完整技能数据（UI 直接调取）──
+            conn.execute("""INSERT OR REPLACE INTO crew_skill_groups
+                (version_code, crew_id, skill_key, modifiers_json, trigger_json, tier_json, is_epic)
+                VALUES (?,?,?,?,?,?,?)""",
+                         (version_code, crew_id, sk,
+                          _json_dumps(mods),
+                          _json_dumps(trigger_data),
+                          _json_dumps(sv.get("tier", {})),
+                          1 if sv.get("isEpic") else 0))
+
     # ── 8. Signal Flags (Exterior/PCEF*) ────────────────
 
     def store_signal_flag(self, mod_id: str, raw_data: dict, version_code: str = ""):

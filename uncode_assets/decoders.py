@@ -3,6 +3,10 @@
 对应 wows-toolkit `models/{material,visual,model}.rs`，加上 Korabli 独有的
 SkeletonPrototype / TrailPrototype / VfxMaterialPrototype / MiscSettingsPrototype。
 
+WG 服（get_wows_type() == 'Wargaming'）：
+  - Material 用 WG 0x78 布局（decode_material 内部自适应）
+  - Visual/Model 用 generic 兜底（WG 布局与 Korabli 不同，populate 用自写 WG 解析）
+
 `data` 约定：从记录起始到 blob 末尾的切片（`get_prototype_data` 返回），
 因此所有相对指针的基准 = 0（记录起始）。
 """
@@ -16,7 +20,7 @@ from typing import Dict, List, Optional
 from . import binary as B
 from .errors import ParseError
 from .parser import PrototypeDatabase, PrototypeLocation
-from .types import PrototypeType, type_from_magic
+from .types import PrototypeType, get_wows_type, type_from_magic
 
 
 # ── 工具 ──────────────────────────────────────────────────────────────────
@@ -117,7 +121,7 @@ def _read_typed_value(data: bytes, ptr: int, ptype: int, pidx: int):
 
 
 def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
-    """解码 MaterialPrototype（Korabli 实测 0x88B/条，blob 0）。
+    """解码 MaterialPrototype（Korabli 0x88B / WG 0x78B，按服务器布局自适应）。
 
     Korabli 布局（2026-08-03 实测）相对 WoWS 的 0x78 布局整体偏移 +8 字节，
     且 +0x28 是"每属性一个 u32"的标志区（值恒 1）：
@@ -127,17 +131,30 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
       +0x30 bool / +0x38 int32 / +0x40 float_a / +0x48 float_b
       +0x50 texture / +0x58 vec2 / +0x60 vec3 / +0x68 vec4 / +0x70 mat4
       +0x78 u64 material_hash
+
+    WG 布局（wows-toolkit material.rs）：
+      +0x00 u16 property_count, +0x02 u16 flags, +0x04 u32 shader_id,
+      +0x08 u64 reserved, +0x10 names_ptr, +0x18 type_idx_ptr,
+      +0x20..+0x60 type_ptrs[9], +0x68 material_hash, +0x70 pad
+
     指针为 u64，基准 = 记录起始。
     """
-    if len(data) < 0x88:
+    wg = get_wows_type() == "Wargaming"
+    need = 0x78 if wg else 0x88
+    shader_off = 0x04 if wg else 0x08
+    names_off = 0x10 if wg else 0x18
+    type_idx_off = 0x18 if wg else 0x20
+    type_ptrs_base = 0x20 if wg else 0x30
+    mat_hash_off = 0x68 if wg else 0x78
+    if len(data) < need:
         raise ParseError(f"MaterialPrototype 数据过短: {len(data)}")
     property_count = B.read_u16(data, 0x00)
     flags = B.read_u16(data, 0x02)
-    shader_id = B.read_u32(data, 0x08)
-    names_ptr = B.read_u64(data, 0x18)
-    type_idx_ptr = B.read_u64(data, 0x20)
-    type_ptrs = {t: B.read_u64(data, 0x30 + t * 8) for t in range(9)}
-    material_hash = B.read_u64(data, 0x78)
+    shader_id = B.read_u32(data, shader_off)
+    names_ptr = B.read_u64(data, names_off)
+    type_idx_ptr = B.read_u64(data, type_idx_off)
+    type_ptrs = {t: B.read_u64(data, type_ptrs_base + t * 8) for t in range(9)}
+    material_hash = B.read_u64(data, mat_hash_off)
 
     names = B.parse_u32_array(data, names_ptr, property_count) if names_ptr else []
     type_idx = B.parse_u16_array(data, type_idx_ptr, property_count) if type_idx_ptr else []
@@ -289,6 +306,129 @@ def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
     return items
 
 
+# ── VisualPrototype（WG 0x70 布局）───────────────────────────────────────
+
+def decode_visual_wg(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> dict:
+    """解码 VisualPrototype（WG 0x70B/条，blob 1；wows-toolkit visual.rs）。
+
+    WG 记录布局（与 Korabli 0x40 完全不同）：
+      +0x00 u32 nodes_count / +0x04 pad
+      +0x08 i64 name_map_name_ids / +0x10 i64 name_map_node_ids /
+      +0x18 i64 name_ids / +0x20 i64 matrices / +0x28 i64 parent_ids（均 relptr）
+      +0x30 u64 merged_geometry_path_id
+      +0x38 u8 underwater_model / +0x39 u8 abovewater_model /
+      +0x3A u16 render_sets_count / +0x3C u8 lods_count
+      +0x40 BoundingBox(32B) / +0x60 i64 render_sets relptr / +0x68 i64 lods relptr
+    RenderSet 0x28：+0x00 u32 name_id / +0x04 u32 material_name_id /
+      +0x08 u32 vertices_mapping / +0x0C u32 indices_mapping /
+      +0x10 u64 material_mfm_path_id / +0x18 u8 skinned / +0x19 u8 nodes_count /
+      +0x20 i64 node_name_ids relptr
+    LOD 0x10：+0x00 f32 extent / +0x04 u8 casts_shadow / +0x06 u16 count / +0x08 relptr
+    """
+    if len(data) < 0x70:
+        raise ParseError(f"VisualPrototype(WG) 数据过短: {len(data)}")
+    index = db.build_self_id_index()
+
+    def path_of(h: int) -> str:
+        if h == 0:
+            return ""
+        if h == 0xFFFFFFFFFFFFFFFF:
+            return "(none)"
+        i = index.get(h)
+        return db.reconstruct_path(i, index) if i is not None else f"0x{h:016X}"
+
+    def str_of(h: int) -> str:
+        return db.strings.get_string_or_hex(h)
+
+    # ── nodes（基础骨架：HP_ 挂点 / stage/Bow/MidFront... 骨骼）──────────
+    nodes_count = B.read_u32(data, 0x00)
+    nodes: dict = {"count": nodes_count, "name_ids": [], "matrices": [], "parent_ids": []}
+    if 0 < nodes_count < 5000:
+        try:
+            nodes = {
+                "count": nodes_count,
+                "name_map_name_ids": B.parse_u32_array(data, B.read_u64(data, 0x08), nodes_count),
+                "name_map_node_ids": B.parse_u16_array(data, B.read_u64(data, 0x10), nodes_count),
+                "name_ids": [str_of(n) for n in
+                             B.parse_u32_array(data, B.read_u64(data, 0x18), nodes_count)],
+                "name_id_hashes": B.parse_u32_array(data, B.read_u64(data, 0x18), nodes_count),
+                "matrices": B.parse_matrix_array(data, B.read_u64(data, 0x20), nodes_count),
+                "parent_ids": B.parse_u16_array(data, B.read_u64(data, 0x28), nodes_count),
+            }
+        except Exception:  # noqa: BLE001
+            pass
+
+    geometry_path_id = B.read_u64(data, 0x30)
+    render_sets_count = B.read_u16(data, 0x3A)
+    lods_count = B.read_u8(data, 0x3C)
+
+    # ── render_sets ────────────────────────────────────────────────────
+    render_sets: List[dict] = []
+    rs_rel = B.read_i64(data, 0x60)
+    if rs_rel and render_sets_count:
+        for k in range(render_sets_count):
+            o = rs_rel + k * 0x28
+            if o + 0x28 > len(data):
+                break
+            nid = B.read_u32(data, o)
+            mid = B.read_u32(data, o + 0x04)
+            mfm_h = B.read_u64(data, o + 0x10)
+            skinned = B.read_u8(data, o + 0x18)
+            ncnt = B.read_u8(data, o + 0x19)
+            node_names: List[str] = []
+            nrel = B.read_i64(data, o + 0x20)
+            if skinned and ncnt and nrel:
+                nabs = o + nrel
+                if nabs + ncnt * 4 <= len(data):
+                    node_names = [str_of(B.read_u32(data, nabs + j * 4)) for j in range(ncnt)]
+            render_sets.append({
+                "name": str_of(nid),
+                "material_identifier": str_of(mid),
+                "vertices_mapping_id": f"0x{B.read_u32(data, o + 0x08):08X}",
+                "indices_mapping_id": f"0x{B.read_u32(data, o + 0x0C):08X}",
+                "material_mfm": path_of(mfm_h),
+                "skinned": bool(skinned),
+                "nodes": node_names,
+            })
+
+    # ── lods ──────────────────────────────────────────────────────────
+    lods: List[dict] = []
+    lod_rel = B.read_i64(data, 0x68)
+    if lod_rel and lods_count:
+        for k in range(lods_count):
+            o = lod_rel + k * 0x10
+            if o + 0x10 > len(data):
+                break
+            rsn_cnt = B.read_u16(data, o + 0x06)
+            rsn_rel = B.read_i64(data, o + 0x08)
+            rsn: List[str] = []
+            if rsn_rel and rsn_cnt:
+                rabs = o + rsn_rel
+                if rabs + rsn_cnt * 4 <= len(data):
+                    rsn = [str_of(B.read_u32(data, rabs + j * 4)) for j in range(rsn_cnt)]
+            lods.append({
+                "extent": B.read_f32(data, o),
+                "casts_shadow": bool(B.read_u8(data, o + 0x04)),
+                "render_set_names": rsn,
+            })
+
+    return {
+        "_type": "VisualPrototype",
+        "nodes": nodes,
+        "geometry": {"path": path_of(geometry_path_id), "id": f"0x{geometry_path_id:016X}"},
+        "underwater_model": bool(B.read_u8(data, 0x38)),
+        "abovewater_model": bool(B.read_u8(data, 0x39)),
+        "bounding_box": {
+            "min": _arr(B.parse_vec3(data, 0x40)),
+            "max": _arr(B.parse_vec3(data, 0x50)),
+        },
+        "render_sets_count": render_sets_count,
+        "render_sets": render_sets,
+        "lods_count": lods_count,
+        "lods": lods,
+    }
+
+
 # ── ModelPrototype ────────────────────────────────────────────────────────
 
 def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
@@ -382,6 +522,39 @@ def decode_skeleton(data: bytes, db: PrototypeDatabase) -> dict:
         "rotation_limits": rotation_limits,
         "rotation_limits_ids": rotation_limits_ids,
         "parent_ids": parent_ids,
+    }
+
+
+# ── SkeletonExtenderPrototype（WG 独有）───────────────────────────────────
+
+def decode_skeleton_extender(data: bytes, db: PrototypeDatabase) -> dict:
+    """解码 SkeletonExtenderPrototype（WG 0x20B/条，blob 2；wows-toolkit skeleton_extender.rs）。
+
+    +0x00 u16 flag（1=带骨架）/ +0x02 u16 node_count / +0x04 pad
+    +0x08 i64 name_ids relptr -> u32[node_count]（节点名哈希）
+    +0x10 i64 parent_name_ids relptr -> u32[node_count]（父节点名哈希，如 Scene Root）
+    +0x18 i64 matrices relptr -> 4x4float[node_count]（列主序，节点 local 变换）
+    三数组 index-aligned；父按名字引用（非数组索引），节点通常挂在 Scene Root（identity）。
+    """
+    if len(data) < 0x20:
+        raise ParseError(f"SkeletonExtenderPrototype 数据过短: {len(data)}")
+    flag = B.read_u16(data, 0x00)
+    node_count = B.read_u16(data, 0x02)
+    name_ids: List[int] = []
+    parent_name_ids: List[int] = []
+    matrices: List[List[float]] = []
+    if node_count > 0:
+        name_ids = B.parse_u32_array(data, B.read_i64(data, 0x08), node_count)
+        parent_name_ids = B.parse_u32_array(data, B.read_i64(data, 0x10), node_count)
+        matrices = B.parse_matrix_array(data, B.read_i64(data, 0x18), node_count)
+    return {
+        "_type": "SkeletonExtenderPrototype",
+        "flag": flag,
+        "node_count": node_count,
+        "name_ids": [db.strings.get_string_or_hex(n) for n in name_ids],
+        "name_id_hashes": name_ids,
+        "parent_name_ids": [db.strings.get_string_or_hex(n) for n in parent_name_ids],
+        "matrices": matrices,
     }
 
 
@@ -666,14 +839,22 @@ def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[Prot
     """
     name = proto_type.name if proto_type else "Unknown"
     item_size = proto_type.item_size if proto_type else 0x10
+    wg = get_wows_type() == "Wargaming"
     if name == "MaterialPrototype":
         return decode_material(data, db)
     if name == "VisualPrototype":
+        if wg:
+            # WG VisualPrototype 0x70 布局（nodes/geometry/render_sets/lods）
+            return decode_visual_wg(data, db, record_base)
         return decode_visual(data, db, record_base)
     if name == "ModelPrototype":
+        if wg:
+            return decode_generic(data, db, name, item_size)
         return decode_model(data, db)
     if name == "SkeletonPrototype":
         return decode_skeleton(data, db)
+    if name == "SkeletonExtenderPrototype":
+        return decode_skeleton_extender(data, db)
     if name == "TrailPrototype":
         return decode_trail(data, db)
     if name == "VfxMaterialPrototype":

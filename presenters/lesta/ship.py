@@ -799,6 +799,11 @@ class LestaShipPresenter(LestaBasePresenter):
             "SELECT * FROM ship_rage_mode WHERE version_code=? AND ship_id=?", (vc, ship_id)).fetchone()
         if not rage:
             return
+        # 当前舰船所属舰种（用于分舰种加成按当前舰种唯一显示）
+        _basic = conn.execute(
+            "SELECT shiptype FROM ship_basic_info WHERE version_code=? AND ship_id=?",
+            (vc, ship_id)).fetchone()
+        current_species = _basic['shiptype'] if _basic else ""
         items = []
         o = 0
         dname = self.resolve_name_by_id(rage['display_name_id'], 'rage_mode', rage['rage_mode_name']) or "战斗指令"
@@ -812,9 +817,9 @@ class LestaShipPresenter(LestaBasePresenter):
         items.append(self.make_item("常驻生效", '是' if rage['is_modifier_works_always'] else '否', o)); o += 1
 
         if rage['decrement_delay']:
-            items.append(self.make_item(f"    衰减倒计时: {rage['decrement_delay']}s", "", o)); o += 1
-            items.append(self.make_item(f"    衰减周期: {rage['decrement_period']}s", "", o)); o += 1
-            items.append(self.make_item(f"    衰减数值: {rage['decrement_count']}%", "", o)); o += 1
+            items.append(self.make_item("衰减倒计时", f"{rage['decrement_delay']}s", o)); o += 1
+            items.append(self.make_item("衰减周期", f"{rage['decrement_period']}s", o)); o += 1
+            items.append(self.make_item("衰减数值", f"{rage['decrement_count']}%", o)); o += 1
 
         TRIGGER_LABELS = {
             "GameLogicTriggerOnActivation": "触发效果",
@@ -822,10 +827,16 @@ class LestaShipPresenter(LestaBasePresenter):
             "GameLogicTrigger": "进度积累",
         }
 
+        def _strip_idx(key):
+            # 归一化带数字索引后缀的键（GameLogicTrigger_1 → GameLogicTrigger / Activator_1 → Activator）
+            return re.sub(r'_\d+$', '', key)
+
         triggers = json.loads(rage['triggers_json'] or '[]')
         if triggers:
             for trig_obj in triggers:
+                trig_obj = {_strip_idx(k): v for k, v in trig_obj.items()}
                 for tkey, tdata in trig_obj.items():
+                    tdata = {_strip_idx(k): v for k, v in tdata.items()}
                     trigger_label = TRIGGER_LABELS.get(tkey, tkey)
                     act = tdata.get("Activator", {})
                     atype = act.get("type", "")
@@ -833,7 +844,7 @@ class LestaShipPresenter(LestaBasePresenter):
                     # 提取所有动作数据
                     actions_found = {k: v for k, v in tdata.items() if k.startswith("Action") and isinstance(v, dict)}
 
-                    if tkey == "GameLogicTriggerProgress" and atype == "RibbonActivator":
+                    if tkey in ("GameLogicTrigger", "GameLogicTriggerProgress") and atype == "RibbonActivator":
                         # 进度积累专用格式：每获得N个xx/yy勋带时获得M进度
                         ribbons = act.get("subRibbons", [])
                         rnames = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
@@ -861,6 +872,10 @@ class LestaShipPresenter(LestaBasePresenter):
                         if ribbons and isinstance(ribbons, list):
                             names = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons]
                             cond_parts.append(f"勋带: {', '.join(names)}")
+                    elif atype == "PotentialDamageActivator":
+                        pds = act.get("potentialDamageShift", 0)
+                        if pds:
+                            cond_parts.append(f"承受{pds:.0f}潜在伤害")
                     req = act.get("requiredCount", 0)
                     if req:
                         cond_parts.append(f"次数: {req}")
@@ -881,7 +896,7 @@ class LestaShipPresenter(LestaBasePresenter):
                                     effect_parts.append(f"-{rt}s 整备时间")
                             elif atype2 == "RageModeProgressAction":
                                 pn = aln.get("progressName", "")
-                                if pn:
+                                if pn and pn != "default":
                                     effect_parts.append(f"进度: {pn}")
                             else:
                                 extra = {k: v for k, v in aln.items() if k != "type"}
@@ -889,18 +904,26 @@ class LestaShipPresenter(LestaBasePresenter):
                                     label = NM.DETAIL_MAP.get(ek, ek)
                                     effect_parts.append(f"{label}: {ev}")
 
+                    # 从 RageModeProgressAction 提取进度数值
+                    progress_val = ""
+                    for ak, aln in actions_found.items():
+                        if aln.get("type") == "RageModeProgressAction":
+                            progress_val = str(aln.get("progress", ""))
+
                     cond_str = ', '.join(cond_parts) if cond_parts else ""
+                    effect_str = '; '.join(effect_parts) if effect_parts else ""
 
                     if tkey == "GameLogicTriggerOnActivation":
-                        effect_str = '; '.join(effect_parts) if effect_parts else ""
                         if effect_str:
                             items.append(self.make_item(trigger_label, effect_str, o)); o += 1
-                    elif tkey == "GameLogicTriggerProgress":
-                        # 进度积累：只显示条件
+                    elif tkey in ("GameLogicTriggerProgress", "GameLogicTrigger"):
+                        # 进度积累：显示积累条件（每获得xx/承受xx时获得M进度）
                         if cond_str:
-                            items.append(self.make_item(trigger_label, cond_str, o)); o += 1
+                            display = f"每{cond_str}时获得{progress_val}进度" if progress_val else f"每{cond_str}"
+                            items.append(self.make_item(trigger_label, display, o)); o += 1
+                        elif effect_str:
+                            items.append(self.make_item(trigger_label, effect_str, o)); o += 1
                     else:
-                        effect_str = '; '.join(effect_parts) if effect_parts else ""
                         display = effect_str or cond_str
                         if display:
                             items.append(self.make_item(trigger_label, display, o)); o += 1
@@ -913,7 +936,20 @@ class LestaShipPresenter(LestaBasePresenter):
                 if isinstance(mods, dict) and mods:
                     for mk, mv in sorted(mods.items()):
                         label = Mapping.MODIFIER_MAP.get(mk, mk)
-                        if isinstance(mv, dict):
+                        if isinstance(mv, dict) and mv and all(k in NM.SHIP_CLASS_MAP for k in mv) \
+                                and all(isinstance(v, (int, float)) for v in mv.values()):
+                            # 分舰种加成（AAAuraDamage 等）：按当前舰船所属舰种取唯一值显示
+                            factor = mv.get(current_species)
+                            if factor is None:
+                                factor = mv.get("default")
+                            if factor is not None:
+                                items.append(self.make_item(label, f"{(factor - 1) * 100:+.0f}%", o)); o += 1
+                            else:
+                                # 当前舰种不在分舰种表中 → 回退列出全部舰种
+                                for species_key, f2 in mv.items():
+                                    cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
+                                    items.append(self.make_item(f"{label}({cn})", f"{(f2 - 1) * 100:+.0f}%", o)); o += 1
+                        elif isinstance(mv, dict):
                             for species_key, factor in mv.items():
                                 cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
                                 items.append(self.make_item(f"{label}({cn})", f"{(factor - 1) * 100:+.0f}%", o)); o += 1

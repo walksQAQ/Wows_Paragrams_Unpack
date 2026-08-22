@@ -35,6 +35,7 @@ NAME_MAPPING_FILES: dict[str, str] = {
     "skill_names.json": "skill_title",
     "skill_descriptions.json": "skill_desc",
     "torpedo_group_names.json": "torpedo_group",
+    "signal_flag_names.json": "signal_flag",
 }
 
 

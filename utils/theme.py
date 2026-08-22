@@ -180,10 +180,15 @@ class _Theme:
             placeholder = "@" + key + "@"
             out = out.replace(placeholder, value)
         # 应用内图片按服务器目录（lesta/wargaming）重写 QSS 中的图片引用（如 combo_arrow）。
+        # ⚠️ 通用 UI 控件图标（resources/pictures/ui/，如 check_checked/combo_arrow）**不分服**，
+        # 保持公共路径 :/resources/pictures/ui/...；仅重写服务器特定目录（modules/consumables/…）。
         # 延迟 import 避免循环依赖；无图片引用的 QSS 直接跳过。
         if ":/resources/pictures/" in out:
             from utils.image_paths import pic_dir
+            _PIC_UI_GUARD = "\x00PIC_UI_GUARD\x00"
+            out = out.replace(":/resources/pictures/ui/", _PIC_UI_GUARD)
             out = out.replace(":/resources/pictures/", f":/resources/pictures/{pic_dir()}/")
+            out = out.replace(_PIC_UI_GUARD, ":/resources/pictures/ui/")
         return out
 
     def bind(self, widget, template: str) -> str:

@@ -57,18 +57,22 @@ class _LoadWorker(QThread):
 
     def __init__(self, game_dir: Optional[str] = None,
                  assets_path: Optional[str] = None,
-                 bin_folder: Optional[str] = None, parent=None):
+                 bin_folder: Optional[str] = None,
+                 wows_type: str = "", parent=None):
         super().__init__(parent)
         self._game_dir = game_dir
         self._assets_path = assets_path
         self._bin_folder = bin_folder
+        self._wows_type = wows_type
 
     def run(self) -> None:
         try:
             if self._game_dir:
-                svc = AssetsBinService(game_dir=self._game_dir, bin_folder=self._bin_folder)
+                svc = AssetsBinService(game_dir=self._game_dir, bin_folder=self._bin_folder,
+                                       wows_type=self._wows_type)
             else:
-                svc = AssetsBinService(assets_path=self._assets_path)
+                svc = AssetsBinService(assets_path=self._assets_path,
+                                       wows_type=self._wows_type)
             self.loaded.emit(svc)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{type(e).__name__}: {e}")
@@ -85,6 +89,13 @@ class AssetsBinViewer(QMainWindow):
         self._svc: Optional[AssetsBinService] = None
         self._worker: Optional[_LoadWorker] = None
         self._bin_folder: Optional[str] = None
+        # 服务器类型表：继承主应用设置（WG→10 类型表，Lesta→12 类型表）
+        self._wows_type = ""
+        try:
+            from app.application import app as app_ctx
+            self._wows_type = getattr(app_ctx.ctx, "wows_type", "") or ""
+        except Exception:  # noqa: BLE001
+            self._wows_type = ""
         self.setWindowTitle("assets.bin 浏览器")
         self.resize(1280, 820)
         self.setStyleSheet(_STYLE)
@@ -182,9 +193,11 @@ class AssetsBinViewer(QMainWindow):
         self.status_label.setText("正在加载/解析 assets.bin...（Kraken 解压可能较慢）")
         self.info_label.setText("加载中...")
         if p.is_dir():
-            self._worker = _LoadWorker(game_dir=str(p), bin_folder=self._bin_folder, parent=self)
+            self._worker = _LoadWorker(game_dir=str(p), bin_folder=self._bin_folder,
+                                       wows_type=self._wows_type, parent=self)
         else:
-            self._worker = _LoadWorker(assets_path=str(p), parent=self)
+            self._worker = _LoadWorker(assets_path=str(p),
+                                       wows_type=self._wows_type, parent=self)
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_load_failed)
         self._worker.start()
@@ -386,7 +399,8 @@ class AssetsBinViewer(QMainWindow):
             pass
 
     def _set_source_label(self, path: str) -> None:
-        self.source_label.setText(f"来源: {Path(path).name}")
+        tag = "WG" if self._wows_type == "Wargaming" else "Lesta"
+        self.source_label.setText(f"来源: {Path(path).name}  [{tag}] 类型表")
 
     # ── 关闭与索引缓存清理 ─────────────────────────────
 

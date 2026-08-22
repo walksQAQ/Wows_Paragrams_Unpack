@@ -637,6 +637,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         cfgd.update(extra)
                     except (json.JSONDecodeError, TypeError):
                         pass
+                # WG：效果数据在 logic 子对象，合并到顶层供各类型分支读取
+                _logic = cfgd.get('logic')
+                if isinstance(_logic, dict):
+                    cfgd.update(_logic)
                 ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
                 num_raw = cfgd.get('numConsumables') or cfgd.get('num_consumables') or "0"
                 prep = float(cfgd.get('preparationTime', 0) or 0)
@@ -655,6 +659,21 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 if wt:
                     items.append(self.make_item(f"        持续时间", f"{wt:.0f}", len(items), unit="s"))
                 items.append(self.make_item(f"        消耗品效果:", "", len(items)))
+                # WG 使用方式（tacticalParams）
+                _tp = cfgd.get('tacticalParams') or {}
+                if isinstance(_tp, dict) and _tp:
+                    _ut = _tp.get('usageType', '')
+                    _ut_zh = {"default": "常规", "position": "指定位置", "entity": "指定目标"}.get(_ut, _ut)
+                    items.append(self.make_item(f"        使用方式: {_ut_zh}", "", len(items)))
+                    _wr = _tp.get('workRange')
+                    _ar = _tp.get('aimRange')
+                    if _ut == "default":
+                        pass
+                    else:
+                        if _wr:
+                            items.append(self.make_item(f"        作用范围: {float(_wr)/1000:.2f}km", "", len(items)))
+                        elif _ar:
+                            items.append(self.make_item(f"        瞄准范围: {float(_ar):.0f}m", "", len(items)))
                 # 按类型显示特有属性
                 if ct == "crashCrew":
                     items.append(self.make_item(f"          扑灭起火、清除进水、并修复受损配件。", "", len(items)))
@@ -667,10 +686,14 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     is_inter = cfgd.get('isInterceptor') or 0
                     items.append(self.make_item(f"          数量: {fn2} | 截击机: {'是' if is_inter else '否'}", "", len(items)))
                     dog = cfgd.get('dogFightTime', 0)
+                    if isinstance(dog, dict):
+                        dog = next((x for x in dog.values() if isinstance(x, (int, float))), 0)
                     fly = cfgd.get('flyAwayTime', 0)
                     if dog or fly:
                         items.append(self.make_item(f"          狗斗: {dog}s | 离开: {fly}s", "", len(items)))
                     rk = cfgd.get('distanceToKill', 0)
+                    if isinstance(rk, dict):
+                        rk = next((x for x in rk.values() if isinstance(x, (int, float))), 0)
                     if rk:
                         items.append(self.make_item(f"          巡逻半径: {rk/10:.2f}km", "", len(items)))
                 elif ct == "scout":
@@ -750,10 +773,26 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     ds = float(cfgd.get('distShip', 0) or 0) * 0.03
                     items.append(self.make_item(f"          舰船探测: {ds:.2f} km", "", len(items)))
                 elif ct == "planeSmokeGenerator":
-                    ad = cfgd.get('activationDelay', 0)
                     r = float(cfgd.get('radius', 0) or 0)
-                    if ad: items.append(self.make_item(f"          生效延迟: {ad}s", "", len(items)))
+                    h = cfgd.get('height', 0)
+                    lt = cfgd.get('lifeTime', 0)
+                    sd = cfgd.get('startDelayTime', 0) or cfgd.get('activationDelay', 0)
                     if r: items.append(self.make_item(f"          烟雾半径: {r*3:.2f}m", "", len(items)))
+                    if h: items.append(self.make_item(f"          烟雾高度: {h}m", "", len(items)))
+                    if lt: items.append(self.make_item(f"          持续时间: {lt}s", "", len(items)))
+                    if sd: items.append(self.make_item(f"          起效延迟: {sd}s", "", len(items)))
+                elif ct in ("planeTacticalFighters", "callFighters"):
+                    fn = cfgd.get('fightersName') or ""
+                    if fn:
+                        fname = self.resolve_name('plane', fn) or fn
+                        items.append(self.make_item(f"          战斗机名称: {fname}", "", len(items)))
+                    tda = cfgd.get('timeDelayAttack', 0)
+                    fly = cfgd.get('flyAwayTime', 0)
+                    if tda or fly:
+                        items.append(self.make_item(f"          攻击延迟: {tda}s | 离开: {fly}s", "", len(items)))
+                    wp = cfgd.get('workPreparationTime', 0)
+                    if wp:
+                        items.append(self.make_item(f"          准备时间: {wp}s", "", len(items)))
                 elif ct == "supportBuoy":
                     bdv = cfgd.get('battleDropVisualName', 'Unknown')
                     bda = cfgd.get('battleDropActivationTime', 0)
@@ -778,6 +817,22 @@ class WargamingShipPresenter(WargamingBasePresenter):
         # 收集原始消耗品数据供 UI 构建按钮
         raw_slots: list[dict] = []
         for s in slots:
+            _aam, _dam = [], ""
+            if conn:
+                try:
+                    _cfg_r = conn.execute(
+                        "SELECT extra_json FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
+                        (vc, s['consumable_id'], s['config_key'])).fetchone()
+                    if not _cfg_r:
+                        _cfg_r = conn.execute(
+                            "SELECT extra_json FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
+                            (vc, s['consumable_id'])).fetchone()
+                    if _cfg_r and _cfg_r['extra_json']:
+                        _ej = json.loads(_cfg_r['extra_json'])
+                        _aam = _ej.get('availableActivationModes') or []
+                        _dam = _ej.get('defaultActivationMode') or ""
+                except Exception:
+                    _aam, _dam = [], ""
             raw_slots.append({
                 "slot_index": s['slot_index'],
                 "item_index": s['item_index'],
@@ -786,6 +841,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 "display_name": self.resolve_name_by_id(
                     s['display_name_id'], 'consumable', s['consumable_id']
                 ) or s['consumable_id'] or "",
+                "available_activation_modes": _aam,
+                "default_activation_mode": _dam,
             })
         sections.append({
             "label": "消耗品数据", "items": items, "icon": "💊",
@@ -799,6 +856,11 @@ class WargamingShipPresenter(WargamingBasePresenter):
             "SELECT * FROM ship_rage_mode WHERE version_code=? AND ship_id=?", (vc, ship_id)).fetchone()
         if not rage:
             return
+        # 当前舰船所属舰种（用于分舰种加成按当前舰种唯一显示）
+        _basic = conn.execute(
+            "SELECT shiptype FROM ship_basic_info WHERE version_code=? AND ship_id=?",
+            (vc, ship_id)).fetchone()
+        current_species = _basic['shiptype'] if _basic else ""
         items = []
         o = 0
         dname = self.resolve_name_by_id(rage['display_name_id'], 'rage_mode', rage['rage_mode_name']) or "战斗指令"
@@ -812,9 +874,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
         items.append(self.make_item("常驻生效", '是' if rage['is_modifier_works_always'] else '否', o)); o += 1
 
         if rage['decrement_delay']:
-            items.append(self.make_item(f"    衰减倒计时: {rage['decrement_delay']}s", "", o)); o += 1
-            items.append(self.make_item(f"    衰减周期: {rage['decrement_period']}s", "", o)); o += 1
-            items.append(self.make_item(f"    衰减数值: {rage['decrement_count']}%", "", o)); o += 1
+            items.append(self.make_item("衰减倒计时", f"{rage['decrement_delay']}s", o)); o += 1
+            items.append(self.make_item("衰减周期", f"{rage['decrement_period']}s", o)); o += 1
+            items.append(self.make_item("衰减数值", f"{rage['decrement_count']}%", o)); o += 1
 
         TRIGGER_LABELS = {
             "GameLogicTriggerOnActivation": "触发效果",
@@ -822,10 +884,16 @@ class WargamingShipPresenter(WargamingBasePresenter):
             "GameLogicTrigger": "进度积累",
         }
 
+        def _strip_idx(key):
+            # 归一化带数字索引后缀的键（GameLogicTrigger_1 → GameLogicTrigger / Activator_1 → Activator）
+            return re.sub(r'_\d+$', '', key)
+
         triggers = json.loads(rage['triggers_json'] or '[]')
         if triggers:
             for trig_obj in triggers:
+                trig_obj = {_strip_idx(k): v for k, v in trig_obj.items()}
                 for tkey, tdata in trig_obj.items():
+                    tdata = {_strip_idx(k): v for k, v in tdata.items()}
                     trigger_label = TRIGGER_LABELS.get(tkey, tkey)
                     act = tdata.get("Activator", {})
                     atype = act.get("type", "")
@@ -833,7 +901,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     # 提取所有动作数据
                     actions_found = {k: v for k, v in tdata.items() if k.startswith("Action") and isinstance(v, dict)}
 
-                    if tkey == "GameLogicTriggerProgress" and atype == "RibbonActivator":
+                    if tkey in ("GameLogicTrigger", "GameLogicTriggerProgress") and atype == "RibbonActivator":
                         # 进度积累专用格式：每获得N个xx/yy勋带时获得M进度
                         ribbons = act.get("subRibbons", [])
                         rnames = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
@@ -861,6 +929,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         if ribbons and isinstance(ribbons, list):
                             names = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons]
                             cond_parts.append(f"勋带: {', '.join(names)}")
+                    elif atype == "PotentialDamageActivator":
+                        pds = act.get("potentialDamageShift", 0)
+                        if pds:
+                            cond_parts.append(f"承受{pds:.0f}潜在伤害")
                     req = act.get("requiredCount", 0)
                     if req:
                         cond_parts.append(f"次数: {req}")
@@ -881,7 +953,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                     effect_parts.append(f"-{rt}s 整备时间")
                             elif atype2 == "RageModeProgressAction":
                                 pn = aln.get("progressName", "")
-                                if pn:
+                                if pn and pn != "default":
                                     effect_parts.append(f"进度: {pn}")
                             else:
                                 extra = {k: v for k, v in aln.items() if k != "type"}
@@ -889,18 +961,26 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                     label = NM.DETAIL_MAP.get(ek, ek)
                                     effect_parts.append(f"{label}: {ev}")
 
+                    # 从 RageModeProgressAction 提取进度数值
+                    progress_val = ""
+                    for ak, aln in actions_found.items():
+                        if aln.get("type") == "RageModeProgressAction":
+                            progress_val = str(aln.get("progress", ""))
+
                     cond_str = ', '.join(cond_parts) if cond_parts else ""
+                    effect_str = '; '.join(effect_parts) if effect_parts else ""
 
                     if tkey == "GameLogicTriggerOnActivation":
-                        effect_str = '; '.join(effect_parts) if effect_parts else ""
                         if effect_str:
                             items.append(self.make_item(trigger_label, effect_str, o)); o += 1
-                    elif tkey == "GameLogicTriggerProgress":
-                        # 进度积累：只显示条件
+                    elif tkey in ("GameLogicTriggerProgress", "GameLogicTrigger"):
+                        # 进度积累：显示积累条件（每获得xx/承受xx时获得M进度）
                         if cond_str:
-                            items.append(self.make_item(trigger_label, cond_str, o)); o += 1
+                            display = f"每{cond_str}时获得{progress_val}进度" if progress_val else f"每{cond_str}"
+                            items.append(self.make_item(trigger_label, display, o)); o += 1
+                        elif effect_str:
+                            items.append(self.make_item(trigger_label, effect_str, o)); o += 1
                     else:
-                        effect_str = '; '.join(effect_parts) if effect_parts else ""
                         display = effect_str or cond_str
                         if display:
                             items.append(self.make_item(trigger_label, display, o)); o += 1
@@ -913,7 +993,20 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 if isinstance(mods, dict) and mods:
                     for mk, mv in sorted(mods.items()):
                         label = Mapping.MODIFIER_MAP.get(mk, mk)
-                        if isinstance(mv, dict):
+                        if isinstance(mv, dict) and mv and all(k in NM.SHIP_CLASS_MAP for k in mv) \
+                                and all(isinstance(v, (int, float)) for v in mv.values()):
+                            # 分舰种加成（AAAuraDamage 等）：按当前舰船所属舰种取唯一值显示
+                            factor = mv.get(current_species)
+                            if factor is None:
+                                factor = mv.get("default")
+                            if factor is not None:
+                                items.append(self.make_item(label, f"{(factor - 1) * 100:+.0f}%", o)); o += 1
+                            else:
+                                # 当前舰种不在分舰种表中 → 回退列出全部舰种
+                                for species_key, f2 in mv.items():
+                                    cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
+                                    items.append(self.make_item(f"{label}({cn})", f"{(f2 - 1) * 100:+.0f}%", o)); o += 1
+                        elif isinstance(mv, dict):
                             for species_key, factor in mv.items():
                                 cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
                                 items.append(self.make_item(f"{label}({cn})", f"{(factor - 1) * 100:+.0f}%", o)); o += 1
@@ -2174,11 +2267,19 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         try:
                             _arr = json.loads(_dod)
                             _parts = []
-                            for _pair in _arr or []:
-                                if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
-                                    _parts.append(f"{_pair[0]*0.03:.2f}km → ×{_pair[1]*100:g}%")
+                            if isinstance(_arr, (list, tuple)) and len(_arr) >= 1:
+                                _first = _arr[0]
+                                if isinstance(_first, (list, tuple)) and len(_first) >= 2:
+                                    _parts.append(f"前 {_first[0]*0.03:.2f}km 保持 {_first[1]*100:g}% 伤害")
+                                if len(_arr) >= 2:
+                                    for _pair in _arr[1:-1]:
+                                        if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
+                                            _parts.append(f"到 {_pair[0]*0.03:.2f}km 渐变为 {_pair[1]*100:g}% 伤害")
+                                    _last = _arr[-1]
+                                    if isinstance(_last, (list, tuple)) and len(_last) >= 2:
+                                        _parts.append(f"直到 {_last[0]*0.03:.2f}km 渐变并保持 {_last[1]*100:g}% 伤害")
                             if _parts:
-                                detail_items.append(self.make_item("距离伤害系数", ' / '.join(_parts), di)); di += 1
+                                detail_items.append(self.make_item("动态鱼雷伤害", '\n'.join(_parts), di)); di += 1
                             if len(_arr) >= 2 and isinstance(_arr[0], (list, tuple)) and isinstance(_arr[1], (list, tuple)) \
                                     and len(_arr[0]) >= 2 and len(_arr[1]) >= 2:
                                 _a, _b = _arr[0][1], _arr[1][1]
@@ -2658,11 +2759,19 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                         try:
                                             _arr = json.loads(_dod)
                                             _parts = []
-                                            for _pair in _arr or []:
-                                                if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
-                                                    _parts.append(f"{_pair[0]*0.03:.2f}km → ×{_pair[1]*100:g}%")
+                                            if isinstance(_arr, (list, tuple)) and len(_arr) >= 1:
+                                                _first = _arr[0]
+                                                if isinstance(_first, (list, tuple)) and len(_first) >= 2:
+                                                    _parts.append(f"前 {_first[0]*0.03:.2f}km 保持 {_first[1]*100:g}% 伤害")
+                                                if len(_arr) >= 2:
+                                                    for _pair in _arr[1:-1]:
+                                                        if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
+                                                            _parts.append(f"到 {_pair[0]*0.03:.2f}km 渐变为 {_pair[1]*100:g}% 伤害")
+                                                    _last = _arr[-1]
+                                                    if isinstance(_last, (list, tuple)) and len(_last) >= 2:
+                                                        _parts.append(f"直到 {_last[0]*0.03:.2f}km 渐变并保持 {_last[1]*100:g}% 伤害")
                                             if _parts:
-                                                detail_items.append(self.make_item("距离伤害系数", ' / '.join(_parts), di)); di += 1
+                                                detail_items.append(self.make_item("动态鱼雷伤害", '\n'.join(_parts), di)); di += 1
                                             if len(_arr) >= 2 and isinstance(_arr[0], (list, tuple)) and isinstance(_arr[1], (list, tuple)) \
                                                     and len(_arr[0]) >= 2 and len(_arr[1]) >= 2:
                                                 _a, _b = _arr[0][1], _arr[1][1]
@@ -2712,6 +2821,18 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             if prep: con_detail.append(self.make_item("准备时间", str(prep), cd2, unit="s")); cd2 += 1
                             if cd_time: con_detail.append(self.make_item("冷却时间", str(cd_time), cd2, unit="s")); cd2 += 1
                             if wt: con_detail.append(self.make_item("持续时间", str(wt), cd2, unit="s")); cd2 += 1
+                            # WG：可用激活方式与默认激活方式
+                            _aam = cd.get('availableActivationModes') or []
+                            if _aam:
+                                _modes_zh = []
+                                for _m in _aam:
+                                    _mu = str(_m).upper()
+                                    _modes_zh.append("手动" if _mu == "MANUAL" else ("自动" if _mu == "AUTO" else str(_m)))
+                                con_detail.append(self.make_item("可用激活方式", '/'.join(_modes_zh), cd2)); cd2 += 1
+                            _dam = cd.get('defaultActivationMode') or ""
+                            if _dam:
+                                _du = str(_dam).upper()
+                                con_detail.append(self.make_item("默认激活方式", "手动" if _du == "MANUAL" else ("自动" if _du == "AUTO" else str(_dam)), cd2)); cd2 += 1
                             con_detail.append(self.make_item("消耗品效果", "", cd2, row_type="header")); cd2 += 1
                             if ct == "crashCrew":
                                 con_detail.append(self.make_item("说明", "扑灭起火、清除进水、并修复受损配件。", cd2)); cd2 += 1
@@ -2730,9 +2851,13 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                 con_detail.append(self.make_item("数量", str(cd.get('fightersNum', 0)), cd2)); cd2 += 1
                                 con_detail.append(self.make_item("截击机", "是" if cd.get('isInterceptor', False) else "否", cd2)); cd2 += 1
                                 dog = cd.get('dogFightTime', 0); fly = cd.get('flyAwayTime', 0)
+                                if isinstance(dog, dict):
+                                    dog = next((x for x in dog.values() if isinstance(x, (int, float))), 0)
                                 if dog: con_detail.append(self.make_item("狗斗", str(dog), cd2, unit="s")); cd2 += 1
                                 if fly: con_detail.append(self.make_item("离开", str(fly), cd2, unit="s")); cd2 += 1
                                 rk = cd.get('distanceToKill', 0)
+                                if isinstance(rk, dict):
+                                    rk = next((x for x in rk.values() if isinstance(x, (int, float))), 0)
                                 if rk: con_detail.append(self.make_item("巡逻半径", f"{rk/10:.2f}", cd2, unit="km")); cd2 += 1
                             elif ct in ("regenerateHealth", "regenCrew"):
                                 rr = cd.get('regenerationRate', 0) or cd.get('regenerationHPSpeed', 0)
@@ -2770,6 +2895,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             "config_key": variant,
                             "display_name": aname,
                             "detail_items": con_detail,
+                            "available_activation_modes": cd.get('availableActivationModes') or [] if cfg else [],
+                            "default_activation_mode": cd.get('defaultActivationMode') or "" if cfg else "",
                         })
                 config_contents[key] = {
                     "items": items,
@@ -3018,11 +3145,19 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                     try:
                                         _arr = json.loads(_dod)
                                         _parts = []
-                                        for _pair in _arr or []:
-                                            if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
-                                                _parts.append(f"{_pair[0]*0.03:.2f}km → ×{_pair[1]*100:g}%")
+                                        if isinstance(_arr, (list, tuple)) and len(_arr) >= 1:
+                                            _first = _arr[0]
+                                            if isinstance(_first, (list, tuple)) and len(_first) >= 2:
+                                                _parts.append(f"前 {_first[0]*0.03:.2f}km 保持 {_first[1]*100:g}% 伤害")
+                                            if len(_arr) >= 2:
+                                                for _pair in _arr[1:-1]:
+                                                    if isinstance(_pair, (list, tuple)) and len(_pair) >= 2:
+                                                        _parts.append(f"到 {_pair[0]*0.03:.2f}km 渐变为 {_pair[1]*100:g}% 伤害")
+                                                _last = _arr[-1]
+                                                if isinstance(_last, (list, tuple)) and len(_last) >= 2:
+                                                    _parts.append(f"直到 {_last[0]*0.03:.2f}km 渐变并保持 {_last[1]*100:g}% 伤害")
                                         if _parts:
-                                            detail_items.append(self.make_item("距离伤害系数", ' / '.join(_parts), di)); di += 1
+                                            detail_items.append(self.make_item("动态鱼雷伤害", '\n'.join(_parts), di)); di += 1
                                         if len(_arr) >= 2 and isinstance(_arr[0], (list, tuple)) and isinstance(_arr[1], (list, tuple)) \
                                                 and len(_arr[0]) >= 2 and len(_arr[1]) >= 2:
                                             _a, _b = _arr[0][1], _arr[1][1]
@@ -3073,7 +3208,39 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     ammo_ids = [x for x in parsed if x]
             except Exception:
                 ammo_ids = []
-            items.append(self.make_item("反潜空袭" if ammo_ids else "空袭", "", o, row_type="header")); o += 1
+            # 空袭标题按实际携带弹药类型命名：同时有高爆炸弹+深水炸弹 → "高爆/深弹空袭"。
+            # ammoList 里是飞机名，飞机 bomb_name 才是弹药名，再查 projectile 判定类型。
+            def _as_kind(_a):
+                _pi = conn.execute(
+                    "SELECT bomb_name FROM plane_basic_info WHERE version_code=? AND plane_id=?",
+                    (vc, _a)).fetchone()
+                _arm = _pi['bomb_name'] if (_pi and _pi['bomb_name']) else _a
+                _pbi = conn.execute(
+                    "SELECT species, ammo_type FROM projectile_basic_info WHERE version_code=? AND projectile_id=?",
+                    (vc, _arm)).fetchone()
+                if not _pbi:
+                    return ""
+                _sp = _pbi['species'] or ""
+                _at = _pbi['ammo_type'] or ""
+                if _sp == "DepthCharge":
+                    return "深弹"
+                if _sp in ("bomb", "Bomb"):
+                    return {"AP": "穿甲", "HE": "高爆", "SAP": "半穿甲"}.get(_at, "高爆")
+                if _sp in ("rocket", "Rocket"):
+                    return {"AP": "穿甲火箭", "HE": "高爆火箭"}.get(_at, "火箭")
+                return ""
+            _kinds: list[str] = []
+            for _a in ammo_ids:
+                _k = _as_kind(_a)
+                if _k and _k not in _kinds:
+                    _kinds.append(_k)
+            if len(_kinds) >= 2:
+                _header = "/".join(_kinds) + "空袭"
+            elif len(_kinds) == 1:
+                _header = "反潜空袭" if _kinds[0] == "深弹" else _kinds[0] + "空袭"
+            else:
+                _header = "反潜空袭" if ammo_ids else "空袭"
+            items.append(self.make_item(_header, "", o, row_type="header")); o += 1
             if s['charges'] is not None:
                 items.append(self.make_item("最大充能次数", str(s['charges']), o)); o += 1
             if s['reload_time']:
@@ -3094,24 +3261,52 @@ class WargamingShipPresenter(WargamingBasePresenter):
             if s.get('time_from_heaven') is not None:
                 items.append(self.make_item("天降时间", str(s['time_from_heaven']), o, unit="s")); o += 1
             asc = s.get('ammo_switch_coeff')
-            if asc:
-                items.append(self.make_item("弹药切换系数", f"{asc * 100:g}%", o)); o += 1
+            if asc and len(ammo_ids) >= 2:
+                # ammoSwitchCoeff 是【切换时装填系数】：实际切换装填时间 = 装填时间 × 系数。
+                # 仅当 ammoList 含 2+ 种弹药（飞机）时才需切换装填，单弹药不显示。
+                _sw_rt = (s.get('reload_time') or 0) * asc
+                if _sw_rt:
+                    items.append(self.make_item("切换装填时间", f"{_sw_rt:.1f}", o, unit="s")); o += 1
             if s.get('auto_use') is not None:
                 items.append(self.make_item("自动使用", "是" if s['auto_use'] else "否", o)); o += 1
+            buoy_states: list[str] = []
             bs = s.get('available_buoyancy_states_json')
             if bs:
                 try:
-                    states = json.loads(bs) if isinstance(bs, str) else bs
-                    if isinstance(states, list) and states:
-                        items.append(self.make_item("可用浮态", " / ".join(BUOY_LABEL.get(x, x) for x in states), o)); o += 1
+                    _parsed = json.loads(bs) if isinstance(bs, str) else bs
+                    if isinstance(_parsed, list):
+                        buoy_states = [x for x in _parsed if x]
                 except Exception:
-                    pass
-            # 弹药详情（深水炸弹等）
-            for arm in ammo_ids:
+                    buoy_states = []
+            if buoy_states:
+                items.append(self.make_item("可用浮态", " / ".join(BUOY_LABEL.get(x, x) for x in buoy_states), o)); o += 1
+            # 弹药详情（深水炸弹等）。
+            # ⚠️ ammo_list_json 里存的是【飞机名】（如 PAAD908_ASW_T10），
+            #    飞机的 bombName（plane_basic_info.bomb_name）才是弹药名（如 PAPD107_depth_T10）
+            for arm0 in ammo_ids:
+                arm = arm0
+                pinfo = conn.execute(
+                    "SELECT plane_id, plane_index, bomb_name, species, max_speed, cruising_speed, "
+                    "speed_move_with_bomb, speed_max_mult, speed_min_mult, hp, attack_count, "
+                    "flight_height, attacker_size, num_planes_in_squadron, visibility_factor "
+                    "FROM plane_basic_info WHERE version_code=? AND plane_id=?",
+                    (vc, arm0)).fetchone()
+                if pinfo:
+                    arm = pinfo['bomb_name'] or arm0
+                    pname = self.resolve_plane(arm0) or arm0
+                    items.append(self.make_item("飞机型号", pname, o)); o += 1
+                    if pinfo['speed_move_with_bomb']:
+                        items.append(self.make_item("巡航速度", str(pinfo['speed_move_with_bomb']), o, unit="kts")); o += 1
+                    if pinfo['attack_count']:
+                        items.append(self.make_item("载弹量", str(pinfo['attack_count']), o)); o += 1
+                    if pinfo['num_planes_in_squadron']:
+                        items.append(self.make_item("编队飞机数", str(pinfo['num_planes_in_squadron']), o)); o += 1
                 ammo_name = ammo_map.get(arm.upper(), self.resolve_name('ammo', arm) or arm)
                 items.append(self.make_item("弹药", ammo_name, o)); o += 1
                 detail_items: list[dict] = []
                 di = 0
+                if buoy_states:
+                    detail_items.append(self.make_item("可用浮态", " / ".join(BUOY_LABEL.get(x, x) for x in buoy_states), di)); di += 1
                 pbi = conn.execute(
                     "SELECT species, ammo_type, custom_ui_postfix FROM projectile_basic_info "
                     "WHERE version_code=? AND projectile_id=?", (vc, arm)).fetchone()
@@ -3342,6 +3537,30 @@ class WargamingShipPresenter(WargamingBasePresenter):
             slot_info["slot_idx"] = i
             slot_info["flags"] = [f for f in all_flags if f["signalType"] == i]
             signal_slots.append(slot_info)
+
+        # ── WG：14 种信号旗同时显示（PCEF010 无加成属性，不显示）──
+        # 名称取本地化（IDS_PCEFxxx_*_SIGNALFLAG），未命中回退 raw name
+        wg_flags: list[dict] = []
+        for row in conn.execute(
+            "SELECT mod_id, name, rarity, modifiers_json, flags_json "
+            "FROM signal_flags WHERE version_code=? ORDER BY mod_id", (vc,)).fetchall():
+            mid = row['mod_id']
+            if mid.startswith("PCEF010"):
+                continue  # PCEF010 无加成，不在应用内显示
+            mods = json.loads(row['modifiers_json'] or '{}')
+            if not mods:
+                continue
+            raw_name = row['name'] or ""
+            disp = self.resolve_name("signal_flag", raw_name) or raw_name
+            wg_flags.append({
+                "mod_id": mid,
+                "name": disp,
+                "raw_name": raw_name,
+                "modifiers": mods,
+                "flags": json.loads(row['flags_json'] or '[]'),
+                "image_key": raw_name,
+            })
+
         nat_row = conn.execute(
             "SELECT nation FROM entity_registry WHERE version_code=? AND entity_id=?",
             (vc, ship_id)).fetchone()
@@ -3480,5 +3699,6 @@ class WargamingShipPresenter(WargamingBasePresenter):
             "upgrades": upgrades,
             "modernizations": modernizations,
             "signal_slots": signal_slots,
+            "signal_flags": wg_flags,
             "_stock_config_letter": _stock_config_letter,
         }

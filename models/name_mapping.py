@@ -207,6 +207,53 @@ class Mapping:
         "torpedoReloaderAdditionalConsumables": "鱼雷装填助推器消耗品装填数",
         "torpedoReloaderReloadCoeff": "鱼雷装填助推器消耗品冷却时间",
         "workTime": "生效时间",
+        # ── WG 信号旗修饰符 ──
+        "collisionDamageApply": "撞击伤害",
+        "collisionDamageNerf": "受到的撞击伤害",
+        "activeManeuveringWorkTimeCoeff": "主动机动作用时间",
+        "floodChanceFactor": "造成进水的几率",
+        "floodChanceFactorPlane": "飞机造成进水的几率",
+        "burnChanceFactorBig": "造成起火的几率",
+        "burnChanceFactorSmall": "造成起火的几率（小口径）",
+        "hydrophoneReloadCoeff": "水听器冷却时间",
+        "submarineLocatorReloadCoeff": "潜艇定位器冷却时间",
+        "auxTorpBoosterReloadCoeff": "备用鱼雷增程器冷却时间",
+        "smokeGeneratorCapacityCoeff": "发烟器容量",
+        # ── WG 舰长技能词条（2026-08-22）──
+        "switchAmmoReloadCoef": "炮弹类型切换时间",
+        "ammoSplashRadiusMultiplier": "炮弹爆炸半径",
+        "AAMaxHP": "防空炮生命值",
+        "GSMaxHP": "副炮生命值",
+        "SGCritRudderTime": "舵机瘫痪持续时间",
+        "activeManeuveringAdditionalConsumables": "额外主动机动消耗品数量",
+        "activeManeuveringReloadCoeff": "主动机动消耗品冷却时间",
+        "artilleryAlertEnabled": "开启炮弹来袭警报",
+        "artilleryAlertMinDistance": "炮弹来袭警报最小距离",
+        "callFightersAirOnly": "战斗机仅对空中目标",
+        "callFightersAppearDelay": "战斗机出现延迟",
+        "consumableCapacityCoeff": "消耗品容量",
+        "damagedEngineCoeff": "引擎受损时最大航速",
+        "firstSectorTimeCoeff": "第一个声呐扇区持续时间",
+        "nearEnemyIntuitionEnabled": "开启近距离敌军预警",
+        "nearRLSEnabled": "开启潜艇雷达探测预警",
+        "planeEscapeHeightCoeff": "飞机逃脱高度",
+        "planeReturnSpeedAfterEscape": "飞机逃脱后返航速度",
+        "planeTacticalFightersAdditionalConsumables": "战术战斗机额外消耗品数量",
+        "planeTacticalFightersWorkTimeCoeff": "战术战斗机作用时间",
+        "prioritySectorStartPhaseStrengthBonus": "防空优先扇区起始阶段强度",
+        "priorityTargetEnabled": "开启优先目标系统",
+        "regenCrewCapacityCoeff": "船员恢复消耗品容量",
+        "reloadFactor": "消耗品装填时间",
+        "restoreForsage": "完全恢复引擎加力",
+        "scoutCapacityCoeff": "侦察机消耗品容量",
+        "secondSectorTimeCoeff": "第二个声呐扇区持续时间",
+        "shipConsumableCapacityCoeff": "舰船消耗品容量",
+        "softCriticalEnabled": "开启软性模块损坏警报",
+        "speedBoostersCapacityCoeff": "引擎增压消耗品容量",
+        "speedCoefBattery": "水下最大航速",
+        "squadronConsumableCapacityCoeff": "中队消耗品容量",
+        "torpedoFullPingDamageCoeff": "声呐全标记鱼雷伤害",
+        "visibilityForSubmarineCoeff": "被潜艇发现的距离",
     }
 
     NATION_MAP = {
@@ -405,6 +452,8 @@ class Mapping:
         "floodChanceCommonBonus": "raw_pct",
         "burnChanceFactorHighLevel": "raw_pct",
         "burnChanceFactorLowLevel": "raw_pct",
+        "burnChanceFactorBig": "raw_pct",
+        "burnChanceFactorSmall": "raw_pct",
         # ── 机动性 ──
         "speedCoef": "coeff",
         "engineBackwardForsageMaxSpeed": "coeff",
@@ -490,6 +539,36 @@ class Mapping:
         "torpedoReloaderReloadCoeff": "coeff",
         # ── 特殊 ──
         "workTime": "coeff",
+        # ── WG 舰长技能词条（2026-08-22）──
+        "switchAmmoReloadCoef": "coeff",
+        "ammoSplashRadiusMultiplier": "coeff",
+        "AAMaxHP": "coeff",
+        "GSMaxHP": "coeff",
+        "SGCritRudderTime": "coeff",
+        "activeManeuveringAdditionalConsumables": "raw_int",
+        "activeManeuveringReloadCoeff": "coeff",
+        "artilleryAlertMinDistance": "raw_km",
+        "callFightersAppearDelay": "coeff",
+        "consumableCapacityCoeff": "coeff",
+        "damagedEngineCoeff": "coeff",
+        "firstSectorTimeCoeff": "coeff",
+        "planeEscapeHeightCoeff": "coeff",
+        "planeReturnSpeedAfterEscape": "coeff",
+        "planeTacticalFightersAdditionalConsumables": "raw_int",
+        "planeTacticalFightersWorkTimeCoeff": "coeff",
+        "prioritySectorStartPhaseStrengthBonus": "raw",
+        "regenCrewCapacityCoeff": "coeff",
+        "reloadFactor": "coeff",
+        "scoutCapacityCoeff": "coeff",
+        "secondSectorTimeCoeff": "coeff",
+        "shipConsumableCapacityCoeff": "coeff",
+        "speedBoostersCapacityCoeff": "coeff",
+        "speedCoefBattery": "coeff",
+        "squadronConsumableCapacityCoeff": "coeff",
+        "torpedoFullPingDamageCoeff": "coeff",
+        "visibilityForSubmarineCoeff": "coeff",
+        "floodChanceFactor": "coeff",
+        "smokeGeneratorCapacityCoeff": "coeff",
     }
 
     # ── 值倍率：需要将存储值乘以固定系数后才能得到真实百分比 ──
@@ -519,6 +598,7 @@ class Mapping:
         "prioritySectorStrengthBonus": "%",
         "visionXRayMineDist": "km",
         "visionXRayTorpedoDist": "km",
+        "artilleryAlertMinDistance": "km",
     }
 
     # ── 颜色方向：哪些词条是"负值=增益" ─────────────────
@@ -535,7 +615,7 @@ class Mapping:
         # ── 副炮 ──
         "GSShotDelay", "GSIdealRadius", "GSRepairTime", "GSCritProb",
         "GSPriorityTargetIdealRadius",
-        "GSMIdealRadius", "GSMShotDelay",   # 手动模式：散布/装填越低越好（增益）
+        "GSMIdealRadius",   # 手动模式
         # ── 防空 ──
         "AARepairTime", "AACritProb",
         "prioritySectorCooldownMultiplier",
@@ -580,6 +660,10 @@ class Mapping:
         "healForsageReloadCoeff", "planeConsumableReloadTime",
         # ── 特殊 ──
         "hlCritTimeCoeff",
+        # ── WG 舰长技能词条（越低越好）──
+        "switchAmmoReloadCoef", "activeManeuveringReloadCoeff",
+        "callFightersAppearDelay", "visibilityForSubmarineCoeff",
+        "reloadFactor", "scoutReloadCoeff",
     }
 
     @staticmethod
@@ -610,6 +694,9 @@ class Mapping:
           - pos方向：正数绿色(#4caf50)、负数红色(#f44336)
           - neg方向：负数绿色(#4caf50)、正数红色(#f44336)
         """
+        # 防御：非数值（list/dict/str 等）无法格式化，返回空
+        if not isinstance(value, (int, float)):
+            return ""
         if key in Mapping.MODIFIER_HIDDEN:
             return ""
         fmt = Mapping.MODIFIER_FORMAT_MAP.get(key, "coeff")
