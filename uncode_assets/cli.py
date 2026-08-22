@@ -42,26 +42,31 @@ from .types import can_decode, list_types
 from contextlib import contextmanager
 
 
-def _make_service(source: str) -> AssetsBinService:
+def _make_service(source: str, wows_type: str = "") -> AssetsBinService:
     """根据来源自动选择：目录→游戏目录，文件→assets.bin 文件。"""
     p = Path(source)
     if p.is_dir():
-        return AssetsBinService(game_dir=p)
-    return AssetsBinService(assets_path=p)
+        return AssetsBinService(game_dir=p, wows_type=wows_type)
+    return AssetsBinService(assets_path=p, wows_type=wows_type)
 
 
 @contextmanager
-def _open_service(source: str):
+def _open_service(source: str, wows_type: str = ""):
     """N23: context manager —— 统一 _make_service + close 样板。"""
-    svc = _make_service(source)
+    svc = _make_service(source, wows_type)
     try:
         yield svc
     finally:
         svc.close()
 
 
+def _wt(args: argparse.Namespace) -> str:
+    """命令行 --server → AssetsBinService wows_type（'wargaming'→'Wargaming'，其余空=Lesta）。"""
+    return "Wargaming" if getattr(args, "server", "") == "wargaming" else ""
+
+
 def cmd_info(args: argparse.Namespace) -> None:
-    with _open_service(args.source) as svc:
+    with _open_service(args.source, _wt(args)) as svc:
         info = svc.info()
         print("=== assets.bin (PrototypeDatabase) ===")
         print(f"  magic:        {info['magic']}")
@@ -76,7 +81,7 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
-    with _open_service(args.source) as svc:
+    with _open_service(args.source, _wt(args)) as svc:
         print("Databases:")
         for s in svc.database_stats():
             print(
@@ -86,7 +91,7 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    with _open_service(args.source) as svc:
+    with _open_service(args.source, _wt(args)) as svc:
         files = svc.find_files(args.keyword or "", max_results=args.max)
         if not files:
             print("(无匹配文件)")
@@ -98,7 +103,7 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 
 def cmd_ls(args: argparse.Namespace) -> None:
-    with _open_service(args.source) as svc:
+    with _open_service(args.source, _wt(args)) as svc:
         entries = svc.list_dir(args.dir or "/")
         if not entries:
             print("(空目录)")
@@ -110,7 +115,7 @@ def cmd_ls(args: argparse.Namespace) -> None:
 
 def cmd_resolve(args: argparse.Namespace) -> None:
     try:
-        with _open_service(args.source) as svc:
+        with _open_service(args.source, _wt(args)) as svc:
             loc, full = svc.resolve(args.path)
             print(f"Resolved: {full}")
             print(f"  blob_index={loc['blob_index']} record_index={loc['record_index']}")
@@ -122,7 +127,7 @@ def cmd_resolve(args: argparse.Namespace) -> None:
 
 def cmd_decode(args: argparse.Namespace) -> None:
     try:
-        with _open_service(args.source) as svc:
+        with _open_service(args.source, _wt(args)) as svc:
             text = svc.decode_path_json(args.path)
             print(text)
     except AssetsBinError as e:
@@ -133,7 +138,7 @@ def cmd_decode(args: argparse.Namespace) -> None:
 def cmd_types(args: argparse.Namespace) -> None:
     """列出全部 prototype 类型（对齐 wows-toolkit `PrototypeType` 枚举）。"""
     print(f"{'blob':>4}  {'类型名':<26} {'magic':<12} {'item':>5}  扩展名                  可解码")
-    for t in list_types():
+    for t in list_types(_wt(args)):
         ext = ",".join(t.extensions) if t.extensions else "-"
         flag = "✅" if can_decode(t) else "—"
         print(f"  {t.blob_index:>2}  {t.name:<26} 0x{t.magic:08X}  0x{t.item_size:02X}  {ext:<22} {flag}")
@@ -142,7 +147,7 @@ def cmd_types(args: argparse.Namespace) -> None:
 def cmd_mfm(args: argparse.Namespace) -> None:
     """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material`）。"""
     try:
-        with _open_service(args.source) as svc:
+        with _open_service(args.source, _wt(args)) as svc:
             if args.self_id:
                 mat = svc.decode_mfm_by_self_id(int(args.self_id, 0))
                 if mat is None:
@@ -157,7 +162,7 @@ def cmd_mfm(args: argparse.Namespace) -> None:
 
 
 def cmd_dump(args: argparse.Namespace) -> None:
-    with _open_service(args.source) as svc:
+    with _open_service(args.source, _wt(args)) as svc:
         stats = svc.dump(
             args.output,
             type_filter=args.type,
@@ -172,7 +177,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
 
 def cmd_extract(args: argparse.Namespace) -> None:
     out = Path(args.output) if args.output else Path("assets.bin")
-    with _open_service(args.game_dir) as svc:
+    with _open_service(args.game_dir, _wt(args)) as svc:
         data = svc.load_from_game(args.game_dir)
         out.write_bytes(data)
         print(f"✅ 已提取 assets.bin ({len(data)} 字节) → {out.resolve()}")
@@ -184,12 +189,15 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""示例:
   python -m uncode_assets.cli info  D:/Korabli_ST
-  python -m uncode_assets.cli stats D:/assets.bin
+  python -m uncode_assets.cli stats D:/assets.bin --server wargaming
   python -m uncode_assets.cli list  D:/assets.bin particle
   python -m uncode_assets.cli decode D:/assets.bin content/gameplay/foo.visual
   python -m uncode_assets.cli dump  D:/assets.bin ./out --type Visual
         """,
     )
+    parser.add_argument(
+        "--server", default="lesta", choices=["lesta", "wargaming"],
+        help="服务器类型表（lesta=Korabli 12 类 / wargaming=WG 10 类），默认 lesta")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_cmd(name, help_text, *args, **kwargs):

@@ -16,7 +16,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 from . import binary as B
 from .decoders import decode_by_type, decode_skeleton, decode_visual
 from .parser import BLOB_HEADER_SIZE, PrototypeDatabase, PrototypeLocation
-from .types import PrototypeType, type_from_magic
+from .types import PrototypeType, get_wows_type, type_from_magic
 
 #: VFS 索引缓存版本号：目录树/索引构建逻辑变更时 +1，使旧缓存自动失效
 CACHE_VERSION = 4
@@ -265,7 +265,9 @@ class AssetsBinVfs:
         }
         tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
         with open(tmp, "wb") as fh:
-            pickle.dump({"version": CACHE_VERSION, "files": files_index, "dirs": self._dirs},
+            pickle.dump({"version": CACHE_VERSION,
+                         "wows_type": get_wows_type(),
+                         "files": files_index, "dirs": self._dirs},
                         fh, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(cache_path)
 

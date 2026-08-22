@@ -449,9 +449,9 @@
     <file>resources/pictures/lesta/talents/PZW426_ACHIEVEMENT_2.png</file>
     <file>resources/pictures/lesta/talents/PZW426_DAMAGE_17.png</file>
     <file>resources/pictures/lesta/talents/PZW426_RIBBONS_18_19.png</file>
-    <file>resources/pictures/lesta/ui/check_checked.png</file>
-    <file>resources/pictures/lesta/ui/check_indeterminate.png</file>
-    <file>resources/pictures/lesta/ui/combo_arrow.png</file>
+    <file>resources/pictures/ui/check_checked.png</file>
+    <file>resources/pictures/ui/check_indeterminate.png</file>
+    <file>resources/pictures/ui/combo_arrow.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap_inactive.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_depthcharge.png</file>
@@ -468,6 +468,8 @@
     <file>resources/pictures/wargaming/ammo_types/atba_cs.png</file>
     <file>resources/pictures/wargaming/ammo_types/atba_he.png</file>
     <file>resources/pictures/wargaming/ammo_types/axislaser.png</file>
+    <file>resources/pictures/wargaming/ammo_types/bomb_ap.png</file>
+    <file>resources/pictures/wargaming/ammo_types/bomb_he.png</file>
     <file>resources/pictures/wargaming/ammo_types/bomber_torpedo.png</file>
     <file>resources/pictures/wargaming/ammo_types/bomber_torpedo_alt.png</file>
     <file>resources/pictures/wargaming/ammo_types/bomber_torpedo_deepwater.png</file>
@@ -495,9 +497,13 @@
     <file>resources/pictures/wargaming/ammo_types/impulselaser.png</file>
     <file>resources/pictures/wargaming/ammo_types/missiles.png</file>
     <file>resources/pictures/wargaming/ammo_types/pinger.png</file>
+    <file>resources/pictures/wargaming/ammo_types/projectile.png</file>
+    <file>resources/pictures/wargaming/ammo_types/projectile_ap.png</file>
     <file>resources/pictures/wargaming/ammo_types/sector_wave.png</file>
     <file>resources/pictures/wargaming/ammo_types/skip_ap.png</file>
     <file>resources/pictures/wargaming/ammo_types/skip_ap_alt.png</file>
+    <file>resources/pictures/wargaming/ammo_types/skip_bomb_ap.png</file>
+    <file>resources/pictures/wargaming/ammo_types/skip_bomb_he.png</file>
     <file>resources/pictures/wargaming/ammo_types/skip_he.png</file>
     <file>resources/pictures/wargaming/ammo_types/skip_he_alt.png</file>
     <file>resources/pictures/wargaming/ammo_types/submarine_siege_mode.png</file>
@@ -898,34 +904,34 @@
     <file>resources/pictures/wargaming/modules/icon_module_Suo.png</file>
     <file>resources/pictures/wargaming/modules/icon_module_TorpedoBomber.png</file>
     <file>resources/pictures/wargaming/modules/icon_module_Torpedoes.png</file>
-    <file>resources/pictures/wargaming/rageMode/all_consumables_reload_by_shield_ship_damage_auto_filling_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/ammo_atba_reload_by_shield_ship_damage_auto_filling_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/ammo_damage_by_potential_damage_counter_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/ammo_damage_by_shield_ship_hit_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/ammo_reload_by_shield_ship_damage_auto_filling_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/atba_firepower_by_damage_counter_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/atba_firepower_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/atba_range_damage_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/consumables_and_torpedoes_reload_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/consumables_reload_boost_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/consumables_reload_boost_TE_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/consumables_reload_by_torpedo_hit_detected_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/consumables_reload_by_torpedo_hit_visibility_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/he_atba_penetration_boost_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/he_penetration_boost_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_accuracy_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_ap_damage_atba_damage_accuracy_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_ap_damage_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_dist_accuracy_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_reload_consumables_reload_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_reload_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/main_gun_reload_TE_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/missile_resupply_kill_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/missile_resupply_shoot_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/shield_damage_by_shield_ship_hit_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/survivability_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/torpedo_reload_and_shipspeed_preview.png</file>
-    <file>resources/pictures/wargaming/rageMode/torpedo_reload_consumables_reload_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/all_consumables_reload_by_shield_ship_damage_auto_filling_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/ammo_atba_reload_by_shield_ship_damage_auto_filling_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/ammo_damage_by_potential_damage_counter_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/ammo_damage_by_shield_ship_hit_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/ammo_reload_by_shield_ship_damage_auto_filling_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/atba_firepower_by_damage_counter_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/atba_firepower_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/atba_range_damage_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/consumables_and_torpedoes_reload_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/consumables_reload_boost_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/consumables_reload_boost_TE_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/consumables_reload_by_torpedo_hit_detected_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/consumables_reload_by_torpedo_hit_visibility_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/he_atba_penetration_boost_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/he_penetration_boost_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_accuracy_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_ap_damage_atba_damage_accuracy_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_ap_damage_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_dist_accuracy_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_reload_consumables_reload_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_reload_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/main_gun_reload_TE_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/missile_resupply_kill_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/missile_resupply_shoot_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/shield_damage_by_shield_ship_hit_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/survivability_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/torpedo_reload_and_shipspeed_preview.png</file>
+    <file>resources/pictures/wargaming/ragemode/torpedo_reload_consumables_reload_preview.png</file>
     <file>resources/pictures/wargaming/ship_types/加值.png</file>
     <file>resources/pictures/wargaming/ship_types/可研发.png</file>
     <file>resources/pictures/wargaming/ship_types/特种.png</file>

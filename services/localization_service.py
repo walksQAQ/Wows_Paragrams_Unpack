@@ -128,7 +128,7 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     stats["guns_names"] = {"path": save(data, "guns_names.json"), "count": len(data)}
 
     # 弹药
-    pat = re.compile(r'msgid "IDS_(P[A-Z]P[ABDLMRTW]+\d+\S*?)"\s+msgstr ' + _Q, re.MULTILINE)
+    pat = re.compile(r'msgid "IDS_(P[A-Z]P[A-Z]+\d+\S*?)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
     stats["ammo_names"] = {"path": save(data, "ammo_names.json"), "count": len(data)}
 
@@ -151,6 +151,11 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     pat = re.compile(r'msgid "(IDS_SHIP_PARAM_TORPEDO_GUNS_GROUP_[A-Z_]+)"\s+msgstr ' + _Q, re.MULTILINE)
     data = {k: v for k, v in pat.findall(raw) if v.strip()}
     stats["torpedo_group_names"] = {"path": save(data, "torpedo_group_names.json"), "count": len(data)}
+
+    # 信号旗（WG 服 IDS_PCEFxxx_*_SIGNALFLAG 及 _DESCRIPTION）
+    pat = re.compile(r'msgid "IDS_(PCEF\d+_[A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
+    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    stats["signal_flag_names"] = {"path": save(data, "signal_flag_names.json"), "count": len(data)}
 
     # 舰船升级键（ShipUpgradeInfo 中的 upgrade_key，如 PAUH941_MIDWAY_1945）
     # 格式: P[国籍]U[槽位类型][编号]_[名称]，[A-Z]匹配任意国籍

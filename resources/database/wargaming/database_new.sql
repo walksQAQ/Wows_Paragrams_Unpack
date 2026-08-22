@@ -632,7 +632,7 @@ CREATE TABLE IF NOT EXISTS projectile_torpedo_ext (
     uw_critical REAL DEFAULT 0,          -- 基础漏水率（uwCritical, 0~1）
     is_deep_water INTEGER DEFAULT 0,
     deep_water_ignore_classes TEXT,
-    distance_of_damage_json TEXT,        -- WG：距离伤害系数表 JSON [[83.33,0.1],[86.66,1.0]]
+    distance_of_damage_json TEXT,        -- WG：动态鱼雷伤害表 JSON [[83.33,0.1],[86.66,1.0]]
     PRIMARY KEY (version_code, projectile_id),
     FOREIGN KEY (version_code, projectile_id) REFERENCES projectile_basic_info(version_code, projectile_id) ON DELETE CASCADE
 );
@@ -950,6 +950,18 @@ CREATE TABLE IF NOT EXISTS crew_skill_definitions (
     trigger_json TEXT DEFAULT '{}',
     available_ship_types TEXT DEFAULT '[]',
     PRIMARY KEY (version_code, skill_key, rarity)
+);
+
+-- WG：舰长技能组（每个舰长文件内嵌 Skills，按 crew_id 记录完整技能数据）
+CREATE TABLE IF NOT EXISTS crew_skill_groups (
+    version_code TEXT NOT NULL,
+    crew_id TEXT NOT NULL,
+    skill_key TEXT NOT NULL,
+    modifiers_json TEXT DEFAULT '{}',
+    trigger_json TEXT DEFAULT '{}',
+    tier_json TEXT DEFAULT '{}',
+    is_epic INTEGER DEFAULT 0,
+    PRIMARY KEY (version_code, crew_id, skill_key)
 );
 
 -- 技能容器（来自 PCOL 文件）

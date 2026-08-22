@@ -68,6 +68,10 @@ class AssetsCacheService:
             return "assets_data_wg.db"
         return "assets_data.db"
 
+    def _is_wg(self) -> bool:
+        """当前缓存库是否 WG 服（WG 的 assets.bin 用 10 类型表，布局与 Korabli 不同）。"""
+        return self._wows_type == "Wargaming"
+
     # ── 连接 ────────────────────────────────────────────────
 
     @property
@@ -292,7 +296,8 @@ class AssetsCacheService:
         # drop 全部表 → 幂等重建（assets_database.sql 优先 / inline 兜底）→ 记录 schema 版本。
         self._drop_all_tables()
         self.initialize()
-        svc = AssetsBinService(assets_path=assets_path)
+        # wows_type 传入：WG 服用 10 类型表 + WG 布局（渲染集 0x70/材质 0x78）
+        svc = AssetsBinService(assets_path=assets_path, wows_type=self._wows_type)
         db = svc.db
 
         def _p(msg: str) -> None:
@@ -316,9 +321,15 @@ class AssetsCacheService:
 
             _p("清空旧缓存并写入元信息，扫描 VFS 全树...")
 
-            # 收集 SkeletonPrototype 与 MaterialPrototype 文件（一次遍历全树）
+            # 收集骨架/视觉/扩展/材质文件（一次遍历全树）：
+            #   skel_files: Korabli SkeletonPrototype（HP_/MP_ 挂点 + 骨骼）
+            #   vis_files:  WG VisualPrototype .visual（基础骨架 nodes，含 HP_ 挂点）
+            #   ext_files:  WG SkeletonExtender .skel_ext（MP_/SP_/EP_ 挂点）
+            #   mfm_files:  MaterialPrototype .mfm（材质贴图）
             skel_files: list = []
             mfm_files: list = []
+            vis_files: list = []
+            ext_files: list = []
             for f in svc.vfs.all_files():
                 try:
                     pt = f.prototype_type
@@ -330,11 +341,19 @@ class AssetsCacheService:
                     skel_files.append(f)
                 elif pt.name == "MaterialPrototype" and f.path.endswith(".mfm"):
                     mfm_files.append(f)
+                elif pt.name == "VisualPrototype" and f.path.endswith(".visual"):
+                    vis_files.append(f)
+                elif pt.name == "SkeletonExtenderPrototype" and f.path.endswith(".skel_ext"):
+                    ext_files.append(f)
 
-            _p(f"解析舰体骨架挂点与骨骼（{len(skel_files)} 个骨架文件）...")
+            _p(f"解析舰体骨架挂点与骨骼（{len(skel_files)} 个骨架文件，"
+               f"WG 另含 Visual {len(vis_files)} / SkeletonExtender {len(ext_files)}）...")
+            if self._is_wg():
+                _p("WG 服：骨架来自 Visual nodes（HP_ 挂点/骨骼）+ "
+                   "SkeletonExtender（MP_/SP_/EP_ 挂点）")
 
-            # 1) 骨架挂点（SkeletonPrototype，含 *_ports.visual 的 HP_ 挂点）
-            #    + 完整骨骼世界矩阵（bind pose 按 parent 累积，引用小零件/Root_BlendBone 用）
+            # 1) 骨架挂点 + 完整骨骼世界矩阵（bind pose 按 parent 累积）
+            #    Korabli：SkeletonPrototype；WG：Visual nodes（HP_）+ SkeletonExtender（MP_）
             import numpy as np
             skel_rows: list[tuple] = []
             bone_rows: list[tuple] = []
@@ -392,6 +411,11 @@ class AssetsCacheService:
                                       pos[0], pos[1], pos[2],
                                       quat[0], quat[1], quat[2], quat[3],
                                       scale[0], scale[1], scale[2]))
+            # WG：Visual nodes（HP_ 挂点 + 骨骼）+ SkeletonExtender（MP_/SP_/EP_ 挂点）
+            if self._is_wg():
+                self._populate_wg_skeleton(
+                    svc, db, sdict, self_id_idx, bin_folder,
+                    vis_files, ext_files, skel_rows, bone_rows, skel_failed)
             if skel_failed:
                 sample = ", ".join(skel_failed[:5])
                 more = f" 等 {len(skel_failed)} 个" if len(skel_failed) > 5 else ""
@@ -429,8 +453,16 @@ class AssetsCacheService:
                     data = vis.data
                     isize = vis.item_size
                     nrec = vis.record_count
+                    wg = self._is_wg()
                     for ri in range(nrec):
                         off = BLOB_HEADER_SIZE + ri * isize
+                        if wg:
+                            # WG VisualPrototype 0x70 布局（wows-toolkit visual.rs）：
+                            # 渲染集 relptr 在 +0x60，记录头字段与 Korabli 完全不同，
+                            # 走专用 WG 解析（每记录一 geometry → 渲染集 0x28 步长）
+                            self._render_sets_wg(data, off, db, self_id_idx, sdict,
+                                                 bin_folder, rs_rows)
+                            continue
                         if off + 0x40 > len(data):
                             break
                         cnt = struct.unpack_from('<Q', data, off + 0x30)[0]
@@ -510,21 +542,34 @@ class AssetsCacheService:
             mfm_rows: list[tuple] = []
             mf_rows: list[tuple] = []
             mfm_failed: list[str] = []
+            wg_mat = self._is_wg()
             for f in mfm_files:
                 try:
-                    data = svc.vfs.open_file_len(f.path, 0x90)
+                    data = svc.vfs.open_file_len(f.path, 0x78 if wg_mat else 0x90)
                 except Exception as exc:  # noqa: BLE001
                     mfm_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
                     continue
-                if len(data) < 0x88:
+                if len(data) < (0x78 if wg_mat else 0x88):
                     continue
                 pc = B.read_u16(data, 0x00)
                 if not pc:
                     continue
-                shader_id = B.read_u32(data, 0x08)
-                names_ptr = B.read_u64(data, 0x18)
-                type_idx_ptr = B.read_u64(data, 0x20)
-                type_ptrs = {t: B.read_u64(data, 0x30 + t * 8) for t in range(9)}
+                if wg_mat:
+                    # WG MaterialPrototype 0x78 布局（wows-toolkit material.rs）：
+                    # +0x00 u16 property_count / +0x02 u16 flags /
+                    # +0x04 u32 shader_id / +0x08 u64 reserved /
+                    # +0x10 names_ptr / +0x18 type_idx_ptr /
+                    # +0x20..+0x60 type_ptrs[9] / +0x68 material_hash
+                    shader_id = B.read_u32(data, 0x04)
+                    names_ptr = B.read_u64(data, 0x10)
+                    type_idx_ptr = B.read_u64(data, 0x18)
+                    type_ptrs = {t: B.read_u64(data, 0x20 + t * 8) for t in range(9)}
+                else:
+                    # Korabli 0x88 布局
+                    shader_id = B.read_u32(data, 0x08)
+                    names_ptr = B.read_u64(data, 0x18)
+                    type_idx_ptr = B.read_u64(data, 0x20)
+                    type_ptrs = {t: B.read_u64(data, 0x30 + t * 8) for t in range(9)}
                 tptr4 = type_ptrs.get(4) or 0
                 vec4_ptr = type_ptrs.get(7) or 0
                 need = 0x90
@@ -772,6 +817,196 @@ class AssetsCacheService:
         return p
 
     # ── 工具 ────────────────────────────────────────────────
+
+    def _render_sets_wg(self, data, off, db, self_id_idx, sdict,
+                        bin_folder, rs_rows) -> None:
+        """WG VisualPrototype 渲染集解析（0x70 记录 + 0x28 渲染集，wows-toolkit visual.rs）。
+
+        WG 记录布局（与 Korabli 完全不同，不可复用 Korabli 的 +0x30/+0x38/+0x20）：
+          +0x30 u64 merged_geometry_path_id
+          +0x38 u8 underwater_model / +0x39 u8 abovewater_model /
+          +0x3A u16 render_sets_count / +0x3C u8 lods_count
+          +0x60 i64 render_sets_relptr（**record-relative**，i64 有符号）
+        RenderSet 0x28 步长（parser_utils.rs parse_render_set_fields）：
+          +0x00 u32 name_id(.vertices) / +0x04 u32 material_name_id /
+          +0x08 u32 vertices_mapping_id / +0x0C u32 indices_mapping_id /
+          +0x10 u64 material_mfm_path_id / +0x18 u8 skinned /
+          +0x19 u8 nodes_count / +0x20 i64 node_name_ids_relptr（item-relative）
+        """
+        if off + 0x70 > len(data):
+            return
+        gp = self._path_of(struct.unpack_from('<Q', data, off + 0x30)[0],
+                           db, self_id_idx)
+        if not (gp and gp.endswith(".geometry")):
+            return
+        cnt = struct.unpack_from('<H', data, off + 0x3A)[0]
+        rel = struct.unpack_from('<q', data, off + 0x60)[0]
+        if not rel or cnt <= 0:
+            return
+        base = off + rel
+        if base + cnt * 0x28 > len(data):
+            return
+        for k in range(cnt):
+            o = base + k * 0x28
+            shp = sdict.get(struct.unpack_from('<I', data, o)[0]) or ''
+            # WG 渲染集名是形状名（xxShape，无后缀）；对应 .vertices 名 = xxShape.vertices。
+            # 与 Korabli 不同（Korabli 渲染集 +0x00 直接就是 .vertices 名）。
+            if shp and not shp.endswith('.vertices'):
+                shp += '.vertices'
+            if not shp.endswith('.vertices'):
+                continue
+            mat = sdict.get(struct.unpack_from('<I', data, o + 4)[0]) or ''
+            mfm_h = struct.unpack_from('<Q', data, o + 0x10)[0]
+            mfm = self._path_of(mfm_h, db, self_id_idx)
+            damage = int('_crack_' in shp or '_lod' in shp or 'Crack' in mat)
+            skinned = data[o + 0x18]
+            ncnt = data[o + 0x19]
+            nodes: list = []
+            if skinned and ncnt:
+                nrel = struct.unpack_from('<q', data, o + 0x20)[0]
+                if nrel:
+                    nabs = o + nrel
+                    if nabs + ncnt * 4 <= len(data):
+                        for j in range(ncnt):
+                            nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
+                            nm = sdict.get(nid) or ''
+                            if nm:
+                                nodes.append(nm)
+            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage,
+                            int(skinned), json.dumps(nodes)))
+
+    def _populate_wg_skeleton(self, svc, db, sdict, self_id_idx, bin_folder,
+                              vis_files, ext_files, skel_rows, bone_rows,
+                              skel_failed) -> None:
+        """WG 骨架：VisualPrototype nodes（基础骨架，含 HP_ 挂点）+ SkeletonExtender（MP_/SP_/EP_）。
+
+        数据来源（wows-toolkit）：
+          - Visual nodes（visual.rs）：+0x00 u32 nodes_count / +0x18 name_ids relptr /
+            +0x20 matrices relptr / +0x28 parent_ids relptr（u16 索引，0xFFFF=根）。
+            HP_ 炮塔挂点与全部骨架骨骼都在这（舰船按段 Bow/MidFront/MidBack/Stern 分 .visual）。
+          - SkeletonExtender（skeleton_extender.rs，0x20 记录）：+0x00 u16 flag /
+            +0x02 u16 node_count / +0x08 name_ids relptr / +0x18 matrices relptr。
+            parent 为名字哈希（通常 Scene Root）→ local 即船空间；节点含 MP_/SP_/EP_。
+        矩阵均为列主序 4x4 → 转行主序 → _decompose_mat（含反射 det=-1 处理）。
+        """
+        import numpy as np
+
+        # 1) VisualPrototype nodes → HP_ 挂点 + 全部骨骼
+        for f in vis_files:
+            stem = self._stem_of_skeleton(f.path)
+            if not stem:
+                continue
+            try:
+                names, mats, parents = self._wg_visual_nodes(svc, f, sdict)
+                if not names or not mats:
+                    continue
+                n = len(names)
+                local = [np.array(mats[i], dtype=np.float32).reshape(4, 4).T
+                         for i in range(len(mats))]
+                w: list = [None] * len(local)
+                for i in range(len(local)):
+                    p = parents[i] if i < len(parents) else 65535
+                    if p >= len(local) or p == i or p == 65535:
+                        w[i] = local[i]
+                    else:
+                        w[i] = (w[p] if w[p] is not None
+                                else np.eye(4, dtype=np.float32)) @ local[i]
+                for i in range(n):
+                    nm = names[i]
+                    if not nm or i >= len(w) or w[i] is None:
+                        continue
+                    pos, quat, scale = self._decompose_mat(w[i])
+                    bone_rows.append((bin_folder, stem, nm,
+                                      float(pos[0]), float(pos[1]), float(pos[2]),
+                                      quat[0], quat[1], quat[2], quat[3],
+                                      scale[0], scale[1], scale[2]))
+                    if nm.startswith("HP_"):
+                        skel_rows.append((bin_folder, stem, nm,
+                                          float(pos[0]), float(pos[1]), float(pos[2]),
+                                          quat[0], quat[1], quat[2], quat[3],
+                                          scale[0], scale[1], scale[2]))
+            except Exception as exc:  # noqa: BLE001
+                skel_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
+
+        # 2) SkeletonExtender → MP_/SP_/EP_ 挂点（local 即船空间）
+        for f in ext_files:
+            stem = self._stem_of_skeleton(f.path)
+            if not stem:
+                continue
+            try:
+                names, mats = self._wg_extender_nodes(svc, f, sdict)
+                for i, nm in enumerate(names):
+                    if not nm or i >= len(mats):
+                        continue
+                    mtx = np.array(mats[i], dtype=np.float32).reshape(4, 4).T
+                    pos, quat, scale = self._decompose_mat(mtx)
+                    bone_rows.append((bin_folder, stem, nm,
+                                      float(pos[0]), float(pos[1]), float(pos[2]),
+                                      quat[0], quat[1], quat[2], quat[3],
+                                      scale[0], scale[1], scale[2]))
+                    if nm.startswith(("MP_", "SP_", "EP_")):
+                        skel_rows.append((bin_folder, stem, nm,
+                                          float(pos[0]), float(pos[1]), float(pos[2]),
+                                          quat[0], quat[1], quat[2], quat[3],
+                                          scale[0], scale[1], scale[2]))
+            except Exception as exc:  # noqa: BLE001
+                skel_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
+
+    def _wg_visual_nodes(self, svc, f, sdict):
+        """WG VisualPrototype nodes → (names, matrices, parents)。有界读取（不拷整段 blob）。"""
+        import struct
+        hdr = svc.vfs.open_file_len(f.path, 0x30)
+        if len(hdr) < 0x30:
+            return [], [], []
+        ncnt = struct.unpack_from('<I', hdr, 0)[0]
+        if ncnt <= 0 or ncnt > 5000:
+            return [], [], []
+        nids_ptr = struct.unpack_from('<q', hdr, 0x18)[0]
+        mats_ptr = struct.unpack_from('<q', hdr, 0x20)[0]
+        pids_ptr = struct.unpack_from('<q', hdr, 0x28)[0]
+        need = 0x30
+        if nids_ptr and ncnt:
+            need = max(need, nids_ptr + ncnt * 4)
+        if mats_ptr and ncnt:
+            need = max(need, mats_ptr + ncnt * 64)
+        if pids_ptr and ncnt:
+            need = max(need, pids_ptr + ncnt * 2)
+        data = svc.vfs.open_file_len(f.path, need + 16)
+        names = []
+        for i in range(ncnt):
+            nm = sdict.get(struct.unpack_from('<I', data, nids_ptr + i * 4)[0]) or ''
+            names.append(nm)
+        mats = []
+        for i in range(ncnt):
+            mats.append(list(struct.unpack_from('<16f', data, mats_ptr + i * 64)))
+        parents = [struct.unpack_from('<H', data, pids_ptr + i * 2)[0] for i in range(ncnt)]
+        return names, mats, parents
+
+    def _wg_extender_nodes(self, svc, f, sdict):
+        """WG SkeletonExtender → (names, matrices)。列主序矩阵，local 即船空间。"""
+        import struct
+        hdr = svc.vfs.open_file_len(f.path, 0x20)
+        if len(hdr) < 0x20:
+            return [], []
+        ncnt = struct.unpack_from('<H', hdr, 0x02)[0]
+        if ncnt <= 0 or ncnt > 5000:
+            return [], []
+        nids_ptr = struct.unpack_from('<q', hdr, 0x08)[0]
+        mats_ptr = struct.unpack_from('<q', hdr, 0x18)[0]
+        need = 0x20
+        if nids_ptr and ncnt:
+            need = max(need, nids_ptr + ncnt * 4)
+        if mats_ptr and ncnt:
+            need = max(need, mats_ptr + ncnt * 64)
+        data = svc.vfs.open_file_len(f.path, need + 16)
+        names = []
+        for i in range(ncnt):
+            nm = sdict.get(struct.unpack_from('<I', data, nids_ptr + i * 4)[0]) or ''
+            names.append(nm)
+        mats = []
+        for i in range(ncnt):
+            mats.append(list(struct.unpack_from('<16f', data, mats_ptr + i * 64)))
+        return names, mats
 
     @staticmethod
     def _stem_of_skeleton(path: str) -> str:

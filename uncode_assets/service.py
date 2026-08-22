@@ -42,6 +42,7 @@ class AssetsBinService:
         assets_path: Optional[str | Path] = None,
         assets_bytes: Optional[bytes] = None,
         bin_folder: Optional[str] = None,
+        wows_type: str = "",
     ):
         """
         参数:
@@ -50,7 +51,12 @@ class AssetsBinService:
             assets_path: 已解压的 assets.bin 文件路径
             assets_bytes: 内存中的 assets.bin 字节
             bin_folder: 游戏 bin 子版本号（继承主应用设置时传入）
+            wows_type: 服务器类型（'Wargaming'→WG 10 类型表；其余→Korabli 12 类型表）。
+                      需在解析**之前**传入，内部按服务器设置类型表上下文。
         """
+        if wows_type:
+            from .types import set_wows_type
+            set_wows_type(wows_type)
         self._db: Optional[PrototypeDatabase] = None
         self._vfs: Optional[AssetsBinVfs] = None
         self._game_dir: Optional[Path] = None
@@ -121,11 +127,16 @@ class AssetsBinService:
         if cache_path is not None and Path(cache_path).exists():
             try:
                 import pickle
+                from .types import get_wows_type
                 from .vfs import CACHE_VERSION
                 with open(cache_path, "rb") as fh:
                     idx = pickle.load(fh)
                 if idx.get("version") != CACHE_VERSION:
                     raise ValueError("缓存版本过旧，需重建")
+                # 缓存按服务器隔离：item_size 依赖服务器类型表（WG 0x78 vs Korabli 0x88），
+                # 混用会错位（Material/Visual/Model 记录偏移全错）。不匹配则重建。
+                if idx.get("wows_type") != get_wows_type():
+                    raise ValueError("缓存服务器与当前不符，需重建")
                 self._vfs = AssetsBinVfs.from_index(self._db, idx["files"], idx["dirs"])
                 self._from_cache = True
                 return

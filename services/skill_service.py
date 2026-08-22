@@ -110,6 +110,83 @@ class SkillService:
             },
         }
 
+        # ── WG 服舰长技能位置映射（与 Lesta 位置不同，人工按 WG 实测填充）──
+        # 潜艇 4 行 5 列；其他舰种 4 行 6 列。
+        # 格式：{"row-col": "icon_name"}，如 "1-1": "gm_shell_reload"
+        # ⚠️ 当前为空占位（由人工填充 WG 技能位置后生效）
+        self._wg_grid_map = {
+            "航母": {
+                "1-1": "planes_forsage_renewal", "1-2": "planes_forsage_duration",
+                "1-3": "planes_consumables_speedbooster_reload", "1-4": "planes_reload",
+                "1-5": "consumables_fighter_additional", "1-6": "planes_consumables_callfighters_range",
+                "2-1": "planes_torpedo_armingrange", "2-2": "planes_torpedo_speed",
+                "2-3": "planes_speed", "2-4": "planes_consumables_active_maneuvering_upgrade",
+                "2-5": "aa_damage_constant_bubbles_cv", "2-6": "planes_consumables_callfighters_additional",
+                "3-1": "planes_aiming_boost", "3-2": "planes_ap_damage",
+                "3-3": "he_fire_probability_cv", "3-4": "planes_defense_damage_constant",
+                "3-5": "planes_hp", "3-6": "planes_consumables_callfighters_upgrade",
+                "4-1": "planes_divebomber_speed", "4-2": "planes_torpedo_uw_reduced",
+                "4-3": "atba_upgrade", "4-4": "planes_defense_damage_bubbles",
+                "4-5": "detection_visibility_crashcrew", "4-6": "planes_consumables_callfighters_preparationtime",
+            },
+            "战列舰": {
+                "1-1": "gm_shell_reload", "1-2": "he_fire_probability",
+                "1-3": "consumables_reload", "1-4": "consumables_crashcrew_regencrew_reload",
+                "1-5": "detection_alert", "1-6": "defense_crit_probability",
+                "2-1": "gm_turn", "2-2": "he_penetration",
+                "2-3": "trigger_speed_bb", "2-4": "detection_torpedo_range",
+                "2-5": "detection_aiming", "2-6": "aa_damage_constant_bubbles",
+                "3-1": "ap_damage_bb", "3-2": "atba_range",
+                "3-3": "armament_reload_aa_damage", "3-4": "defence_crit_fire_flooding",
+                "3-5": "defence_uw", "3-6": "aa_prioritysector_damage_constant",
+                "4-1": "trigger_burn_gm_reload", "4-2": "atba_accuracy",
+                "4-3": "trigger_gm_atba_reload_bb", "4-4": "consumables_crashcrew_regencrew_upgrade",
+                "4-5": "detection_visibility_range", "4-6": "defence_fire_probability",
+            },
+            "巡洋舰": {
+                "1-1": "gm_turn", "1-2": "torpedo_speed",
+                "1-3": "consumables_reload", "1-4": "gm_shell_reload",
+                "1-5": "detection_alert", "1-6": "maneuverability",
+                "2-1": "he_fire_probability", "2-2": "torpedo_reload",
+                "2-3": "consumables_duration", "2-4": "consumables_spotter_upgrade",
+                "2-5": "detection_aiming", "2-6": "aa_prioritysector_damage_constant",
+                "3-1": "he_sap_damage", "3-2": "torpedo_damage",
+                "3-3": "armament_reload_aa_damage", "3-4": "ap_damage_ca",
+                "3-5": "consumables_additional", "3-6": "defense_hp",
+                "4-1": "trigger_gm_atba_reload_ca", "4-2": "trigger_speed_accuracy",
+                "4-3": "detection_direction", "4-4": "he_penetration",
+                "4-5": "detection_visibility_range", "4-6": "aa_damage_constant_bubbles",
+            },
+            "驱逐舰": {
+                "1-1": "gm_turn", "1-2": "torpedo_flooding_probability",
+                "1-3": "consumables_reload", "1-4": "gm_shell_reload",
+                "1-5": "detection_alert", "1-6": "defense_crit_probability",
+                "2-1": "he_fire_probability", "2-2": "torpedo_speed",
+                "2-3": "consumables_duration", "2-4": "ap_damage_dd",
+                "2-5": "detection_aiming", "2-6": "maneuverability",
+                "3-1": "gm_reload_aa_damage_constant", "3-2": "torpedo_reload",
+                "3-3": "armament_reload_aa_damage", "3-4": "he_penetration",
+                "3-5": "consumables_additional", "3-6": "defense_hp",
+                "4-1": "gm_range_aa_damage_bubbles", "4-2": "trigger_speed",
+                "4-3": "detection_direction", "4-4": "trigger_gm_reload",
+                "4-5": "detection_visibility_range", "4-6": "trigger_spreading",
+            },
+            "潜艇": {
+                "1-1": "trigger_pinger_reload_buff", "1-2": "torpedo_flooding_probability",
+                "1-3": "trigger_cons_rudder_time_coeff", "1-4": "detection_aiming",
+                "1-5": "detection_alert", 
+                "2-1": "submarine_battery_capacity", "2-2": "trigger_seen_torpedo_reload",
+                "2-3": "consumables_duration", "2-4": "defense_crit_probability",
+                "2-5": "maneuverability", 
+                "3-1": "trigger_pinger_speed_buff", "3-2": "submarine_hold_sectors",
+                "3-3": "consumables_reload", "3-4": "submarine_danger_alert",
+                "3-5": "consumables_additional", 
+                "4-1": "armament_reload_submarine", "4-2": "submarine_torpedo_ping_damage",
+                "4-3": "trigger_cons_sonar_time_coeff", "4-4": "submarine_battery_burn_down",
+                "4-5": "submarine_speed", 
+            },
+        }
+
     def _get_db(self):
         return get_db()
 
@@ -210,12 +287,55 @@ class SkillService:
         return None
 
     def get_grid_skills(self, ship_type_cn: str, container_id: str = "PCOL001_CommonCrewSkills",
-                        ship_type_en: str = "") -> list[list[Optional[dict]]]:
+                        ship_type_en: str = "", wows_type: str = "", crew_id: str = "") -> list[list[Optional[dict]]]:
         """
-        获取 4×6 技能网格数据。
+        获取技能网格数据。
+        - Lesta：固定 4×6，位置取 `_grid_map`
+        - WG：潜艇 4×5、其他舰种 4×6，位置取 `_wg_grid_map`；
+          指定 crew_id 时直接取该舰长技能组（crew_skill_groups）的数据，否则回退标准定义
         """
         if not ship_type_en:
             ship_type_en = self._ship_type_map.get(ship_type_cn, "")
+
+        # 服务器判定：显式传参优先，其次取当前 DB
+        if not wows_type:
+            _db0 = self._get_db()
+            wows_type = getattr(_db0, "_wows_type", "") or ""
+
+        if wows_type == "Wargaming":
+            cols = 5 if ship_type_cn == "潜艇" else 6
+            grid = self._wg_grid_map.get(ship_type_cn, {})
+            result = [[None] * cols for _ in range(4)]
+            # 指定舰长 → 直接取该舰长技能组数据（WG 每个舰长内嵌完整技能）
+            crew_data = self._get_crew_skill_group(crew_id, ship_type_en) if crew_id else None
+            db = self._get_db()
+            vc = self._get_version_code()
+            for pos, icon_name in grid.items():
+                try:
+                    parts = pos.split("-")
+                    row = int(parts[0]) - 1
+                    col = int(parts[1]) - 1
+                    if 0 <= row < 4 and 0 <= col < cols:
+                        if crew_data is not None:
+                            sk = self._icon_to_skill_key(icon_name, db, vc)
+                            cd = crew_data.get(sk) if sk else None
+                            if cd:
+                                result[row][col] = {
+                                    "skill_key": sk,
+                                    "modifiers": cd["modifiers"],
+                                    "trigger": cd["trigger"],
+                                    "tier": cd["tier"],
+                                    "rarity": "EPIC" if cd["is_epic"] else "REGULAR",
+                                    "icon_name": icon_name,
+                                    "is_epic": cd["is_epic"],
+                                }
+                        else:
+                            skill = self.get_skill_for_grid(icon_name, ship_type_en, container_id)
+                            if skill:
+                                result[row][col] = skill
+                except (ValueError, IndexError):
+                    continue
+            return result
 
         grid = self._grid_map.get(ship_type_cn, {})
         result = [[None] * 6 for _ in range(4)]
@@ -233,6 +353,37 @@ class SkillService:
                 continue
 
         return result
+
+    def _get_crew_skill_group(self, crew_id: str, ship_type_en: str = "") -> Optional[dict]:
+        """取某舰长技能组（WG Crew 文件内嵌 Skills）→ {skill_key: {modifiers, trigger, tier, is_epic}}"""
+        db = self._get_db()
+        vc = self._get_version_code()
+        if not db or not vc or not crew_id:
+            return None
+        try:
+            rows = db._conn.execute(
+                "SELECT skill_key, modifiers_json, trigger_json, tier_json, is_epic "
+                "FROM crew_skill_groups WHERE version_code=? AND crew_id=?",
+                (vc, crew_id)).fetchall()
+        except Exception:
+            return None
+        out = {}
+        for r in rows:
+            mods = json.loads(r["modifiers_json"] or "{}")
+            if ship_type_en:
+                flat = {}
+                for k, v in mods.items():
+                    if isinstance(v, dict):
+                        v = v.get(ship_type_en) or next((x for x in v.values() if isinstance(x, (int, float))), v)
+                    flat[k] = v
+                mods = flat
+            out[r["skill_key"]] = {
+                "modifiers": mods,
+                "trigger": json.loads(r["trigger_json"] or "{}"),
+                "tier": json.loads(r["tier_json"] or "{}"),
+                "is_epic": bool(r["is_epic"]),
+            }
+        return out or None
 
     def reload_skill_with_rarity(self, skill_key: str, rarity: str,
                                  ship_type_en: str = "") -> Optional[dict]:

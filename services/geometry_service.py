@@ -785,7 +785,7 @@ class GeometryService:
             if progress_cb:
                 progress_cb(66 + 33 * (n_refs + idx) / max(1, n_refs + n_mp),
                             f"加载甲板设备 {mp_name}")
-            folder = mp_base_id(mp_name)
+            folder = self._mp_model_folder(mp_name)
             if not folder:
                 continue
             rb = self._mount_root_blend(folder)
@@ -1089,6 +1089,17 @@ class GeometryService:
         self._mount_model_cache[key] = world
         return world
 
+    def _mp_model_folder(self, mp_name: str) -> str:
+        """MP_ 节点 → 模型目录：WG 用完整 miscName（如 AM003_Fairlead_1），Lesta 用 baseID（AM003）。
+
+        WG 的甲板设备模型目录按 misc 全名命名（wows-toolkit misc_name_from_node：
+        去 MP_ 前缀 + 去实例后缀），Lesta 按 baseID（首个字母+数字 token）命名；
+        用错则 `misc/{folder}/{folder}.geometry` 找不到 → 甲板设备不显示。
+        """
+        if app_ctx.ctx.wows_type == "Wargaming":
+            return self._misc_name_from_node(mp_name)
+        return mp_base_id(mp_name)
+
     @staticmethod
     def _misc_name_from_node(node_name: str) -> str:
         """MP_ 节点名 → misc 模型名（去 MP_ 前缀 + 尾部实例索引）。
@@ -1156,7 +1167,7 @@ class GeometryService:
             if mp_allow is not None and mp_name not in mp_allow \
                     and self._misc_name_from_node(mp_name) not in (battle_customs or ()):
                 continue
-            sub_folder = mp_base_id(mp_name)
+            sub_folder = self._mp_model_folder(mp_name)
             if not sub_folder or sub_folder in visited_next:
                 continue
             sub_skel_to_ship = skel_to_ship_game @ W
@@ -1340,7 +1351,12 @@ class GeometryService:
             for path, entry in extractor.file_tree.items():
                 if entry.is_directory or not path.endswith(".geometry"):
                     continue
-                if "/lods/" in path or "_lod" in path.rsplit("/", 1)[-1]:
+                # 排除 LOD 子目录与损伤/残骸变体几何（主模型目录常含 *_dead/_broken.geometry，
+                # 不过滤会被当独立网格重复渲染 → 同一挂点出现多个炮塔）
+                fname = path.rsplit("/", 1)[-1]
+                if "/lods/" in path or "_lod" in fname:
+                    continue
+                if any(x in fname for x in ("_dead", "_broken", "_destroyed", "_burn")):
                     continue
                 parts = path.split("/")
                 if len(parts) < 2:
