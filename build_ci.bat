@@ -2,26 +2,26 @@
 set _CL_=/utf-8
 chcp 65001 >nul
 
-:: ═══════════════════════════════════════════════════════════════
-:: GitHub Actions 专用「纯净构建脚本」
-::   只做一件事：产出 release\KorabliParagrams.exe 供上传到 Release。
-::   不含本地专属步骤（D 盘临时目录重定向、taskkill 旧进程、
-::   config.json 复制、pause、timeout），与 build.bat（本地）解耦。
-::   调用方：.github/workflows/release.yml 的 Build exe 步骤。
-:: ═══════════════════════════════════════════════════════════════
+:: ============================================================
+:: GitHub Actions dedicated clean build script
+::   Only job: produce release\KorabliParagrams.exe for Release upload.
+::   No local-only steps (D: temp redirect, taskkill old process,
+::   config.json copy, pause, timeout); decoupled from build.bat (local).
+::   Invoked by: Build exe step in .github/workflows/release.yml
+:: ============================================================
 
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
 
-:: Python 强制 UTF-8 模式：CI 管道默认 cp1252 会 UnicodeEncodeError
+:: Force UTF-8 mode: CI pipes default cp1252 would raise UnicodeEncodeError
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
-:: ── 步骤 1: 生成并编译 Qt 资源文件（QRC → _resources.py） ──
-echo [QRC] 生成 resources.qrc ...
+:: Step 1: generate and compile Qt resources (QRC -> _resources.py)
+echo [QRC] Generating resources.qrc ...
 %PYTHON% scripts/gen_qrc.py
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
-echo [QRC] 编译 _resources.py ...
+echo [QRC] Compiling _resources.py ...
 set RCC_TOOL=.venv\Lib\site-packages\PySide6\rcc.exe
 if exist "%RCC_TOOL%" (
     "%RCC_TOOL%" -g python resources.qrc -o app/_resources.py
@@ -32,16 +32,17 @@ if exist "%RCC_TOOL%" (
     )
 )
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
-echo [QRC] 资源编译完成。
+echo [QRC] resources compiled.
 
-:: ── 步骤 1.5: 从 Git Tag 生成版本文件（含 pre-release 版本号） ──
-echo [VERSION] 从 Git Tag 生成 __about__.py ...
+:: Step 1.5: generate version file from Git tag (incl. pre-release version)
+echo [VERSION] Generating __about__.py from Git tag ...
 %PYTHON% scripts/gen_version.py
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
-:: ── 步骤 2: 编译 onefile 可执行文件 ──
-:: CI 用 MinGW gcc（--mingw64）+ 关闭 LTO（--lto=no）尝试规避 runner 自带
-:: MSVC 的全量慢编译；--assume-yes-for-downloads 让 Nuitka 自动下载 gcc 等依赖。
+:: Step 2: compile onefile executable
+:: CI uses MinGW gcc (--mingw64) + disabled LTO (--lto=no) to avoid slow
+:: MSVC full compile on runners; --assume-yes-for-downloads lets Nuitka
+:: auto-download gcc etc.
 %PYTHON% -m nuitka ^
     --standalone ^
     --onefile ^
@@ -62,7 +63,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-:: 精准清理 Nuitka 产生的所有中间缓存文件夹（产物 exe 保留在 %OUTDIR%）
+:: Clean up Nuitka intermediate cache folders (keep exe in %OUTDIR%)
 rd /s /q "%OUTDIR%\main.build" 2>nul
 rd /s /q "%OUTDIR%\main.dist" 2>nul
 rd /s /q "%OUTDIR%\main.onefile-build" 2>nul
