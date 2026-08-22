@@ -20,6 +20,7 @@ jobs:
           fetch-depth: 0  # 完整历史：校验 tag + gen_version.py 推导版本号
 
       - name: Verify tag is on master
+        shell: bash
         run: |
           git fetch origin master
           if git merge-base --is-ancestor "${{ github.ref_name }}" origin/master; then
