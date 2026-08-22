@@ -2,10 +2,10 @@
 set _CL_=/utf-8
 chcp 65001 >nul
 
-:: CI 模式：set CI_MODE=1 时跳过本地 D 盘重定向与 pause（GitHub Actions 用）
+:: CI mode: set CI_MODE=1 to skip local D: redirect and pause (for GitHub Actions)
 if not defined CI_MODE set CI_MODE=0
 
-:: ── 0. 重定向 Nuitka 编译缓存 / 临时构建目录到 D 盘（避免占用 C 盘；仅本地构建） ──
+:: 0. Redirect Nuitka build cache/temp to D: (avoid C: usage; local builds only)
 if "%CI_MODE%"=="0" (
     set NUITKA_CACHE_DIR=D:\nuitka_cache
     set TMPDIR=D:\nuitka_tmp
@@ -15,29 +15,29 @@ if "%CI_MODE%"=="0" (
     if not exist "D:\nuitka_tmp" mkdir "D:\nuitka_tmp"
 )
 
-:: 强行结束可能仍在运行的旧程序，防止文件锁死导致 Access is denied
+:: Kill old running program to avoid file-lock Access is denied
 if "%CI_MODE%"=="0" taskkill /f /im KorabliParagrams.exe 2>nul
 
 set PYTHON=.venv\Scripts\python.exe
 set OUTDIR=release
 
-:: Python 强制 UTF-8 模式：gen_qrc.py 等含中文输出，CI 管道默认 cp1252 会
-:: UnicodeEncodeError（chcp 65001 只改控制台代码页，不影响 runner 捕获的管道编码）
+:: Force UTF-8 mode: gen_qrc.py etc. emit CJK text; CI pipes default cp1252 would
+:: raise UnicodeEncodeError (chcp 65001 only changes console codepage, not pipes)
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
-:: 如果文件被杀毒软件等临时锁死，尝试强力删除旧 exe
+:: Force-delete old exe if it is temporarily locked (antivirus etc.)
 if exist "%OUTDIR%\KorabliParagrams.exe" del /f /q "%OUTDIR%\KorabliParagrams.exe" 2>nul
 
-:: ── 步骤 1: 生成并编译 Qt 资源文件（QRC → _resources.py） ──
-echo [QRC] 生成 resources.qrc ...
+:: Step 1: generate and compile Qt resources (QRC -> _resources.py)
+echo [QRC] Generating resources.qrc ...
 %PYTHON% scripts/gen_qrc.py
 if %ERRORLEVEL% NEQ 0 (
-    echo [! ERROR] QRC 生成失败
+    echo [! ERROR] QRC generation failed
     if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
-echo [QRC] 编译 _resources.py ...
+echo [QRC] Compiling _resources.py ...
 set RCC_TOOL=.venv\Lib\site-packages\PySide6\rcc.exe
 if exist "%RCC_TOOL%" (
     "%RCC_TOOL%" -g python resources.qrc -o app/_resources.py
@@ -48,27 +48,27 @@ if exist "%RCC_TOOL%" (
     )
 )
 if %ERRORLEVEL% NEQ 0 (
-    echo [! ERROR] QRC 编译失败
+    echo [! ERROR] QRC compile failed
     if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
-echo [QRC] 资源编译完成。
+echo [QRC] resources compiled.
 
-:: ── 步骤 1.5: 从 Git Tag 生成版本文件（Nuitka 编译前） ──
-echo [VERSION] 从 Git Tag 生成 __about__.py ...
+:: Step 1.5: generate version file from Git tag (before Nuitka)
+echo [VERSION] Generating __about__.py from Git tag ...
 %PYTHON% scripts/gen_version.py
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] 生成版本文件失败，中止打包。
+    echo [ERROR] version file generation failed, aborting.
     if "%CI_MODE%"=="0" pause
     exit /b %ERRORLEVEL%
 )
 
-:: 编译器策略：本地沿用 Nuitka 默认工具链（MSVC，历史成功路径）；
-:: CI（runner 自带 VS 导致 MSVC 全量编译慢）时切换 MinGW gcc + 关闭 LTO 尝试加速
+:: Compiler strategy: local keeps Nuitka default toolchain (MSVC, known good);
+:: CI uses MinGW gcc + disables LTO (MSVC full compile is slow on CI runners)
 set EXTRA_NUITKA_ARGS=
 if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--mingw64 --lto=no
 
-:: ── 步骤 2: 编译 onefile 可执行文件 ──
+:: Step 2: compile onefile executable
 %PYTHON% -m nuitka ^
     --standalone ^
     --onefile ^
@@ -90,17 +90,17 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-:: 将 config.json 复制到 exe 同级目录下（仅本地；CI 由 build_ci.bat 负责，无需 config）
+:: Copy config.json next to exe (local only; CI handled by build_ci.bat)
 if "%CI_MODE%"=="0" (
     if exist "config.json" (
         copy /y "config.json" "%OUTDIR%\config.json" >nul
-        echo [OK] config.json 已成功部署到外部 release 目录。
+        echo [OK] config.json deployed to external release dir.
     ) else (
-        echo [WARN] 未在根目录找到 config.json 模板，程序首次运行时会自动创建默认配置。
+        echo [WARN] config.json template not found; default config auto-created on first run.
     )
 )
 
-:: 精准清理 Nuitka 产生的所有中间缓存文件夹
+:: Clean up Nuitka intermediate cache folders
 rd /s /q "%OUTDIR%\main.build" 2>nul
 rd /s /q "%OUTDIR%\main.dist" 2>nul
 rd /s /q "%OUTDIR%\main.onefile-build" 2>nul
