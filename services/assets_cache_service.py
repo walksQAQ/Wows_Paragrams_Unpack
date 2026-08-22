@@ -45,13 +45,21 @@ class AssetsCacheService:
     """assets.bin 数据缓存（独立数据库 assets_data.db，线程安全）。"""
 
     def __init__(self, db_path: str | Path | None = None, wows_type: str = ""):
-        if db_path is None:
-            if not wows_type:
+        if not wows_type:
+            try:
                 from app.application import app as app_ctx
                 wows_type = app_ctx.ctx.wows_type
+            except Exception:  # noqa: BLE001
+                wows_type = ""
+        self._wows_type = wows_type or ""
+        if db_path is None:
             db_path = get_data_dir() / self._db_name(wows_type)
         self._db_path = Path(db_path)
         self._local = threading.local()
+
+    def _schema_subdir(self) -> str:
+        """按服务器返回 SQL 架构子目录（lesta / wargaming）。"""
+        return "wargaming" if self._wows_type == "Wargaming" else "lesta"
 
     @staticmethod
     def _db_name(wows_type: str = "") -> str:
@@ -95,9 +103,12 @@ class AssetsCacheService:
         # 源码模式优先文件系统（assets_database.sql 是维护源，QRC 可能滞后于热改）；
         # 打包/无文件系统时回退 QRC（与 database_new.sql 的 QRC 打包一致）
         sql_text = None
+        sub = self._schema_subdir()
         try:
             from utils.path_utils import get_bundled_dir
-            sql_path = get_bundled_dir() / "resources" / "database" / "assets_database.sql"
+            sql_path = get_bundled_dir() / "resources" / "database" / sub / "assets_database.sql"
+            if not sql_path.exists():
+                sql_path = get_bundled_dir() / "resources" / "database" / "assets_database.sql"
             if sql_path.exists():
                 sql_text = sql_path.read_text(encoding="utf-8")
         except Exception:  # noqa: BLE001
@@ -105,7 +116,7 @@ class AssetsCacheService:
         if not sql_text:
             try:
                 from PySide6.QtCore import QFile, QIODevice
-                qf = QFile(":/resources/database/assets_database.sql")
+                qf = QFile(f":/resources/database/{sub}/assets_database.sql")
                 if qf.open(QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Text):
                     sql_text = str(qf.readAll(), encoding="utf-8")
                     qf.close()

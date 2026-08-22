@@ -182,17 +182,16 @@ def run_localization() -> "_AppTask":
         bus.task_progress.emit(5, f"{action}语言文件")
         # ── 下载 / 复制 global.mo ────────────────────
         if wows_type == "Wargaming":
-            from utils.path_utils import find_latest_bin_folder
-            lb = find_latest_bin_folder(game_path)
+            # 直接从游戏 bin 目录复制 global.mo（优先已配置版本，否则取最新数字版本目录）
+            lb = getattr(ctx, "bin_folder", "") or ""
+            if not lb or not os.path.isdir(os.path.join(game_path, "bin", lb)):
+                from utils.path_utils import find_latest_bin_folder
+                lb = find_latest_bin_folder(game_path) or ""
             if not lb:
                 raise Exception("找不到 bin 目录或版本文件夹")
             src = os.path.join(game_path, "bin", lb, "res/texts/zh_sg/LC_MESSAGES/global.mo")
             if not os.path.exists(src):
-                alt = os.path.join(bin_root, lb, "res/texts/zh_cn/LC_MESSAGES/global.mo")
-                if os.path.exists(alt):
-                    src = alt
-                else:
-                    raise Exception("找不到 global.mo")
+                raise Exception(f"找不到 global.mo")
             shutil.copy2(src, os.path.join(str(data_dir), "global.mo"))
 
         elif wows_type == "Lesta":

@@ -57,7 +57,13 @@ def _run_analysis(db, data_by_category: dict[str, dict[str, dict]] | None = None
                 bus.log_message.emit("⏳ 跳过预分析：split 目录已被清理")
                 return
 
-        from services.analysis_service import AnalysisService
+        # 数据写入层按服务器分发：Lesta → services/lesta/analysis.py，
+        # Wargaming → services/wargaming/analysis.py（两套平级实现）
+        from services import wg_compat
+        if wg_compat.is_wg():
+            from services.wargaming.analysis import WargamingAnalysisService as AnalysisService
+        else:
+            from services.lesta.analysis import LestaAnalysisService as AnalysisService
         svc = AnalysisService()
         svc.initialize()
         if not svc.is_ready:
@@ -122,28 +128,36 @@ def run_process() -> "_AppTask":
         # 预提取 assets.bin 到**独立缓存库 assets_data.db**（与主库 game_data.db 无锁冲突）。
         # 在这里（分析开始前）后台启动，与下方 _run_analysis 写 game_data.db **同时进行**，
         # 缩短整体加载时长；3D 查看器只读该缓存库。
-        assets_started[0] = True
-        try:
-            from utils.threading_utils import run_async
+        # WG 服模式下跳过 assets.bin 处理（WG 的 assets.bin 格式尚未适配，见计划 M1.6）。
+        # 不启动后台任务，标记跳过成功，避免主流程等待/因失败而终止。
+        if wg_compat.is_wg():
+            assets_started[0] = False
+            assets_ok[0] = True
+            assets_done.set()
+            bus.log_message.emit("⏭️ WG 服模式：跳过 3D 缓存（assets.bin）提取")
+        else:
+            assets_started[0] = True
+            try:
+                from utils.threading_utils import run_async
 
-            def _assets_cache_job():
-                try:
-                    assets_ok[0] = _populate_assets_cache(
-                        bin_folder=app_ctx.ctx.bin_folder,
-                        game_version=app_ctx.ctx.game_version,
-                        wows_type=app_ctx.ctx.wows_type)
-                except Exception as e:  # noqa: BLE001
-                    bus.log_message.emit(f"❌ assets_data.db 写入失败: {e}")
-                    assets_ok[0] = False
-                finally:
-                    # populate 完成后清理 assets.bin 临时文件与索引缓存
-                    # （data/assets.bin 提取产物 / data/assets_{bin_folder}.bin 版本缓存 / .uncode_cache）
-                    _cleanup_assets_temp()
-                    assets_done.set()
+                def _assets_cache_job():
+                    try:
+                        assets_ok[0] = _populate_assets_cache(
+                            bin_folder=app_ctx.ctx.bin_folder,
+                            game_version=app_ctx.ctx.game_version,
+                            wows_type=app_ctx.ctx.wows_type)
+                    except Exception as e:  # noqa: BLE001
+                        bus.log_message.emit(f"❌ assets_data.db 写入失败: {e}")
+                        assets_ok[0] = False
+                    finally:
+                        # populate 完成后清理 assets.bin 临时文件与索引缓存
+                        # （data/assets.bin 提取产物 / data/assets_{bin_folder}.bin 版本缓存 / .uncode_cache）
+                        _cleanup_assets_temp()
+                        assets_done.set()
 
-            run_async(_assets_cache_job)
-        except Exception:  # noqa: BLE001
-            assets_done.set()  # 启动失败兜底，避免主流程等待卡死
+                run_async(_assets_cache_job)
+            except Exception:  # noqa: BLE001
+                assets_done.set()  # 启动失败兜底，避免主流程等待卡死
         # 主线程：分析并写 game_data.db（与 assets 后台缓存并行）
         _run_analysis(db, data_by_category, version_code=version_code)
         bus.log_message.emit(f"📦 步骤 3/3: 数据入库写入: {len(db_batch)} 条, 映射 {sum(ms.values())} 条 ({db.db_size_mb} MB)")
@@ -341,6 +355,9 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
 
     返回是否成功写入；过程中分阶段打日志（骨架/渲染集/材质）。
     """
+    # WG 服模式：跳过 assets.bin（格式未适配，见计划 M1.6），直接视为成功，避免阻塞加载流程
+    if wg_compat.is_wg():
+        return True
     try:
         from services.assets_cache_service import AssetsCacheService
         from services.geometry_service import GeometryService
