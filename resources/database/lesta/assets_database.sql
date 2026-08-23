@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS material_full (
     mfm_path TEXT NOT NULL,
     shader_id TEXT NOT NULL DEFAULT '0x0',
     family TEXT NOT NULL DEFAULT '',
+    material_hash TEXT NOT NULL DEFAULT '',
     textures TEXT NOT NULL DEFAULT '',
     indexed TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(bin_folder, mfm_path)

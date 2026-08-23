@@ -26,6 +26,7 @@ from OpenGL import GL
 GL.ERROR_CHECKING = False
 
 from models.camera import OrbitCamera
+from models.geometry_transform import prepare_render_mesh
 
 # ── 装甲展示重构常量（参考 landaire/wows-toolkit）─────────────────────────
 PLATE_EDGE_COLOR = (0.0, 0.0, 0.0, 0.9)       # 板块边界描边色
@@ -429,6 +430,9 @@ class GeometryViewport(QOpenGLWidget):
             white = (1.0, 1.0, 1.0, 1.0)
             for hm in ship_geometry.hull_meshes:
                 # 按材质拆分的分段使用自己的贴图（如 DeckHouse），否则用舰体默认贴图
+                # crack/damage 损伤网格不显示（导出保留用）
+                if getattr(hm, "is_crack", False):
+                    continue
                 hm_tex = getattr(hm, "texture_dds", None) or tex
                 specs.append({
                     "name": hm.name, "kind": "hull",
@@ -441,6 +445,9 @@ class GeometryViewport(QOpenGLWidget):
                     "is_wire": getattr(hm, "is_wire", False),
                 })
             for mm in ship_geometry.mounts:
+                # crack/damage 损伤网格不显示（导出保留用）
+                if getattr(mm, "is_crack", False):
+                    continue
                 specs.append({
                     "name": mm.name, "kind": "mount",
                     "positions": mm.positions, "normals": mm.normals, "uvs": mm.uvs,
@@ -448,6 +455,7 @@ class GeometryViewport(QOpenGLWidget):
                     "indices": mm.indices,
                     "texture": mm.texture_dds if mm.texture_dds else tex,
                     "model": mm.model_matrix,
+                    "tech_family": getattr(mm, "tech_family", "pbs"),
                     "is_wire": getattr(mm, "is_wire", False),
                 })
             if armor_scene is None:
@@ -483,70 +491,16 @@ class GeometryViewport(QOpenGLWidget):
             m.release()
         self._meshes = []
         for spec in self._mesh_specs:
-            pos0 = spec["positions"]
-            n0 = spec["normals"]
-            idx = spec["indices"]
-            colors0 = spec["colors"]
-            uvs0 = spec.get("uvs")
-            # ── 法线朝向修正 ─────────────────────────────
-            # 顶点做 Z 镜像(negz, det=-1)转右手系会翻转三角形绕序（几何法线方向反），
-            # 法线必须按各 mesh 实际绕序抵消：Korabli 数据绕序不统一（约一半模型
-            # 外表面是另一绕序），统一翻转会让另一半内外面反。
-            # 检测原始坐标系下 法线·几何叉积 的一致性：>0.5 表示绕序=外表面，
-            # 渲染后需用 -S 翻转法线；否则用 S。
-            flip = np.array([1.0, 1.0, -1.0], dtype=np.float32)
-            if idx is not None and idx.size >= 3 and pos0.shape[0] > 0 \
-                    and n0 is not None and n0.shape[0] == pos0.shape[0]:
-                try:
-                    tri = idx.reshape(-1, 3)
-                    v0 = pos0[tri[:, 0]]; v1 = pos0[tri[:, 1]]; v2 = pos0[tri[:, 2]]
-                    g = np.cross(v1 - v0, v2 - v0)
-                    gn = np.linalg.norm(g, axis=1)
-                    gn[gn < 1e-8] = 1.0
-                    g = g / gn[:, None]
-                    nv = n0[tri[:, 0]]
-                    c = float(((nv * g).sum(1) > 0).mean())
-                    if c > 0.5:
-                        flip = np.array([-1.0, -1.0, 1.0], dtype=np.float32)
-                    # 绕序混合的 prim（c 接近 0.5，如部分防空炮 TurretShape）：单一 flip
-                    # 无法统一 → 逐三角形拆分对齐（法线与绕序相反的三角形复制顶点并翻转法线）
-                    elif 0.35 <= c <= 0.65:
-                        bad = (nv * g).sum(1) < 0
-                        if bad.any() and not bad.all():
-                            btri = tri[bad]
-                            nb = btri.shape[0]
-                            src = btri.ravel()   # 原顶点索引
-                            extra_pos = pos0[src]
-                            extra_n = -n0[src]
-                            extra_idx = (np.arange(nb * 3).reshape(-1, 3)
-                                         + len(pos0)).astype(np.uint32)
-                            new_idx = idx.copy()
-                            bad_flat = np.flatnonzero(bad)
-                            for j, t in enumerate(bad_flat):
-                                new_idx[t * 3:(t + 1) * 3] = extra_idx[j]
-                            n_old = len(pos0)
-                            pos0 = np.vstack([pos0, extra_pos])
-                            n0 = np.vstack([n0, extra_n])
-                            # 颜色 / UV 随拆分的顶点同步扩展
-                            if colors0 is not None and colors0.shape[0] == n_old:
-                                colors0 = np.vstack([colors0, colors0[src]])
-                            if uvs0 is not None and uvs0.shape[0] == n_old:
-                                uvs0 = np.vstack([uvs0, uvs0[src]])
-                            idx = new_idx
-                            # 对齐后法线=绕序方向，渲染镜像需用 -S 抵消
-                            flip = np.array([-1.0, -1.0, 1.0], dtype=np.float32)
-                except Exception:  # noqa: BLE001
-                    pass
-            # ⚠️ 逐三角形「质心向外」定向已移除（2026-08-19）：当初为修甲板面加，
-            # 但甲板缺失的真因是「长边剔除」误删（已修），并非面朝向错误；
-            # 该逻辑复制顶点翻转法线会破坏平滑着色，且文件法线(u8/255*2-1)已正确。
-            # ─────────────────────────────────────────────
-            p = np.ascontiguousarray(pos0 * np.array([1.0, 1.0, -1.0], dtype=np.float32))
-            n = np.ascontiguousarray(n0 * flip)
+            # 解析空间 → 渲染空间（右手系，与 glTF 同构）变换。
+            # ⚠️ 与导出服务共用 prepare_render_mesh（models/geometry_transform.py），
+            # 保证「查看器里看到的 = 导出的」；该函数内置法线朝向修正与绕序混合拆分。
+            p, n, idx, uvs0, colors0 = prepare_render_mesh(
+                spec["positions"], spec["normals"], spec["indices"],
+                spec["colors"], spec.get("uvs"))
             mesh = GpuMesh(
                 name=spec["name"], kind=spec["kind"],
                 positions=p, normals=n, uvs=uvs0,
-                colors=np.ascontiguousarray(colors0, dtype=np.float32),
+                colors=colors0,
                 indices=np.ascontiguousarray(idx, dtype=np.uint32),
                 texture_dds=spec.get("texture"),
                 model_matrix=spec.get("model"),
@@ -832,6 +786,8 @@ class GeometryViewport(QOpenGLWidget):
             for mesh in self._meshes:
                 if mesh.kind not in ("hull", "mount"):
                     continue
+                if mesh.tech_family in ("grid", "transparent"):
+                    continue  # 线网/半透明走透明 pass
                 if mesh.kind == "hull" and (not self._show_hull or self._show_armor):
                     continue
                 if mesh.kind == "mount" and (not self._show_mounts or self._show_armor):
@@ -840,7 +796,8 @@ class GeometryViewport(QOpenGLWidget):
                 if mesh.kind == "hull" and mesh.tech_family == "indexed":
                     self._bind_indexed(mesh, u)
                 else:
-                    GL.glUniform1i(u["u_mode"], 0)
+                    # emissive 自发光：无光照亮色；其余光照实体
+                    GL.glUniform1i(u["u_mode"], 2 if mesh.tech_family == "emissive" else 0)
                     if mesh.has_tex:
                         GL.glBindTexture(GL.GL_TEXTURE_2D, mesh._texture)
                         GL.glUniform1i(u["u_has_tex"], 1)
@@ -850,6 +807,37 @@ class GeometryViewport(QOpenGLWidget):
                 mesh.render(GL.GL_TRIANGLES)
             self._apply_model(view, proj, None)
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+
+            # ── 透明 pass（grid_alpha 线网 / glass / propeller / water / cloud 等） ──
+            # 贴图 alpha 通道即透明度（线网/玻璃/螺旋桨/水），开启混合；
+            # 无光照保持贴图原色，不写深度避免自身双面重叠 z-fight，
+            # 船体深度已写入故被遮挡处仍被剔除。
+            GL.glEnable(GL.GL_BLEND)
+            GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
+            GL.glDepthMask(GL.GL_FALSE)
+            GL.glUniform1i(u["u_mode"], 2)
+            GL.glUniform1f(u["u_opacity"], 1.0)
+            for mesh in self._meshes:
+                if mesh.kind not in ("hull", "mount"):
+                    continue
+                if mesh.tech_family not in ("grid", "transparent"):
+                    continue
+                if mesh.kind == "hull" and (not self._show_hull or self._show_armor):
+                    continue
+                if mesh.kind == "mount" and (not self._show_mounts or self._show_armor):
+                    continue
+                self._apply_model(view, proj, mesh.model_matrix)
+                if mesh.has_tex:
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, mesh._texture)
+                    GL.glUniform1i(u["u_has_tex"], 1)
+                else:
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+                    GL.glUniform1i(u["u_has_tex"], 0)
+                mesh.render(GL.GL_TRIANGLES)
+            self._apply_model(view, proj, None)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+            GL.glDisable(GL.GL_BLEND)
+            GL.glDepthMask(GL.GL_TRUE)
 
             # ── 装甲 pass ──
             if self._show_armor:

@@ -692,7 +692,7 @@ class WargamingDetailPanel(DetailPanel):
                     cfgd.get('distanceOfPreparation') or [])
                 if _prep_segs:
                     kv("准备时间随距离变化", "\n".join(_prep_segs))
-        elif ct == "auxTorpBooster":
+        elif ct in "auxTorpBooster":
             for _blbl, _bval, _bcol in WargamingShipPresenter.format_aux_torp_buff(conn, vc, cfgd):
                 kv(_blbl, _bval, color=_bcol)
         elif ct in ("tacticalBuffGunBoost", "tacticalBuffAuxBoost", "tacticalFireExtinguishing", "tacticalBuffHeal", "tacticalBuffHealConsumableReload"):
@@ -700,6 +700,10 @@ class WargamingDetailPanel(DetailPanel):
             for _sd_lbl, _sd_val, _sd_col in WargamingShipPresenter.format_support_drop(
                     conn, vc, cfgd, lambda pid: bp.resolve_name('plane', pid)):
                 kv(_sd_lbl, _sd_val, color=_sd_col)
+        elif ct == "buff":
+            # 通用 buff：logic.buff → PCOM 实体（如 PCY080 反空袭，效果为受到的鱼雷/火箭弹/炸弹伤害降低）
+            for _blbl, _bval, _bcol in WargamingShipPresenter.format_torpedo_damage_decrease_buff(conn, vc, cfgd):
+                kv(_blbl, _bval, color=_bcol)
         else:
             _handled = False
         return _handled

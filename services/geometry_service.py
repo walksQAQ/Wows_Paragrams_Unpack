@@ -25,6 +25,7 @@ from app.application import app as app_ctx
 from app.signals import bus
 from models.geometry_parser import parse_geometry, ArmorModel, GeometryError
 from models.collision_materials import collision_material_name, thickness_to_color
+from services.fx_mapping import tech_family as fx_tech_family
 from utils.threading_utils import TaskCancelled
 
 
@@ -156,9 +157,17 @@ class HullMesh:
     indexed_params: dict | None = None  # INDEXED 分块参数 {arrays, grid, offset}
     opaque: bool = True                 # 半透明材质（玻璃等）用 alpha 混合
     is_wire: bool = False               # wire 线框辅助网格：用 GL_LINES 渲染（非实体面）
+    #: crack/damage 损伤网格（查看器不显示，导出保留用）
+    is_crack: bool = False
     #: bind pose 蒙皮已实际施加到顶点（Root_BlendBone 已烘焙进几何）；
     #: 挂载矩阵不得再乘 rb，否则双重镜像 → 朝向翻转（PASB111 副炮 AGS542 实证）
     skinned_applied: bool = False
+    #: 蒙皮权重（GLB 导出 glTF skin 用；非蒙皮网格为 None）
+    bone_indices: np.ndarray | None = None   # (N,4) uint8（调色板 slot × 3）
+    bone_weights: np.ndarray | None = None   # (N,4) float32
+    #: 蒙皮调色板骨骼名与 bind 世界矩阵（游戏空间），导出时转 glTF 空间
+    skin_bones: list = field(default_factory=list)
+    skin_bind: list = field(default_factory=list)
 
 
 @dataclass
@@ -181,6 +190,14 @@ class MountMesh:
     model_folder: str = ""         # 来源模型目录
     vertex_count: int = 0
     is_wire: bool = False          # wire 线框辅助网格：GL_LINES 渲染
+    tech_family: str = "pbs"      # shader 技术族：pbs/indexed/other/grid
+    #: crack/damage 损伤网格（查看器不显示，导出保留用）
+    is_crack: bool = False
+    #: 蒙皮权重（GLB 导出 glTF skin 用；非蒙皮为 None）
+    bone_indices: np.ndarray | None = None
+    bone_weights: np.ndarray | None = None
+    skin_bones: list = field(default_factory=list)
+    skin_bind: list = field(default_factory=list)
 
     def bounds_in_world(self) -> tuple[np.ndarray, np.ndarray]:
         """本地包围盒经 model_matrix 变换后的世界包围盒。"""
@@ -556,6 +573,8 @@ class GeometryService:
                             hm.material = mat_key
                         if mat_key == '__wire__' or mat_key == 'WIRE':
                             hm.is_wire = True
+                        if mat_key is not None and mat_key.startswith('__crack__'):
+                            hm.is_crack = True
                         if mat_key is not None:
                             # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
                             bundle = self._resolve_material_full(g.get('mfm') or '', extractor)
@@ -738,6 +757,9 @@ class GeometryService:
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
+                    is_crack=hm.is_crack,
+                    bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
+                    skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
                 geom.mounts.append(mm)
 
@@ -808,6 +830,9 @@ class GeometryService:
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
+                    is_crack=hm.is_crack,
+                    bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
+                    skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
                 geom.mounts.append(mm)
                 if mm.positions.size:
@@ -1193,6 +1218,9 @@ class GeometryService:
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=sub_folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
+                    is_crack=hm.is_crack,
+                    bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
+                    skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
                 geom.mounts.append(mm)
                 if mm.positions.size:
@@ -1437,9 +1465,16 @@ class GeometryService:
                     hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'])
                     hm.material = mat
                     hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
+                    hm.is_crack = bool(g.get('damage'))
                     hm.skinned_applied = bool(g.get('skinned_applied'))
                     hm.texture_path = tex_path
                     hm.texture_dds = tex_bytes
+                    # 材质技术族（grid_alpha 线网等）：挂载模型同样按 mfm 识别
+                    if mfm:
+                        _bundle = self._resolve_material_full(mfm, extractor)
+                        if _bundle:
+                            hm.tech_family = _bundle.get('tech_family', 'pbs')
+                            hm.material_textures = _bundle.get('textures') or {}
                     meshes.append(hm)
                     if not main_tex[1]:
                         main_tex = (tex_path, tex_bytes)
@@ -1646,10 +1681,12 @@ class GeometryService:
         """按渲染集索引把 primitives 分组：{material_key: {material, mfm, prims}}。
 
         - 用 murmur3(shape.vertices) == primitive.mapping_id 连接渲染集与几何
-        - **damage 渲染集（crack/patch/wire/lod）的网格直接跳过**（不渲染）
+        - **damage/crack 渲染集**（crack/patch 等损伤网格）保留到 `__crack__` 组
+          （查看器不显示，GLB 导出保留用；带 crack mfm）
+        - LOD 低模仍跳过（不同 LOD 级，非 crack）
         - 匹配到材质的按材质分组；未匹配的归 None（用舰体默认贴图）
         - sdict 兜底：无渲染集匹配的 primitive 用字符串表反查 shape 名，
-          LOD/crack 低模也跳过（渲染集精确区域可能未收录其 LOD 渲染集）
+          LOD 低模跳过；`_crack_`/Crack 名归 `__crack__` 组
         - 多个 shape 同材质（如 Hull 本体 + DeckHouse）自动合并
         """
         mat_by_mid: dict = {}
@@ -1664,15 +1701,34 @@ class GeometryService:
             if nk and nk not in norm_to_rs:
                 norm_to_rs[nk] = rs
         groups: dict = {}
+
+        def _crack_group(mat: str, mfm: str) -> dict:
+            """damage/crack 网格组（按材质分键，避免多种 crack 材质混入同一网格）。"""
+            key = f"__crack__#{mat}" if mat else "__crack__"
+            return groups.setdefault(key, {'material': mat, 'mfm': mfm,
+                                           'prims': [], 'damage': True})
+
         for p in primitives:
             if p.mapping_id in damage_mids:
-                continue   # 跳过 crack/patch/wire 等损伤网格
+                # 损伤网格：DB 把 LOD 与真 crack 都标 damage=1，按 shape 名区分——
+                # `_lod` 低模跳过（非 crack）；保留真 crack（`_crack_`/Crack 名或
+                # crack 材质变体，如 BowShape 的 crack 渲染集）到 __crack__ 组
+                _rs = global_rs.get(p.mapping_id) or {}
+                _sname = (_rs.get('shape') or '')
+                if '_lod' in _sname.lower():
+                    continue
+                mat, mfm = mat_by_mid.get(p.mapping_id, ('', ''))
+                _crack_group(mat, mfm)['prims'].append(p)
+                continue
             entry = mat_by_mid.get(p.mapping_id)
             if entry is None:
-                # 无渲染集匹配：字符串表反查 shape 名，LOD/crack 低模兜底跳过
+                # 无渲染集匹配：字符串表反查 shape 名，LOD 低模跳过；crack 名保留
                 if sdict is not None:
                     _name = sdict.get(p.mapping_id) or ''
-                    if '_lod' in _name or '_crack_' in _name or 'Crack' in _name:
+                    if '_lod' in _name:
+                        continue
+                    if '_crack_' in _name or 'Crack' in _name:
+                        _crack_group('', '')['prims'].append(p)
                         continue
                     # 模糊兜底：归一化 shape 名匹配渲染集（游戏数据笔误，
                     # 如 JGA180 视觉写 TurretShapeff.vertices、几何是 TurretShape.vertices）
@@ -1861,7 +1917,15 @@ class GeometryService:
             info = c.get_material_full(app_ctx.ctx.bin_folder or "", mfm_path)
             if info:
                 sid = info.get("shader_id") or "0x0"
+                mh = info.get("material_hash") or ""
                 family = info.get("family") or self._material_family(sid)
+                # fx 坐标映射（material_hash → fx 名 → 技术族）：识别精确到 fx
+                # 变体，替代 shader_id 族/mfm 名启发式。assets.bin 无 fx 名字符串，
+                # 但 material_hash 是 fx 变体稳定标识（grid_alpha=0x337D...、
+                # grid_alpha_skinned=0x4AF4...）；映射表 resources/fx_mapping_*.md
+                # 由人工填写，无合适映射时该列存 shader_id → 退回 shader_id 高 16 位族。
+                if mh:
+                    family = fx_tech_family(app_ctx.ctx.wows_type or "", sid, mh)
                 # 贴图属性 → 实时从客户端 pkg 解包字节（.dds/.dd0 分级）
                 textures: dict = {}
                 for name, vp in (info.get("textures") or {}).items():
@@ -1871,7 +1935,8 @@ class GeometryService:
                     tp, td = self._load_texture_tier(base, extractor)
                     if td:
                         textures[name] = (tp, td)
-                result = {"tech_family": family, "shader_id": sid, "textures": textures}
+                result = {"tech_family": family, "shader_id": sid,
+                          "material_hash": mh, "textures": textures}
                 # INDEXED 分块参数（material_full.indexed 已含 vec4 数组）
                 indexed = info.get("indexed") or {}
                 if indexed:
@@ -1987,6 +2052,9 @@ class GeometryService:
         ln = np.linalg.norm(new_nrm, axis=1, keepdims=True)
         ln[ln == 0] = 1.0
         prim.normals = (new_nrm / ln).astype(np.float32)
+        # 保留蒙皮调色板与 bind 世界矩阵（GLB 导出 skin 用；bones 保持原样）
+        prim.skin_bones = list(palette)
+        prim.skin_bind = mats
         return True
 
     @staticmethod
@@ -1995,11 +2063,16 @@ class GeometryService:
         v_total = sum(p.positions.shape[0] for p in primitives)
         i_total = sum(0 if p.indices is None else p.indices.size for p in primitives)
         has_uv = any(p.uvs is not None for p in primitives)
+        has_bone = any(p.bone_indices is not None for p in primitives)
 
         positions = np.empty((v_total, 3), dtype=np.float32)
         normals = np.empty((v_total, 3), dtype=np.float32)
         uvs = np.empty((v_total, 2), dtype=np.float32) if has_uv else None
         indices = np.empty(i_total, dtype=np.uint32)
+        bone_indices = np.empty((v_total, 4), dtype=np.uint8) if has_bone else None
+        bone_weights = np.empty((v_total, 4), dtype=np.float32) if has_bone else None
+        skin_bones: list = []
+        skin_bind: list = []
 
         voff = 0
         ioff = 0
@@ -2012,6 +2085,16 @@ class GeometryService:
                     uvs[voff:voff + n] = p.uvs
                 else:
                     uvs[voff:voff + n] = 0.0
+            if bone_indices is not None:
+                if p.bone_indices is not None:
+                    bone_indices[voff:voff + n] = p.bone_indices
+                    bone_weights[voff:voff + n] = p.bone_weights
+                else:
+                    bone_indices[voff:voff + n] = 0
+                    bone_weights[voff:voff + n] = 0.0
+            if not skin_bones and p.skin_bones:
+                skin_bones = list(p.skin_bones)
+                skin_bind = list(p.skin_bind)
             if p.indices is not None and p.indices.size:
                 indices[ioff:ioff + p.indices.size] = p.indices.astype(np.uint32) + voff
                 ioff += p.indices.size
@@ -2024,6 +2107,10 @@ class GeometryService:
             uvs=uvs,
             indices=indices[:ioff] if ioff < i_total else indices,
             vertex_count=voff,
+            bone_indices=bone_indices,
+            bone_weights=bone_weights,
+            skin_bones=skin_bones,
+            skin_bind=skin_bind,
         )
 
     @staticmethod

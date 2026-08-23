@@ -38,7 +38,8 @@ from utils.path_utils import get_data_dir
 #:    供蒙皮网格按渲染集调色板施加 bind pose 混合（修复 PASA111 天线/索具
 #:    180° 朝向错误；Korabli 渲染集项 +0x0C skinned / +0x0D nodes_count /
 #:    +0x28 item-relative relptr → u32 名ID 数组）
-ASSETS_SCHEMA_VERSION = 7
+#: v8：material_full 新增 material_hash 列（fx 变体标识，识别材质技术族用）
+ASSETS_SCHEMA_VERSION = 8
 
 
 class AssetsCacheService:
@@ -217,6 +218,7 @@ class AssetsCacheService:
             mfm_path TEXT NOT NULL,
             shader_id TEXT NOT NULL DEFAULT '0x0',
             family TEXT NOT NULL DEFAULT '',
+            material_hash TEXT NOT NULL DEFAULT '',
             textures TEXT NOT NULL DEFAULT '',
             indexed TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(bin_folder, mfm_path)
@@ -561,12 +563,14 @@ class AssetsCacheService:
                     # +0x10 names_ptr / +0x18 type_idx_ptr /
                     # +0x20..+0x60 type_ptrs[9] / +0x68 material_hash
                     shader_id = B.read_u32(data, 0x04)
+                    mat_hash = B.read_u64(data, 0x68)
                     names_ptr = B.read_u64(data, 0x10)
                     type_idx_ptr = B.read_u64(data, 0x18)
                     type_ptrs = {t: B.read_u64(data, 0x20 + t * 8) for t in range(9)}
                 else:
                     # Korabli 0x88 布局
                     shader_id = B.read_u32(data, 0x08)
+                    mat_hash = B.read_u64(data, 0x78)
                     names_ptr = B.read_u64(data, 0x18)
                     type_idx_ptr = B.read_u64(data, 0x20)
                     type_ptrs = {t: B.read_u64(data, 0x30 + t * 8) for t in range(9)}
@@ -631,7 +635,7 @@ class AssetsCacheService:
                             indexed[nm] = vals
                 family = self._material_family(f"0x{shader_id:08X}")
                 mf_rows.append((bin_folder, self._norm_vfs_path(f.path), f"0x{shader_id:08X}", family,
-                                json.dumps(textures), json.dumps(indexed)))
+                                f"0x{mat_hash:016X}", json.dumps(textures), json.dumps(indexed)))
             if mfm_failed:
                 sample = ", ".join(mfm_failed[:5])
                 more = f" 等 {len(mfm_failed)} 个" if len(mfm_failed) > 5 else ""
@@ -645,8 +649,8 @@ class AssetsCacheService:
             if mf_rows:
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO material_full "
-                    "(bin_folder, mfm_path, shader_id, family, textures, indexed) "
-                    "VALUES (?,?,?,?,?,?)", mf_rows)
+                    "(bin_folder, mfm_path, shader_id, family, material_hash, textures, indexed) "
+                    "VALUES (?,?,?,?,?,?,?)", mf_rows)
             counts["material_full"] = len(mf_rows)
             del mf_rows
 
@@ -785,16 +789,17 @@ class AssetsCacheService:
         return out
 
     def get_material_full(self, bin_folder: str, mfm_path: str) -> dict | None:
-        """材质完整信息：{shader_id, family, textures:{name: 原始路径}, indexed:{name:[[...]]}}。"""
+        """材质完整信息：{shader_id, family, material_hash, textures, indexed}。"""
         try:
             row = self._conn.execute(
-                "SELECT shader_id, family, textures, indexed FROM material_full "
+                "SELECT shader_id, family, material_hash, textures, indexed FROM material_full "
                 "WHERE bin_folder=? AND mfm_path=?", (bin_folder, mfm_path)).fetchone()
             if row is None:
                 return None
             return {
                 "shader_id": row["shader_id"],
                 "family": row["family"],
+                "material_hash": row["material_hash"],
                 "textures": json.loads(row["textures"] or "{}"),
                 "indexed": json.loads(row["indexed"] or "{}"),
             }

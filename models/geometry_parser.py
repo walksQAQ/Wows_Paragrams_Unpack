@@ -106,6 +106,10 @@ class MeshPrimitive:
     #: 由 geometry_service._apply_skinning 按渲染集调色板施加 bind pose 混合。
     bone_indices: np.ndarray | None = None
     bone_weights: np.ndarray | None = None
+    #: 蒙皮调色板（渲染集 nodes 骨骼名）与 bind 世界矩阵（游戏空间）。
+    #: 由 geometry_service._apply_skinning 应用成功后填充；供 GLB 导出 skin 用。
+    skin_bones: list = field(default_factory=list)
+    skin_bind: list = field(default_factory=list)
 
 
 @dataclass
