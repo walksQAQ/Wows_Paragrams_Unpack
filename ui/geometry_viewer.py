@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt, QSettings, Signal, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox, QCompleter,
-    QPushButton, QCheckBox, QWidget, QProgressBar,
+    QPushButton, QCheckBox, QWidget, QProgressBar, QFileDialog, QMessageBox,
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QSlider, QToolTip,
 )
 
@@ -89,6 +89,8 @@ class GeometryViewerDialog(QDialog):
     ship_loaded = Signal(str)
     #: 后台加载进度（0..100, 消息, 代数）→ 主线程更新右侧进度条
     progress_changed = Signal(float, str, int)
+    #: 后台导出进度（0..100, 消息）→ 主线程更新导出进度条
+    export_progress_changed = Signal(float, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,6 +115,9 @@ class GeometryViewerDialog(QDialog):
         self._loading_ships = False   # 舰船列表后台任务进行中
         self._ships_task = None       # 舰船列表任务句柄（可取消）
         self._load_task = None        # 舰船模型加载任务句柄（可取消）
+        # ── 导出状态 ──
+        self._exporting = False       # 导出进行中
+        self._export_task = None      # 导出任务句柄（可取消）
 
         self._build_ui()
         theme.bind(self, "QDialog { background: @panel_bg@; }")
@@ -272,6 +277,30 @@ class GeometryViewerDialog(QDialog):
         theme.bind(self.stats_label, "color:@text_muted@; font-size:11px; background:transparent; border:none;")
         pl.addWidget(self.stats_label)
 
+        # ── 模型导出（渲染模型 / 装甲模型 分开导出）──
+        self._add_section_title(pl, "导出模型", sec_style)
+        export_row = QHBoxLayout()
+        self.btn_export_render = QPushButton("导出渲染模型")
+        self.btn_export_armor = QPushButton("导出装甲模型")
+        for b in (self.btn_export_render, self.btn_export_armor):
+            theme.bind(b, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:4px 8px; font-size:11px; }")
+        export_row.addWidget(self.btn_export_render)
+        export_row.addWidget(self.btn_export_armor)
+        pl.addLayout(export_row)
+        self.export_progress = QProgressBar()
+        self.export_progress.setVisible(False)
+        self.export_progress.setFixedHeight(14)
+        theme.bind(self.export_progress, "QProgressBar { border:1px solid #0078d4; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
+                    "QProgressBar::chunk { background:#0078d4; }")
+        pl.addWidget(self.export_progress)
+        self.export_status = QLabel("渲染模型：舰体 + 挂载；装甲模型：厚度着色板块")
+        self.export_status.setWordWrap(True)
+        self.export_status.setAlignment(Qt.AlignTop)
+        theme.bind(self.export_status, "color:@text_hint@; font-size:11px; background:transparent; border:none;")
+        pl.addWidget(self.export_status)
+        # 后台线程经信号投递导出进度 → 主线程更新进度条
+        self.export_progress_changed.connect(self._on_export_progress)
+
         # ── 装甲厚度图例（可折叠） ──
         self.btn_legend = QPushButton("▸ 装甲厚度图例")
         self.btn_legend.setFlat(True)
@@ -303,6 +332,9 @@ class GeometryViewerDialog(QDialog):
         self.btn_legend.clicked.connect(self._toggle_legend)
         self.armor_tree.itemChanged.connect(self._on_tree_item_changed)
         self.armor_tree.itemSelectionChanged.connect(self._on_tree_selection)
+        # 模型导出（渲染 / 装甲 分开）
+        self.btn_export_render.clicked.connect(lambda: self._start_export(False))
+        self.btn_export_armor.clicked.connect(lambda: self._start_export(True))
         # 3D 拾取回调
         self.viewport.on_hover = self._on_viewport_hover
         self.viewport.on_select = self._on_viewport_select
@@ -758,6 +790,100 @@ class GeometryViewerDialog(QDialog):
         # 加载失败也要兑现挂起请求，避免按钮点击被吞掉
         self._try_load_pending()
 
+    # ── 模型导出（渲染 / 装甲 分开）─────────────────────
+
+    def _start_export(self, armor: bool):
+        """导出入口：选路径 → 后台导出（只读 ShipGeometry/ArmorScene）。"""
+        if self._loading or self._exporting:
+            return
+        geom = self._current_geom
+        if geom is None:
+            self.export_status.setText("请先加载舰船模型")
+            bus.log_message.emit("⚠️ 导出: 请先加载舰船模型")
+            return
+        if armor and (self._armor_scene is None or not self._armor_scene.tri_count):
+            self.export_status.setText("当前舰船没有装甲数据")
+            bus.log_message.emit("⚠️ 导出: 当前舰船没有装甲数据")
+            return
+        base = (geom.display_name or geom.game_key).replace(" ", "_")
+        base = base.replace("/", "_").replace("\\", "_").replace(":", "_")
+        default_name = f"{base}_armor.glb" if armor else f"{base}_render.glb"
+        title = "导出装甲模型 (GLB)" if armor else "导出渲染模型 (GLB)"
+        path, _ = QFileDialog.getSaveFileName(self, title, default_name,
+                                              "glTF 2.0 Binary (*.glb)")
+        if not path:
+            return
+        if not path.lower().endswith(".glb"):
+            path += ".glb"
+        self._begin_export(path, armor)
+
+    def _begin_export(self, path: str, armor: bool):
+        """启动后台导出任务（后台线程只读几何对象，不触碰 Qt/OpenGL）。"""
+        import numpy as np
+        self._exporting = True
+        self._export_task = None
+        for b in (self.btn_export_render, self.btn_export_armor):
+            b.setEnabled(False)
+        self.export_progress.setVisible(True)
+        self.export_progress.setValue(0)
+        self.export_status.setText("导出中，请稍候...")
+        geom = self._current_geom
+        armor_scene = self._armor_scene
+        # 冻结当前查看器的装甲显隐掩码（后台线程读取快照）
+        visible = None
+        if armor and armor_scene is not None and self.viewport._visible_tris is not None:
+            visible = np.asarray(self.viewport._visible_tris, dtype=bool).copy()
+
+        def _work(cancel_event):
+            from services.export_service import export_render_glb, export_armor_glb
+            if armor:
+                return export_armor_glb(
+                    geom, armor_scene, path, visible_tris=visible,
+                    cancel_event=cancel_event,
+                    progress_cb=lambda p, m: self.export_progress_changed.emit(float(p), m))
+            return export_render_glb(
+                geom, path, cancel_event=cancel_event,
+                progress_cb=lambda p, m: self.export_progress_changed.emit(float(p), m))
+
+        self._export_task = run_async(
+            _work,
+            on_finished=self._on_export_done,
+            on_error=self._on_export_error,
+            cancel_event=threading.Event(),
+        )
+
+    def _on_export_progress(self, pct: float, msg: str) -> None:
+        """主线程更新导出进度条（由后台线程经信号投递）。"""
+        if self._closed or not self._exporting:
+            return
+        pct = max(0.0, min(100.0, float(pct)))
+        self.export_progress.setValue(int(pct))
+        self.export_progress.setFormat(f"{msg}  {pct:.0f}%")
+
+    def _on_export_done(self, report):
+        if self._closed:
+            return
+        self._exporting = False
+        for b in (self.btn_export_render, self.btn_export_armor):
+            b.setEnabled(True)
+        self.export_progress.setVisible(False)
+        self.export_status.setText("")
+        for w in report.warnings:
+            bus.log_message.emit(f"⚠️ 导出警告: {w}")
+        bus.log_message.emit(report.summary())
+        QMessageBox.information(self, "导出完成", report.summary())
+
+    def _on_export_error(self, err):
+        if self._closed:
+            return
+        self._exporting = False
+        for b in (self.btn_export_render, self.btn_export_armor):
+            b.setEnabled(True)
+        self.export_progress.setVisible(False)
+        self.export_status.setText("导出失败")
+        bus.log_message.emit(f"❌ 导出失败: {err}")
+        QMessageBox.warning(self, "导出失败", f"导出失败：{err}")
+
     # ── 生命周期 ─────────────────────────────────────────
 
     def _on_log(self, msg: str):
@@ -785,6 +911,12 @@ class GeometryViewerDialog(QDialog):
             self._load_task.kill(timeout=1.0)
         self._load_task = None
         self._ships_task = None
+        # 导出任务：只读几何/内存型，取消并强制收尾（写入外部路径，不阻塞关闭）
+        if self._export_task is not None:
+            self._export_task.cancel()
+            self._export_task.kill(timeout=1.0)
+        self._export_task = None
+        self._exporting = False
         # 释放服务层缓存的本次加载重内存（挂载几何/贴图/材质/快照等），
         # 否则关闭后内存仍被单例 GeometryService 占用
         if self._service is not None:

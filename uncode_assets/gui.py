@@ -184,7 +184,13 @@ class AssetsBinViewer(QMainWindow):
     # ── 加载 ────────────────────────────────────────────
 
     def load_source(self, source: str) -> None:
-        """加载 assets.bin 文件路径或游戏目录（后台线程）。"""
+        """加载 assets.bin 文件路径或游戏目录（后台线程）。
+
+        游戏目录按内容自动探测服务器类型（Korabli64.exe→Lesta，
+        WorldOfWarships*.exe→Wargaming），避免主应用为 Lesta 时用 Lesta
+        类型表(0x88)解析 WG 客户端的 assets.bin(0x78) 导致解码错乱
+        （路径显示为一串 0x 地址）。
+        """
         p = Path(source)
         if self._worker and self._worker.isRunning():
             return
@@ -193,6 +199,10 @@ class AssetsBinViewer(QMainWindow):
         self.status_label.setText("正在加载/解析 assets.bin...（Kraken 解压可能较慢）")
         self.info_label.setText("加载中...")
         if p.is_dir():
+            detected = self._detect_wows_type(str(p))
+            if detected and detected != self._wows_type:
+                self._wows_type = detected
+                self._set_source_label(str(p))
             self._worker = _LoadWorker(game_dir=str(p), bin_folder=self._bin_folder,
                                        wows_type=self._wows_type, parent=self)
         else:
@@ -201,6 +211,31 @@ class AssetsBinViewer(QMainWindow):
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_load_failed)
         self._worker.start()
+
+    @staticmethod
+    def _detect_wows_type(game_dir: str) -> str:
+        """按游戏目录内容探测服务器类型（Korabli→Lesta，WoWS→Wargaming）。"""
+        g = Path(game_dir)
+        bin_dir = g / "bin"
+        if bin_dir.is_dir():
+            try:
+                subs = sorted(bin_dir.iterdir(), key=lambda x: str(x), reverse=True)
+            except Exception:  # noqa: BLE001
+                subs = []
+            for bd in subs:
+                if not bd.is_dir():
+                    continue
+                bin64 = bd / "bin64"
+                if (bin64 / "Korabli64.exe").exists():
+                    return "Lesta"
+                if (bin64 / "WorldOfWarships64.exe").exists() \
+                        or (bin64 / "WorldOfWarships.exe").exists():
+                    return "Wargaming"
+        if (g / "Korabli64.exe").exists():
+            return "Lesta"
+        if (g / "WorldOfWarships.exe").exists():
+            return "Wargaming"
+        return ""
 
     def _on_loaded(self, svc: AssetsBinService) -> None:
         self._svc = svc

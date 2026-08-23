@@ -17,6 +17,11 @@ numpy>=1.24
 PyOpenGL>=3.1
 meshoptimizer>=0.2
 
+# 3D 模型导出（GLB / glTF 2.0 Binary：渲染模型 + 装甲模型）
+pygltflib>=1.16
+Pillow>=10.0
+texture2ddecoder>=1.1
+
 # 网络下载相关依赖
 requests>=2.28
 

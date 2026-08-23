@@ -221,6 +221,8 @@ class PenetrationCalculatorDialog(QDialog):
         # 主题切换：面板背景等由 theme.bind 自动更新；插件加成按钮动态重建以应用新主题
         from app.signals import bus as _bus
         _bus.theme_changed.connect(self._on_theme_changed_pen)
+        # 切换服务器（Lesta/Wargaming）后重新加载数据（工具栏 _on_server 重置 db 后刷新）
+        _bus.wows_type_changed.connect(self._on_wows_type_changed_pen)
 
     def _on_theme_changed_pen(self, _mode: str) -> None:
         """主题切换后：重建插件加成按钮，确保其跟随新主题"""
@@ -229,6 +231,16 @@ class PenetrationCalculatorDialog(QDialog):
                 self._load_mod_bonuses()
         except Exception:
             pass
+
+    def _on_wows_type_changed_pen(self, _server: str) -> None:
+        """切换服务器（Lesta/Wargaming）后重新加载计算器数据。
+
+        工具栏 _on_server 先 set_wows_type（发出本信号）再 reset_db/get_db，
+        用 singleShot(0) 延迟到该流程完整执行（新库就绪）后再刷新，
+        重建筛选器/火炮/弹药并重置当前计算。
+        """
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._load_data)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -825,6 +837,12 @@ class PenetrationCalculatorDialog(QDialog):
                 self._set_error("当前未加载数据库，无法填充计算器数据。")
                 return
 
+            # 只取最新版本的数据（多版本共存时避免同名船重复/串旧版本数据）
+            vc = db.get_latest_version_code() or ""
+            if not vc:
+                self._set_error("当前数据库无可用数据，请先加载游戏数据。")
+                return
+            self._cur_version_code = vc
             ship_rows = db._conn.execute(
                 """
                 SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier, er.nation
@@ -841,9 +859,11 @@ class PenetrationCalculatorDialog(QDialog):
                 LEFT JOIN entity_registry er
                     ON er.version_code = sb.version_code
                     AND er.entity_id = sb.ship_id
-                WHERE g.ship_id IS NOT NULL OR a.ship_id IS NOT NULL OR s.ship_id IS NOT NULL
+                WHERE (g.ship_id IS NOT NULL OR a.ship_id IS NOT NULL OR s.ship_id IS NOT NULL)
+                  AND sb.version_code = ?
                 ORDER BY sb.ship_id
-                """
+                """,
+                (vc,),
             ).fetchall()
             if not ship_rows:
                 ship_rows = db._conn.execute(
@@ -853,9 +873,11 @@ class PenetrationCalculatorDialog(QDialog):
                     LEFT JOIN entity_registry er
                         ON er.version_code = sb.version_code
                         AND er.entity_id = sb.ship_id
+                    WHERE sb.version_code = ?
                     ORDER BY sb.ship_id
-                """
-            ).fetchall()
+                """,
+                    (vc,),
+                ).fetchall()
 
             self._ship_catalog = []
             # 批量解析舰船中文名，避免逐条查询（全量 ~964 艘）
@@ -985,8 +1007,8 @@ class PenetrationCalculatorDialog(QDialog):
         from services.database_service import get_db
         db = get_db()
         row = db._conn.execute(
-            f"SELECT * FROM {table} WHERE ship_id=? AND module_key=? LIMIT 1",
-            (ship_id, mod_key),
+            f"SELECT * FROM {table} WHERE ship_id=? AND module_key=? AND version_code=? LIMIT 1",
+            (ship_id, mod_key, getattr(self, "_cur_version_code", "") or ""),
         ).fetchone()
         return row, kind
 
@@ -1001,26 +1023,27 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             from services.database_service import get_db
             db = get_db()
+            vc = getattr(self, "_cur_version_code", "") or ""
             # 主炮
             rows = db._conn.execute(
-                "SELECT module_key, launcher_name FROM ship_module_artillery WHERE ship_id=? GROUP BY module_key ORDER BY module_key LIMIT 50",
-                (ship_id,),
+                "SELECT module_key, launcher_name FROM ship_module_artillery WHERE ship_id=? AND version_code=? GROUP BY module_key ORDER BY module_key LIMIT 50",
+                (ship_id, vc),
             ).fetchall()
             for row in rows:
                 label = self._resolve_name("gun", row["module_key"]) or row["launcher_name"] or row["module_key"]
                 self.gun_cb.addItem(f"主炮 · {label}", f"main:{row['module_key']}")
             # 副炮（atba）
             arows = db._conn.execute(
-                "SELECT module_key, launcher_name FROM ship_module_atba WHERE ship_id=? GROUP BY module_key ORDER BY module_key LIMIT 50",
-                (ship_id,),
+                "SELECT module_key, launcher_name FROM ship_module_atba WHERE ship_id=? AND version_code=? GROUP BY module_key ORDER BY module_key LIMIT 50",
+                (ship_id, vc),
             ).fetchall()
             for row in arows:
                 label = self._resolve_name("gun", row["module_key"]) or row["launcher_name"] or row["module_key"]
                 self.gun_cb.addItem(f"副炮 · {label}", f"atba:{row['module_key']}")
             # 次级主炮（中口径）
             srows = db._conn.execute(
-                "SELECT module_key, launcher_name FROM ship_module_secondary_artillery WHERE ship_id=? GROUP BY module_key ORDER BY module_key LIMIT 50",
-                (ship_id,),
+                "SELECT module_key, launcher_name FROM ship_module_secondary_artillery WHERE ship_id=? AND version_code=? GROUP BY module_key ORDER BY module_key LIMIT 50",
+                (ship_id, vc),
             ).fetchall()
             for row in srows:
                 label = self._resolve_name("gun", row["module_key"]) or row["launcher_name"] or row["module_key"]
@@ -1053,25 +1076,26 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             from services.database_service import get_db
             db = get_db()
+            vc = getattr(self, "_cur_version_code", "") or ""
             rows = db._conn.execute(
-                "SELECT DISTINCT module_key FROM ship_module_artillery WHERE ship_id=? ORDER BY module_key",
-                (ship_id,),
+                "SELECT DISTINCT module_key FROM ship_module_artillery WHERE ship_id=? AND version_code=? ORDER BY module_key",
+                (ship_id, vc),
             ).fetchall()
             for row in rows:
                 idx = self.gun_cb.findData(f"main:{row['module_key']}")
                 if idx >= 0:
                     return idx
             arows = db._conn.execute(
-                "SELECT DISTINCT module_key FROM ship_module_atba WHERE ship_id=? ORDER BY module_key",
-                (ship_id,),
+                "SELECT DISTINCT module_key FROM ship_module_atba WHERE ship_id=? AND version_code=? ORDER BY module_key",
+                (ship_id, vc),
             ).fetchall()
             for row in arows:
                 idx = self.gun_cb.findData(f"atba:{row['module_key']}")
                 if idx >= 0:
                     return idx
             srows = db._conn.execute(
-                "SELECT DISTINCT module_key FROM ship_module_secondary_artillery WHERE ship_id=? ORDER BY module_key",
-                (ship_id,),
+                "SELECT DISTINCT module_key FROM ship_module_secondary_artillery WHERE ship_id=? AND version_code=? ORDER BY module_key",
+                (ship_id, vc),
             ).fetchall()
             for row in srows:
                 idx = self.gun_cb.findData(f"sec:{row['module_key']}")
@@ -1098,6 +1122,7 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             from services.database_service import get_db
             db = get_db()
+            vc = getattr(self, "_cur_version_code", "") or ""
             kind, mod_key = self._split_gun_key(gun_key)
             slot_types = self._slot_types_for_kind(kind)
             placeholders = ",".join("?" * len(slot_types))
@@ -1106,12 +1131,12 @@ class PenetrationCalculatorDialog(QDialog):
                 SELECT p.ammo_id, pb.ammo_type, pb.species
                 FROM ship_weapon_projectiles p
                 LEFT JOIN projectile_basic_info pb ON pb.projectile_id = p.ammo_id
-                WHERE p.ship_id=? AND p.module_id=? AND p.slot_type IN ({placeholders})
+                WHERE p.version_code=? AND p.ship_id=? AND p.module_id=? AND p.slot_type IN ({placeholders})
                 GROUP BY p.ammo_id
                 ORDER BY p.ammo_order, p.ammo_id
                 LIMIT 30
                 """,
-                (ship_id, mod_key, *slot_types),
+                (vc, ship_id, mod_key, *slot_types),
             ).fetchall()
             if not rows:
                 self.ammo_cb.addItem("无可用弹药")
@@ -1141,12 +1166,13 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             from services.database_service import get_db
             db = get_db()
+            vc = getattr(self, "_cur_version_code", "") or ""
             kind, mod_key = self._split_gun_key(gun_key)
             slot_types = self._slot_types_for_kind(kind)
             placeholders = ",".join("?" * len(slot_types))
             rows = db._conn.execute(
-                f"SELECT DISTINCT ammo_id FROM ship_weapon_projectiles WHERE ship_id=? AND module_id=? AND slot_type IN ({placeholders}) ORDER BY ammo_id",
-                (ship_id, mod_key, *slot_types),
+                f"SELECT DISTINCT ammo_id FROM ship_weapon_projectiles WHERE version_code=? AND ship_id=? AND module_id=? AND slot_type IN ({placeholders}) ORDER BY ammo_id",
+                (vc, ship_id, mod_key, *slot_types),
             ).fetchall()
             for row in rows:
                 idx = self.ammo_cb.findData(row["ammo_id"])
@@ -1184,6 +1210,7 @@ class PenetrationCalculatorDialog(QDialog):
             return None, None, None
         from services.database_service import get_db
         db = get_db()
+        vc = getattr(self, "_cur_version_code", "") or ""
         gun_row, kind = self._load_gun_row(ship_id, gun_key)
         _, mod_key = self._split_gun_key(gun_key)
         slot_types = self._slot_types_for_kind(kind)
@@ -1194,10 +1221,10 @@ class PenetrationCalculatorDialog(QDialog):
             FROM ship_weapon_projectiles p
             LEFT JOIN projectile_basic_info pb ON pb.projectile_id = p.ammo_id
             LEFT JOIN projectile_bullet_ext e ON e.projectile_id = p.ammo_id
-            WHERE p.ship_id=? AND p.module_id=? AND p.ammo_id=? AND p.slot_type IN ({placeholders})
+            WHERE p.version_code=? AND p.ship_id=? AND p.module_id=? AND p.ammo_id=? AND p.slot_type IN ({placeholders})
             LIMIT 1
             """,
-            (ship_id, mod_key, ammo_id, *slot_types),
+            (vc, ship_id, mod_key, ammo_id, *slot_types),
         ).fetchone()
         return gun_row, ammo_row, ship_id
 
@@ -1208,6 +1235,7 @@ class PenetrationCalculatorDialog(QDialog):
             return []
         from services.database_service import get_db
         db = get_db()
+        vc = getattr(self, "_cur_version_code", "") or ""
         kind, mod_key = self._split_gun_key(gun_key)
         slot_types = self._slot_types_for_kind(kind)
         placeholders = ",".join("?" * len(slot_types))
@@ -1217,11 +1245,11 @@ class PenetrationCalculatorDialog(QDialog):
             FROM ship_weapon_projectiles p
             LEFT JOIN projectile_basic_info pb ON pb.projectile_id = p.ammo_id
             LEFT JOIN projectile_bullet_ext e ON e.projectile_id = p.ammo_id
-            WHERE p.ship_id=? AND p.module_id=? AND p.slot_type IN ({placeholders})
+            WHERE p.version_code=? AND p.ship_id=? AND p.module_id=? AND p.slot_type IN ({placeholders})
             GROUP BY p.ammo_id
             ORDER BY p.ammo_order, p.ammo_id
             """,
-            (ship_id, mod_key, *slot_types),
+            (vc, ship_id, mod_key, *slot_types),
         ).fetchall()
         return list(rows)
 
@@ -1257,6 +1285,7 @@ class PenetrationCalculatorDialog(QDialog):
         from services.database_service import get_db
         db = get_db()
         try:
+            vc = getattr(self, "_cur_version_code", "") or ""
             gun_row, kind = self._load_gun_row(ship_id, gun_key)
             _, mod_key = self._split_gun_key(gun_key)
             slot_types = self._slot_types_for_kind(kind)
@@ -1267,10 +1296,10 @@ class PenetrationCalculatorDialog(QDialog):
                 FROM ship_weapon_projectiles p
                 LEFT JOIN projectile_basic_info pb ON pb.projectile_id = p.ammo_id
                 LEFT JOIN projectile_bullet_ext e ON e.projectile_id = p.ammo_id
-                WHERE p.ship_id=? AND p.module_id=? AND p.ammo_id=? AND p.slot_type IN ({placeholders})
+                WHERE p.version_code=? AND p.ship_id=? AND p.module_id=? AND p.ammo_id=? AND p.slot_type IN ({placeholders})
                 LIMIT 1
                 """,
-                (ship_id, mod_key, ammo_id, *slot_types),
+                (vc, ship_id, mod_key, ammo_id, *slot_types),
             ).fetchone()
         except Exception:
             return None, None, []
@@ -1285,7 +1314,8 @@ class PenetrationCalculatorDialog(QDialog):
         try:
             db = get_db()
             row = db._conn.execute(
-                "SELECT ship_index FROM ship_basic_info WHERE ship_id=? LIMIT 1", (ship_id,)
+                "SELECT ship_index FROM ship_basic_info WHERE ship_id=? AND version_code=? LIMIT 1",
+                (ship_id, getattr(self, "_cur_version_code", "") or ""),
             ).fetchone()
             if row and row["ship_index"]:
                 ship_name = self._resolve_name("ship", row["ship_index"]) or ship_id

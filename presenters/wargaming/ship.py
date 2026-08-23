@@ -563,13 +563,22 @@ class WargamingShipPresenter(WargamingBasePresenter):
         return WargamingShipPresenter.format_pcom_buff(conn, vc, cfgd.get('buff', ''))
 
     @staticmethod
-    def format_pcom_buff(conn, vc: str, buff_id: str) -> list[tuple[str, str, str]]:
-        """读取 PCOM 实体（consumable_buff）的 buff 效果词条，返回 [(标签, 格式化值), ...]。
+    def format_torpedo_damage_decrease_buff(conn, vc: str, cfgd: dict) -> list[tuple[str, str, str]]:
+        """读取 torpedoDamageDecrease 消耗品引用的 PCOM buff（logic.buff），返回效果词条。"""
+        return WargamingShipPresenter.format_pcom_buff(conn, vc, cfgd.get('buff', ''))
 
-        扁平 buff（无 level_*，入库为 consumable_buff buff_level=0 单行，整份存 buff_json）
-        读其 modifier 中**有实际效果**的词条：跳过全 1.0 的分舰种 dict，以及
-        GMMaxDistAbsoluteCap / healthPerLevel / artilleryBurnChanceBonus / aimRange /
-        BuffStatsList 等噪音键。无数据或全部无效返回 []。
+    @staticmethod
+    def format_pcom_buff(conn, vc: str, buff_id: str) -> list[tuple[str, str, str]]:
+        """读取 PCOM 实体（consumable_buff）的 buff 效果词条，返回 [(标签, 格式化值, 颜色), ...]。
+
+        两种入库形态（见 services/wargaming/analysis.py store_consumable_buff）：
+          - 扁平 buff（无 level_*，如 PCOM915/916/917 AuxiliaryTorpedoArmamentBooster，
+            入库为 buff_level=0 单行）：modifier 子对象即全部有效词条，直接读取。
+          - 分级 buff（有 level_N，如 PCOM9xx_AirstrikeCountermeasures*，入库为每级一行，
+            buff_json 即该级整份模板）：无 modifier 键，把整个模板当词条源，但只保留
+            **有实际效果**的词条——跳过 0 / 1.0 / False 默认值噪音，以及
+            GMMaxDistAbsoluteCap / aimRange / healthPerLevel / artilleryBurnChanceBonus /
+            BuffStatsList 等常量/元数据噪音键。无数据或全部无效返回 []。
         """
         if not buff_id:
             return []
@@ -583,15 +592,28 @@ class WargamingShipPresenter(WargamingBasePresenter):
         if not row:
             return []
         try:
-            mods = (json.loads(row['buff_json'] or '{}') or {}).get('modifier') or {}
+            data = json.loads(row['buff_json'] or '{}') or {}
         except (json.JSONDecodeError, TypeError):
             return []
-        SKIP = {"GMMaxDistAbsoluteCap", "healthPerLevel", "artilleryBurnChanceBonus",
-                "aimRange", "BuffStatsList"}
+        _flat = data.get('modifier')
+        if isinstance(_flat, dict) and _flat:
+            # 扁平 buff：modifier 子对象即有效词条（保持原行为）
+            mods, strict = _flat, False
+        else:
+            # 分级 buff：整份 level 模板 → 严格过滤默认值噪音
+            mods, strict = data, True
+        # 元数据/常量噪音键（分级模板整份入库时会出现）
+        SKIP = {
+            "id", "index", "type", "name", "descIDs", "titleIDs", "iconIDs",
+            "feedbackIDs", "negative", "hidden", "hideLowerLogMessage",
+            "restrictions", "opposite", "notificationLevel", "typeinfo",
+            "level", "BuffStatsList",
+            "aimRange",
+        }
         BOOL_GREEN = "#1b8a1b"
         rows: list[tuple[str, str, str]] = []
         for bk, bv in sorted(mods.items()):
-            if bk in SKIP:
+            if bk in SKIP or bk.startswith("level_"):
                 continue
             if isinstance(bv, bool):
                 # 布尔词条：true → 描述文本放右列数据区（绿色），左列留空
@@ -609,6 +631,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 continue
             if abs(bv - 1.0) < 1e-9:
                 continue  # coeff 1.0 无效果
+            if strict and abs(bv) < 1e-9:
+                continue  # 分级模板中 0 = 无效果默认值（raw 加性词条）
             label = Mapping.MODIFIER_MAP.get(bk, bk)
             ft = Mapping.format_modifier(bk, bv)
             if ft:
@@ -876,6 +900,12 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             _txt = _bval
                         else:
                             _txt = _blbl
+                        items.append(self.make_item(f"          {_txt}", "", len(items)))
+                elif ct == "buff":
+                    # 逻辑：为玩家操纵舰船添加 buff（logic.buff → PCOM 实体；如 PCY080 反空袭）
+                    for _blbl, _bval, _bcol in self.format_torpedo_damage_decrease_buff(conn, vc, cfgd):
+                        # 左列为空（布尔状态词条描述在右列）时只显示值，不带前导冒号
+                        _txt = f"{_blbl}: {_bval}" if _blbl else _bval
                         items.append(self.make_item(f"          {_txt}", "", len(items)))
         if last_slot is not None:
             items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
