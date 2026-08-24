@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from . import binary as B
 from .errors import ParseError
@@ -120,6 +120,25 @@ def _read_typed_value(data: bytes, ptr: int, ptype: int, pidx: int):
     return None
 
 
+def _read_typed_array(data: bytes, ptr: int, ptype: int, pidx: int, length: int):
+    """读取某属性类型第 pidx 起连续 length 个元素（数组属性完整展开）。
+
+    对齐 assets_cache_service 的 INDEXED vec4 数组提取：同一 ptype 的属性
+    共享同一值数组槽位区，pidx 间距即数组长度。越界/无法读取时截断。
+    """
+    if ptr <= 0 or ptr >= len(data) or length <= 0:
+        return None
+    out: List = []
+    for k in range(length):
+        v = _read_typed_value(data, ptr, ptype, pidx + k)
+        if v is None:
+            break
+        if ptype in (5, 6, 7, 8):  # vec2/vec3/vec4/mat4：元素逐个规整，避免 float32 长小数
+            v = [_f(x) for x in v]
+        out.append(v)
+    return out or None
+
+
 def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     """解码 MaterialPrototype（Korabli 0x88B / WG 0x78B，按服务器布局自适应）。
 
@@ -159,6 +178,27 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     names = B.parse_u32_array(data, names_ptr, property_count) if names_ptr else []
     type_idx = B.parse_u16_array(data, type_idx_ptr, property_count) if type_idx_ptr else []
 
+    # 数组长度推断：同一 ptype 的属性共享同一值数组槽位区，按 pidx 排序后
+    # 相邻间距即数组长度（INDEXED 分块材质 offsetScaleMatIdArr/tileIdxMatIdArr
+    # 等 vec4 数组各 196 项，pidx 0/196/392/... 间距 196 → 完整展开；
+    # 普通材质间距通常为 1 → 长度 1，保持单值不展开）。
+    by_type: Dict[int, List[Tuple[int, int]]] = {}
+    for i in range(property_count):
+        ti = type_idx[i] if i < len(type_idx) else 0
+        by_type.setdefault(ti & 0xF, []).append((ti >> 4, i))
+    arr_lens: Dict[int, int] = {}
+    for ptype, items in by_type.items():
+        items.sort()
+        n = len(items)
+        for j, (pidx, i) in enumerate(items):
+            if j + 1 < n:
+                length = items[j + 1][0] - pidx
+            elif n > 1:
+                length = items[-1][0] - items[-2][0]  # 最后一组沿用前一组间距
+            else:
+                length = 1
+            arr_lens[i] = max(0, min(length, 4096))
+
     properties: List[dict] = []
     for i in range(property_count):
         ti = type_idx[i] if i < len(type_idx) else 0
@@ -177,6 +217,12 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
             prop["value_path"] = _resolve_path_id(db, value)
         else:
             prop["value"] = value
+        # 数组属性：输出完整值列表（INDEXED vec4 数组等），供浏览器显示明文式完整 arr。
+        length = arr_lens.get(i, 1)
+        if length > 1 and ptype in (1, 2, 3, 5, 6, 7, 8):
+            arr = _read_typed_array(data, type_ptrs.get(ptype, 0), ptype, pidx, length)
+            if arr:
+                prop["array"] = arr
         properties.append(prop)
 
     return {

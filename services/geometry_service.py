@@ -44,7 +44,9 @@ class ShipInfo:
 #: 模型部件归属（component / 归属分类，用于挂载与装甲按归属筛选显示）
 COMPONENT_HULL = "船体"
 COMPONENT_MAIN = "主炮塔"
-COMPONENT_SECONDARY = "副炮"
+COMPONENT_SECONDARY = "副炮塔"
+COMPONENT_TORPEDOES = "鱼雷发射管"
+COMPONENT_DEPTH_CHARGE = "深弹发射器"
 COMPONENT_AA = "防空"
 COMPONENT_DIRECTOR = "指挥仪"
 COMPONENT_FINDER = "测距仪"
@@ -57,19 +59,108 @@ COMPONENT_OTHER = "其他"
 #: 但这些板有真实厚度数据，在我们的查看器中应默认显示。清空该集合即可。
 HIDDEN_GENERIC_MATERIALS: set[str] = set()
 
+
+def _is_magenta_placeholder(dds_bytes: bytes, sample: int = 256) -> bool:
+    """检测贴图是否为「洋红占位纹理」（缺失贴图常用纯色洋红，BC7 全 mode0）。
+
+    只抽前若干 BC7 块解码颜色端点求平均色；平均 RGB 偏洋红(R>180,G<110,B>90)
+    即视为占位。非 BC7 / 解析失败返回 False（不误判正常 camo）。
+    实例图集(CIA000_instances_atlas_art)实测全 mode0 纯洋红 (238,51,127)。
+    """
+    try:
+        from models.dds_reader import parse_dds
+        dds = parse_dds(dds_bytes)
+        if dds.bc_kind != 8 or not dds.mips:
+            return False
+        mip0 = dds.mips[0]
+        w, h = dds.width, dds.height
+        nblocks = (w // 4) * (h // 4)
+        if nblocks == 0:
+            return False
+
+        def _unpack(b: bytes, off: int, n: int) -> int:
+            v = 0
+            for i in range(n):
+                bit = (off + i) // 8
+                biti = (off + i) % 8
+                if bit < len(b):
+                    v |= ((b[bit] >> biti) & 1) << i
+            return v
+
+        def _ep(b: bytes, offs) -> list:
+            """按 (off, bits) 解码 3 通道端点色，返回 0~255 值。"""
+            out = []
+            for off, bits in offs:
+                v = _unpack(b, off, bits)
+                out.append(v / ((1 << bits) - 1) * 255.0)
+            return out
+
+        total = [0.0, 0.0, 0.0]
+        cnt = 0
+        stride = max(1, nblocks // sample)
+        for bi in range(0, nblocks, stride):
+            if cnt >= sample:
+                break
+            blk = mip0[bi * 16: bi * 16 + 16]
+            if len(blk) < 16:
+                break
+            m = 0
+            for k in range(8):
+                if (blk[0] >> (7 - k)) & 1:
+                    m += 1
+                else:
+                    break
+            if m == 0:
+                p0 = _ep(blk, [(7, 4), (11, 4), (15, 4)])
+                p1 = _ep(blk, [(22, 4), (26, 4), (30, 4)])
+            elif m == 1:
+                p0 = _ep(blk, [(8, 6), (14, 6), (20, 6)])
+                p1 = _ep(blk, [(50, 6), (56, 6), (62, 6)])
+            elif m == 2:
+                p0 = _ep(blk, [(8, 5), (17, 5), (26, 5)])
+                p1 = _ep(blk, [(56, 5), (65, 5), (74, 5)])
+            elif m == 3:
+                p0 = _ep(blk, [(8, 7), (15, 7), (22, 7)])
+                p1 = _ep(blk, [(50, 7), (57, 7), (64, 7)])
+            elif m == 4:
+                p0 = _ep(blk, [(8, 5), (19, 5), (30, 5)])
+                p1 = _ep(blk, [(49, 5), (60, 5), (71, 5)])
+            elif m == 5:
+                p0 = _ep(blk, [(8, 7), (15, 7), (22, 7)])
+                p1 = _ep(blk, [(49, 7), (56, 7), (63, 7)])
+            elif m == 6:
+                p0 = _ep(blk, [(8, 7), (15, 7), (22, 7)])
+                p1 = _ep(blk, [(43, 7), (50, 7), (57, 7)])
+            elif m == 7:
+                p0 = _ep(blk, [(8, 5), (17, 5), (26, 5)])
+                p1 = _ep(blk, [(56, 5), (65, 5), (74, 5)])
+            else:
+                continue
+            total[0] += (p0[0] + p1[0]) * 0.5
+            total[1] += (p0[1] + p1[1]) * 0.5
+            total[2] += (p0[2] + p1[2]) * 0.5
+            cnt += 1
+        if cnt == 0:
+            return False
+        r, g, b = total[0] / cnt, total[1] / cnt, total[2] / cnt
+        return r > 180.0 and g < 110.0 and b > 90.0
+    except Exception:
+        return False
+
 #: GameParams 组件键 → 归属分类（按 base 组件名匹配任意前缀变体）
 #: 键格式 {PREFIX}_{BASE}，如 AB1_Artillery / B_AirDefense / A1_Torpedoes
 _COMPONENT_BY_BASE = {
     "Artillery": COMPONENT_MAIN,            # 主炮塔（A1_/AB1_/B_/C_/X_... 前缀）
     "ATBA": COMPONENT_SECONDARY,            # 副炮（A_/B_...）
-    "SecondaryArtillery": COMPONENT_SECONDARY,
+    "SecondaryArtillery": COMPONENT_MAIN,
     "AirDefense": COMPONENT_AA,             # 防空（A_/B_...）
-    "AirSupport": COMPONENT_AA,
+    "AirSupport": COMPONENT_OTHER,
     "Directors": COMPONENT_DIRECTOR,        # 指挥仪（A_/AB_...）
     "Finders": COMPONENT_FINDER,            # 测距仪（A_/AB_...）
     "Radars": COMPONENT_RADAR,              # 雷达（A_/AB_...）
     "AirArmament": COMPONENT_OTHER,         # 弹射器（HP_JC_*）
-    "Torpedoes": COMPONENT_OTHER,           # 鱼雷发射管（HP_*GT_*）
+    "Torpedoes": COMPONENT_TORPEDOES,        # 鱼雷发射管（HP_*GT_*）
+    "DepthChargeGuns": COMPONENT_DEPTH_CHARGE,  # 深水炸弹炮塔（HP_*GB_*）
 }
 
 
@@ -152,9 +243,14 @@ class HullMesh:
     material: str | None = None    # 材质名（如 TL2_SHIPMAT_PBS_DeckHouse）
     texture_dds: bytes | None = None   # 该材质独立贴图（.mfm diffuseMap 或 INDEXED albedoArray）
     texture_path: str = ""
+    #: 是否声明了颜色贴图（mfm 有 diffuseMap / indexed 有 albedoArray）。False=无色：
+    #: 按透明/不参与颜色计算处理（如仅 normalMap 的贴花层），避免误渲成白色/串错贴图。
+    has_color: bool = True
     tech_family: str = "pbs"           # shader 技术族：pbs(0x0005)/indexed(0x0009)/other
     material_textures: dict = field(default_factory=dict)  # {贴图键: (vfs_path, bytes)}
     indexed_params: dict | None = None  # INDEXED 分块参数 {arrays, grid, offset}
+    #: emissive 自发光强度（mfm emissivePower 属性；None=默认 1.0）
+    emissive_power: float | None = None
     opaque: bool = True                 # 半透明材质（玻璃等）用 alpha 混合
     is_wire: bool = False               # wire 线框辅助网格：用 GL_LINES 渲染（非实体面）
     #: crack/damage 损伤网格（查看器不显示，导出保留用）
@@ -190,7 +286,16 @@ class MountMesh:
     model_folder: str = ""         # 来源模型目录
     vertex_count: int = 0
     is_wire: bool = False          # wire 线框辅助网格：GL_LINES 渲染
+    #: 是否声明了颜色贴图（mfm 有 diffuseMap / indexed 有 albedoArray）。False=无色：
+    #: 按透明/不参与颜色计算处理（如仅 normalMap 的贴花层）。
+    has_color: bool = True
     tech_family: str = "pbs"      # shader 技术族：pbs/indexed/other/grid
+    #: 材质贴图集 {贴图键: (vfs_path, bytes)}（INDEXED：albedoArray/materialIdMap/artMap）
+    material_textures: dict = field(default_factory=dict)
+    #: INDEXED 分块参数 {arrays, grid, offset}（炮塔等分块涂装）
+    indexed_params: dict | None = None
+    #: emissive 自发光强度（mfm emissivePower 属性；None=默认 1.0）
+    emissive_power: float | None = None
     #: crack/damage 损伤网格（查看器不显示，导出保留用）
     is_crack: bool = False
     #: 蒙皮权重（GLB 导出 glTF skin 用；非蒙皮为 None）
@@ -287,7 +392,7 @@ class ShipGeometry:
     bounds_min: np.ndarray | None = None
     bounds_max: np.ndarray | None = None
     stats: dict = field(default_factory=dict)
-    #: 船体漫反射贴图（.dds 原始字节）与 VFS 路径（可能为 None，未找到贴图）
+    #: 舰体漫反射贴图（.dds 原始字节）与 VFS 路径（可能为 None，未找到贴图）
     texture_dds: bytes | None = None
     texture_path: str = ""
 
@@ -341,6 +446,10 @@ class GeometryService:
         self._assets_self_id_index = None
         #: 材质贴图缓存 {mfm_path: (texture_path, texture_bytes)}，跨船复用
         self._material_texture_cache: dict = {}
+        #: 贴图字节缓存 {base路径: bytes}（同次加载内共享图集只解压一次；
+        #: INDEXED 的 albedoArray/normalArray/MGArray 是 20MB+ 共享图集，
+        #: 每 mfm 现场解压 30s/个 → 多个 mfm 复用同一图集时严重卡死）
+        self._texture_bytes_cache: dict = {}
         #: 材质完整信息缓存 {mfm_path: dict}（技术族 + 贴图集 + INDEXED 分块参数）
         self._material_full_cache: dict = {}
         #: 全局渲染集索引 {murmur3(shape.vertices): {shape, material, mfm, damage}}
@@ -577,23 +686,9 @@ class GeometryService:
                             hm.is_crack = True
                         if mat_key is not None:
                             # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
+                            # ★ 只认 mfm 声明的贴图属性；未声明颜色贴图 → 无色（不按名补全）
                             bundle = self._resolve_material_full(g.get('mfm') or '', extractor)
-                            if bundle:
-                                hm.tech_family = bundle.get('tech_family', 'pbs')
-                                hm.material_textures = bundle.get('textures') or {}
-                                hm.indexed_params = bundle.get('indexed_params')
-                                texs = hm.material_textures
-                                # 主贴图：INDEXED 用 albedoArray（分块图集）；标准用 diffuseMap
-                                if hm.tech_family == 'indexed' and 'albedoArray' in texs:
-                                    hm.texture_path, hm.texture_dds = texs['albedoArray']
-                                elif 'diffuseMap' in texs:
-                                    hm.texture_path, hm.texture_dds = texs['diffuseMap']
-                            if not hm.texture_dds:
-                                try:
-                                    tp, td = self._resolve_material_texture(g.get('mfm') or '', extractor)
-                                    hm.texture_path, hm.texture_dds = tp, td
-                                except Exception:  # noqa: BLE001
-                                    pass
+                            self._apply_declared_color(hm, bundle, extractor)
                         geom.hull_meshes.append(hm)
                         if hm.positions.size:
                             pmin = hm.positions.min(axis=0)
@@ -758,6 +853,10 @@ class GeometryService:
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
                     is_crack=hm.is_crack,
+                    tech_family=hm.tech_family,
+                    material_textures=hm.material_textures or {},
+                    indexed_params=hm.indexed_params,
+                    has_color=hm.has_color,
                     bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
@@ -831,6 +930,7 @@ class GeometryService:
                     model_folder=folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
                     is_crack=hm.is_crack,
+                    has_color=hm.has_color,
                     bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
@@ -884,6 +984,7 @@ class GeometryService:
 
     def _skeleton_bone_world(self, folder: str, bone_name: str) -> np.ndarray | None:
         """读挂载模型骨架某 bone 的世界矩阵（bind pose，**只从 assets_data.db 读取**）。
+
         按 folder 缓存整棵骨架的世界矩阵表。"""
         key = f"skelworld:{folder}"
         if key not in self._mount_model_cache:
@@ -1219,6 +1320,7 @@ class GeometryService:
                     model_folder=sub_folder, vertex_count=hm.vertex_count,
                     is_wire=hm.is_wire,
                     is_crack=hm.is_crack,
+                    has_color=hm.has_color,
                     bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 )
@@ -1335,7 +1437,7 @@ class GeometryService:
 
         # 2) 解析 OOL 渲染集（rel 起、0x50 步长、count 项）：
         #    渲染集结构（0x50 步长）：+0x00 shape.vertices / +0x04 indices /
-        #    +0x08 材质名 / +0x20 .mfm 路径 selfId。
+        #    +0x08 材质名 / +0x20 .mfm 路径 selfId.
         out: dict[str, dict] = {}
         for ri in recs:
             rec_off = BLOB_HEADER_SIZE + ri * entry.item_size
@@ -1415,7 +1517,7 @@ class GeometryService:
             bus.log_message.emit(f"⚠️ 挂载模型 {folder}: 未找到几何文件，该挂载不显示")
             self._mount_model_cache[folder] = None
             return None
-        # 蒙皮 bind pose 骨架 stem = 挂载模型目录（_apply_skinning 用它查骨骼矩阵）
+        # 蒙皮 bind pose 骨架 stem（舰船模型目录；_apply_skinning 用它查骨骼矩阵）
         self._current_skinning_stem = folder
 
         all_armor = []
@@ -1450,34 +1552,26 @@ class GeometryService:
                     if not g.get('prims'):
                         continue
                     mfm = g.get('mfm') or ''
-                    tex_path, tex_bytes = "", b""
-                    # 1) 当前模型自己的 mfm（路径含 folder）
-                    if mfm and folder in mfm:
-                        tex_path, tex_bytes = self._resolve_material_texture(mfm, extractor)
-                    # 2) 当前模型自有贴图（{folder}_a.dd0 文件名约定）
-                    if not tex_bytes:
-                        tex_path, tex_bytes = self._find_model_diffuse(
-                            first_geom_path, folder, extractor)
-                    # 3) 共享 mfm（同型号变体共享材质，如 JGA018/JGA181→JGA010）；
-                    #    跨型号串用（JGS156→JGS157）已在 2) 用自有贴图挡住
-                    if not tex_bytes and mfm and folder not in mfm:
-                        tex_path, tex_bytes = self._resolve_material_texture(mfm, extractor)
                     hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'])
                     hm.material = mat
                     hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
                     hm.is_crack = bool(g.get('damage'))
                     hm.skinned_applied = bool(g.get('skinned_applied'))
-                    hm.texture_path = tex_path
-                    hm.texture_dds = tex_bytes
-                    # 材质技术族（grid_alpha 线网等）：挂载模型同样按 mfm 识别
                     if mfm:
+                        # ★ 只认 mfm 声明的贴图属性（indexed→albedoArray，否则 diffuseMap）；
+                        #   未声明颜色贴图 → has_color=False（无色，不按名补全 diffuse）。
+                        #   INDEXED 数组不变，继续按老样子参与渲染。
                         _bundle = self._resolve_material_full(mfm, extractor)
-                        if _bundle:
-                            hm.tech_family = _bundle.get('tech_family', 'pbs')
-                            hm.material_textures = _bundle.get('textures') or {}
+                        self._apply_declared_color(hm, _bundle, extractor)
+                    else:
+                        # 无 mfm 的默认组：取模型自身 mfm 声明的 diffuseMap（只认声明）
+                        tex_path, tex_bytes = self._find_model_diffuse(
+                            first_geom_path, folder, extractor)
+                        hm.texture_path, hm.texture_dds = tex_path, tex_bytes
+                        hm.has_color = bool(tex_bytes)
                     meshes.append(hm)
-                    if not main_tex[1]:
-                        main_tex = (tex_path, tex_bytes)
+                    if not main_tex[1] and hm.texture_dds:
+                        main_tex = (hm.texture_path, hm.texture_dds)
 
         if not meshes and not all_armor:
             bus.log_message.emit(f"⚠️ 挂载模型 {folder}: 解析后无网格/装甲，该挂载不显示")
@@ -1537,7 +1631,9 @@ class GeometryService:
                     if not tex_path:
                         continue
                     name = mfm_path.rsplit("/", 1)[-1][:-4]
-                    if name == stem or name.startswith(stem + "_"):
+                    # ★ 只认精确 mfm 名：不再 `startswith(stem + "_")` 前缀补全，
+                    #   避免把一个变体(如 _decal_tech/_wire/_alpha)声明的 diffuse 串到主材质。
+                    if name == stem or name in prefer:
                         if any(x in name for x in ("_wire", "_dead", "_blaze", "_alpha")):
                             continue
                         # 库存原始路径（含扩展名），渲染分级仍用基础名
@@ -1577,40 +1673,44 @@ class GeometryService:
         except Exception:  # noqa: BLE001
             return b""
 
-    @staticmethod
-    def _load_texture_tier(base: str, extractor) -> tuple[str, bytes]:
-        """按 .dd0/.dd1/.dd2/.dds 分级读取贴图（.dd0 最高清），返回 (vfs_path, bytes)。"""
+    def _load_texture_tier(self, base: str, extractor) -> tuple[str, bytes]:
+        """按 .dd0/.dd1/.dd2/.dds 分级读取贴图（.dd0 最高清），返回 (vfs_path, bytes)。
+
+        ⚠️ 按 base 路径缓存解压字节：共享图集（CIT000_1k_ship_tiles_*.dds 等 20MB+）
+        被大量 INDEXED 材质复用，若不缓存则每个 mfm 都重新 Kraken 解压（~30s/个）
+        导致加载卡死。缓存只跨同一次 load_ship（_clear_per_load_caches 清理）。
+        """
+        if base in self._texture_bytes_cache:
+            return base + ".dds", self._texture_bytes_cache[base]
         for tier in (".dd0", ".dd1", ".dd2", ".dds"):
             cand = base + tier
             data = GeometryService._read_vfs(extractor, cand)
             if data and data[:4] == b"DDS ":
+                # 校验可解析出 mip/层（bc7prep 的 .dd0 若未正确解码会得到空 mip，
+                # 上传后是空纹理 → 采样 (0,0,0,1) 黑不透明 → 全黑），回退下一层级
+                try:
+                    from models.dds_reader import parse_dds
+                    d = parse_dds(data)
+                    if not (d.mips or d.layers):
+                        continue
+                except Exception:
+                    continue
+                # 只缓存非空解压结果（共享图集多为 .dds；.dd0 大文件也缓存）
+                if len(data) > 256 * 1024:
+                    self._texture_bytes_cache[base] = data
                 return cand, data
         return "", b""
 
     def _find_model_diffuse(self, geometry_path: str, folder: str, extractor) -> tuple[str, bytes]:
-        """挂载模型贴图：**基于 .mfm 识别**（diffuseMap 权威），回退文件名约定。"""
+        """挂载模型贴图：**只认 .mfm 声明**的 diffuseMap（不再按文件名约定补全）。"""
         # 1) .mfm 识别：{folder}.mfm / {folder}_skinned.mfm → diffuseMap → _a 基础名
         base = self._mfm_diffuse_base(folder, prefer=(folder, f"{folder}_skinned"))
         if base:
             path, data = self._load_texture_tier(base, extractor)
             if data:
                 return path, data
-        # 2) 回退：文件名约定 {stem}_a.dd0（无 _Hull 后缀，与舰体不同）
-        model_dir = geometry_path.rsplit("/", 1)[0]
-        tex_dir = model_dir.rsplit("/", 1)[0] + "/textures"
-        stem = folder
-        candidates = [
-            f"{tex_dir}/{stem}_a.dd0",
-            f"{tex_dir}/{stem}_a.dds",
-            f"{tex_dir}/{stem}.dd0",
-            f"{tex_dir}/{stem}.dds",
-            f"{tex_dir}/{stem}_Hull_a.dd0",
-            f"{tex_dir}/{stem}_Hull_a.dds",
-        ]
-        for cand in candidates:
-            data = self._read_vfs(extractor, cand)
-            if data and data[:4] == b"DDS ":
-                return cand, data
+        # ★ 不再按文件名约定补全（_a.dd0/_Hull_camo 等）：只认 mfm 声明的 diffuseMap，
+        #   缺失就当不存在。下面走渲染集 mfm 兜底（同型号变体共享材质）仍是只认声明。
         # 3) 渲染集 mfm 兜底：同型号变体共享材质（如 JGA181→JGA010、JGA020 无自有时）
         try:
             seen_mfm: set = set()
@@ -1647,33 +1747,18 @@ class GeometryService:
         return m.group(0) if m else ""
 
     def _find_hull_diffuse(self, ship: ShipInfo, extractor) -> tuple[str, bytes]:
-        """舰体贴图：**基于 .mfm 识别**（Hull.mfm 的 diffuseMap 权威），回退文件名约定。
+        """舰体贴图：**只认 .mfm 声明**的 diffuseMap（Hull.mfm 权威，不再按文件名约定补全）。
 
         颜色贴图以 `_a` 后缀为准，优先 `.dd0`（4096×4096 高清 DDS）。
         """
-        # 1) .mfm 识别：{stem}_Hull.mfm / {stem}.mfm → diffuseMap
+        # 1) .mfm 识别：{stem}_Hull.mfm / {stem}.mfm → diffuseMap（只认声明）
         stem = ship.model_folder
         base = self._mfm_diffuse_base(stem, prefer=(f"{stem}_Hull", stem))
         if base:
             path, data = self._load_texture_tier(base, extractor)
             if data:
                 return path, data
-        # 2) 回退：文件名约定 {stem}_Hull_a.dd0
-        model_dir = ship.model_path.rsplit("/", 1)[0]
-        tex_dir = model_dir.rsplit("/", 1)[0] + "/textures"
-        candidates = [
-            f"{tex_dir}/{stem}_Hull_a.dd0",
-            f"{tex_dir}/{stem}_Hull_a.dds",
-            f"{tex_dir}/{stem}_Hull.dd0",
-            f"{tex_dir}/{stem}_Hull.dds",
-            f"{tex_dir}/{stem}_Hull_d.dd0",
-            f"{tex_dir}/{stem}_Hull_d.dds",
-            f"content/gameplay/common/camouflage/textures/{stem}_Hull_camo_01.dds",
-        ]
-        for cand in candidates:
-            data = self._read_vfs(extractor, cand)
-            if data and data[:4] == b"DDS ":
-                return cand, data
+        # ★ 不再按文件名约定补全（_Hull_a.dd0/_Hull_camo 等）：只认 mfm 声明的 diffuseMap。
         return "", b""
 
     def _split_primitives_by_material(self, primitives, global_rs: dict,
@@ -1871,18 +1956,49 @@ class GeometryService:
         self._visual_rs_cache[key] = idx
         return idx
 
+    def _apply_declared_color(self, hm, bundle: dict, extractor):
+        """按 .mfm **声明的贴图属性**设置 mesh 颜色贴图（只认声明，不按名补全）。
+
+        - indexed：用 albedoArray（分块图集）
+        - 标准：用 diffuseMap
+        - 都没声明：has_color=False、texture_dds=None（无色 → 按透明/不参与颜色计算处理）
+
+        bundle 为空（mfm 不在库/解析失败）同样按无色处理，绝不按文件名补全。
+        """
+        texs = (bundle or {}).get('textures') or {}
+        hm.tech_family = (bundle or {}).get('tech_family', 'pbs')
+        hm.material_textures = texs
+        hm.indexed_params = (bundle or {}).get('indexed_params')
+        if hm.tech_family == 'indexed' and 'albedoArray' in texs:
+            hm.texture_path, hm.texture_dds = texs['albedoArray']
+        elif 'diffuseMap' in texs:
+            hm.texture_path, hm.texture_dds = texs['diffuseMap']
+        # meshdecal 的 albedo（SHIP_MESHDECAL_ALBEDO_*）用 g_albedoMap：
+        # 仍是该材质的颜色贴图（alpha 遮罩），应参与渲染，不能当无色 overlay。
+        elif 'g_albedoMap' in texs:
+            hm.texture_path, hm.texture_dds = texs['g_albedoMap']
+        else:
+            # ★ 只认 mfm 声明：没声明颜色贴图就当不存在，不再按名/前缀猜 diffuse
+            hm.texture_path, hm.texture_dds = "", None
+        hm.has_color = bool(hm.texture_dds)
+
     def _resolve_material_texture(self, mfm_path: str, extractor) -> tuple[str, bytes]:
-        """材质 .mfm 路径 → 贴图（diffuseMap → .dd0/.dd1/.dd2/.dds 分级），按 mfm 缓存。"""
+        """材质 .mfm 声明的 diffuseMap 贴图（只认 mfm 里声明的属性；未声明 → 不存在）。
+
+        绝不再按 mfm 文件名/前缀自动补全（旧版 _mfm_diffuse_base 前缀匹配会把
+        无颜色贴花/变体的 diffuse 串到别的材质，indexed 也受影响）。找不到返回 ("", b"")。
+        """
         if not mfm_path or not mfm_path.endswith('.mfm'):
             return "", b""
         cached = self._material_texture_cache.get(mfm_path)
         if cached is not None:
             return cached
-        stem = mfm_path.rsplit('/', 1)[-1][:-4]
-        base = self._mfm_diffuse_base(stem, prefer=(stem,))
         result = ("", b"")
-        if base:
-            result = self._load_texture_tier(base, extractor)
+        try:
+            bundle = self._resolve_material_full(mfm_path, extractor)
+            result = (bundle.get('textures') or {}).get('diffuseMap', ("", b""))
+        except Exception:  # noqa: BLE001
+            result = ("", b"")
         self._material_texture_cache[mfm_path] = result
         return result
 
@@ -1942,6 +2058,13 @@ class GeometryService:
                 if indexed:
                     try:
                         arrs = {k: np.array(v, dtype=np.float32) for k, v in indexed.items()}
+                        # 洋红占位 artMap = 缺失/无 camo：把艺术涂装 BaseStrength 置 0，
+                        # 否则占位洋红会被满强度混入 → 雷达/炮塔粉红（CIA000_instances_atlas 实测）。
+                        art_tx = textures.get("artMap")
+                        if art_tx and _is_magenta_placeholder(art_tx[1]):
+                            a_arr = arrs.get("artStrengthMatIdArr")
+                            if a_arr is not None and a_arr.ndim == 2 and a_arr.shape[1] >= 1:
+                                a_arr[:, 0] = 0.0
                         params: dict = {"arrays": arrs}
                         off = arrs.get("offsetScaleMatIdArr")
                         if off is not None and len(off):
@@ -1986,7 +2109,7 @@ class GeometryService:
             p' = Σ_j w_j · (R_j · p + t_j)
         顶点骨骼索引 = 调色板 slot × 3（Korabli 实测），权重 4×u8/255（和=1）。
 
-        - 调色板缺失 / 骨骼缺失 / 全部骨骼为恒等 → 不修改（保持原样，安全回退）。
+        - 调色板缺失 / 骨架缺失 / 全部骨骼为恒等 → 不修改（保持原样，安全回退）。
         - 法线用旋转部分（忽略平移）混合后归一化。
         - 反射骨骼（det=-1）会翻转三角形绕序，但渲染器不启用背面剔除，无碍。
         """
@@ -2269,6 +2392,7 @@ class GeometryService:
         """
         self._mount_model_cache.clear()
         self._material_texture_cache.clear()
+        self._texture_bytes_cache.clear()
         self._material_full_cache.clear()
         self._ship_snapshot_cache.clear()
         self._skeleton_bones_cache.clear()

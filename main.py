@@ -285,6 +285,5 @@ def main() -> None:
     log_writer.close()
     sys.exit(ret)
 
-
 if __name__ == "__main__":
     main()

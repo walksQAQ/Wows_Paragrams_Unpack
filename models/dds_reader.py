@@ -72,8 +72,8 @@ GL_COMPRESSED_FORMAT = {
     1: 0x83F0,  # GL_COMPRESSED_RGB_S3TC_DXT1_EXT
     2: 0x83F2,  # GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
     3: 0x83F3,  # GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
-    4: 0x83F5,  # GL_COMPRESSED_RED_RGTC1
-    6: 0x83F7,  # GL_COMPRESSED_RG_RGTC2
+    4: 0x8DBB,  # GL_COMPRESSED_RED_RGTC1（BC4 单通道；⚠️ 原误用 0x83F5=DXT5 导致 matid 上传失败）
+    6: 0x8DBC,  # GL_COMPRESSED_RG_RGTC2（BC5 双通道；⚠️ 原误用 0x83F7）
     8: 0x8E8C,  # GL_COMPRESSED_RGBA_BPTC_UNORM_ARB
 }
 
@@ -92,7 +92,8 @@ GL_SRGB_RGBA8 = 0x8C43
 
 class DdsTexture:
     def __init__(self, width: int, height: int, bc_kind: int, mips: list[bytes],
-                 internal_format: int, rgba_bpp: int = 0, internal_format_srgb: int = 0):
+                 internal_format: int, rgba_bpp: int = 0, internal_format_srgb: int = 0,
+                 array_size: int = 1, layers: list[list[bytes]] | None = None):
         self.width = width
         self.height = height
         #: 1=DXT1 2=DXT3 3=DXT5 4=BC4 6=BC5 8=BC7；0=未压缩
@@ -103,6 +104,10 @@ class DdsTexture:
         self.internal_format_srgb = internal_format_srgb or internal_format
         #: 未压缩时每像素字节数
         self.rgba_bpp = rgba_bpp
+        #: 2DArray/3D 层数（DX10 arraySize；1=普通 2D）
+        self.array_size = array_size
+        #: 各层的 mip 数据（array_size>1 时用；每层 list[bytes]）
+        self.layers = layers if layers is not None else None
 
 
 def parse_dds(data: bytes) -> DdsTexture:
@@ -122,9 +127,12 @@ def parse_dds(data: bytes) -> DdsTexture:
 
     bc_kind = 0
     rgba_bpp = 0
+    array_size = 1
     if has_dx10:
         dxgi = struct.unpack_from("<I", data, 128)[0]
         data_off = 148
+        # DX10 头：dxgiFormat(128) resourceDimension(132) miscFlag(136) arraySize(140) miscFlags2(144)
+        array_size = struct.unpack_from("<I", data, 140)[0] or 1
         if dxgi in _DXGI_TO_BC:
             bc_kind, _bs = _DXGI_TO_BC[dxgi]
         elif dxgi in _DXGI_TO_RGBA:
@@ -140,23 +148,35 @@ def parse_dds(data: bytes) -> DdsTexture:
         data_off = 128
 
     mips: list[bytes] = []
+    #: 每 mip level 的 array 层连续数据（array_size>1 时用；顺序 = 该 level 全部层）
+    layers: list[bytes] | None = None
+    if array_size > 1:
+        layers = []
     mw, mh = width, height
     n_mips = max(mip_count, 1)
-    # N36: block_bytes 在循环外预计算（避免每次迭代重算常数）
     block_bytes = 16 if bc_kind in (2, 3, 6, 8) else 8 if bc_kind else None
     for i in range(n_mips):
         mw = max(width >> i, 1)
         mh = max(height >> i, 1)
         if block_bytes is not None:
-            size = ((mw + 3) // 4) * ((mh + 3) // 4) * block_bytes
+            per = ((mw + 3) // 4) * ((mh + 3) // 4) * block_bytes
         else:
-            size = mw * mh * rgba_bpp
-        chunk = data[data_off:data_off + size]
-        if len(chunk) < size:
-            break
-        mips.append(chunk)
-        data_off += size
+            per = mw * mh * rgba_bpp
+        if array_size > 1:
+            size = per * array_size
+            chunk = data[data_off:data_off + size]
+            if len(chunk) < size:
+                break
+            layers.append(chunk)          # 该 level 的全部层连续
+            data_off += size
+        else:
+            chunk = data[data_off:data_off + per]
+            if len(chunk) < per:
+                break
+            mips.append(chunk)
+            data_off += per
 
     internal = GL_COMPRESSED_FORMAT.get(bc_kind, 0) if bc_kind else 0
     internal_srgb = GL_SRGB_COMPRESSED_FORMAT.get(bc_kind, internal) if bc_kind else 0
-    return DdsTexture(width, height, bc_kind, mips, internal, rgba_bpp, internal_srgb)
+    return DdsTexture(width, height, bc_kind, mips, internal, rgba_bpp, internal_srgb,
+                      array_size=array_size, layers=layers)
