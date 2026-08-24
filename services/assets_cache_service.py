@@ -584,7 +584,8 @@ class AssetsCacheService:
                 if tptr4 and pc:
                     need = max(need, tptr4 + pc * 8)
                 if vec4_ptr and pc:
-                    need = max(need, vec4_ptr + pc * 16 + 196 * 16 + 64)
+                    # ⚠️ 覆盖全部 vec4 数组（pidx 最多 4096 槽位，非仅 pc*16：tileIdxMatIdArr 等 pidx 可达 980）
+                    need = max(need, vec4_ptr + 4096 * 16 + 64)
                 if need > 0x90:
                     try:
                         data = svc.vfs.open_file_len(f.path, need + 8)
@@ -600,7 +601,12 @@ class AssetsCacheService:
                     ptype = ti & 0xF
                     pidx = ti >> 4
                     raw_name = names[i] if i < len(names) else 0
-                    nm = sdict.get(raw_name & 0xFFFFFFFF) or ""
+                    # 数组名优先查 sdict（shape/贴图名缓存），缺失时回退 db.strings 完整表
+                    # （⚠️ tileIdxMatIdArr/offsetScaleMatIdArr/artStrengthMatIdArr 等在 sdict 缺失，
+                    #   必须用 db.strings 解析，否则 INDEXED 分块数组被漏提取）
+                    nm = (sdict.get(raw_name & 0xFFFFFFFF)
+                          or db.strings.get_string_or_hex(raw_name)
+                          or "")
                     if ptype == 4:
                         value = _read_typed_value(data, tptr4, 4, pidx)
                         if isinstance(value, int) and value:
@@ -617,7 +623,9 @@ class AssetsCacheService:
                 indexed: dict = {}
                 if vec4s and vec4_ptr:
                     for j, (nid, pidx) in enumerate(vec4s):
-                        nm = sdict.get(nid & 0xFFFFFFFF) or f"vec4_{j}"
+                        nm = (sdict.get(nid & 0xFFFFFFFF)
+                              or db.strings.get_string_or_hex(nid)
+                              or f"vec4_{j}")
                         if j + 1 < len(vec4s):
                             length = vec4s[j + 1][1] - pidx
                         elif len(vec4s) > 1:

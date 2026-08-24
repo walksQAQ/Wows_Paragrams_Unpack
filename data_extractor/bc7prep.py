@@ -352,13 +352,13 @@ def un_munge_mode7(out: bytearray, first_ptr: bytes, second_ptr: bytes, nblocks:
             pbits = compact16to1_4x(prgbs)
             abits = bit_extract(rest, 8, 20)
             rbits, gbits, bbits = decorr_to_RGB_packed(rbits, gbits, bbits, 0x84210)
-            lo = 0x80 | (bit_extract(rest, 28, 6) << 8) | (rbits << 14) | (gbits << 34) | (bbits << 54)
+            lo = (0x80 | (bit_extract(rest, 28, 6) << 8) | (rbits << 14) | (gbits << 34) | (bbits << 54)) & M64
             hi = (bbits >> 10) | (abits << 10) | (pbits << 30)
         else:
             pbits = bit_extract(rest, 8, 4)
             rgbbits = (expand4to5_12x(prgbs) << 1) | expand1to5_12x(rest >> 12)
             abits = (expand4to5_4x(prgbs >> 48) << 1) | expand1to5_4x(rest >> 24)
-            lo = 0x80 | (bit_extract(rest, 28, 6) << 8) | (rgbbits << 14)
+            lo = (0x80 | (bit_extract(rest, 28, 6) << 8) | (rgbbits << 14)) & M64
             hi = (rgbbits >> 50) | (abits << 10) | (pbits << 30)
         hi = (hi | (rest & ~0x3FFFFFFFF)) & M64
         dest = target_offs(target[iblock])
