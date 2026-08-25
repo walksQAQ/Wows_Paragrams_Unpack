@@ -258,6 +258,11 @@ def main() -> None:
         try:
             from services.database_service import get_db
             server = app_ctx.ctx.wows_type
+            # 启动时数据库 schema 版本检查（Application 初始化时已只读记录）
+            mismatches = getattr(app_ctx, "schema_mismatches", None) or []
+            if mismatches:
+                from utils.window_utils import prompt_schema_mismatch
+                prompt_schema_mismatch(window, server, mismatches)
             db = get_db(server)
             if not db.exists:
                 return

@@ -70,6 +70,15 @@ class Application(QObject):
         self._config_manager = ConfigManager()
         self._ctx = AppContext(config=self._config_manager._raw)
 
+        # 启动时先做一次只读 schema 版本检查（务必在 _sync_data_state 触发
+        # initialize/整库重建之前），记录不匹配信息，供主窗口启动后弹提示。
+        self._schema_mismatches: list[dict] = []
+        try:
+            from services.database_service import check_schema_mismatches
+            self._schema_mismatches = check_schema_mismatches(self._ctx.wows_type)
+        except Exception:  # noqa: BLE001
+            self._schema_mismatches = []
+
         # 启动时自动同步 game_data_state：优先检查主数据库，兼容旧版 split 数据
         self._sync_data_state()
 
@@ -102,6 +111,11 @@ class Application(QObject):
     @property
     def config(self) -> ConfigManager:
         return self._config_manager
+
+    @property
+    def schema_mismatches(self) -> list[dict]:
+        """启动时检测到的数据库 schema 版本不匹配列表（只读记录，供启动后提示）。"""
+        return self._schema_mismatches
 
     # ── 便捷方法 ──────────────────────────────────────────
 

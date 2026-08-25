@@ -224,8 +224,16 @@ class TopToolbar(QWidget):
         app_ctx.set_wows_type(server)
         # 切换服务器提醒：需更换游戏路径（wows_type 已切换，game_path 需用户手动改）
         self._prompt_server_path(server)
-        # 切换服务器时重置数据库单例，刷新界面
-        from services.database_service import reset_db, get_db
+        # 切换服务器时，先做一次只读 schema 版本检查（在 get_db/initialize 重建前），
+        # 不匹配则弹出提示；再重置数据库单例刷新界面
+        from services.database_service import check_schema_mismatches, reset_db, get_db
+        try:
+            mismatches = check_schema_mismatches(server)
+            if mismatches:
+                from utils.window_utils import prompt_schema_mismatch
+                prompt_schema_mismatch(self.window(), server, mismatches)
+        except Exception:  # noqa: BLE001
+            pass
         reset_db()
         db = get_db(server)
         if db.exists and db.get_stats().get("total_entities", 0) > 0:

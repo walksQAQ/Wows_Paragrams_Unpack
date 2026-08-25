@@ -609,9 +609,15 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         _check_cancel(cancel_event)
         if progress_cb:
             progress_cb(5 + 60 * i / max(1, n_hull), f"导出舰体 {i + 1}/{n_hull}")
+        inst = getattr(hm, "instance_matrices", None) or []
         if getattr(hm, "is_crack", False):
             _add_solid(builder, hm, f"crack_{_sanitize(hm.name)}", component="hull",
                        parent_bone=crack_bone)
+        elif inst:
+            # 多节点实例化：一份原始几何 → 导出时按每个节点矩阵各烘焙一份（各处实例）
+            for _k, _m in enumerate(inst):
+                _add_solid(builder, hm, f"hull_{_sanitize(hm.name)}_{_k}",
+                           matrix=_m, component="hull", parent_bone=hull_bone)
         else:
             _add_solid(builder, hm, f"hull_{_sanitize(hm.name)}", component="hull",
                        parent_bone=hull_bone)
@@ -623,16 +629,24 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         _check_cancel(cancel_event)
         if progress_cb:
             progress_cb(65 + 30 * i / max(1, n_mounts), f"导出挂载 {i + 1}/{n_mounts}")
+        inst_mm = getattr(mm, "instance_matrices", None) or []
         if getattr(mm, "is_crack", False):
             _add_solid(builder, mm, f"crack_{_sanitize(mm.name)}",
                        matrix=mm.model_matrix, component=getattr(mm, "component", ""),
                        parent_bone=crack_bone)
             continue
-        mount_bone = builder.add_node(f"mount_{_sanitize(mm.name)}")
-        builder.add_children(mounts_bone, [mount_bone])
-        _add_solid(builder, mm, f"mount_{_sanitize(mm.name)}",
-                   matrix=mm.model_matrix, component=getattr(mm, "component", ""),
-                   parent_bone=mount_bone)
+        if inst_mm:
+            # 实例化挂载：一份几何 → 按各节点矩阵各烘焙一份（省顶点内存）
+            for _k, _m in enumerate(inst_mm):
+                _add_solid(builder, mm, f"mount_{_sanitize(mm.name)}_{_k}",
+                           matrix=_m, component=getattr(mm, "component", ""),
+                           parent_bone=mounts_bone)
+        else:
+            mount_bone = builder.add_node(f"mount_{_sanitize(mm.name)}")
+            builder.add_children(mounts_bone, [mount_bone])
+            _add_solid(builder, mm, f"mount_{_sanitize(mm.name)}",
+                       matrix=mm.model_matrix, component=getattr(mm, "component", ""),
+                       parent_bone=mount_bone)
 
     report.textures = len(builder._texture_cache)
     if np.isfinite(bmin).all():

@@ -39,7 +39,12 @@ from utils.path_utils import get_data_dir
 #:    180° 朝向错误；Korabli 渲染集项 +0x0C skinned / +0x0D nodes_count /
 #:    +0x28 item-relative relptr → u32 名ID 数组）
 #: v8：material_full 新增 material_hash 列（fx 变体标识，识别材质技术族用）
-ASSETS_SCHEMA_VERSION = 8
+#: v10（2026-08-25）：render_sets 同一 (geom_path, shape) 可对应**多个节点**（如
+#:    BIA400_Motor_Cutter_25ftShape 同时在 _0/_1 两舷节点），此前 PK 折叠导致只渲染
+#:    一个；现改为汇总节点调色板（并集），供 geometry_service 按多节点实例化。
+#: v11（2026-08-25）：多节点并集**仅对刚性（skinned=0）件**生效；蒙皮 shape 的
+#:    nodes 是蒙皮骨骼调色板，并集会污染（如 TurretShape 的 4 骨骼）。保留首条。
+ASSETS_SCHEMA_VERSION = 11
 
 
 class AssetsCacheService:
@@ -74,6 +79,51 @@ class AssetsCacheService:
         return self._wows_type == "Wargaming"
 
     # ── 连接 ────────────────────────────────────────────────
+
+    @staticmethod
+    def _merge_render_set_rows(rows: list[tuple]) -> list[tuple]:
+        """汇总同一 (geom_path, shape) 的多条渲染集项：合并 node 调色板（并集）。
+
+        原始资产里同一 shape 可绑定多个骨骼节点（左右舷实例化，如 motor_cutter），
+        但 render_sets 表 PK 是 (bin_folder, geom_path, shape)，INSERT OR REPLACE 会把
+        多条折叠成一条 → 丢失其余节点 → 只渲染一个实例。此处按 PK 合并，把节点并集
+        写回单行 nodes 数组，供 geometry_service 逐节点实例化。
+
+        输入 tuple: (bin_folder, geom_path, shape, material, mfm, damage, skinned, nodes_json)
+        """
+        merged: dict[tuple, list] = {}
+        order: list[tuple] = []
+        for r in rows:
+            bin_folder, gp, shp, mat, mfm, damage, skinned, nodes_json = r
+            key = (bin_folder, gp, shp)
+            sk = int(skinned)
+            if key not in merged:
+                nodeset: set = set()
+                if nodes_json:
+                    try:
+                        nodeset.update(json.loads(nodes_json))
+                    except Exception:  # noqa: BLE001
+                        pass
+                # 首条：无论刚性/蒙皮都用它的节点调色板（蒙皮 shape 的调色板 = 蒙皮骨骼）
+                merged[key] = [mat, mfm, damage, sk, nodeset]
+                order.append(key)
+            else:
+                m = merged[key]
+                m[3] = int(m[3]) or sk
+                # ★ 仅**刚性（skinned=0）**项并入额外节点（多实例，如左右舷）；
+                #   蒙皮项节点是蒙皮调色板，保留首条即可，并集会污染骨骼调色板。
+                if sk == 0 and nodes_json:
+                    try:
+                        m[4].update(json.loads(nodes_json))
+                    except Exception:  # noqa: BLE001
+                        pass
+        out: list[tuple] = []
+        for key in order:
+            bin_folder, gp, shp = key
+            mat, mfm, damage, skinned, nodeset = merged[key]
+            out.append((bin_folder, gp, shp, mat, mfm, damage,
+                        int(skinned), json.dumps(sorted(nodeset))))
+        return out
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -501,7 +551,10 @@ class AssetsCacheService:
                             skinned = data[o + 0x0C]
                             ncnt = data[o + 0x0D]
                             nodes: list[str] = []
-                            if skinned and ncnt:
+                            # ★ 所有条目都读 nodes（含 skinned=0 的刚性父子模型，如
+                            #   BIA454_Bollard_bigShape → ['BIA454_Bollard_big_7']），
+                            #   供 geometry_service 按父节点矩阵定位到舰船空间。
+                            if ncnt:
                                 nrel = struct.unpack_from('<Q', data, o + 0x28)[0]
                                 if nrel:
                                     nabs = o + nrel
@@ -516,6 +569,8 @@ class AssetsCacheService:
             except Exception:  # noqa: BLE001
                 pass
             if rs_rows:
+                # ★ 汇总同一 shape 的多节点绑定（左右舷实例化），避免 PK 折叠丢节点
+                rs_rows = self._merge_render_set_rows(rs_rows)
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO render_sets "
                     "(bin_folder, geom_path, shape, material, mfm, damage, "
@@ -875,7 +930,8 @@ class AssetsCacheService:
             skinned = data[o + 0x18]
             ncnt = data[o + 0x19]
             nodes: list = []
-            if skinned and ncnt:
+            # ★ 所有条目都读 nodes（含 skinned=0 的刚性父子模型），供定位用。
+            if ncnt:
                 nrel = struct.unpack_from('<q', data, o + 0x20)[0]
                 if nrel:
                     nabs = o + nrel

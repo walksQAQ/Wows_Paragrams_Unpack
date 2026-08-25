@@ -264,6 +264,13 @@ class HullMesh:
     #: 蒙皮调色板骨骼名与 bind 世界矩阵（游戏空间），导出时转 glTF 空间
     skin_bones: list = field(default_factory=list)
     skin_bind: list = field(default_factory=list)
+    #: 构成该网格的形状名（*.vertices 去后缀，如 BIA454_Bollard_bigShape）与
+    #: 对应绑定的骨骼节点名（如 BIA454_Bollard_big_6）；调试模式 3 标签用。
+    shape_names: list = field(default_factory=list)
+    node_names: list = field(default_factory=list)
+    #: 逐节点实例矩阵（渲染空间 4x4 行主序）；非空时该网格是一份原始几何，
+    #: 渲染时按其每个矩阵各画一次（左右舷/多处实例，如切锯机 _0/_1）。
+    instance_matrices: list = field(default_factory=list)
 
 
 @dataclass
@@ -303,6 +310,12 @@ class MountMesh:
     bone_weights: np.ndarray | None = None
     skin_bones: list = field(default_factory=list)
     skin_bind: list = field(default_factory=list)
+    #: 构成该网格的形状名与绑定的骨骼节点名（调试模式 3 标签用）。
+    shape_names: list = field(default_factory=list)
+    node_names: list = field(default_factory=list)
+    #: 逐节点实例矩阵（渲染空间 4x4 行主序）；非空时该网格是一份原始几何，
+    #: 渲染时按其每个矩阵各画一次（挂载模型内的多处实例）。
+    instance_matrices: list = field(default_factory=list)
 
     def bounds_in_world(self) -> tuple[np.ndarray, np.ndarray]:
         """本地包围盒经 model_matrix 变换后的世界包围盒。"""
@@ -671,30 +684,48 @@ class GeometryService:
                 # 用 shape_names 表（populate 时写入 DB）按名兜底跳过 _lod/_crack_；
                 # ★ 只从数据库读取，绝不现场读 assets.bin
                 sdict = self._shape_names_sdict()
-                groups = self._split_primitives_by_material(parsed.primitives, ship_rs, sdict)
+                groups = self._split_primitives_by_material(parsed.primitives, ship_rs, sdict,
+                                                            geom_path=e.path, instancing=True)
                 if groups:
                     for mat_key, g in groups.items():
                         if not g.get('prims'):
                             continue
-                        nm = part_name if mat_key is None else f"{part_name}#{mat_key}"
-                        hm = self._merge_hull(nm, g['prims'])
-                        if mat_key is not None:
-                            hm.material = mat_key
+                        inst = list(g.get('instance_matrices') or [])
+                        # __inst__# 组：真实材质在 g['material']，带逐节点实例矩阵
+                        if isinstance(mat_key, str) and mat_key.startswith('__inst__#'):
+                            real = g.get('material')
+                            nm = part_name if real is None else f"{part_name}#{real}"
+                        else:
+                            real = mat_key
+                            nm = part_name if mat_key is None else f"{part_name}#{mat_key}"
+                        hm = self._merge_hull(nm, g['prims'],
+                                              shape_names=g.get('shape_names', []),
+                                              node_names=g.get('node_names', []),
+                                              instance_matrices=inst)
+                        if real is not None:
+                            hm.material = real
                         if mat_key == '__wire__' or mat_key == 'WIRE':
                             hm.is_wire = True
-                        if mat_key is not None and mat_key.startswith('__crack__'):
+                        if isinstance(mat_key, str) and mat_key.startswith('__crack__'):
                             hm.is_crack = True
-                        if mat_key is not None:
+                        if real is not None:
                             # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
                             # ★ 只认 mfm 声明的贴图属性；未声明颜色贴图 → 无色（不按名补全）
                             bundle = self._resolve_material_full(g.get('mfm') or '', extractor)
                             self._apply_declared_color(hm, bundle, extractor)
                         geom.hull_meshes.append(hm)
                         if hm.positions.size:
-                            pmin = hm.positions.min(axis=0)
-                            pmax = hm.positions.max(axis=0)
-                            bmin = np.minimum(bmin, pmin)
-                            bmax = np.maximum(bmax, pmax)
+                            if inst:
+                                # 实例化网格：包围盒按各个节点矩阵求并集
+                                for _m in inst:
+                                    mn, mx = self._instanced_bounds(hm.positions, _m)
+                                    bmin = np.minimum(bmin, mn)
+                                    bmax = np.maximum(bmax, mx)
+                            else:
+                                pmin = hm.positions.min(axis=0)
+                                pmax = hm.positions.max(axis=0)
+                                bmin = np.minimum(bmin, pmin)
+                                bmax = np.maximum(bmax, pmax)
                 else:
                     hm = self._merge_hull(part_name, parsed.primitives)
                     geom.hull_meshes.append(hm)
@@ -776,6 +807,102 @@ class GeometryService:
 
     # ── 挂载模型 ────────────────────────────────────────
 
+    def _emit_instanced_mount(self, geom: ShipGeometry, src: dict, folder: str,
+                              comp: str, group_items: list,
+                              bmin: np.ndarray, bmax: np.ndarray):
+        """为一个 (folder, comp) 组创建**实例化**挂载网格（一份几何 + 各节点矩阵）。
+
+        同一模型目录被多个挂载节点引用（如 MP_... / MP_..._INDEX2、多座同型炮塔）时，
+        不再为每个节点复制一份几何（N×顶点内存爆炸）；而是只创建每个材质分片一份网格，
+        把各节点的渲染空间矩阵存入 instance_matrices，渲染时逐节点各画一次。
+        group_items: [(label, mtx, armor_mtx), ...]。
+        """
+        for hm in src["meshes"]:
+            mats = [(_armor_mtx if hm.skinned_applied else _mtx)
+                    for (_label, _mtx, _armor_mtx) in group_items]
+            mm = MountMesh(
+                name=folder, component=comp,
+                positions=hm.positions, normals=hm.normals,
+                uvs=hm.uvs, indices=hm.indices,
+                model_matrix=None,
+                instance_matrices=[np.ascontiguousarray(m, dtype=np.float32)
+                                   for m in mats],
+                texture_dds=hm.texture_dds, texture_path=hm.texture_path,
+                model_folder=folder, vertex_count=hm.vertex_count,
+                is_wire=hm.is_wire, is_crack=hm.is_crack,
+                tech_family=hm.tech_family,
+                material_textures=hm.material_textures or {},
+                indexed_params=hm.indexed_params,
+                has_color=hm.has_color,
+                bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
+                skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
+                shape_names=hm.shape_names, node_names=hm.node_names,
+            )
+            geom.mounts.append(mm)
+            if mm.positions.size:
+                for _m in mm.instance_matrices:
+                    mn, mx = self._instanced_bounds(mm.positions, _m)
+                    bmin = np.minimum(bmin, mn)
+                    bmax = np.maximum(bmax, mx)
+        return bmin, bmax
+
+    def _dedupe_mount_instances(self, geom: ShipGeometry) -> None:
+        """把 `geom.mounts` 中共享同一几何的 MountMesh 合并为**实例化**网格。
+
+        所有节点类型（HP 挂载 / MP 甲板设备 / 挂载模型骨架上的 MP 子设备）统一收敛：
+        同一模型目录被多个节点引用时，不再逐节点复制顶点，而是每个
+        (model_folder, 几何, component) 只保留一份网格，把各节点的渲染矩阵存入
+        instance_matrices。渲染时逐节点各画一次 → 大幅降低 GPU 内存。
+
+        依据：`_load_mount_model` 按 folder 缓存，同一模型的 `positions` 是同一个
+        ndarray 对象，故用 `id(positions)` 判同几何。
+        """
+        groups: dict = {}
+        order: list = []
+        for mm in geom.mounts:
+            key = (getattr(mm, 'model_folder', ''), id(mm.positions),
+                   getattr(mm, 'component', ''), getattr(mm, 'tech_family', 'pbs'))
+            if key not in groups:
+                groups[key] = [mm, []]
+                order.append(key)
+            g = groups[key]
+            if mm.instance_matrices:
+                g[1].extend(list(mm.instance_matrices))
+            elif mm.model_matrix is not None:
+                g[1].append(np.ascontiguousarray(mm.model_matrix, dtype=np.float32))
+            else:
+                g[1].append(np.eye(4, dtype=np.float32))
+        new_mounts: list = []
+        for key in order:
+            rep, mats = groups[key]
+            n = len(mats)
+            if n == 1:
+                # 单节点：无需实例化，保留原样（不额外复制）
+                if rep.instance_matrices and not rep.model_matrix:
+                    rep.instance_matrices = mats
+                new_mounts.append(rep)
+                continue
+            name = f"{getattr(rep, 'name', rep.model_folder)}+({n})"
+            inst = MountMesh(
+                name=name, component=rep.component,
+                positions=rep.positions, normals=rep.normals,
+                uvs=rep.uvs, indices=rep.indices,
+                model_matrix=None,
+                texture_dds=rep.texture_dds, texture_path=rep.texture_path,
+                model_folder=rep.model_folder, vertex_count=rep.vertex_count,
+                is_wire=rep.is_wire, is_crack=rep.is_crack,
+                tech_family=rep.tech_family,
+                material_textures=rep.material_textures or {},
+                indexed_params=rep.indexed_params,
+                has_color=rep.has_color,
+                bone_indices=rep.bone_indices, bone_weights=rep.bone_weights,
+                skin_bones=rep.skin_bones, skin_bind=rep.skin_bind,
+                shape_names=rep.shape_names, node_names=rep.node_names,
+                instance_matrices=mats,
+            )
+            new_mounts.append(inst)
+        geom.mounts = new_mounts
+
     def _load_mounts(self, geom: ShipGeometry, ship: ShipInfo, extractor,
                      armor_thickness: dict, progress_cb=None,
                      cancel_event: threading.Event | None = None):
@@ -803,6 +930,7 @@ class GeometryService:
             bmax = np.full(3, -np.inf, dtype=np.float32)
 
         model_cache: dict = {}   # model_folder -> 加载结果 or None
+        hp_groups: dict = {}     # (folder, comp) -> [(label, mtx, armor_mtx), ...]
         placed = 0
         sub_placed = 0   # 挂载模型骨架上的 MP 子设备（炮塔测距仪/炮上防空炮等）
         _negz = np.diag([1.0, 1.0, -1.0, 1.0])   # 几何(左手系)→渲染(右手系) 共轭
@@ -840,33 +968,9 @@ class GeometryService:
             if src is None:
                 continue
 
-            # 每个材质分片实例化一个挂载网格（本地坐标 + 挂点矩阵 + 独立贴图）
-            # ★ 已蒙皮网格的顶点已含 Root_BlendBone（_apply_skinning 烘焙），
-            #   矩阵用 armor_mtx（不乘 rb），否则双重镜像 → 朝向翻转（PASB111 副炮）
-            for hm in src["meshes"]:
-                mm = MountMesh(
-                    name=hp, component=comp,
-                    positions=hm.positions, normals=hm.normals,
-                    uvs=hm.uvs, indices=hm.indices,
-                    model_matrix=(armor_mtx if hm.skinned_applied else mtx),
-                    texture_dds=hm.texture_dds, texture_path=hm.texture_path,
-                    model_folder=folder, vertex_count=hm.vertex_count,
-                    is_wire=hm.is_wire,
-                    is_crack=hm.is_crack,
-                    tech_family=hm.tech_family,
-                    material_textures=hm.material_textures or {},
-                    indexed_params=hm.indexed_params,
-                    has_color=hm.has_color,
-                    bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
-                    skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
-                )
-                geom.mounts.append(mm)
-
-                # 世界包围盒（含挂载，供取景框选）
-                if mm.positions.size:
-                    mn, mx = mm.bounds_in_world()
-                    bmin = np.minimum(bmin, mn)
-                    bmax = np.maximum(bmax, mx)
+            # ★ 不逐节点复制几何：把该节点的 (label, mtx, armor_mtx) 累积到分组，
+            #   循环后按 (folder, comp) 一次性实例化（一份几何 + 各节点矩阵）。
+            hp_groups.setdefault((folder, comp), []).append((hp, mtx, armor_mtx))
 
             # 该模型的装甲（本地坐标 + 原始挂点矩阵定位 + 归属分类）
             for am in src["armor_meshes"]:
@@ -895,11 +999,20 @@ class GeometryService:
                 mp_allow=mp_allow, battle_customs=battle_customs)
             sub_placed += sub_n
 
+        # ★ 一次性实例化 HP 挂载（同模型多节点 → 一份几何 + 各节点矩阵）
+        for (folder, comp), items in hp_groups.items():
+            src = model_cache.get(folder)
+            if src is None:
+                continue
+            bmin, bmax = self._emit_instanced_mount(geom, src, folder, comp,
+                                                    items, bmin, bmax)
+
         # ── MP 甲板设备挂载（缆桩/小艇/探照灯/救生筏等 misc 模型）──
         # MP 节点不在 GameParams，由 populate 纳入 skeleton_mounts（v5）；
         # 模型目录由命名约定推导：MP_{baseID}_... → misc/{baseID}/{baseID}.geometry
         mp_placed = 0
         mp_items = [(n, m) for n, m in transforms.items() if n.startswith("MP_")]
+        mp_groups: dict = {}   # folder -> [(label, mtx, armor_mtx), ...]
         n_mp = len(mp_items)
         for idx, (mp_name, m_raw) in enumerate(mp_items):
             self._raise_if_cancelled(cancel_event)
@@ -920,25 +1033,8 @@ class GeometryService:
             src = model_cache[folder]
             if src is None:
                 continue
-            for hm in src["meshes"]:
-                mm = MountMesh(
-                    name=mp_name, component=COMPONENT_DECK,
-                    positions=hm.positions, normals=hm.normals,
-                    uvs=hm.uvs, indices=hm.indices,
-                    model_matrix=(armor_mtx if hm.skinned_applied else mtx),
-                    texture_dds=hm.texture_dds, texture_path=hm.texture_path,
-                    model_folder=folder, vertex_count=hm.vertex_count,
-                    is_wire=hm.is_wire,
-                    is_crack=hm.is_crack,
-                    has_color=hm.has_color,
-                    bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
-                    skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
-                )
-                geom.mounts.append(mm)
-                if mm.positions.size:
-                    mn, mx = mm.bounds_in_world()
-                    bmin = np.minimum(bmin, mn)
-                    bmax = np.maximum(bmax, mx)
+            # ★ 不逐节点复制几何：累积到分组，循环后一次性实例化
+            mp_groups.setdefault(folder, []).append((mp_name, mtx, armor_mtx))
             for am in src["armor_meshes"]:
                 mesh = ArmorMesh(
                     name=am.name, positions=am.positions, normals=am.normals,
@@ -956,6 +1052,18 @@ class GeometryService:
                 geom, folder, m_raw, model_cache, extractor, armor_thickness,
                 COMPONENT_DECK, bmin, bmax, 0, frozenset(), cancel_event=cancel_event)
             sub_placed += sub_n
+
+        # ★ 一次性实例化 MP 甲板设备（同模型多节点 → 一份几何 + 各节点矩阵）
+        for folder, items in mp_groups.items():
+            src = model_cache.get(folder)
+            if src is None:
+                continue
+            bmin, bmax = self._emit_instanced_mount(geom, src, folder, COMPONENT_DECK,
+                                                    items, bmin, bmax)
+
+        # ★ 统一收敛：把所有节点类型（含挂载模型骨架上的 MP 子设备）中共享同一
+        #   几何的 MountMesh 合并为实例化网格（一份几何 + 各节点矩阵），省 GPU 内存。
+        self._dedupe_mount_instances(geom)
 
         if np.isfinite(bmin).all():
             geom.bounds_min = bmin
@@ -1323,6 +1431,7 @@ class GeometryService:
                     has_color=hm.has_color,
                     bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
+                    shape_names=hm.shape_names, node_names=hm.node_names,
                 )
                 geom.mounts.append(mm)
                 if mm.positions.size:
@@ -1545,14 +1654,18 @@ class GeometryService:
                 del data
             all_armor.extend(parsed.armor_models)
             if parsed.primitives:
-                groups = self._split_primitives_by_material(parsed.primitives, mount_rs, sdict)
+                groups = self._split_primitives_by_material(parsed.primitives, mount_rs, sdict,
+                                                            geom_path=e.path)
                 for mat, g in groups.items():
                     # 保留所有分组（含 None 组：shape 无渲染集材质时用默认/文件名约定贴图，
                     # 如指挥仪 ControlTowerShape —— 否则指挥仪/雷达等会整组丢失不显示）
                     if not g.get('prims'):
                         continue
                     mfm = g.get('mfm') or ''
-                    hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'])
+                    hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'],
+                                          shape_names=g.get('shape_names', []),
+                                          node_names=g.get('node_names', []),
+                                          instance_matrices=g.get('instance_matrices') or [])
                     hm.material = mat
                     hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
                     hm.is_crack = bool(g.get('damage'))
@@ -1762,7 +1875,9 @@ class GeometryService:
         return "", b""
 
     def _split_primitives_by_material(self, primitives, global_rs: dict,
-                                      sdict: dict | None = None) -> dict:
+                                      sdict: dict | None = None,
+                                      geom_path: str | None = None,
+                                      instancing: bool = False) -> dict:
         """按渲染集索引把 primitives 分组：{material_key: {material, mfm, prims}}。
 
         - 用 murmur3(shape.vertices) == primitive.mapping_id 连接渲染集与几何
@@ -1777,28 +1892,56 @@ class GeometryService:
         mat_by_mid: dict = {}
         damage_mids: set = set()
         norm_to_rs: dict = {}   # 归一化 shape stem → 渲染集（模糊兜底：处理视觉/几何笔误）
-        for mid, rs in global_rs.items():
+        rs_by_mid: dict = {}    # 任意一个 entry（按 mid 兜底）
+        rs_by_gp_mid: dict = {} # (geom_path, mid) → 分段精确（刚性绑定用）
+        for key, rs in global_rs.items():
+            mid = key[1] if isinstance(key, tuple) else key
             mat_by_mid[mid] = (rs.get('material') or '', rs.get('mfm') or '')
+            rs_by_mid.setdefault(mid, rs)
+            if isinstance(key, tuple):
+                rs_by_gp_mid[key] = rs
             if rs.get('damage'):
                 damage_mids.add(mid)
                 continue
             nk = GeometryService._norm_shape_stem(rs.get('shape') or '')
             if nk and nk not in norm_to_rs:
                 norm_to_rs[nk] = rs
+
+        def _rs_for(mid: int):
+            """优先当前几何分段的渲染集条目（保留各自骨骼节点），否则任一兜底。"""
+            if geom_path:
+                rs = rs_by_gp_mid.get((geom_path, mid))
+                if rs is not None:
+                    return rs
+            return rs_by_mid.get(mid)
         groups: dict = {}
+
+        def _new_group(mat: str, mfm: str, damage: bool = False) -> dict:
+            return {'material': mat, 'mfm': mfm, 'prims': [],
+                    'shape_names': [], 'node_names': [], 'damage': damage}
 
         def _crack_group(mat: str, mfm: str) -> dict:
             """damage/crack 网格组（按材质分键，避免多种 crack 材质混入同一网格）。"""
             key = f"__crack__#{mat}" if mat else "__crack__"
-            return groups.setdefault(key, {'material': mat, 'mfm': mfm,
-                                           'prims': [], 'damage': True})
+            return groups.setdefault(key, _new_group(mat, mfm, damage=True))
+
+        def _add_names(g: dict, p, rs=None) -> None:
+            """收集该 primitive 的形状名（sdict 反查）与**全部**骨骼节点名到分组，供调试标签用。"""
+            if sdict is not None:
+                _sn = sdict.get(p.mapping_id) or ''
+                if _sn and _sn not in g['shape_names']:
+                    g['shape_names'].append(_sn)
+            nodes = (rs or {}).get('nodes') or []
+            for _nn in nodes:
+                if _nn and _nn not in g['node_names']:
+                    g['node_names'].append(_nn)
 
         for p in primitives:
             if p.mapping_id in damage_mids:
                 # 损伤网格：DB 把 LOD 与真 crack 都标 damage=1，按 shape 名区分——
                 # `_lod` 低模跳过（非 crack）；保留真 crack（`_crack_`/Crack 名或
                 # crack 材质变体，如 BowShape 的 crack 渲染集）到 __crack__ 组
-                _rs = global_rs.get(p.mapping_id) or {}
+                _rs = _rs_for(p.mapping_id) or {}
                 _sname = (_rs.get('shape') or '')
                 if '_lod' in _sname.lower():
                     continue
@@ -1822,22 +1965,76 @@ class GeometryService:
                         if fuz is not None:
                             mat = fuz.get('material') or ''
                             mfm = fuz.get('mfm') or ''
-                            if self._apply_skinning(p, fuz):
-                                g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
+                            g = groups.setdefault(mat, _new_group(mat, mfm))
+                            applied = self._apply_skinning(p, fuz)
+                            if applied:
+                                g['prims'].append(p)
                                 g['skinned_applied'] = True
+                                _add_names(g, p, fuz)
+                            elif instancing:
+                                bake, instmats = self._rigid_instance_matrices(p, fuz)
+                                if instmats:
+                                    ig = groups.setdefault(
+                                        f"__inst__#{mat}#{p.mapping_id}",
+                                        _new_group(mat, mfm))
+                                    ig['prims'].append(p)
+                                    ig['instance_matrices'] = instmats
+                                    ig['skinned_applied'] = True
+                                    _add_names(ig, p, fuz)
+                                elif bake is not None:
+                                    self._bake_rigid(p, bake)
+                                    g['prims'].append(p)
+                                    g['skinned_applied'] = True
+                                    _add_names(g, p, fuz)
+                                else:
+                                    g['prims'].append(p)
+                                    _add_names(g, p, fuz)
                             else:
-                                g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
-                            g['prims'].append(p)
+                                clones = self._apply_rigid_multi(p, fuz)
+                                if clones:
+                                    g['prims'].extend(clones)
+                                    g['skinned_applied'] = True
+                                else:
+                                    g['prims'].append(p)
+                                _add_names(g, p, fuz)
                             continue
-                groups.setdefault(None, {'material': None, 'mfm': '', 'prims': []})['prims'].append(p)
+                groups.setdefault(None, _new_group(None, ''))['prims'].append(p)
             else:
                 mat, mfm = entry
-                rs = global_rs.get(p.mapping_id)
+                rs = _rs_for(p.mapping_id)
                 applied = self._apply_skinning(p, rs)
-                g = groups.setdefault(mat, {'material': mat, 'mfm': mfm, 'prims': []})
-                g['prims'].append(p)
+                g = groups.setdefault(mat, _new_group(mat, mfm))
                 if applied:
+                    g['prims'].append(p)
                     g['skinned_applied'] = True
+                else:
+                    if instancing:
+                        # 只存各节点坐标：网格一份原始几何，渲染时逐节点各画一次
+                        bake, instmats = self._rigid_instance_matrices(p, rs)
+                        if instmats:
+                            ig = groups.setdefault(
+                                f"__inst__#{mat}#{p.mapping_id}", _new_group(mat, mfm))
+                            ig['prims'].append(p)
+                            ig['instance_matrices'] = instmats
+                            ig['skinned_applied'] = True
+                            _add_names(ig, p, rs)
+                        elif bake is not None:
+                            self._bake_rigid(p, bake)
+                            g['prims'].append(p)
+                            g['skinned_applied'] = True
+                            _add_names(g, p, rs)
+                        else:
+                            g['prims'].append(p)
+                            _add_names(g, p, rs)
+                    else:
+                        # 非蒙皮：按绑定节点实例化（同一 shape 可绑多节点 → 左右舷多实例）
+                        clones = self._apply_rigid_multi(p, rs)
+                        if clones:
+                            g['prims'].extend(clones)
+                            g['skinned_applied'] = True
+                        else:
+                            g['prims'].append(p)
+                        _add_names(g, p, rs)
         return groups
 
     @staticmethod
@@ -1944,12 +2141,17 @@ class GeometryService:
                     entry = {'shape': r["shape"], 'material': mat, 'mfm': mfm,
                              'damage': damage, 'skinned': r.get('skinned', False),
                              'nodes': r.get('nodes') or []}
-                    if mid in idx:
-                        # 跨模型同名 shape（murmur3 冲突）：优先当前模型自己的 mfm
+                    # ★ 按 (geom_path, mid) 索引：同一 shape 名可能出现在多个几何分段
+                    #   且各自绑定不同骨骼节点（如 BIA454_Bollard_bigShape 在 MidBack 绑
+                    #   _6、MidFront 绑 _0），必须保留各分段的节点，否则只渲染一个。
+                    gp = r.get('geom_path') or ''
+                    key = (gp, mid)
+                    if key in idx:
+                        # 跨模型同名 shape：优先当前模型自己的 mfm
                         if mfm and model_folder in mfm:
-                            idx[mid] = entry
+                            idx[key] = entry
                         continue
-                    idx[mid] = entry
+                    idx[key] = entry
         except Exception as exc:  # noqa: BLE001
             idx = {}
             bus.log_message.emit(f"⚠️ 渲染集数据读取失败({model_folder}): {exc}，已回退默认贴图")
@@ -2180,8 +2382,177 @@ class GeometryService:
         prim.skin_bind = mats
         return True
 
+    def _apply_rigid_binding(self, prim, rs: dict | None) -> bool:
+        """对**非蒙皮但刚性绑定到骨架节点**的子模型施加父节点世界矩阵（原地烘焙顶点）。
+
+        背景：船体几何文件里的一些甲板/上层建筑小件（如 BIA454_Bollard_bigShape、
+        BIA703_HelmetsShape）在文件里位于**原点**，渲染集条目 skinned=0 但 nodes 非空
+        （如 ['BIA454_Bollard_big_7']），即刚性父级绑定到某个骨骼节点。需乘该骨骼的
+        世界矩阵（_skeleton_bones 返回）把顶点摆到舰船空间，否则渲染/导出都停在世界中心。
+
+        返回是否实际变换了顶点（True → 已烘焙，后续按普通几何处理）。
+        """
+        if prim is None or rs is None:
+            return False
+        if rs.get('skinned'):
+            return False  # 蒙皮走 _apply_skinning
+        nodes = rs.get('nodes') or []
+        if not nodes:
+            return False  # 无父节点（主船体/独立几何）→ 保持原点
+        stem = getattr(self, '_current_skinning_stem', None)
+        if not stem:
+            return False
+        bones = self._skeleton_bones(stem)
+        if not bones:
+            return False
+        m = bones.get(nodes[0])
+        if m is None:
+            return False
+        if np.allclose(m, np.eye(4), atol=1e-4):
+            return False  # 恒等无需变换
+        R = m[:3, :3].astype(np.float64)
+        t = m[:3, 3].astype(np.float64)
+        pos = prim.positions
+        nrm = prim.normals
+        prim.positions = ((pos.astype(np.float64) @ R.T) + t).astype(np.float32)
+        new_nrm = nrm.astype(np.float64) @ R.T
+        ln = np.linalg.norm(new_nrm, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        prim.normals = (new_nrm / ln).astype(np.float32)
+        return True
+
+    def _bake_rigid(self, prim, m) -> None:
+        """把刚性父节点矩阵 m（4x4 行主序）烘焙进 primitive 的顶点（原地）。"""
+        R = m[:3, :3].astype(np.float64)
+        t = m[:3, 3].astype(np.float64)
+        prim.positions = ((prim.positions.astype(np.float64) @ R.T) + t).astype(np.float32)
+        new_nrm = prim.normals.astype(np.float64) @ R.T
+        ln = np.linalg.norm(new_nrm, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        prim.normals = (new_nrm / ln).astype(np.float32)
+
     @staticmethod
-    def _merge_hull(part_name: str, primitives) -> HullMesh:
+    def _clone_prim(p):
+        """复制一个 MeshPrimitive（顶点/法线/uv/索引各拷贝一份，供多节点分别烘焙）。"""
+        from models.geometry_parser import MeshPrimitive
+        return MeshPrimitive(
+            name=p.name,
+            positions=p.positions.copy(),
+            normals=p.normals.copy(),
+            uvs=None if p.uvs is None else p.uvs.copy(),
+            indices=None if p.indices is None else p.indices.copy(),
+            mapping_id=p.mapping_id,
+            is_skinned=p.is_skinned,
+            bone_indices=None if p.bone_indices is None else p.bone_indices.copy(),
+            bone_weights=None if p.bone_weights is None else p.bone_weights.copy(),
+            skin_bones=list(p.skin_bones),
+            skin_bind=list(p.skin_bind),
+        )
+
+    def _apply_rigid_multi(self, prim, rs: dict | None) -> list:
+        """对**非蒙皮但刚性绑定**的子模型：按每个绑定节点烘焙一份顶点，返回列表。
+
+        同一 shape 可绑定多个骨骼节点（左右舷实例化，如 BIA400_Motor_Cutter_25ftShape
+        在 `_0`/`_1` 两节点各一份）。每节点烘焙一份 → `_merge_hull` 合并为一网格，
+        从而在两个位置各渲染一个实例。
+        - 单节点：原地烘焙（保留既有行为），返回 [prim]。
+        - 多节点：每节点克隆一份并烘焙，返回克隆列表（不改原 prim）。
+        - 无法定位（无骨骼/全恒等/蒙皮）：返回 []（调用方追加原始 prim）。
+        """
+        if prim is None or rs is None:
+            return []
+        if rs.get('skinned'):
+            return []
+        nodes = rs.get('nodes') or []
+        if not nodes:
+            return []
+        stem = getattr(self, '_current_skinning_stem', None)
+        if not stem:
+            return []
+        bones = self._skeleton_bones(stem)
+        if not bones:
+            return []
+        mats: list[tuple[str, object]] = []
+        for nd in nodes:
+            m = bones.get(nd)
+            if m is None:
+                continue
+            if np.allclose(m, np.eye(4), atol=1e-4):
+                continue
+            mats.append((nd, m))
+        if not mats:
+            return []
+        if len(mats) == 1:
+            self._bake_rigid(prim, mats[0][1])
+            return [prim]
+        out = []
+        for _nd, m in mats:
+            clone = self._clone_prim(prim)
+            self._bake_rigid(clone, m)
+            out.append(clone)
+        return out
+
+    def _rigid_instance_matrices(self, prim, rs: dict | None):
+        """刚性绑定：返回 (bake_matrix, instance_matrices)。
+
+        只存各骨架节点坐标，不复制顶点——网格只含一份原始几何，渲染时按每个节点
+        矩阵各画一次（左右舷/多处实例）。比逐节点烘焙复制顶点更省内存。
+
+        返回：
+          (None, None)                  —— 不可刚性绑定（蒙皮/无节点/无骨骼/全恒等），
+                                            调用方保留原始几何（原样放入网格）。
+          (M_game, [])                  —— 恰一个有效节点：调用方用 M_game 原地烘焙
+                                            （既有单节点行为）。
+          (None, [M_render_i, ...])     —— 多节点：调用方保留原始几何，并把 M_render_i
+                                            写入网格 instance_matrices；渲染时逐实例绘制。
+        M_render = MirrorZ @ M_game @ MirrorZ（游戏空间 → 渲染空间模型矩阵）。
+        """
+        if prim is None or rs is None or rs.get('skinned'):
+            return None, None
+        nodes = rs.get('nodes') or []
+        if not nodes:
+            return None, None
+        stem = getattr(self, '_current_skinning_stem', None)
+        if not stem:
+            return None, None
+        bones = self._skeleton_bones(stem)
+        if not bones:
+            return None, None
+        negz = np.diag([1.0, 1.0, -1.0, 1.0]).astype(np.float32)
+        game_mats: list[np.ndarray] = []
+        for nd in nodes:
+            m = bones.get(nd)
+            if m is None:
+                continue
+            if np.allclose(m, np.eye(4), atol=1e-4):
+                continue
+            game_mats.append(np.asarray(m, dtype=np.float32))
+        if not game_mats:
+            return None, None
+        if len(game_mats) == 1:
+            return game_mats[0], []
+        inst = [(negz @ m @ negz).astype(np.float32) for m in game_mats]
+        return None, inst
+
+    @staticmethod
+    def _instanced_bounds(positions, matrix) -> tuple[np.ndarray, np.ndarray]:
+        """局部顶点包围盒经实例矩阵变换后的世界包围盒（8 角点法）。"""
+        mn = positions.min(axis=0)
+        mx = positions.max(axis=0)
+        corners = np.array([
+            [mn[0], mn[1], mn[2]], [mn[0], mn[1], mx[2]],
+            [mn[0], mx[1], mn[2]], [mn[0], mx[1], mx[2]],
+            [mx[0], mn[1], mn[2]], [mx[0], mn[1], mx[2]],
+            [mx[0], mx[1], mn[2]], [mx[0], mx[1], mx[2]],
+        ], dtype=np.float32)
+        hom = np.hstack([corners, np.ones((8, 1), dtype=np.float32)])
+        w = (hom @ matrix.T)[:, :3]
+        return w.min(axis=0), w.max(axis=0)
+
+    @staticmethod
+    def _merge_hull(part_name: str, primitives, shape_names: list | None = None,
+                    node_names: list | None = None,
+                    instance_matrices: list | None = None) -> HullMesh:
         """把同一部件的所有 primitive 合并成单个网格。"""
         v_total = sum(p.positions.shape[0] for p in primitives)
         i_total = sum(0 if p.indices is None else p.indices.size for p in primitives)
@@ -2234,6 +2605,9 @@ class GeometryService:
             bone_weights=bone_weights,
             skin_bones=skin_bones,
             skin_bind=skin_bind,
+            shape_names=list(dict.fromkeys(shape_names or [])),
+            node_names=list(dict.fromkeys(node_names or [])),
+            instance_matrices=list(instance_matrices or []),
         )
 
     @staticmethod
