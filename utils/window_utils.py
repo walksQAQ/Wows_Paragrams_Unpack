@@ -39,3 +39,36 @@ def ensure_dialog_shown(parent: object, attr: str, factory, center_parent=None) 
     dlg.raise_()
     dlg.activateWindow()
     return dlg
+
+
+def prompt_schema_mismatch(parent: QWidget | None, server: str,
+                           mismatches: list[dict]) -> None:
+    """弹出数据库结构版本不匹配提示。
+
+    用于「选择服务器」或「应用启动」时，检测到某服务器对应的两个数据库
+    （game_data.db + assets_data.db）schema 版本与当前程序不一致时，向用户弹窗提醒。
+
+    mismatches: check_schema_mismatches 返回的列表，元素含 db/found/expected。
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    lines = "\n".join(
+        f"• {m['db']}：{m['found']} → {m['expected']}"
+        for m in mismatches)
+    if all(m["found"] < m["expected"] for m in mismatches):
+        detail = (
+            "以下数据库的 schema 版本落后，数据可能已过时：\n\n"
+            f"{lines}\n\n"
+            "重新加载数据时会按当前结构重建（旧数据将被清空），请重新加载以确保兼容。")
+    else:
+        detail = (
+            "以下数据库的 schema 版本与当前程序不一致：\n\n"
+            f"{lines}\n\n"
+            "数据可能不兼容，建议重新加载数据。")
+    box = QMessageBox(parent)
+    box.setWindowTitle("数据库结构版本不匹配")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText(f"检测到 {server} 服务器的数据库结构版本与当前程序不匹配。")
+    box.setInformativeText(detail)
+    box.addButton(QMessageBox.StandardButton.Ok)
+    box.exec()

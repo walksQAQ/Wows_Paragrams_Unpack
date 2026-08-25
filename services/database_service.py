@@ -1143,6 +1143,69 @@ def reset_db() -> None:
     global _db, _db_wows_type
     _db = None
     _db_wows_type = ""
+
+
+# ── Schema 版本一致性检查（纯只读，不触发 initialize/重建）─────────────────
+
+def _read_schema_version(db_path: Path) -> int:
+    """只读方式读取数据库文件当前记录的 schema 版本（meta_schema_version 最大值）。
+
+    文件不存在 / 打开失败 / 无该表 → 返回 0（视为全新库，不参与「落后」判定）。
+    仅以只读方式打开，绝不触发 SQLite 创建数据库文件或任何重写。
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        # mode=ro 只读打开（WAL 库也能读到已提交数据），不落盘、不建库
+        conn = sqlite3.connect(
+            f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT version FROM meta_schema_version "
+                "ORDER BY version DESC LIMIT 1").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return 0
+
+
+def check_schema_mismatches(wows_type: str = "") -> list[dict]:
+    """纯只读检查指定服务器对应的两个数据库文件 schema 版本是否与当前程序不一致。
+
+    对应关系（与 DatabaseManager._db_name / AssetsCacheService._db_name 一致）：
+      Lesta      → game_data.db + assets_data.db
+      Wargaming  → game_data_wg.db + assets_data_wg.db
+
+    「不一致」判定：库内 meta_schema_version 记录 found > 0 且 found != 当前代码预期版本。
+    （found == 0 表示全新/未建库，不算不一致，不提示。）
+
+    返回（仅含不一致的库，空列表表示全部匹配）：
+      [{"kind": "game"|"assets", "db": 文件名, "found": 库内版本, "expected": 当前版本}, ...]
+    """
+    from services.assets_cache_service import (
+        AssetsCacheService, ASSETS_SCHEMA_VERSION,
+    )
+    if not wows_type:
+        from app.application import app as app_ctx
+        wows_type = app_ctx.ctx.wows_type
+
+    data_dir = get_data_dir()
+    checks = [
+        ("game", DatabaseManager._db_name(wows_type), DB_SCHEMA_VERSION),
+        ("assets", AssetsCacheService._db_name(wows_type), ASSETS_SCHEMA_VERSION),
+    ]
+    mismatches: list[dict] = []
+    for kind, name, expected in checks:
+        found = _read_schema_version(data_dir / name)
+        if found > 0 and found != expected:
+            mismatches.append({
+                "kind": kind,
+                "db": name,
+                "found": found,
+                "expected": expected,
+            })
+    return mismatches
     DatabaseManager.close_all_connections()
     try:
         from presenters.registry import PresenterRegistry
