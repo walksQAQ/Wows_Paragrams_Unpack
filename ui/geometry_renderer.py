@@ -58,14 +58,19 @@ in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
 in vec4 in_color;
+layout(location = 8) in vec4 i_model0;
+layout(location = 9) in vec4 i_model1;
+layout(location = 10) in vec4 i_model2;
+layout(location = 11) in vec4 i_model3;
 uniform mat4 u_mvp;
 uniform mat3 u_normal_mat;
 out vec4 v_color;
 out vec3 v_normal;
 out vec2 v_uv;
 void main() {
-    gl_Position = u_mvp * vec4(in_position, 1.0);
-    v_normal = u_normal_mat * in_normal;
+    mat4 model = mat4(i_model0, i_model1, i_model2, i_model3);
+    gl_Position = u_mvp * model * vec4(in_position, 1.0);
+    v_normal = u_normal_mat * mat3(model) * in_normal;
     v_color = in_color;
     v_uv = in_uv;
 }
@@ -85,370 +90,99 @@ void main() {
 }
 """
 
-FRAG_SRC = """
+#: ★ PBS / 实体 shader（u_mode 0/1/2）：标准材质 + emissive + 线框。只声明 PBS 用到的 sampler，
+#:   与 INDEXED/FX 的纹理单元完全独立（2026-08-27 渲染逻辑拆分第二次）。
+FRAG_PBS = """
 #version 400 core
 in vec4 v_color;
-in vec3 v_normal;
-in vec2 v_uv;
-uniform int u_mode;        // 0=光照实体 1=线框 2=无光照实体 3=INDEXED分块
+ in vec3 v_normal;
+ in vec2 v_uv;
+uniform int u_mode;        // 0=光照实体 1=线框 2=无光照实体(emissive/透明)
 uniform float u_opacity;
 uniform vec3 u_light_dir;
 uniform vec3 u_ambient;
 uniform sampler2D u_tex;
 uniform int u_has_tex;
-// emissive 自发光（ship_emissive_material.fx 等）：无光照 + diffuse blue 通道做自发光强度
-// （用户要求：先忽略 _n/_mg 贴图，只用 diffuse 基础渲染）
-uniform float u_emissive;     // 1=emissive 渲染（u_mode==2 时生效）
-uniform float u_emissive_k;   // 自发光强度系数（emissivePower）
-// INDEXED 分块涂装（ship_material_indexed.fx，ps_5_0 官方公式，2026-08-24 运行时抓取）
-uniform sampler2D u_matid_tex;   // materialIdMap（R=材质ID 0~195）
-uniform sampler2DArray u_tiles_tex; // albedoArray（2DArray，每层=船 tile 色块）
-uniform sampler2DArray u_normal_tex; // normalArray（2DArray，每层=法线 tile）
-uniform sampler2D u_alpha_n_map; // normalMap（全船 _alpha_n.dds，@v_uv，与 normalArray 合成法线）
-uniform sampler2D u_art_tex;     // artMap（艺术涂装叠加层）
-uniform sampler2DArray u_noise_tex; // rgbNoiseMap（materialIdMap 采样扰动）
-// 标准 PBS 法线贴图（仅当材质声明 normalMap/g_normalMap；未声明则用几何法线）
+uniform float u_emissive;
+uniform float u_emissive_k;
 uniform sampler2D u_normal_map;
 uniform int u_has_normal_map;
-uniform vec4 u_offset_scale[196]; // offsetScaleMatIdArr：每材质ID (offset.xy, scale.zw)
-uniform vec4 u_rotation[196];    // rotationMatIdArr(.x=角度) + artStrengthMatIdArr(.y=BaseStrength)
-uniform vec4 u_tile_idx[196];    // tileIdxMatIdArr：每材质ID (albedo层, normal层, MG层, disableMGNCamo)
-uniform vec4 u_tint[196];        // albedoTintMatIdArr：每材质ID 调色(RGB) + 强度(w)
-uniform vec4 u_remove[196];      // albedoToRemoveTintMatIdArr：每材质ID 要替换为tint的色
-uniform float u_gamma;           // tint 混合 gamma 系数（cb1[19].x）
-// u_mode==4：轻量 deferred compositing —— decal_tech 独立法线细节层（读船体 surface MRT）
-uniform sampler2D u_scene_tex;         // MRT 附件0：船体未打光 albedo（linear）
-uniform sampler2D u_scene_normal_tex;  // MRT 附件1：船体世界法线
-uniform vec2 u_viewport;               // 视口尺寸（换算屏幕 UV）
-uniform int u_mrt;                     // 1=输出未打光 albedo+世界法线到 MRT（轻量 deferred surface）
-uniform int u_debug_mode;              // Normal 数据链调试：1=RAW normalArray 2=RAW normalMap(g_normalMap) 3=Hull最终N 4=Decal RAW 5=Decal合成N 8=同时显示
-uniform int u_use_scene_normal;        // 1=船体打光用 Final Normal(附件2)（含 decal 法线）
-uniform sampler2D u_scene_final_tex;   // MRT 附件2：Final Normal（Hull+decal 合成，供打光）
+uniform sampler2D u_mg_map;
+uniform int u_has_mg;
+uniform vec3 u_view_dir;              // 观察方向（反射用）
+uniform int u_mrt;
 out vec4 fragColor;
 out vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）
+// ★ 永久程序化环境（天空/海面/太阳反射，2026-08-27）：不依赖解包，金属反射直接用
+vec3 env_color(vec3 R) {
+    vec3 sky = vec3(0.30, 0.44, 0.58);
+    vec3 sea = vec3(0.05, 0.08, 0.11);
+    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 c = mix(sea, sky, pow(t, 0.85));
+    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
+    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
+    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
+    return c;
+}
+// 统一 PBR: Cook-Torrance GGX + Schlick Fresnel + 金属环境反射(env_color)
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
+    vec3 L = normalize(-u_light_dir);
+    vec3 V = normalize(u_view_dir);
+    vec3 H = normalize(L + V);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float roughness = clamp(1.0 - gloss, 0.04, 1.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    float a = roughness * roughness; float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / max(3.14159265 * denom * denom, 1e-5);
+    float k = (roughness + 1.0); k = k * k / 8.0;
+    float Gv = NdotV / (NdotV * (1.0 - k) + k);
+    float Gl = NdotL / (NdotL * (1.0 - k) + k);
+    float G = Gv * Gl;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
+    vec3 kd = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = albedo * kd * lit;
+    vec3 direct = diffuse * NdotL + specular * NdotL;
+    vec3 R = reflect(-V, N);
+    vec3 env = env_color(R);
+    vec3 env_spec = env * F * metallic;
+    return direct + env_spec;
+}
 void main() {
     vec4 base = v_color;
     bool is_tex = (u_has_tex == 1);
     if (is_tex) {
         base = texture(u_tex, v_uv);
     }
-    if (u_mode == 3) {
-        // INDEXED（2.0 技术，官方 ship_material_indexed.fx ps_5_0 对齐，2026-08-24）：
-        //  materialIdMap → matId；uv'=rotate(u*scale+offset)；alb=albedoArray[slice](uv',d)
-        //  tint：lerp(tint_lin, alb_lin, sat((sum|alb-ref|)/tint.w))；法线 normalArray .xy 重建 z
-        ivec2 imsz = textureSize(u_matid_tex, 0);
-        // ★ rgbNoise 按官方逻辑（indexed_sm5_hit22.dxbc.asm）：
-        //   noise_uv = v_uv * blendNoiseParams.x(=48)；振幅 = 1/(48*52)=1/2496；
-        //   面朝上（dot(世界法线, (0,1,0)) > 0.96）只用噪声红通道(1D)，否则 xy(2D)；
-        //   muv = v_uv + noise_decode * 振幅。这是**全局**扰动 materialIdMap 采样坐标（非按 matId）。
-        vec2 noise_uv = v_uv * 48.0;
-        vec2 noise_raw = texture(u_noise_tex, vec3(noise_uv, 0.0)).xy;
-        float floating = dot(normalize(v_normal), vec3(0.0, 1.0, 0.0));
-        vec2 noise_sel = (floating > 0.96) ? vec2(noise_raw.x) : noise_raw;
-        vec2 noise2 = noise_sel * 2.0 - 1.0;
-        vec2 muv_uv = v_uv + noise2 * (1.0 / (48.0 * 52.0));
-        // materialIdMap → matId：官方**单 texel 中心采样**（2026-08-24 抽取证实 matIdMap 是
-        // 干净分块 99.7% 相邻同 matId，不用 textureGather 中值平滑，否则会模糊材质边界）
-        vec2 muv = (floor(muv_uv * vec2(imsz) + 0.5)) / vec2(imsz);
-        float mval = texture(u_matid_tex, muv).r;
-        int matId = int(min(floor(mval * 255.0 + 0.5), 195.0));
-        // uv' = v_uv * offsetScale[matId].zw + offsetScale[matId].xy，再 rotate。
-        // ★ 2026-08-27 实测纠正（官方公式，无 V 翻转）：
-        //   - **materialIdMap 与 albedoArray/normalArray 统一用 v_uv（不翻转）**。
-        //     此前为 OpenGL/D3D 差异额外加 flipV(y=1-v)，但 layer-major 数组纹理解析修正后
-        //     DDS 上传的 V 轴已与 materialIdMap 一致，故去掉 flipV、回到反汇编的官方公式。
-        //   - **必须用 per-matId 的 offsetScale**（官方公式 z/w 是本层平铺倍数，xy 是格内偏移）：
-        //     * 船底 matId23 → 层1（斜向板条图案），offsetScale=38
-        //     * 炮衣 matId87 → 层17（斜纹帆布图案），offsetScale=6 （repro：debug9 蓝色带=matId87）
-        //     去掉 scale 会让有图案的层(如炮衣层17)被采到均匀角落→平涂无色（用户实测炮衣平涂即是此因）。
-        vec2 uv = v_uv * u_offset_scale[matId].zw + u_offset_scale[matId].xy;
-        float uang = u_rotation[matId].x;
-        float usa = sin(uang); float uca = cos(uang);
-        uv = vec2(uv.x*uca + uv.y*usa, -uv.x*usa + uv.y*uca);
-        float slice = max(u_tile_idx[matId].x, 0.0);
-        vec2 dudx = dFdx(uv);
-        vec2 dudy = dFdy(uv);
-        // albedo：单材质单 tile（官方行为，不平均 4 个候选材质，避免边界模糊）
-        vec3 albedo = textureGrad(u_tiles_tex, vec3(uv, slice), dudx, dudy).rgb;
-        // tint 混合（官方：lerp(tint_lin, alb_lin, sat(sum|albedo-ref| / tint.w))）
-        float g = u_gamma;
-        vec3 albedo_lin = pow(albedo, vec3(g));
-        vec3 tint_lin = pow(u_tint[matId].rgb, vec3(g));
-        vec3 ref = u_remove[matId].rgb;
-        float sum = abs(albedo.x-ref.x) + abs(albedo.y-ref.y) + abs(albedo.z-ref.z);
-        float k = clamp((sum + 0.001) / max(u_tint[matId].w, 1e-4), 0.0, 1.0);
-        vec3 c = mix(tint_lin, albedo_lin, k);
-        // artMap 艺术涂装(camo)（标准叠加层）：
-        //   - 全船 512×512 覆盖层，用船体全图 UV(v_uv) 采样
-        //   - camo 强度 = art.a * artStrengthMatIdArr[matId].x(=u_rotation[matId].y)
-        //   - artMap 以 sRGB 内格式上传，GPU 硬件解码为 linear；此处与 c 同处 linear 空间
-        //   - mix(c, art.rgb, am)：高 alpha(有cam图案) 显示 camo 色，低 alpha 显示 base。
-        //     ⚠️ 曾误用**加性** c += art*am → camo 大面积高亮把底色(含船底红棕)推白；
-        //        也试过**乘法** c *= mix(1,art.rgb,am) → 把整船压暗。用 lerp 是对的。
-        vec4 art4 = texture(u_art_tex, v_uv);
-        float am = clamp(art4.a * u_rotation[matId].y, 0.0, 1.0);
-        if (u_debug_mode == 10) { am = 0.0; }   // debug10=禁用 art，看 base
-        c = mix(c, art4.rgb, am);               // ★ camo 叠加（lerp，保留低 alpha 的底色）
-        // 法线：normalArray(每材质 tile) + normalMap(_alpha_n, 全船) 合成（对齐官方 asm）：
-        //   t20(normalArray) 解码 + t14(normalMap@v1.xy) 解码 → add → add(0,0,-1) → normalize
-        float nslice = max(u_tile_idx[matId].y, 0.0);
-        vec3 ntex = textureGrad(u_normal_tex, vec3(uv, nslice), dudx, dudy).rgb;
-        vec3 n_ts = vec3(ntex.x * 2.0 - 1.0, ntex.y * 2.0 - 1.0, 0.0);
-        float nz = n_ts.x*n_ts.x + n_ts.y*n_ts.y;
-        n_ts.z = sqrt(max(1.0 - nz, 0.0));
-        // 全船 normalMap（alpha_n）：@v_uv 采样，解码，再与 normalArray 重组（减 (0,0,1)）
-        vec3 a4 = texture(u_alpha_n_map, v_uv).rgb;
-        vec3 n_a = vec3(a4.x * 2.0 - 1.0, a4.y * 2.0 - 1.0, 0.0);
-        float nza = n_a.x*n_a.x + n_a.y*n_a.y;
-        n_a.z = sqrt(max(1.0 - nza, 0.0));
-        n_ts = normalize(n_ts + n_a - vec3(0.0, 0.0, 1.0));
-        vec3 N = normalize(v_normal);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0,1.0,0.0) : vec3(1.0,0.0,0.0);
-        vec3 T = normalize(cross(up, N));
-        vec3 B = normalize(cross(N, T));
-        vec3 n_world = normalize(T*n_ts.x + B*n_ts.y + N*n_ts.z);
-        if (u_mrt == 0 && (u_debug_mode >= 1 && u_debug_mode <= 3 || u_debug_mode == 8)) {
-            // Normal 数据链分段调试（PASS1a/1b/2；8=与 decal 法线同时显示）
-            if (u_debug_mode == 1) {
-                // PASS1a：RAW normalArray（texture array 采样原始值，未合成/TBN/normalize）
-                fragColor = vec4(ntex.rgb, 1.0);
-            } else if (u_debug_mode == 2) {
-                // PASS1b：RAW normalMap / g_normalMap（alpha_n 采样原始值）
-                fragColor = vec4(a4.rgb, 1.0);
-            } else {
-                // PASS2(3) / debug8：normalArray+normalMap 合成 → TBN → 最终 hull world normal
-                fragColor = vec4(normalize(n_world) * 0.5 + 0.5, 1.0);
-            }
-            return;
-        }
-        // ★ 临时 DEBUG(9)：matId 离散色带，直读船底命中的材质编号。
-        //   色带(每 32): 0-31=红,32-63=绿,64-95=蓝,96-127=黄,128-159=品红,160-195=青。
-        //   例: matId=34 → 绿(0..1), 23→红, 144→品红, 90→蓝。
-        if (u_debug_mode == 9) {
-            int band = matId / 32;
-            vec3 col;
-            if (band == 0)      col = vec3(1.0, 0.0, 0.0);
-            else if (band == 1) col = vec3(0.0, 1.0, 0.0);
-            else if (band == 2) col = vec3(0.0, 0.0, 1.0);
-            else if (band == 3) col = vec3(1.0, 1.0, 0.0);
-            else if (band == 4) col = vec3(1.0, 0.0, 1.0);
-            else                col = vec3(0.0, 1.0, 1.0);
-            // 同一 band 内用亮度细分为 4 档，便于区分具体 matId
-            int sub = (matId % 32) / 8;
-            col *= (0.4 + 0.2 * float(sub));
-            vec4 dbg = vec4(col, 1.0);
-            if (u_mrt == 1) {
-                fragColor = dbg;
-                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
-            } else {
-                fragColor = dbg;
-            }
-            return;
-        }
-        // ★ 临时 DEBUG(11)：只显示 raw albedo tile（未叠加 tint/remove/art/光照）。
-        //   输出线性 albedo，最终光照(debug11)再做 sRGB 显示。用于人工核对分块 tile 原貌。
-        if (u_debug_mode == 11) {
-            vec4 dbgv = vec4(albedo, 1.0);
-            if (u_mrt == 1) {
-                fragColor = dbgv;
-                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
-            } else {
-                fragColor = dbgv;
-            }
-            return;
-        }
-        // ★ 临时 DEBUG(12)：只显示 tint 线性上色结果，区分「材质基色」与「tile 细节」。
-        if (u_debug_mode == 12) {
-            if (u_mrt == 1) {
-                fragColor = vec4(tint_lin, 1.0);
-                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
-            } else {
-                fragColor = vec4(tint_lin, 1.0);
-            }
-            return;
-        }
-        if (u_mrt == 1) {
-            // 轻量 deferred surface：存未打光 albedo(linear，已含 tint/art) + 世界法线
-            fragColor = vec4(c, 1.0);
-            fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
-        } else {
-            if (u_use_scene_normal == 1) {
-                vec2 suv2 = gl_FragCoord.xy / u_viewport;
-                n_world = normalize(texture(u_scene_final_tex, suv2).rgb * 2.0 - 1.0);
-            }
-            // 光照（临时简化 half-Lambert，PBR 后续）
-            float diff2 = max(dot(n_world, -u_light_dir), 0.0);
-            float hl2 = diff2 * 0.5 + 0.5;
-            vec3 lit2 = u_ambient + (1.0 - u_ambient) * hl2;
-            c *= lit2;
-            c = pow(c, vec3(1.0 / 2.2));
-            fragColor = vec4(c, 1.0);
-        }
-        return;
-    }
-    if (u_mode == 4) {
-        // 轻量 deferred compositing：decal_tech 独立法线细节层（Normal Detail Layer）。
-        // 读船体 surface MRT（u_scene_tex=未打光 albedo，u_scene_normal_tex=原世界法线），
-        // 用自身 g_normalMap 构造 decal 世界法线，与原法线合成，再打一次光。
-        // ★ g_mode=4 保留（本层是「法线增强/叠加」，非独立完整 PBR 材质）。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        suv.y = 1.0 - suv.y;
-        vec3 base_albedo = texture(u_scene_tex, suv).rgb;          // 船体未打光 albedo(linear)
-        vec3 baseN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
-        // 自身 g_normalMap → tangent 空间 → 世界（相对自身几何法线 v_normal）
-        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 0.0);
-        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
-        n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-        n_ts = normalize(n_ts);
-        vec3 N = normalize(v_normal);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 T = normalize(cross(up, N));
-        vec3 B = normalize(cross(N, T));
-        vec3 decal_n = normalize(T * n_ts.x + B * n_ts.y + N * n_ts.z);
-        // 合成：把 decal 的法线扰动增量(相对 decal 自身几何法线 N)叠加到船体 baseN。
-        // ★ 修正：此前误减世界空间 (0,0,1)（照抄 INDEXED 切线空间合成），会把世界法线
-        //   整体下压 → 凹陷。改为「船体法线 + decal 扰动增量」，方向为凸起。
-        //   g_mode=4 精确合并方式待逆向确认，此处保证方向正确。
-        vec3 merged = normalize(baseN + (decal_n - N));
-        float diff = max(dot(merged, -u_light_dir), 0.0);
-        float hl = diff * 0.5 + 0.5;
-        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
-        vec3 col = base_albedo * lit;
-        col = pow(col, vec3(1.0 / 2.2));
-        // decal 是法线细节层：覆盖船体表面（颜色=船体 albedo，法线=合成后）。
-        // 遮挡由 decal 几何/UV 决定，**不用 g_normalMap 的 alpha**（normal map 的 alpha
-        // 不是 opacity，几乎为 0 会导致 decal 全透明 → 合并后完全不可见）。
-        float mask = 1.0 * u_opacity;
-        fragColor = vec4(col, mask);
-        return;
-    }
-    if (u_mode == 5) {
-        // PASS3：decal_tech 独立 Mesh 的法线 debug（用自己的 UV(v_uv) 采样 g_normalMap）。
-        // decal 不是完整材质，必须有独立 mesh/draw call + 自己的 UV；此处只显示法线信息。
-        vec4 nmap5 = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 0.0);
-        if (u_debug_mode == 4) {
-            // PASS3a：RAW g_normalMap 原始值（未合成/TBN/normalize）
-            fragColor = vec4(nmap5.rgb, 1.0);
-        } else {
-            // PASS3b：g_mode=4 处理后法线（tangent→world）
-            vec3 n5 = vec3(nmap5.x * 2.0 - 1.0, nmap5.y * 2.0 - 1.0, 0.0);
-            n5.z = sqrt(max(1.0 - (n5.x * n5.x + n5.y * n5.y), 0.0));
-            n5 = normalize(n5);
-            vec3 N5 = normalize(v_normal);
-            vec3 up5 = abs(N5.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-            vec3 T5 = normalize(cross(up5, N5));
-            vec3 B5 = normalize(cross(N5, T5));
-            vec3 dn = normalize(T5 * n5.x + B5 * n5.y + N5 * n5.z);
-            fragColor = vec4(normalize(dn) * 0.5 + 0.5, 1.0);
-        }
-        return;
-    }
-    if (u_mode == 9) {
-        // Normal-only decal：读 normal_a(Hull Normal)，合成 decal 法线，写 normal_b(Final Normal)。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        vec3 hullN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
-        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 1.0);
-        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
-        n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-        n_ts = normalize(n_ts);
-        vec3 N = normalize(v_normal);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 T = normalize(cross(up, N));
-        vec3 B = normalize(cross(N, T));
-        vec3 decal_n = normalize(T * n_ts.x + B * n_ts.y + N * n_ts.z);
-        vec3 merged = normalize(hullN + (decal_n - N));
-        fragColor = vec4(merged * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (u_mode == 10) {
-        // Copy：fullscreen quad 读 Hull Normal(scene_normal_tex)，写 normal_a。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        fragColor = texture(u_scene_normal_tex, suv);
-        return;
-    }
-    if (u_mode == 11) {
-        // 最终 Lighting：fullscreen quad 读 Hull Albedo + Final Normal，打光 → 默认 FBO。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        vec3 albedo = texture(u_scene_tex, suv).rgb;
-        vec3 N = normalize(texture(u_scene_final_tex, suv).rgb * 2.0 - 1.0);
-        float diff = max(dot(N, -u_light_dir), 0.0);
-        float hl = diff * 0.5 + 0.5;
-        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
-        vec3 col = albedo * lit;
-        col = pow(col, vec3(1.0 / 2.2));
-        // ★ 临时 DEBUG(9/10)：直接显示 Hull MRT albedo，不打光/不幂，便于读原始值
-        if (u_debug_mode == 9 || u_debug_mode == 10) {
-            fragColor = vec4(texture(u_scene_tex, suv).rgb, 1.0);
-        } else if (u_debug_mode == 11 || u_debug_mode == 12) {
-            // raw albedo tile / tint：线性已存入 MRT，此处补 gamma 做 sRGB 显示
-            fragColor = vec4(pow(texture(u_scene_tex, suv).rgb, vec3(1.0 / 2.2)), 1.0);
-        } else {
-            fragColor = vec4(col, 1.0);
-        }
-        return;
-    }
-    if (u_mode == 12) {
-        // Debug：直接显色「最终法线」（normal_b = Hull+Decal 合成），直观查看法线效果。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        fragColor = texture(u_scene_final_tex, suv);
-        return;
-    }
-    if (u_mode == 7) {
-        // decal_tech 法线生效：读船体 surface MRT（未打光 albedo + 世界法线），
-        // 用自身 g_normalMap 合成法线，打一次光，颜色 = 船体 albedo。
-        vec2 suv = gl_FragCoord.xy / u_viewport;
-        // MRT 纹理 v=0 即屏幕底部，与 gl_FragCoord.y 方向一致，无需翻转（翻转会读到背景）
-        vec3 base_albedo = texture(u_scene_tex, suv).rgb;
-        vec3 baseN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
-        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 1.0);
-        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
-        n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-        n_ts = normalize(n_ts);
-        vec3 N = normalize(v_normal);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 T = normalize(cross(up, N));
-        vec3 B = normalize(cross(N, T));
-        vec3 decal_n = normalize(T * n_ts.x + B * n_ts.y + N * n_ts.z);
-        vec3 merged = normalize(decal_n);   // decal 法线直接作为该区域法线（凹凸由 g_normalMap 决定）
-        float diff = max(dot(merged, -u_light_dir), 0.0);
-        float hl = diff * 0.5 + 0.5;
-        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
-        vec3 col = base_albedo * lit;
-        col = pow(col, vec3(1.0 / 2.2));
-        fragColor = vec4(col, 1.0);
-        return;
-    }
     if (u_mode == 1) {
+        // 线框/平涂：直接显色
         fragColor = vec4(base.rgb, 1.0);
         return;
     }
     vec3 N = normalize(v_normal);
-    // 标准 PBS 法线贴图：材质声明了 normalMap 则用其扰动几何法线（tangent 空间→世界空间）。
-    // 仅对 u_mode==0（光照）生效；u_mode==2 无光照/自发光不需法线。
+    // 标准 PBS 法线贴图：材质声明了 normalMap 则只遵循法线贴图
     if (u_has_normal_map == 1) {
         vec3 nm = texture(u_normal_map, v_uv).rgb;
         vec3 n_ts = vec3(nm.x * 2.0 - 1.0, nm.y * 2.0 - 1.0, 0.0);
-        n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-        n_ts = normalize(n_ts);
-        vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        vec3 T = normalize(cross(up, N));
-        vec3 B = normalize(cross(N, T));
-        N = normalize(T * n_ts.x + B * n_ts.y + N * n_ts.z);
+        n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
+        N = normalize(n_ts);
+    }
+    // _mg（metallicGlossMap）：R=metallic, G=gloss, B=发光/涂装强度
+    float metallic = 0.0; float gloss = 0.0; float emit = 0.0;
+    if (u_has_mg == 1) {
+        vec3 mg = texture(u_mg_map, v_uv).rgb;
+        metallic = mg.r; gloss = mg.g; emit = mg.b;
     }
     if (u_mrt == 1) {
-        // 轻量 deferred surface：标准 PBS/emissive 存未打光 albedo + 世界法线
-        fragColor = vec4(base.rgb, base.a);
-        fragNormal = vec4(N * 0.5 + 0.5, 1.0);
+        // 轻量 deferred surface：标准 PBS/emissive 存未打光 albedo + 世界法线；
+        // a 携带 metallic、fragNormal.a 携带 gloss，供最终 lighting 加金属高光。
+        fragColor = vec4(base.rgb, metallic);
+        fragNormal = vec4(N * 0.5 + 0.5, gloss);
         return;
-    }
-    if (u_mrt == 0 && (u_debug_mode == 3 || u_debug_mode == 8)) {
-        // PASS2/debug8：标准 PBS 法线贴图扰动后的最终 Normal 可视化
-        fragColor = vec4(normalize(N) * 0.5 + 0.5, 1.0);
-        return;
-    }
-    if (u_use_scene_normal == 1) {
-        vec2 suv2 = gl_FragCoord.xy / u_viewport;
-        N = normalize(texture(u_scene_final_tex, suv2).rgb * 2.0 - 1.0);
     }
     vec3 n = N;
     float diff = max(dot(n, -u_light_dir), 0.0);
@@ -458,34 +192,359 @@ void main() {
     if (u_mode == 2) {
         rgb2 = base.rgb;
         if (u_emissive > 0.5) {
-            // emissive：无光照 + diffuse blue 通道自发光增益（忽略 _n/_mg）
             float em = base.b;
             rgb2 = base.rgb * (1.0 + u_emissive_k * em);
         }
     } else {
-        rgb2 = base.rgb * lit;
+        rgb2 = pbr_light(base.rgb, n, metallic, gloss, lit);
+        // ★ _mg B 通道（发光/涂装强度）预留：非 emissive 材质不参与，暂不叠加
     }
     if (is_tex) {
-        // 贴图已被硬件解码到线性空间，这里仅做线性→sRGB 编码输出
         rgb2 = pow(rgb2, vec3(1.0 / 2.2));
     }
     fragColor = vec4(rgb2, base.a * u_opacity);
 }
 """
 
-#: 单输出 fragColor 变体：用于**单 drawbuffer 目标**（decal normal pass / 默认 FBO）。
-#: 移除 fragNormal 输出与赋值 —— 否则 `_program`（fragColor+fragNormal 两个输出）在只有
-#: 1 个 drawbuffer 的目标上因「fragment 输出数 > drawbuffer 数」触发 GL_INVALID_OPERATION(1282)。
-#: MRT(Pass1，scene_fbo 有 2 个 drawbuffer) 仍用完整 FRAG_SRC。
-FRAG_SRC_SINGLE = FRAG_SRC.replace(
-    "out vec4 fragColor;\n"
-    "out vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）",
+#: PBS 单输出变体（移除 fragNormal 声明与 MRT 赋值），用于单 drawbuffer 目标。
+FRAG_PBS_SINGLE = FRAG_PBS.replace(
+    "out vec4 fragColor;\nout vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）",
     "out vec4 fragColor;",
 ).replace(
-    "            fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);",
-    "",
+    "        fragNormal = vec4(N * 0.5 + 0.5, gloss);\n        return;",
+    "        return;",
+)
+
+#: ★ FX / decal / fullscreen shader（u_mode 4/5/7/9/10/11/12）：decal 法线合成 + 最终光照。
+#:   只声明 FX 用到的 sampler（u_tex 供 decal / u_scene_* 供合成），与 INDEXED/PBS 独立。
+FRAG_FX = """
+#version 400 core
+in vec4 v_color;
+ in vec3 v_normal;
+ in vec2 v_uv;
+uniform int u_mode;
+uniform float u_opacity;
+uniform vec3 u_light_dir;
+uniform vec3 u_ambient;
+uniform sampler2D u_tex;
+uniform int u_has_tex;
+uniform sampler2D u_scene_tex;         // MRT 附件0：船体未打光 albedo（linear）
+uniform sampler2D u_scene_normal_tex;  // MRT 附件1：船体世界法线
+uniform sampler2D u_scene_final_tex;   // MRT 附件2：Final Normal（Hull+decal 合成）
+uniform vec2 u_viewport;               // 视口尺寸（换算屏幕 UV）
+uniform vec3 u_view_dir;              // 观察方向（反射用）
+out vec4 fragColor;
+// ★ 永久程序化环境（天空/海面/太阳反射，2026-08-27）：不依赖解包，金属反射直接用
+vec3 env_color(vec3 R) {
+    vec3 sky = vec3(0.30, 0.44, 0.58);
+    vec3 sea = vec3(0.05, 0.08, 0.11);
+    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 c = mix(sea, sky, pow(t, 0.85));
+    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
+    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
+    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
+    return c;
+}
+// 统一 PBR: Cook-Torrance GGX + Schlick Fresnel + 金属环境反射(env_color)
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
+    vec3 L = normalize(-u_light_dir);
+    vec3 V = normalize(u_view_dir);
+    vec3 H = normalize(L + V);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float roughness = clamp(1.0 - gloss, 0.04, 1.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    float a = roughness * roughness; float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / max(3.14159265 * denom * denom, 1e-5);
+    float k = (roughness + 1.0); k = k * k / 8.0;
+    float Gv = NdotV / (NdotV * (1.0 - k) + k);
+    float Gl = NdotL / (NdotL * (1.0 - k) + k);
+    float G = Gv * Gl;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
+    vec3 kd = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = albedo * kd * lit;
+    vec3 direct = diffuse * NdotL + specular * NdotL;
+    vec3 R = reflect(-V, N);
+    vec3 env = env_color(R);
+    vec3 env_spec = env * F * metallic;
+    return direct + env_spec;
+}
+void main() {
+    vec4 base = v_color;
+    bool is_tex = (u_has_tex == 1);
+    if (is_tex) {
+        base = texture(u_tex, v_uv);
+    }
+    if (u_mode == 4) {
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        suv.y = 1.0 - suv.y;
+        vec3 base_albedo = texture(u_scene_tex, suv).rgb;
+        vec3 baseN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
+        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 0.0);
+        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
+        n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
+        n_ts = normalize(n_ts);
+        vec3 decal_n = normalize(n_ts);
+        vec3 merged = normalize(baseN + (decal_n - vec3(0.0, 0.0, 1.0)));
+        float diff = max(dot(merged, -u_light_dir), 0.0);
+        float hl = diff * 0.5 + 0.5;
+        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
+        vec3 col = base_albedo * lit;
+        col = pow(col, vec3(1.0 / 2.2));
+        float mask = 1.0 * u_opacity;
+        fragColor = vec4(col, mask);
+        return;
+    }
+    if (u_mode == 5) {
+        vec4 nmap5 = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 0.0);
+        vec3 n5 = vec3(nmap5.x * 2.0 - 1.0, nmap5.y * 2.0 - 1.0, 0.0);
+        n5.z = sqrt(max(1.0 - (n5.x*n5.x + n5.y*n5.y), 0.0));
+        n5 = normalize(n5);
+        vec3 dn = normalize(n5);
+        fragColor = vec4(normalize(dn) * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (u_mode == 9) {
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        vec3 hullN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
+        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 1.0);
+        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
+        n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
+        n_ts = normalize(n_ts);
+        vec3 decal_n = normalize(n_ts);
+        vec3 merged = normalize(hullN + (decal_n - vec3(0.0, 0.0, 1.0)));
+        fragColor = vec4(merged * 0.5 + 0.5, 1.0);
+        return;
+    }
+    if (u_mode == 10) {
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        fragColor = texture(u_scene_normal_tex, suv);
+        return;
+    }
+    if (u_mode == 11) {
+        // 最终 Lighting：读 Hull Albedo + Final Normal，用统一 PBR(GGX/Fresnel/env) 打光。
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        vec4 scenec = texture(u_scene_tex, suv);
+        vec3 albedo = scenec.rgb;
+        float metallic = scenec.a;
+        vec4 scenen = texture(u_scene_final_tex, suv);
+        vec3 N = normalize(scenen.rgb * 2.0 - 1.0);
+        float gloss = scenen.a;
+        float diff = max(dot(N, -u_light_dir), 0.0);
+        float hl = diff * 0.5 + 0.5;
+        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
+        vec3 col = pbr_light(albedo, N, metallic, gloss, lit);
+        col = pow(col, vec3(1.0 / 2.2));
+        fragColor = vec4(col, 1.0);
+        return;
+    }
+    if (u_mode == 12) {
+        // Debug 法线：直接显色「最终法线」（normal_b = Hull+Decal 合成）。
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        fragColor = texture(u_scene_final_tex, suv);
+        return;
+    }
+    if (u_mode == 13) {
+        // Debug metallic：显色 scene_color_tex.a（Pass1 存的 metallic）。
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        float m = texture(u_scene_tex, suv).a;
+        fragColor = vec4(vec3(m), 1.0);
+        return;
+    }
+    if (u_mode == 14) {
+        // Debug gloss：显色 nb_tex.a（Pass1 存的 gloss）。
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        float g = texture(u_scene_final_tex, suv).a;
+        fragColor = vec4(vec3(g), 1.0);
+        return;
+    }
+    if (u_mode == 7) {
+        vec2 suv = gl_FragCoord.xy / u_viewport;
+        vec3 base_albedo = texture(u_scene_tex, suv).rgb;
+        vec3 baseN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
+        vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 1.0);
+        vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
+        n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
+        n_ts = normalize(n_ts);
+        vec3 decal_n = normalize(n_ts);
+        vec3 merged = normalize(decal_n);
+        float diff = max(dot(merged, -u_light_dir), 0.0);
+        float hl = diff * 0.5 + 0.5;
+        vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
+        vec3 col = base_albedo * lit;
+        col = pow(col, vec3(1.0 / 2.2));
+        fragColor = vec4(col, 1.0);
+        return;
+    }
+    fragColor = vec4(base.rgb, base.a * u_opacity);
+}
+"""
+
+#: FX 单输出（FX 本就单输出，无需变体；此别名便于与其它 program 保持一致）。
+FRAG_FX_SINGLE = FRAG_FX
+
+#: ★ INDEXED 专用 shader（u_mode==3）：只声明 indexed 用到的 sampler，纹理单元与 PBS/FS 完全独立，
+#:   避免单元冲突（2026-08-27）。材质路径分离第一步。
+FRAG_INDEXED = """
+#version 400 core
+in vec4 v_color;
+in vec3 v_normal;
+in vec2 v_uv;
+uniform int u_mode;
+uniform float u_opacity;
+uniform vec3 u_light_dir;
+uniform vec3 u_ambient;
+uniform int u_has_tex;
+uniform sampler2D u_matid_tex;
+uniform sampler2DArray u_tiles_tex;
+uniform sampler2DArray u_normal_tex;
+uniform sampler2DArray u_mg_tex;
+uniform sampler2D u_alpha_n_map;
+uniform sampler2D u_art_tex;
+uniform sampler2DArray u_noise_tex;
+uniform vec4 u_offset_scale[196];
+uniform vec4 u_rotation[196];
+uniform vec4 u_tile_idx[196];
+uniform vec4 u_tint[196];
+uniform vec4 u_remove[196];
+uniform float u_gamma;
+uniform vec2 u_viewport;
+uniform int u_mrt;
+uniform int u_debug_mode;
+uniform int u_use_scene_normal;
+uniform vec3 u_view_dir;   // 观察方向（反射用）
+uniform int u_matid_vis;   // 1=输出 matId 伪彩(诊断散块对应材质)
+uniform sampler2D u_scene_final_tex;
+out vec4 fragColor;
+out vec4 fragNormal;
+// 统一 PBR：环境 + Cook-Torrance GGX + Schlick Fresnel
+vec3 env_color(vec3 R) {
+    vec3 sky = vec3(0.30, 0.44, 0.58);
+    vec3 sea = vec3(0.05, 0.08, 0.11);
+    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 c = mix(sea, sky, pow(t, 0.85));
+    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
+    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
+    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
+    return c;
+}
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
+    vec3 L = normalize(-u_light_dir);
+    vec3 V = normalize(u_view_dir);
+    vec3 H = normalize(L + V);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    float roughness = clamp(1.0 - gloss, 0.04, 1.0);
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    float a = roughness * roughness; float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    float D = a2 / max(3.14159265 * denom * denom, 1e-5);
+    float k = (roughness + 1.0); k = k * k / 8.0;
+    float Gv = NdotV / (NdotV * (1.0 - k) + k);
+    float Gl = NdotL / (NdotL * (1.0 - k) + k);
+    float G = Gv * Gl;
+    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
+    vec3 kd = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = albedo * kd * lit;
+    vec3 direct = diffuse * NdotL + specular * NdotL;
+    vec3 R = reflect(-V, N);
+    vec3 env = env_color(R);
+    vec3 env_spec = env * F * metallic;
+    return direct + env_spec;
+}
+void main() {
+    vec4 base = v_color;
+    if (u_mode == 3) {
+        ivec2 imsz = textureSize(u_matid_tex, 0);
+        vec2 noise_uv = v_uv * 48.0;
+        vec2 noise_raw = texture(u_noise_tex, vec3(noise_uv, 0.0)).xy;
+        float floating = dot(normalize(v_normal), vec3(0.0, 1.0, 0.0));
+        vec2 noise_sel = (floating > 0.96) ? vec2(noise_raw.x) : noise_raw;
+        vec2 noise2 = noise_sel * 2.0 - 1.0;
+        vec2 muv_uv = v_uv + noise2 * (1.0 / (48.0 * 52.0));
+        vec2 muv = (floor(muv_uv * vec2(imsz) + 0.5)) / vec2(imsz);
+        // ★ 官方 gather4 + 一致性选择（2026-08-27）：取 4 邻材质ID，选「与其余最一致」者，
+        //   消除材质分块边界处的零星错误色块（紫色/白色小块）。
+        vec4 m4 = textureGather(u_matid_tex, muv, 0);
+        vec4 mid4 = min(floor(m4 * 255.0 + 0.5), vec4(195.0));
+        float d0 = abs(mid4.x-mid4.y)+abs(mid4.x-mid4.z)+abs(mid4.x-mid4.w);
+        float d1 = abs(mid4.y-mid4.x)+abs(mid4.y-mid4.z)+abs(mid4.y-mid4.w);
+        float d2 = abs(mid4.z-mid4.x)+abs(mid4.z-mid4.y)+abs(mid4.z-mid4.w);
+        float d3 = abs(mid4.w-mid4.x)+abs(mid4.w-mid4.y)+abs(mid4.w-mid4.z);
+        float dm = min(min(d0, d1), min(d2, d3));
+        float sel = (dm == d0) ? mid4.x : (dm == d1) ? mid4.y : (dm == d2) ? mid4.z : mid4.w;
+        int matId = int(sel);
+        vec2 uv = v_uv * u_offset_scale[matId].zw + u_offset_scale[matId].xy;
+        float uang = u_rotation[matId].x;
+        float usa = sin(uang); float uca = cos(uang);
+        uv = vec2(uv.x*uca + uv.y*usa, -uv.x*usa + uv.y*uca);
+        float slice = max(u_tile_idx[matId].x, 0.0);
+        vec2 dudx = dFdx(uv);
+        vec2 dudy = dFdy(uv);
+        vec3 albedo = textureGrad(u_tiles_tex, vec3(uv, slice), dudx, dudy).rgb;
+        float g = u_gamma;
+        vec3 albedo_lin = pow(albedo, vec3(g));
+        vec3 tint_lin = pow(u_tint[matId].rgb, vec3(g));
+        vec3 ref = u_remove[matId].rgb;
+        float sum = abs(albedo.x-ref.x) + abs(albedo.y-ref.y) + abs(albedo.z-ref.z);
+        float k = clamp((sum + 0.001) / max(u_tint[matId].w, 1e-4), 0.0, 1.0);
+        vec3 c = mix(tint_lin, albedo_lin, k);
+        vec4 art4 = texture(u_art_tex, v_uv);
+        float am = clamp(art4.a * u_rotation[matId].y, 0.0, 1.0);
+        c = mix(c, art4.rgb, am);
+        float nslice = max(u_tile_idx[matId].y, 0.0);
+        vec3 ntex = textureGrad(u_normal_tex, vec3(uv, nslice), dudx, dudy).rgb;
+        vec3 n_ts = vec3(ntex.x * 2.0 - 1.0, ntex.y * 2.0 - 1.0, 0.0);
+        float nz = n_ts.x*n_ts.x + n_ts.y*n_ts.y;
+        n_ts.z = sqrt(max(1.0 - nz, 0.0));
+        vec3 a4 = texture(u_alpha_n_map, v_uv).rgb;
+        vec3 n_a = vec3(a4.x * 2.0 - 1.0, a4.y * 2.0 - 1.0, 0.0);
+        float nza = n_a.x*n_a.x + n_a.y*n_a.y;
+        n_a.z = sqrt(max(1.0 - nza, 0.0));
+        n_ts = normalize(n_ts + n_a - vec3(0.0, 0.0, 1.0));
+        vec3 n_world = normalize(n_ts);
+        float mslice = max(u_tile_idx[matId].z, 0.0);
+        vec3 mg = textureGrad(u_mg_tex, vec3(uv, mslice), dudx, dudy).rgb;
+        float metallic = mg.r;
+        float gloss = mg.g;
+        if (u_mrt == 1) {
+            fragColor = vec4(c, metallic);
+            fragNormal = vec4(n_world * 0.5 + 0.5, gloss);
+        } else {
+            if (u_matid_vis == 1) {
+                fragColor = vec4(vec3(float(matId) / 195.0), 1.0);
+                return;
+            }
+            if (u_use_scene_normal == 1) {
+                vec2 suv2 = gl_FragCoord.xy / u_viewport;
+                n_world = normalize(texture(u_scene_final_tex, suv2).rgb * 2.0 - 1.0);
+            }
+            float diff2 = max(dot(n_world, -u_light_dir), 0.0);
+            float hl2 = diff2 * 0.5 + 0.5;
+            vec3 lit2 = u_ambient + (1.0 - u_ambient) * hl2;
+            c = pbr_light(c, n_world, metallic, gloss, lit2);
+            c = pow(c, vec3(1.0 / 2.2));
+            fragColor = vec4(c, 1.0);
+        }
+        return;
+    }
+    fragColor = vec4(base.rgb, base.a * u_opacity);
+}
+"""
+
+#: FRAG_INDEXED 单输出变体（移除 fragNormal 声明与赋值），用于单 drawbuffer 目标。
+FRAG_INDEXED_SINGLE = FRAG_INDEXED.replace(
+    "out vec4 fragColor;\nout vec4 fragNormal;",
+    "out vec4 fragColor;",
 ).replace(
-    "        fragNormal = vec4(N * 0.5 + 0.5, 1.0);",
+    "            fragNormal = vec4(n_world * 0.5 + 0.5, gloss);",
     "",
 )
 
@@ -498,10 +557,18 @@ _COL_OFFSET = 32
 
 _UNIFORMS = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_ambient",
              "u_tex", "u_has_tex", "u_emissive", "u_emissive_k",
-             "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_alpha_n_map", "u_art_tex",
+             "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_mg_tex", "u_alpha_n_map", "u_art_tex",
              "u_noise_tex", "u_offset_scale", "u_rotation", "u_tile_idx", "u_tint", "u_remove",
              "u_gamma", "u_scene_tex", "u_scene_normal_tex", "u_viewport", "u_mrt",
-             "u_normal_map", "u_has_normal_map", "u_debug_mode", "u_scene_final_tex", "u_use_scene_normal")
+             "u_normal_map", "u_has_normal_map", "u_mg_map", "u_has_mg", "u_debug_mode", "u_scene_final_tex", "u_use_scene_normal",
+             "u_view_dir")
+
+#: INDEXED 专用 program 的 uniform 表（与 PBS/FS 独立，避免共用造成的单元/状态冲突）
+_UNIFORMS_INDEXED = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_ambient", "u_matid_vis",
+                     "u_has_tex", "u_has_normal_map", "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_mg_tex",
+                     "u_alpha_n_map", "u_art_tex", "u_noise_tex", "u_offset_scale", "u_rotation",
+                     "u_tile_idx", "u_tint", "u_remove", "u_gamma", "u_viewport", "u_mrt",
+                     "u_debug_mode", "u_use_scene_normal", "u_scene_final_tex", "u_view_dir")
 
 
 def _compile_shader(shader_type: int, source: str) -> int:
@@ -511,6 +578,11 @@ def _compile_shader(shader_type: int, source: str) -> int:
     if not GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS):
         log = GL.glGetShaderInfoLog(sh)
         GL.glDeleteShader(sh)
+        try:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ Shader 编译失败: {log}")
+        except Exception:
+            pass
         raise RuntimeError(f"Shader 编译失败: {log}")
     return sh
 
@@ -535,6 +607,11 @@ def _link_program(vs_src: str, fs_src: str) -> int:
     if not GL.glGetProgramiv(prog, GL.GL_LINK_STATUS):
         log = GL.glGetProgramInfoLog(prog)
         GL.glDeleteProgram(prog)
+        try:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ Program 链接失败: {log}")
+        except Exception:
+            pass
         raise RuntimeError(f"Program 链接失败: {log}")
     return prog
 
@@ -701,6 +778,8 @@ class GpuMesh:
                  tex_cache: dict | None = None):
         self.name = name
         self.kind = kind
+        #: 材质贴图集 {键: (vfs_path, bytes)}，供诊断/后续复用
+        self.material_textures = material_textures or {}
         #: GL 纹理去重缓存（共享图集只上传一次；release 不删除缓存中的纹理）
         self._tex_cache = tex_cache
         #: 构成该网格的形状名与骨骼节点名（调试模式 3 标签用，替代材质/文件名）
@@ -760,6 +839,16 @@ class GpuMesh:
         GL.glVertexAttribPointer(2, 2, GL.GL_FLOAT, GL.GL_FALSE, _VERTEX_STRIDE, _gl_off(_UV_OFFSET))
         GL.glEnableVertexAttribArray(3)
         GL.glVertexAttribPointer(3, 4, GL.GL_FLOAT, GL.GL_FALSE, _VERTEX_STRIDE, _gl_off(_COL_OFFSET))
+        # instance model matrix（每 mesh 一份 VBO，默认 1 个 identity；多实例时上传 N 个）
+        self._inst_vbo = GL.glGenBuffers(1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._inst_vbo)
+        _id = np.eye(4, dtype=np.float32)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, _id.nbytes, _id, GL.GL_DYNAMIC_DRAW)
+        for k in range(4):
+            GL.glEnableVertexAttribArray(8 + k)
+            GL.glVertexAttribPointer(8 + k, 4, GL.GL_FLOAT, GL.GL_FALSE, 64, _gl_off(k * 16))
+            GL.glVertexAttribDivisor(8 + k, 1)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, self._ibo)
         GL.glBindVertexArray(0)
 
@@ -782,8 +871,8 @@ class GpuMesh:
             for key, (_path, tbytes) in material_textures.items():
                 # materialIdMap（材质ID）、albedoArray、normalArray、normalMap/g_normalMap
                 # 均非 sRGB，避免 GPU 硬件 sRGB 解码造成双重 gamma（尤其法线）。
-                _rep = key in ("albedoArray", "normalArray", "rgbNoiseMap")   # 官方 wrap 采样器
-                _nsrgb = ("materialIdMap", "albedoArray", "normalArray", "normalMap", "g_normalMap")
+                _rep = key in ("albedoArray", "normalArray", "rgbNoiseMap", "MGArray")   # 官方 wrap 采样器
+                _nsrgb = ("materialIdMap", "albedoArray", "normalArray", "normalMap", "g_normalMap", "MGArray", "metallicGlossMap")
                 tid, _tgt = _upload_texture(tbytes, srgb=(key not in _nsrgb),
                                             label=_path or key, matid=(key == "materialIdMap"),
                                             repeat=_rep, tex_cache=self._tex_cache)
@@ -814,6 +903,26 @@ class GpuMesh:
         GL.glBindVertexArray(self._vao)
         GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibo)
         GL.glDrawElements(mode, count, GL.GL_UNSIGNED_INT, None)
+        GL.glBindVertexArray(0)
+
+    def render_instanced(self, mode: int, matrices: list, line: bool = False):
+        """GPU instancing：一次上传 N 个 model matrix，一次 glDrawElementsInstanced 画所有实例。"""
+        ibo = self._line_ibo if line else self._ibo
+        count = self._line_count if line else self.index_count
+        if count == 0 or not matrices:
+            return
+        mats = np.zeros((len(matrices), 16), dtype=np.float32)
+        for i, m in enumerate(matrices):
+            if m is None:
+                mats[i] = np.eye(4, dtype=np.float32).reshape(-1)
+            else:
+                # 列主序存储（.T 展平），与 GLSL mat4(i_model0..3) 的列构造一致
+                mats[i] = np.asarray(m, dtype=np.float32).T.reshape(-1)
+        GL.glBindVertexArray(self._vao)
+        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, self._inst_vbo)
+        GL.glBufferData(GL.GL_ARRAY_BUFFER, mats.nbytes, np.ascontiguousarray(mats), GL.GL_DYNAMIC_DRAW)
+        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ibo)
+        GL.glDrawElementsInstanced(mode, count, GL.GL_UNSIGNED_INT, None, len(matrices))
         GL.glBindVertexArray(0)
 
     def update_indices(self, indices: np.ndarray):
@@ -861,6 +970,12 @@ class GeometryViewport(QOpenGLWidget):
         self._uniforms = {}
         self._program_mrt = 0        # 双输出（scene_fbo MRT，Pass1 用）
         self._uniforms_mrt = {}
+        self._prog_indexed = 0       # INDEXED 专用（单输出，直接光照）
+        self._unif_indexed = {}
+        self._prog_indexed_mrt = 0   # INDEXED 专用（双输出，MRT）
+        self._unif_indexed_mrt = {}
+        self._prog_fx = 0           # FX/decal/fullscreen 专用（单输出）
+        self._unif_fx = {}
         self._fs_program = 0
         self._fs_uniforms = {}
         self._meshes: list[GpuMesh] = []
@@ -899,8 +1014,10 @@ class GeometryViewport(QOpenGLWidget):
         self._na_fbo: int = 0; self._na_tex: int = 0
         self._nb_fbo: int = 0; self._nb_tex: int = 0
         self._fullscreen_vao: int = 0; self._fullscreen_vbo: int = 0
-        #: Debug 模式（N 循环）：0=关，1=最终法线显色，2=挂载点位+名称，3=所有模型名称
+        #: Debug 模式（N 循环 0..2）：0=正常，1=法线效果显示(最终法线)，2=所有模型名称(含挂载点位)
         self._debug_mode = 0
+        #: matId 伪彩诊断（>0 时 INDEXED 输出 matId 值；0=正常渲染）
+        self._matid_vis = 0
         #: debug(2/3) 模型点位名称（paintEvent 叠加文本）
         self._mount_labels = []
         #: debug 点位缓存的 GL 资源（_marker_vao/_marker_vbo/_marker_cbo）与数据指纹
@@ -1277,21 +1394,33 @@ class GeometryViewport(QOpenGLWidget):
     def initializeGL(self):
         # 新上下文：旧纹理 id 失效，重置贴图去重缓存
         self._gl_tex_cache = {}
-        # 单输出 program：用于单 drawbuffer 目标（decal normal pass / 默认 FBO / 全屏）。
-        # 若仍用双输出 FRAG_SRC，会在只有 1 个 drawbuffer 上触发 GL_INVALID_OPERATION(1282)。
-        self._program = _link_program(VERT_SRC, FRAG_SRC_SINGLE)
+        # 单输出 PBS program：用于单 drawbuffer 目标（默认 FBO / 透明 / 装甲 / 线框）。
+        # 只声明 PBS 用到的 sampler（u_tex/u_normal_map），与 INDEXED/FX 单元独立，避免 1282。
+        self._program = _link_program(VERT_SRC, FRAG_PBS_SINGLE)
         for name in _UNIFORMS:
             self._uniforms[name] = GL.glGetUniformLocation(self._program, name)
-        # MRT program（fragColor + fragNormal 双输出）：仅 Pass1 渲 scene_fbo(RT0/RT1) 用。
-        self._program_mrt = _link_program(VERT_SRC, FRAG_SRC)
+        # MRT PBS program（fragColor + fragNormal 双输出）：仅 Pass1 渲 scene_fbo(RT0/RT1) 用。
+        self._program_mrt = _link_program(VERT_SRC, FRAG_PBS)
         self._uniforms_mrt = {name: GL.glGetUniformLocation(self._program_mrt, name)
                               for name in _UNIFORMS}
+        # INDEXED 专用 program（与 PBS/FS 分离，规避纹理单元冲突）
+        self._prog_indexed = _link_program(VERT_SRC, FRAG_INDEXED_SINGLE)
+        self._unif_indexed = {name: GL.glGetUniformLocation(self._prog_indexed, name)
+                              for name in _UNIFORMS_INDEXED}
+        self._prog_indexed_mrt = _link_program(VERT_SRC, FRAG_INDEXED)
+        self._unif_indexed_mrt = {name: GL.glGetUniformLocation(self._prog_indexed_mrt, name)
+                                  for name in _UNIFORMS_INDEXED}
+        # FX / decal program（VERT_SRC + FRAG_FX，decal mesh 真实 UV/attrib；单输出）
+        self._prog_fx = _link_program(VERT_SRC, FRAG_FX_SINGLE)
+        self._unif_fx = {name: GL.glGetUniformLocation(self._prog_fx, name)
+                         for name in _UNIFORMS}
         # 独立 fullscreen program（gl_VertexID 全屏三角形，无 VAO/attrib；单输出）
-        self._fs_program = _link_program(TEX_VERT_SRC, FRAG_SRC_SINGLE)
+        self._fs_program = _link_program(TEX_VERT_SRC, FRAG_FX_SINGLE)
         self._fs_uniforms = {name: GL.glGetUniformLocation(self._fs_program, name)
                              for name in ("u_mode", "u_viewport", "u_scene_tex",
                                           "u_scene_normal_tex", "u_scene_final_tex",
-                                          "u_light_dir", "u_ambient", "u_debug_mode")}
+                                          "u_light_dir", "u_ambient", "u_debug_mode",
+                                          "u_view_dir")}
         GL.glEnable(GL.GL_DEPTH_TEST)
         self._gl_ready = True
         self._build_meshes()
@@ -1306,7 +1435,7 @@ class GeometryViewport(QOpenGLWidget):
     def paintGL(self):
         w, h = self.width(), max(self.height(), 1)
         GL.glViewport(0, 0, w, h)
-        GL.glClearColor(0.10, 0.12, 0.15, 1.0)
+        GL.glClearColor(0.30, 0.46, 0.60, 1.0)   # 天空背景色
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         # 每帧重设默认 GL 状态（防御上一帧遗留的 depth/blend 被调试覆盖层破坏）
         GL.glEnable(GL.GL_DEPTH_TEST)
@@ -1356,7 +1485,7 @@ class GeometryViewport(QOpenGLWidget):
             if use_surface:
                 GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._scene_fbo)
                 GL.glViewport(0, 0, w, h)
-                GL.glClearColor(0.10, 0.12, 0.15, 1.0)
+                GL.glClearColor(0.30, 0.46, 0.60, 1.0)   # 天空背景色
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
                 GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
                 GL.glDisable(GL.GL_BLEND)
@@ -1407,13 +1536,15 @@ class GeometryViewport(QOpenGLWidget):
                     GL.glDepthFunc(GL.GL_LEQUAL)
                     GL.glDepthMask(GL.GL_FALSE)
                     GL.glDisable(GL.GL_BLEND)
-                    GL.glUniform1i(u["u_mrt"], 0)
-                    GL.glUniform1i(u["u_mode"], 9)
-                    GL.glUniform1i(u["u_use_scene_normal"], 0)
-                    GL.glUniform2f(u["u_viewport"], float(w), float(h))
+                    GL.glUseProgram(self._prog_fx)
+                    fx = self._unif_fx
+                    GL.glUniform1i(fx["u_mrt"], 0)
+                    GL.glUniform1i(fx["u_mode"], 9)
+                    GL.glUniform1i(fx["u_use_scene_normal"], 0)
+                    GL.glUniform2f(fx["u_viewport"], float(w), float(h))
                     GL.glActiveTexture(GL.GL_TEXTURE1)
                     GL.glBindTexture(GL.GL_TEXTURE_2D, self._na_tex)
-                    GL.glUniform1i(u["u_scene_normal_tex"], 1)
+                    GL.glUniform1i(fx["u_scene_normal_tex"], 1)
                     GL.glActiveTexture(GL.GL_TEXTURE0)
                     for mesh in decal_overlays:
                         # 逐实例绘制（每实例 bind 材质 + 更新模型矩阵）
@@ -1423,10 +1554,11 @@ class GeometryViewport(QOpenGLWidget):
                             for inst in insts:
                                 model = (inst if base is None
                                          else np.ascontiguousarray(base @ inst, dtype=np.float32))
-                                self._draw_decal_once(view, proj, u, mesh, model)
+                                self._draw_decal_once(view, proj, fx, mesh, model)
                         else:
-                            self._draw_decal_once(view, proj, u, mesh, mesh.model_matrix)
-                    self._apply_model(view, proj, None, u)
+                            self._draw_decal_once(view, proj, fx, mesh, mesh.model_matrix)
+                    self._apply_model(view, proj, None, fx)
+                    GL.glUseProgram(self._program)
                     GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
                     GL.glDepthMask(GL.GL_TRUE)
                     GL.glDepthFunc(GL.GL_LESS)
@@ -1442,26 +1574,29 @@ class GeometryViewport(QOpenGLWidget):
             GL.glDisable(GL.GL_DEPTH_TEST)
             GL.glUniform1i(u["u_use_scene_normal"], 0)
             if use_surface:
-                # debug(1)：直接显色最终法线（normal_b = Hull+Decal 合成）
-                if self._debug_mode == 1:
+                # 最终 Lighting：读 Hull Albedo + Final Normal（绑定场景/MRT 纹理）
+                GL.glUniform2f(u["u_viewport"], float(w), float(h))
+                GL.glActiveTexture(GL.GL_TEXTURE5)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self._scene_color_tex)
+                GL.glUniform1i(u["u_scene_tex"], 5)
+                GL.glActiveTexture(GL.GL_TEXTURE8)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self._nb_tex)
+                GL.glUniform1i(u["u_scene_final_tex"], 8)
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                if self._debug_mode == 2:
+                    # debug 2：最终法线
                     GL.glUniform1i(u["u_mode"], 12)
-                    GL.glUniform2f(u["u_viewport"], float(w), float(h))
-                    GL.glActiveTexture(GL.GL_TEXTURE8)
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, self._nb_tex)
-                    GL.glUniform1i(u["u_scene_final_tex"], 8)
-                    GL.glActiveTexture(GL.GL_TEXTURE0)
                     self._draw_fullscreen(12, w, h)
+                elif self._debug_mode == 3:
+                    # debug 3：metallic（scene_color_tex.a）
+                    GL.glUniform1i(u["u_mode"], 13)
+                    self._draw_fullscreen(13, w, h)
+                elif self._debug_mode == 4:
+                    # debug 4：gloss（nb_tex.a）
+                    GL.glUniform1i(u["u_mode"], 14)
+                    self._draw_fullscreen(14, w, h)
                 else:
-                    # 最终 Lighting：读 Hull Albedo + Final Normal
                     GL.glUniform1i(u["u_mode"], 11)
-                    GL.glUniform2f(u["u_viewport"], float(w), float(h))
-                    GL.glActiveTexture(GL.GL_TEXTURE5)
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, self._scene_color_tex)
-                    GL.glUniform1i(u["u_scene_tex"], 5)
-                    GL.glActiveTexture(GL.GL_TEXTURE8)
-                    GL.glBindTexture(GL.GL_TEXTURE_2D, self._nb_tex)
-                    GL.glUniform1i(u["u_scene_final_tex"], 8)
-                    GL.glActiveTexture(GL.GL_TEXTURE0)
                     self._draw_fullscreen(11, w, h)
             # ★ 把 scene 深度拷到默认 FBO：透明 pass（玻璃/线网/螺旋桨等）深度测试需要
             #   船体深度，否则全过 → 模型穿透显示。仅 deferred 路径有 scene 深度。
@@ -1600,13 +1735,19 @@ class GeometryViewport(QOpenGLWidget):
                 self._apply_model(view, proj, None)
                 GL.glDepthMask(GL.GL_TRUE)
 
-            # ── Debug：模型点位/名称叠加（mode 2=挂载点位+名称，3=所有模型名称） ──
-            if self._debug_mode in (2, 3) and self._meshes:
+            # ── Debug：模型点位/名称叠加（mode 1=所有模型名称，含挂载点位） ──
+            if self._debug_mode == 1 and self._meshes:
                 self._draw_model_markers(view, proj, self._uniforms, w, h,
-                                         mount_only=(self._debug_mode == 2))
+                                         mount_only=False)
         except Exception:  # noqa: BLE001 —— 渲染异常不中断 Qt 绘制循环
-            import traceback
-            traceback.print_exc()
+            import traceback, sys
+            tb = traceback.format_exc()
+            try:
+                from app.signals import bus
+                bus.log_message.emit(f"⚠️ 渲染异常: {tb}")
+            except Exception:
+                pass
+            print(tb, file=sys.stderr)
             pass
 
         GL.glUseProgram(0)
@@ -1729,14 +1870,8 @@ class GeometryViewport(QOpenGLWidget):
         - mrt_surface=False：渲到默认 FBO，shader 输出最终光照颜色。
         u_mode 由本方法按材质类型设置（indexed→3，emissive→2，其余→0）。
         """
-        GL.glUniform1i(u["u_mode"], 0)
-        GL.glUniform1i(u["u_debug_mode"], self._debug_mode)
-        GL.glUniform1f(u["u_opacity"], 1.0)
-        GL.glUniform1f(u["u_emissive"], 0.0)
-        GL.glUniform1f(u["u_emissive_k"], 1.0)
-        GL.glActiveTexture(GL.GL_TEXTURE0)
-        GL.glUniform1i(u["u_tex"], 0)
-        self._apply_model(view, proj, None)
+        prev_prog = None
+        last_uu = u
         for mesh in self._meshes:
             if mesh.kind not in ("hull", "mount"):
                 continue
@@ -1748,10 +1883,31 @@ class GeometryViewport(QOpenGLWidget):
                 continue
             if mesh.kind == "mount" and (not self._show_mounts or self._show_armor):
                 continue
-            # ★ 材质只绑定一次，实例循环只更新模型矩阵（省每帧上千次重复绑定）
-            self._bind_solid_material(u, mesh)
-            self._emit_instances(view, proj, mesh, u=u)
-        self._apply_model(view, proj, None, u)
+            # ★ 按材质类型选独立 program（indexed 与 PBS 纹理单元互不干扰）
+            if getattr(mesh, "tech_family", "") == "indexed":
+                prog = self._prog_indexed_mrt if mrt_surface else self._prog_indexed
+                uu = self._unif_indexed_mrt if mrt_surface else self._unif_indexed
+            else:
+                prog = self._program_mrt if mrt_surface else self._program
+                uu = self._uniforms_mrt if mrt_surface else self._uniforms
+            if prog != prev_prog:
+                GL.glUseProgram(prog)
+                prev_prog = prog
+                GL.glUniform1i(uu["u_mode"], 0)
+                GL.glUniform1i(uu["u_debug_mode"], 0)
+                GL.glUniform1f(uu["u_opacity"], 1.0)
+                GL.glUniform3f(uu["u_light_dir"], 0.35, 0.6, 0.72)
+                GL.glUniform3f(uu["u_ambient"], 0.12, 0.12, 0.14)
+                GL.glUniform1f(uu.get("u_emissive", -1), 0.0)
+                GL.glUniform1f(uu.get("u_emissive_k", -1), 1.0)
+                GL.glUniform1i(uu.get("u_tex", -1), 0)
+                GL.glUniform1i(uu["u_mrt"], 1 if mrt_surface else 0)
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+            last_uu = uu
+            self._apply_model(view, proj, None, uu)
+            self._bind_solid_material(uu, mesh)
+            self._emit_instances(view, proj, mesh, u=uu)
+        self._apply_model(view, proj, None, last_uu)
         GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
 
     def _bind_solid_material(self, u, mesh):
@@ -1789,15 +1945,35 @@ class GeometryViewport(QOpenGLWidget):
             GL.glUniform1i(u["u_has_normal_map"], 1)
         else:
             GL.glUniform1i(u["u_has_normal_map"], 0)
+        # _mg（metallicGlossMap）绑定到单元 5（R=metallic, G=gloss, B=发光/涂装强度）
+        _mgid = 0
+        if mesh._extra_tex:
+            _mgid = mesh._extra_tex.get("metallicGlossMap", 0)
+        if _mgid:
+            GL.glActiveTexture(GL.GL_TEXTURE5)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, _mgid)
+            GL.glUniform1i(u["u_mg_map"], 5)
+            GL.glUniform1i(u["u_has_mg"], 1)
+        else:
+            GL.glUniform1i(u["u_has_mg"], 0)
+        _vd = self._camera.eye() - self._camera.target
+        _nv = _vd / max(float(np.linalg.norm(_vd)), 1e-6)
+        GL.glUniform3f(u["u_view_dir"], float(_nv[0]), float(_nv[1]), float(_nv[2]))
         # ★ 关键：法线贴图绑到单元 6 后，必须把活动纹理单元切回 0，
         #   否则下一个网格的 diffuse 会绑到单元 6，而 u_tex 仍采样单元 0 → 串贴图。
         GL.glActiveTexture(GL.GL_TEXTURE0)
 
     def _emit_instances(self, view, proj, mesh, line=False, u=None):
-        """逐实例绘制：只更新模型矩阵，不重复绑定材质/贴图（每网格只 bind 一次）。"""
-        for model in _emit_matrices(mesh):
-            self._apply_model(view, proj, model, u)
+        """逐实例绘制：多实例用 GPU Instancing（1 次 glDrawElementsInstanced），单实例直接 draw。"""
+        matrices = _emit_matrices(mesh)
+        if not matrices:
+            return
+        if len(matrices) == 1:
+            self._apply_model(view, proj, matrices[0], u)
             mesh.render(GL.GL_TRIANGLES if not line else GL.GL_LINES, line=line)
+            return
+        self._apply_model(view, proj, None, u)
+        mesh.render_instanced(GL.GL_TRIANGLES if not line else GL.GL_LINES, matrices, line=line)
 
     @staticmethod
     def _bind_alpha_material(u, mesh):
@@ -1834,7 +2010,7 @@ class GeometryViewport(QOpenGLWidget):
 
     def _draw_decal_once(self, view, proj, u, mesh, model):
         """贴花（dec_tech/amgn）单次绘制一个网格（应用模型矩阵 + 绑定贴图）。"""
-        GL.glUseProgram(self._program)
+        GL.glUseProgram(self._prog_fx)
         self._apply_model(view, proj, model, u)
         self._bind_alpha_material(u, mesh)
         try:
@@ -1854,8 +2030,8 @@ class GeometryViewport(QOpenGLWidget):
           ✅ 向量化投影：名称投影用 numpy 批量计算，替代逐点 Python 循环。
         """
         def _label_for(m):
-            """模式 3 显示各模型自身形状名/骨骼节点名（替代几何文件名）。"""
-            if getattr(self, '_debug_mode', 0) == 3:
+            """模式 1 显示各模型自身形状名/骨骼节点名（替代几何文件名）。"""
+            if getattr(self, '_debug_mode', 0) == 1:
                 sn = getattr(m, 'shape_names', None) or []
                 nn = getattr(m, 'node_names', None) or []
                 if sn:
@@ -2018,6 +2194,9 @@ class GeometryViewport(QOpenGLWidget):
         GL.glActiveTexture(GL.GL_TEXTURE4)
         GL.glBindTexture(GL.GL_TEXTURE_2D_ARRAY, ex.get("rgbNoiseMap", 0))
         GL.glUniform1i(u["u_noise_tex"], 4)
+        GL.glActiveTexture(GL.GL_TEXTURE7)
+        GL.glBindTexture(GL.GL_TEXTURE_2D_ARRAY, ex.get("MGArray", 0))
+        GL.glUniform1i(u["u_mg_tex"], 7)
 
         def _arr(name):
             a = arrays.get(name)
@@ -2051,6 +2230,11 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUniform1i(u["u_has_tex"], 0)
         GL.glUniform1i(u["u_has_normal_map"], 0)   # indexed 不走标准法线贴图（用 normalArray）
         GL.glUniform1i(u["u_mode"], 3)
+        GL.glUniform1i(u["u_matid_vis"], 1 if getattr(self, "_matid_vis", 0) else 0)
+        # 观察方向（PBR 反射用）
+        _vd = self._camera.eye() - self._camera.target
+        _nv = _vd / max(float(np.linalg.norm(_vd)), 1e-6)
+        GL.glUniform3f(u["u_view_dir"], float(_nv[0]), float(_nv[1]), float(_nv[2]))
         GL.glActiveTexture(GL.GL_TEXTURE0)
 
     def _draw_fullscreen(self, mode, w, h):
@@ -2058,13 +2242,17 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUseProgram(self._fs_program)
         fu = self._fs_uniforms
         GL.glUniform1i(fu["u_mode"], mode)
-        GL.glUniform1i(fu["u_debug_mode"], self._debug_mode)
+        GL.glUniform1i(fu["u_debug_mode"], 0)   # 法线显示/光照不依赖 shader debug
         GL.glUniform2f(fu["u_viewport"], float(w), float(h))
         GL.glUniform3f(fu["u_light_dir"], 0.35, 0.6, 0.72)
         GL.glUniform3f(fu["u_ambient"], 0.12, 0.12, 0.14)
         GL.glUniform1i(fu["u_scene_tex"], 5)
         GL.glUniform1i(fu["u_scene_normal_tex"], 1)
         GL.glUniform1i(fu["u_scene_final_tex"], 8)
+        # 观察方向 + 天空盒（反射环境）绑定到 unit6
+        _vd = self._camera.eye() - self._camera.target
+        _nv = _vd / max(float(np.linalg.norm(_vd)), 1e-6)
+        GL.glUniform3f(fu["u_view_dir"], float(_nv[0]), float(_nv[1]), float(_nv[2]))
         # core profile 下 glDrawArrays 需要绑定 VAO（即使顶点由 gl_VertexID 生成）
         GL.glBindVertexArray(self._fullscreen_vao)
         GL.glDrawArrays(GL.GL_TRIANGLES, 0, 6)
@@ -2093,8 +2281,8 @@ class GeometryViewport(QOpenGLWidget):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        # debug(2/3)：叠加模型点位名称
-        if self._debug_mode in (2, 3) and self._mount_labels:
+        # debug(1/2/3/4)：叠加模型点位名称
+        if self._debug_mode == 1 and self._mount_labels:
             painter = QPainter(self)
             painter.setPen(QColor(255, 230, 0))
             f = painter.font()
@@ -2105,20 +2293,18 @@ class GeometryViewport(QOpenGLWidget):
             painter.end()
 
     def keyPressEvent(self, event):
-        """Debug 切换：N 循环 0..12。9=matId 色带，8=禁用 art 看 base，
-        11=只显示 raw albedo tile，12=只显示 tint。F12=截图到 _temp/。"""
+        """Debug 切换：N 循环 0..4。0=正常，1=所有模型名称，2=最终法线，3=metallic，4=gloss。F12=截图到 _temp/。"""
         k = event.key()
         if k == Qt.Key_F12:
             self._capture_png()
             return
         if k == Qt.Key_N:
-            self._debug_mode = (self._debug_mode + 1) % 13
+            self._debug_mode = (self._debug_mode + 1) % 5
             self.update()
             return
         mapping = {Qt.Key_0: 0, Qt.Key_Escape: 0,
-                   Qt.Key_1: 1, Qt.Key_2: 2, Qt.Key_3: 3,
-                   Qt.Key_9: 9, Qt.Key_8: 10,
-                   Qt.Key_B: 11, Qt.Key_T: 12}
+                   Qt.Key_1: 1, Qt.Key_2: 2,
+                   Qt.Key_3: 3, Qt.Key_4: 4}
         if k in mapping:
             self._debug_mode = mapping[k]
             self.update()
