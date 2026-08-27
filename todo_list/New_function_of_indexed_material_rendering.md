@@ -2,9 +2,9 @@
 
 > 📌 **状态：已由 `New_function_of_fix_indexed_render_and_export_glb.md` 取代（2026-08-20）**
 >
-> 2026-08-20 数据库探针证实：真实 vec4 数组只有 `albedoTintMatIdArr`（196×4 tint）与
-> `albedoToRemoveTintMatIdArr`（19×4）；本文档「渲染时」一节引用的 `offsetScaleMatIdArr`
-> 在数据库中不存在。修正方案与 GLB 导出转码设计见新计划文档。
+> ⚠️ 本文件「2 数组/offsetScaleMatIdArr 不存在」的探针结论**已作废**（2026-08-27 实测
+> `material_full.indexed` 确有 6 个 196×4 vec4 数组，含 `offsetScaleMatIdArr` 等）。
+> 修正方案与 GLB 导出转码设计见新计划文档；正确事实以 `indexed-render-authoritative.md` / `docs/shaders-format.md` 为准。
 >
 > 背景：`assets_data.db` 的 `material_full` 表已入库全部材质（含 162 个 INDEXED 材质），
 > `_resolve_material_full` 已能返回 `tech_family=indexed` + 贴图路径 + `indexed_params`（vec4 数组）。
