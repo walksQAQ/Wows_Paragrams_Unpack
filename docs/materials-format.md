@@ -4,11 +4,11 @@
 > 2026-08-19 归档。这是**非 INDEXED**（非 `0x0009` 材质 ID 分块）材质的权威属性参考，
 > 与 `prototype-formats.md`（MaterialPrototype 二进制布局）互补：本文档讲**属性名/语义**，那个讲**字节布局**。
 >
-> 2026-08-20 更新（数据库探针）：INDEXED 材质的真实 vec4 数组只有
-> `albedoTintMatIdArr`（196×4 tint）与 `albedoToRemoveTintMatIdArr`（19×4）；
-> `offsetScaleMatIdArr` / `tileIdxMatIdArr` / `artStrengthMatIdArr` 在数据库中**不存在**，
-> 渲染器 `offset`/`grid` 为默认回退（38,38）。详见 `docs/shaders-format.md` 与
-> `todo_list/New_function_of_fix_indexed_render_and_export_glb.md` P1。
+> 2026-08-27 更新：INDEXED 材质 `material_full.indexed` **确有 6 个 196×4 vec4 数组**
+> （`albedoTintMatIdArr` / `albedoToRemoveTintMatIdArr` / `artStrengthMatIdArr` /
+> `offsetScaleMatIdArr` / `rotationMatIdArr` / `tileIdxMatIdArr`）。
+> 早前「只有 2 数组、offsetScaleMatIdArr 等不存在」的探针结论**已作废**。
+> 详见 `docs/shaders-format.md` 与 `indexed-render-authoritative.md`。
 
 > 注意：`.mfm` 里的贴图路径指向 Mod SDK 内部（`PnFMods/...`），**仅作属性与命名约定参考**；
 > 实际渲染路径以客户端 assets.bin 的 `value_path` 为准（`material_full.textures` 已入库原始路径）。

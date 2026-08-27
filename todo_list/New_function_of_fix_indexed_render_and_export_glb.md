@@ -32,14 +32,14 @@
    | diffuseMap | `*_a.dds` | BC1 32² | 占位（INDEXED 下非主纹理） |
    | normalMap | `*_alpha_n.dds` | — | alpha 法线 |
 
-3. **vec4 数组实测只有两个**（161/162 材质同时具备）：
+3. **vec4 数组实测有 6 个**（196×4，2026-08-27 确认；早前「只有两个」探针结论已作废）：
    - `albedoTintMatIdArr`：196×4。RGB = tint 颜色；第 4 分量范围 0~999，
      整数分布 0~9 + 999（999 疑似特殊标记，语义待验证）。171/196 项非零。
-   - `albedoToRemoveTintMatIdArr`：19×4，全部为 `[1,0,1,1]`（疑似通道掩码，语义待验证）。
-   - 个别材质另有 `g_metallic` / `g_overlayOpacity` / `g_tileScale` 标量数组（各 1 个材质）。
-4. **当前渲染器引用的数组不存在**：`ui/geometry_renderer.py` 的 `u_mode=3` 分支使用
-   `tileIdxMatIdArr` / `offsetScaleMatIdArr` / `artStrengthMatIdArr`，数据库中**从未出现**这三个名字。
-   这是 INDEXED 渲染不正确的直接根因（uniform 全 0 → 采样错误瓦片/错误叠加）。
+   - `albedoToRemoveTintMatIdArr`：196×4。
+   - `offsetScaleMatIdArr` / `rotationMatIdArr` / `tileIdxMatIdArr` / `artStrengthMatIdArr`：均 196×4。
+4. **渲染器引用的 6 数组确实存在**：`ui/geometry_renderer.py` 的 `u_mode=3` 分支使用
+   `tileIdxMatIdArr` / `offsetScaleMatIdArr` / `artStrengthMatIdArr` 是正确的（名字与库一致）。
+   早期「这 3 个数组从未出现 → uniform 全 0」的判断**是探针漏读所致**，非数组缺失。
 5. shader 资源绑定顺序（fxo RDEF 实测）：
    `ambientOcclusionMap → materialIdMap → artMap → rgbNoiseMap → albedoArray → normalArray → MGArray`。
 
@@ -49,14 +49,16 @@
 
 ### 2.1 根因
 
-`_bind_indexed()`（`ui/geometry_renderer.py`）绑定的三组参数与真实数据不符：
+`_bind_indexed()`（`ui/geometry_renderer.py`）绑定的参数与真实数据需对齐：
 
-| 渲染器引用 | 数据库实际 | 后果 |
+| 渲染器引用 | 数据库实际（2026-08-27 实测） | 后果 |
 |---|---|---|
-| `tileIdxMatIdArr`（瓦片索引） | 不存在 | `u_tile_idx` 全 0，永远采样图集左上角 |
-| `offsetScaleMatIdArr`（网格/偏移） | 不存在 | `u_grid` 回落默认 (38,38)，UV 变换错误 |
-| `artStrengthMatIdArr`（叠加强度） | 不存在 | art 叠加恒 0 |
-| （未使用） | `albedoTintMatIdArr` | 真正的 tint 数据被忽略 |
+| `tileIdxMatIdArr`（瓦片索引） | 存在（196×4） | `u_tile_idx` 按 `tileIdx.x` 采样 |
+| `offsetScaleMatIdArr`（网格/偏移） | 存在（196×4，scale=38） | 需传对 scale/倒数，否则 UV 错误（见权威记录） |
+| `artStrengthMatIdArr`（叠加强度） | 存在（196×4，BaseStrength=1.0） | art 叠加按 `.x`=1.0 |
+| `albedoTintMatIdArr` | 存在（196×4） | tint 混合用 lerp（非乘法） |
+
+> ⚠️ 早前「这 3 个数组不存在」的判断**是探针漏读所致**，非真实缺失。
 
 ### 2.2 修正方案
 
@@ -74,13 +76,14 @@
    - `albedoArray` 是按 UV 直接采样，还是按材质 ID 映射到瓦片（`g_tileScale` 仅 1 个材质有，
      倾向「直接采样 + tint 调色」模型）；
    - tint 第 4 分量（0~999）的确切作用：混合权重 / 材质分组索引 / 特殊标记（999）；
-   - `albedoToRemoveTintMatIdArr` 的 19 项 `[1,0,1,1]` 是否为「去除 tint 的通道掩码」；
-   - artMap 叠加强度的来源（无 artStrength 数组，可能是常量或 `g_overlayOpacity`）。
+   - `albedoToRemoveTintMatIdArr` 的 196 项（每项多为 `[1,0,1,1]` 掩码语义待验证）；
+   - artMap 叠加强度：`artStrengthMatIdArr` 已确认存在，BaseStrength=1.0（叠加按 `.x`）。
 
 2. **数据管线修正**：
-   - `geometry_service._resolve_material_full()`：`indexed_params` 改为透传真实数组
-     （`albedoTintMatIdArr` / `albedoToRemoveTintMatIdArr` / 标量参数），删除对不存在数组的解析；
-   - `_bind_indexed()`：uniform 改为 `u_tint[196]` + 实际存在的标量；
+   - `geometry_service._resolve_material_full()`：`indexed_params` 改为透传全部 6 个
+     真实数组（`albedoTintMatIdArr` / `albedoToRemoveTintMatIdArr` / `artStrengthMatIdArr` /
+     `offsetScaleMatIdArr` / `rotationMatIdArr` / `tileIdxMatIdArr`）；
+   - `_bind_indexed()`：uniform 改为 6 数组各 `[196]`（含 `u_tint[196]`）+ 实际存在的标量；
    - `HullMesh.material_textures` 已含全部 9 张路径，补加载 `normalArray` / `MGArray`
      （当前只加载了 albedoArray 作主贴图）。
 

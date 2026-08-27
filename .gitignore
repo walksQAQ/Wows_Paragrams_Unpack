@@ -20,7 +20,6 @@ err.txt
 app/_resources.py
 __about__.py
 test_extract/
-uncode_assets/shaders.py
 todo_list/*.js
 
 _decompile/
@@ -30,3 +29,5 @@ docs/shaders-format.md
 docs/korabli-ballistics-formula.md
 _archive/scripts/shaders.py
 ModsSDK_26.8.0.zip
+_archive/compile/
+_archive/shaders.py

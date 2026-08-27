@@ -150,26 +150,45 @@ def parse_dds(data: bytes) -> DdsTexture:
     mips: list[bytes] = []
     #: 每 mip level 的 array 层连续数据（array_size>1 时用；顺序 = 该 level 全部层）
     layers: list[bytes] | None = None
-    if array_size > 1:
-        layers = []
-    mw, mh = width, height
     n_mips = max(mip_count, 1)
     block_bytes = 16 if bc_kind in (2, 3, 6, 8) else 8 if bc_kind else None
+
+    # 每级 mip 的压缩字节数
+    pers: list[int] = []
     for i in range(n_mips):
         mw = max(width >> i, 1)
         mh = max(height >> i, 1)
         if block_bytes is not None:
-            per = ((mw + 3) // 4) * ((mh + 3) // 4) * block_bytes
+            pers.append(((mw + 3) // 4) * ((mh + 3) // 4) * block_bytes)
         else:
-            per = mw * mh * rgba_bpp
-        if array_size > 1:
-            size = per * array_size
-            chunk = data[data_off:data_off + size]
-            if len(chunk) < size:
+            pers.append(mw * mh * rgba_bpp)
+
+    if array_size > 1:
+        # Lesta/Wargaming 的数组纹理为「层优先（layer-major）」：每个 array slice 的
+        # 完整 mip 链连续存储（slice0:mip0..mipN, slice1:mip0..mipN, ...），而非 D3D 标准
+        # 的「mip 优先（mip-major）」。(2026-08-27 经用户用 PS 对照原始 DDS 确认。)
+        # 这里把数据重排为 GPU（glCompressedTexImage3D）所需的「mip 优先」：
+        #   layers[level] == 该 level 的全部 array slice 连续（slice0, slice1, ...）。
+        chain = sum(pers)
+        cum = [0]
+        for p in pers:
+            cum.append(cum[-1] + p)
+        layers = []
+        ok = True
+        for level in range(n_mips):
+            piece = bytearray()
+            for li in range(array_size):
+                base = data_off + li * chain + cum[level]
+                if base + pers[level] > len(data):
+                    ok = False
+                    break
+                piece += data[base:base + pers[level]]
+            if not ok:
                 break
-            layers.append(chunk)          # 该 level 的全部层连续
-            data_off += size
-        else:
+            layers.append(bytes(piece))
+        data_off += chain * array_size
+    else:
+        for per in pers:
             chunk = data[data_off:data_off + per]
             if len(chunk) < per:
                 break

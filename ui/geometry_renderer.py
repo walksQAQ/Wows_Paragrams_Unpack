@@ -20,6 +20,7 @@ from PySide6.QtGui import QSurfaceFormat, QMouseEvent, QWheelEvent, QPainter, QC
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from OpenGL import GL
+from OpenGL.error import GLError
 
 # 关闭 PyOpenGL 每次调用自动抛 GL 错误异常：避免 paintGL 中途因单个 GL 错误
 # 中断导致整帧渲染缺失。错误改为静默/手动检查。
@@ -151,19 +152,19 @@ void main() {
         vec2 muv = (floor(muv_uv * vec2(imsz) + 0.5)) / vec2(imsz);
         float mval = texture(u_matid_tex, muv).r;
         int matId = int(min(floor(mval * 255.0 + 0.5), 195.0));
-        // uv/scale + offset + rotate（主 matId 变换，供法线/tint）
-        // ★ 官方公式（indexed_sm5_hit22.dxbc.asm 反汇编确认）：
-        //   mad r4.yz, v1.xxyx, cb0[r0.z+19].zzwz, cb0[r0.z+19].xxyx
-        //   = uv = v_uv * offsetScaleMatIdArr[matId].zw + offsetScaleMatIdArr[matId].xy  ← 乘法
-        // ★ Reciprocal 优化：assets 里 .zw 是 CPU 端**原始尺寸**（38/25/…），CPU 提交时预取倒数，
-        //   故 `u_offset_scale` 上传的是 `1/raw`；shader 保持乘法 `v_uv * sc`，sc 已是倒数。
-        //   scale<=0 的退化材质（matId 175）回退 1/38（与倒数空间一致）。
-        vec4 os = u_offset_scale[matId];
-        vec2 sc = (os.zw.x > 0.0 && os.zw.y > 0.0) ? os.zw : vec2(1.0 / 38.0, 1.0 / 38.0);
-        vec2 uv = v_uv * sc + os.xy;
-        float ang = u_rotation[matId].x;
-        float sa = sin(ang); float ca = cos(ang);
-        uv = vec2(uv.x*ca + uv.y*sa, -uv.x*sa + uv.y*ca);
+        // uv' = v_uv * offsetScale[matId].zw + offsetScale[matId].xy，再 rotate。
+        // ★ 2026-08-27 实测纠正（官方公式，无 V 翻转）：
+        //   - **materialIdMap 与 albedoArray/normalArray 统一用 v_uv（不翻转）**。
+        //     此前为 OpenGL/D3D 差异额外加 flipV(y=1-v)，但 layer-major 数组纹理解析修正后
+        //     DDS 上传的 V 轴已与 materialIdMap 一致，故去掉 flipV、回到反汇编的官方公式。
+        //   - **必须用 per-matId 的 offsetScale**（官方公式 z/w 是本层平铺倍数，xy 是格内偏移）：
+        //     * 船底 matId23 → 层1（斜向板条图案），offsetScale=38
+        //     * 炮衣 matId87 → 层17（斜纹帆布图案），offsetScale=6 （repro：debug9 蓝色带=matId87）
+        //     去掉 scale 会让有图案的层(如炮衣层17)被采到均匀角落→平涂无色（用户实测炮衣平涂即是此因）。
+        vec2 uv = v_uv * u_offset_scale[matId].zw + u_offset_scale[matId].xy;
+        float uang = u_rotation[matId].x;
+        float usa = sin(uang); float uca = cos(uang);
+        uv = vec2(uv.x*uca + uv.y*usa, -uv.x*usa + uv.y*uca);
         float slice = max(u_tile_idx[matId].x, 0.0);
         vec2 dudx = dFdx(uv);
         vec2 dudy = dFdy(uv);
@@ -177,14 +178,17 @@ void main() {
         float sum = abs(albedo.x-ref.x) + abs(albedo.y-ref.y) + abs(albedo.z-ref.z);
         float k = clamp((sum + 0.001) / max(u_tint[matId].w, 1e-4), 0.0, 1.0);
         vec3 c = mix(tint_lin, albedo_lin, k);
-        // artMap 艺术涂装(camo)覆盖（2026-08-24 结合 x64dbg+fxo 确认）：
-        //   - 全船 512×512 覆盖层，用船体全图 UV(v_uv) 采样，**不用分块 tile uv**（否则盖黑）
-        //   - camo 强度 = art.a * artStrengthMatIdArr[matId].x(=u_art_strength)
-        //   - artMap 以 sRGB 内格式上传，GPU 硬件解码为 linear，故在 linear 空间 mix
+        // artMap 艺术涂装(camo)（标准叠加层）：
+        //   - 全船 512×512 覆盖层，用船体全图 UV(v_uv) 采样
+        //   - camo 强度 = art.a * artStrengthMatIdArr[matId].x(=u_rotation[matId].y)
+        //   - artMap 以 sRGB 内格式上传，GPU 硬件解码为 linear；此处与 c 同处 linear 空间
+        //   - mix(c, art.rgb, am)：高 alpha(有cam图案) 显示 camo 色，低 alpha 显示 base。
+        //     ⚠️ 曾误用**加性** c += art*am → camo 大面积高亮把底色(含船底红棕)推白；
+        //        也试过**乘法** c *= mix(1,art.rgb,am) → 把整船压暗。用 lerp 是对的。
         vec4 art4 = texture(u_art_tex, v_uv);
-        // BaseStrength = artStrengthMatIdArr[matId].x，已并入 u_rotation[matId].y
         float am = clamp(art4.a * u_rotation[matId].y, 0.0, 1.0);
-        c = mix(c, art4.rgb, am);
+        if (u_debug_mode == 10) { am = 0.0; }   // debug10=禁用 art，看 base
+        c = mix(c, art4.rgb, am);               // ★ camo 叠加（lerp，保留低 alpha 的底色）
         // 法线：normalArray(每材质 tile) + normalMap(_alpha_n, 全船) 合成（对齐官方 asm）：
         //   t20(normalArray) 解码 + t14(normalMap@v1.xy) 解码 → add → add(0,0,-1) → normalize
         float nslice = max(u_tile_idx[matId].y, 0.0);
@@ -214,6 +218,52 @@ void main() {
             } else {
                 // PASS2(3) / debug8：normalArray+normalMap 合成 → TBN → 最终 hull world normal
                 fragColor = vec4(normalize(n_world) * 0.5 + 0.5, 1.0);
+            }
+            return;
+        }
+        // ★ 临时 DEBUG(9)：matId 离散色带，直读船底命中的材质编号。
+        //   色带(每 32): 0-31=红,32-63=绿,64-95=蓝,96-127=黄,128-159=品红,160-195=青。
+        //   例: matId=34 → 绿(0..1), 23→红, 144→品红, 90→蓝。
+        if (u_debug_mode == 9) {
+            int band = matId / 32;
+            vec3 col;
+            if (band == 0)      col = vec3(1.0, 0.0, 0.0);
+            else if (band == 1) col = vec3(0.0, 1.0, 0.0);
+            else if (band == 2) col = vec3(0.0, 0.0, 1.0);
+            else if (band == 3) col = vec3(1.0, 1.0, 0.0);
+            else if (band == 4) col = vec3(1.0, 0.0, 1.0);
+            else                col = vec3(0.0, 1.0, 1.0);
+            // 同一 band 内用亮度细分为 4 档，便于区分具体 matId
+            int sub = (matId % 32) / 8;
+            col *= (0.4 + 0.2 * float(sub));
+            vec4 dbg = vec4(col, 1.0);
+            if (u_mrt == 1) {
+                fragColor = dbg;
+                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
+            } else {
+                fragColor = dbg;
+            }
+            return;
+        }
+        // ★ 临时 DEBUG(11)：只显示 raw albedo tile（未叠加 tint/remove/art/光照）。
+        //   输出线性 albedo，最终光照(debug11)再做 sRGB 显示。用于人工核对分块 tile 原貌。
+        if (u_debug_mode == 11) {
+            vec4 dbgv = vec4(albedo, 1.0);
+            if (u_mrt == 1) {
+                fragColor = dbgv;
+                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
+            } else {
+                fragColor = dbgv;
+            }
+            return;
+        }
+        // ★ 临时 DEBUG(12)：只显示 tint 线性上色结果，区分「材质基色」与「tile 细节」。
+        if (u_debug_mode == 12) {
+            if (u_mrt == 1) {
+                fragColor = vec4(tint_lin, 1.0);
+                fragNormal = vec4(n_world * 0.5 + 0.5, 1.0);
+            } else {
+                fragColor = vec4(tint_lin, 1.0);
             }
             return;
         }
@@ -326,7 +376,15 @@ void main() {
         vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
         vec3 col = albedo * lit;
         col = pow(col, vec3(1.0 / 2.2));
-        fragColor = vec4(col, 1.0);
+        // ★ 临时 DEBUG(9/10)：直接显示 Hull MRT albedo，不打光/不幂，便于读原始值
+        if (u_debug_mode == 9 || u_debug_mode == 10) {
+            fragColor = vec4(texture(u_scene_tex, suv).rgb, 1.0);
+        } else if (u_debug_mode == 11 || u_debug_mode == 12) {
+            // raw albedo tile / tint：线性已存入 MRT，此处补 gamma 做 sRGB 显示
+            fragColor = vec4(pow(texture(u_scene_tex, suv).rgb, vec3(1.0 / 2.2)), 1.0);
+        } else {
+            fragColor = vec4(col, 1.0);
+        }
         return;
     }
     if (u_mode == 12) {
@@ -539,8 +597,17 @@ def _upload_texture(dds_bytes: bytes, srgb: bool = True, label: str = "", matid:
             GL.glTexParameteri(target, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
             GL.glTexParameteri(target, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
         else:
-            # 无 mipmap：只用 base level 线性采样，避免近距 mip 层级跳变导致红→白/细缝
-            GL.glTexParameteri(target, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+            # ★ 模式区别(2026-08-27)：官方用 mip 过滤采样器(g_genericWrapSampler s5) + sample_d，
+            #   textureGrad 按导数选 mip。repeat 的数组纹理(albedoArray/normalArray/rgbNoiseMap)
+            #   已上传全部 mip 层(layers 有 11 级)，但此前 MIN_FILTER=LINEAR 导致 textureGrad 只用
+            #   base level(全细节) → 船底 v_uv*38 高频平铺层1的板条 → 红白条纹；炮衣 v_uv*6 平铺较
+            #   少受 mip 影响小。开启 mip 过滤后：船底高导数→粗糙mip→平滑均匀红，炮衣低导数→精细mip→
+            #   保留斜纹。非 repeat 纹理仍用 LINEAR 避免过度模糊。
+            n_mips_total = len(dds.layers) if is_array else len(dds.mips)
+            if repeat and n_mips_total > 1:
+                GL.glTexParameteri(target, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR)
+            else:
+                GL.glTexParameteri(target, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
             GL.glTexParameteri(target, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
     else:
         # 未压缩 RGBA（BGR 字节序交换为 RGB，sRGB 内部格式硬件解码）
@@ -836,6 +903,12 @@ class GeometryViewport(QOpenGLWidget):
         self._debug_mode = 0
         #: debug(2/3) 模型点位名称（paintEvent 叠加文本）
         self._mount_labels = []
+        #: debug 点位缓存的 GL 资源（_marker_vao/_marker_vbo/_marker_cbo）与数据指纹
+        #: —— 点位 VBO/VAO 在 _meshes 变化时重建一次，避免每帧 gen/delete 卡顿。
+        self._marker_vao: int = 0
+        self._marker_vbo: int = 0
+        self._marker_cbo: int = 0
+        self._marker_fingerprint: tuple = ()
         #: GL 上下文是否已就绪（initializeGL 后）；未就绪的重建操作延迟到 paintGL
         self._gl_ready: bool = False
         self._vis_pending: bool = False
@@ -959,6 +1032,8 @@ class GeometryViewport(QOpenGLWidget):
     def _build_meshes(self):
         for m in self._meshes:
             m.release()
+        # ★ mesh 重建时同步释放 debug 点位缓存（旧指纹失效）
+        self._release_marker_resources()
         self._meshes = []
         for spec in self._mesh_specs:
             # 解析空间 → 渲染空间（右手系，与 glTF 同构）变换。
@@ -1216,7 +1291,7 @@ class GeometryViewport(QOpenGLWidget):
         self._fs_uniforms = {name: GL.glGetUniformLocation(self._fs_program, name)
                              for name in ("u_mode", "u_viewport", "u_scene_tex",
                                           "u_scene_normal_tex", "u_scene_final_tex",
-                                          "u_light_dir", "u_ambient")}
+                                          "u_light_dir", "u_ambient", "u_debug_mode")}
         GL.glEnable(GL.GL_DEPTH_TEST)
         self._gl_ready = True
         self._build_meshes()
@@ -1726,7 +1801,20 @@ class GeometryViewport(QOpenGLWidget):
 
     @staticmethod
     def _bind_alpha_material(u, mesh):
-        """透明/贴花单次材质绑定（uniform + 贴图）——每个网格只做一次。"""
+        """透明/贴花单次材质绑定（uniform + 贴图）——每个网格只做一次。
+
+        ★ 关键修复：shader 里声明了 sampler2DArray 的 u_tiles_tex/u_normal_tex/u_noise_tex
+        （INDEXED 用）。若它们默认绑到 unit0，而本 pass 把 mesh._texture(sampler2D 的 2D 纹理)
+        也绑到 unit0，则「sampler2DArray 绑 2D 纹理」→ GL_INVALID_OPERATION(1282)。
+        故把它们指到独立空 unit(8/9/10) 并绑空 2D_ARRAY，避免与 u_tex 冲突。
+        """
+        # 把 INDEXED 用的 sampler2DArray 挪到独立 unit，避免与 unit0 的 2D 纹理类型冲突
+        for _nm, _un in (("u_tiles_tex", 8), ("u_normal_tex", 9), ("u_noise_tex", 10)):
+            if u.get(_nm) is not None and u[_nm] >= 0:
+                GL.glUniform1i(u[_nm], _un)
+                GL.glActiveTexture(GL.GL_TEXTURE0 + _un)
+                GL.glBindTexture(GL.GL_TEXTURE_2D_ARRAY, 0)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
         if mesh.has_tex:
             GL.glBindTexture(mesh._texture_target, mesh._texture)
             GL.glUniform1i(u["u_has_tex"], 1)
@@ -1739,23 +1827,20 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUseProgram(self._program)
         self._apply_model(view, proj, model, u)
         self._bind_alpha_material(u, mesh)
-        mesh.render(GL.GL_TRIANGLES)
+        try:
+            mesh.render(GL.GL_TRIANGLES)
+        except GLError:
+            raise
 
     def _draw_decal_once(self, view, proj, u, mesh, model):
         """贴花（dec_tech/amgn）单次绘制一个网格（应用模型矩阵 + 绑定贴图）。"""
         GL.glUseProgram(self._program)
         self._apply_model(view, proj, model, u)
         self._bind_alpha_material(u, mesh)
-        # 诊断：清空历史错误，渲染后捕获当前 GL error（定位 1282）
-        while GL.glGetError() != GL.GL_NO_ERROR:
-            pass
-        mesh.render(GL.GL_TRIANGLES)
-        err = GL.glGetError()
-        if err != GL.GL_NO_ERROR:
-            print(f"[GL] decal draw err=0x{err:x} mesh={mesh.name!r} "
-                  f"verts={mesh._vdata.shape[0] if hasattr(mesh,'_vdata') else -1} "
-                  f"idx={mesh.index_count} vao={int(mesh._vao)} ibo={int(mesh._ibo)} "
-                  f"vbo_bytes={mesh._vdata.nbytes if hasattr(mesh,'_vdata') else -1}")
+        try:
+            mesh.render(GL.GL_TRIANGLES)
+        except GLError:
+            raise
 
     def _draw_model_markers(self, view, proj, u, w, h, mount_only: bool):
         """debug(2/3)：显示模型点位 + 名称（挂载为黄点，船体等为青点）。
@@ -1763,6 +1848,10 @@ class GeometryViewport(QOpenGLWidget):
         mount_only=True：只显示挂载模型点位（mode 2）；
         mount_only=False：显示所有渲染模型(Hull/Mount)中心点与名称（mode 3）。
         名称投影到屏幕记录到 self._mount_labels，由 paintEvent 叠加文本。
+
+        ★ 性能：点位 VBO/VAO 按数据指纹缓存，_meshes 不变时复用（不再每帧 gen/delete）；
+          ✅ 去重：同一位置只保留一个点+一个名称，避免「每个节点渲染两遍」。
+          ✅ 向量化投影：名称投影用 numpy 批量计算，替代逐点 Python 循环。
         """
         def _label_for(m):
             """模式 3 显示各模型自身形状名/骨骼节点名（替代几何文件名）。"""
@@ -1779,6 +1868,7 @@ class GeometryViewport(QOpenGLWidget):
 
         pts = []
         cols = []
+        seen = set()           # (x,y,z) 去重：同一位置只标一次，解决「渲染两遍」
         names = []
         for m in self._meshes:
             if m.kind not in ("hull", "mount"):
@@ -1798,63 +1888,81 @@ class GeometryViewport(QOpenGLWidget):
                 cx, cy, cz = 0.0, 0.0, 0.0
             mm = m.model_matrix
             insts = getattr(m, "instance_matrices", None) or []
+            label = _label_for(m)
+            # 挂载=黄，船体=青
+            clr = (1.0, 0.9, 0.2, 1.0) if m.kind == "mount" else (0.3, 0.8, 1.0, 1.0)
+            coords = []
             if insts:
-                # 多节点实例化：每实例一个点位（质心经实例矩阵变换）
                 base = mm
                 for inst in insts:
                     wm = (inst if base is None else base @ inst)
-                    p = np.asarray([cx, cy, cz, 1.0], dtype=np.float64)
-                    wp = wm @ p
-                    x, y, z = float(wp[0]), float(wp[1]), float(wp[2])
-                    pts.append((x, y, z))
-                    cols.append((1.0, 0.9, 0.2, 1.0) if m.kind == "mount" else (0.3, 0.8, 1.0, 1.0))
-                    names.append((x, y, z, _label_for(m)))
+                    p = wm @ np.array([cx, cy, cz, 1.0], dtype=np.float64)
+                    coords.append((float(p[0]), float(p[1]), float(p[2])))
             else:
                 if mm is not None:
-                    x = float(mm[0, 3]); y = float(mm[1, 3]); z = float(mm[2, 3])
+                    coords.append((float(mm[0, 3]), float(mm[1, 3]), float(mm[2, 3])))
                 else:
-                    x, y, z = cx, cy, cz
+                    coords.append((cx, cy, cz))
+            for (x, y, z) in coords:
+                key = (round(x, 4), round(y, 4), round(z, 4))   # 坐标容差去重
+                if key in seen:
+                    continue
+                seen.add(key)
                 pts.append((x, y, z))
-                cols.append((1.0, 0.9, 0.2, 1.0) if m.kind == "mount" else (0.3, 0.8, 1.0, 1.0))
-                names.append((x, y, z, _label_for(m)))
-        # 投影到屏幕，供 paintEvent 画名称
+                cols.append(clr)
+                names.append((x, y, z, label))
         self._mount_labels = []
         if not pts:
             return
-        try:
-            for (x, y, z, name) in names:
-                clip = proj @ view @ np.array([x, y, z, 1.0], dtype=np.float64)
-                wc = float(clip[3])
-                if wc <= 1e-6:      # 点在相机后方/透视除法无效，跳过避免坐标爆炸
-                    continue
-                ndc = clip[:3] / wc
-                sx = (float(ndc[0]) * 0.5 + 0.5) * w
-                sy = (1.0 - (float(ndc[1]) * 0.5 + 0.5)) * h
-                # 只保留屏幕邻近点，防止投影到相机后方时坐标溢出
-                if not (-w < sx < w * 2 and -h < sy < h * 2):
-                    continue
-                self._mount_labels.append((sx, sy, name))
-        except Exception:
-            self._mount_labels = []
         pos = np.asarray(pts, dtype=np.float32).reshape(-1, 3)
         col = np.asarray(cols, dtype=np.float32).reshape(-1, 4)
+
+        # ★ 向量化投影：一次性算全部点位屏幕坐标（替代逐点 Python 循环）
+        try:
+            n = pos.shape[0]
+            hom = np.concatenate([pos, np.ones((n, 1), dtype=np.float64)], axis=1)
+            mvp = proj @ view
+            clip = (mvp @ hom.T).T          # (n,4)
+            wc = clip[:, 3]
+            ok = wc > 1e-6
+            if np.any(ok):
+                ndc = clip[ok, :3] / wc[ok, None]
+                sx = (ndc[:, 0] * 0.5 + 0.5) * w
+                sy = (1.0 - (ndc[:, 1] * 0.5 + 0.5)) * h
+                inb = (-w < sx) & (sx < w * 2) & (-h < sy) & (sy < h * 2)
+                idxs = np.where(ok)[0][inb]
+                for i in idxs:
+                    # 名称取该点对应网格标签（用原 pts 索引，名称可能同点不同）
+                    self._mount_labels.append((float(sx[i]), float(sy[i]), names[i][3]))
+        except Exception:
+            self._mount_labels = []
+
+        # ★ 缓存点位 VBO/VAO：数据指纹(位置+颜色)不变则复用，不再每帧 gen/delete
+        fp = (pos.tobytes(), col.tobytes())
+        if fp != self._marker_fingerprint:
+            self._release_marker_resources()
+            vbo = GL.glGenBuffers(1)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, pos.nbytes, pos, GL.GL_STATIC_DRAW)
+            cbo = GL.glGenBuffers(1)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, cbo)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, col.nbytes, col, GL.GL_STATIC_DRAW)
+            vao = GL.glGenVertexArrays(1)
+            GL.glBindVertexArray(vao)
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
+            GL.glEnableVertexAttribArray(0)
+            GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 12, _gl_off(0))
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, cbo)
+            GL.glEnableVertexAttribArray(3)
+            GL.glVertexAttribPointer(3, 4, GL.GL_FLOAT, GL.GL_FALSE, 16, _gl_off(0))
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
+            GL.glBindVertexArray(0)
+            self._marker_vao, self._marker_vbo, self._marker_cbo = vao, vbo, cbo
+            self._marker_fingerprint = fp
+
         n = pos.shape[0]
-        vbo = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, pos.nbytes, pos, GL.GL_STATIC_DRAW)
-        cbo = GL.glGenBuffers(1)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, cbo)
-        GL.glBufferData(GL.GL_ARRAY_BUFFER, col.nbytes, col, GL.GL_STATIC_DRAW)
-        vao = GL.glGenVertexArrays(1)
-        GL.glBindVertexArray(vao)
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
-        GL.glEnableVertexAttribArray(0)
-        GL.glVertexAttribPointer(0, 3, GL.GL_FLOAT, GL.GL_FALSE, 12, _gl_off(0))
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, cbo)
-        GL.glEnableVertexAttribArray(3)
-        GL.glVertexAttribPointer(3, 4, GL.GL_FLOAT, GL.GL_FALSE, 16, _gl_off(0))
-        GL.glBindBuffer(GL.GL_ARRAY_BUFFER, 0)
-        GL.glBindVertexArray(0)
+        if not (self._marker_vao and n):
+            return
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_BLEND)
         GL.glUniform1i(u["u_mode"], 1)      # 无光照直显颜色
@@ -1862,13 +1970,22 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUniform1f(u["u_opacity"], 1.0)
         self._apply_model(view, proj, None)
         GL.glPointSize(6.0)
-        GL.glBindVertexArray(vao)
+        GL.glBindVertexArray(self._marker_vao)
         GL.glDrawArrays(GL.GL_POINTS, 0, n)
         GL.glBindVertexArray(0)
         GL.glPointSize(1.0)
         GL.glEnable(GL.GL_DEPTH_TEST)
-        GL.glDeleteVertexArrays(1, [vao])
-        GL.glDeleteBuffers(2, [vbo, cbo])
+
+    def _release_marker_resources(self):
+        """释放 debug 点位缓存的 GL 资源。"""
+        if self._marker_vao:
+            GL.glDeleteVertexArrays(1, [self._marker_vao])
+            self._marker_vao = 0
+        if self._marker_vbo or self._marker_cbo:
+            GL.glDeleteBuffers(2, [self._marker_vbo, self._marker_cbo])
+            self._marker_vbo = 0
+            self._marker_cbo = 0
+        self._marker_fingerprint = ()
 
     def _bind_indexed(self, mesh, u):
         """绑定 INDEXED 分块贴图与参数（u_mode=3），供 paintGL 调用。
@@ -1918,16 +2035,12 @@ class GeometryViewport(QOpenGLWidget):
         if ad is not None and getattr(ad, "size", 0) >= 196 * 4:
             rotart[:, 1] = np.asarray(ad, dtype=np.float32).reshape(-1, 4)[:196, 0]
         GL.glUniform4fv(u["u_rotation"], 196, np.ascontiguousarray(rotart.reshape(-1)))
-        # ★ Reciprocal 优化：offsetScaleMatIdArr.zw 是 CPU 端**原始尺寸**（38/25/…），
-        #   上传到 shader 前预取倒数 1/raw，使乘法 uv = v_uv*sc 在倒数空间下等价于 uv/raw，
-        #   避免大幅值 UV（~[-91,76]）被放大几千倍→平铺→白色条带。退化(0)保持 0，shader 回退。
+        # ★ offsetScaleMatIdArr.zw 是**逐材质**的真实 UV 变换倍率（船体 matId23=38，炮塔=20，
+        #   各不相同），shader 用 uv = v_uv*scale + offset（原始值，**不取倒数**）采样 tile，
+        #   靠 sampler 的 REPEAT wrap 回 [0,1]。勿全局用 "1-v" 翻转（会破坏炮塔平铺）。
         _os = _arr("offsetScaleMatIdArr")
         if _os.size >= 196 * 4:
-            _osm = np.ascontiguousarray(_os.reshape(196, 4)).copy()
-            _sx = _osm[:, 2].copy(); _sy = _osm[:, 3].copy()
-            _osm[:, 2] = np.where(_sx > 0.0, 1.0 / np.maximum(_sx, 1e-6), 0.0)
-            _osm[:, 3] = np.where(_sy > 0.0, 1.0 / np.maximum(_sy, 1e-6), 0.0)
-            GL.glUniform4fv(u["u_offset_scale"], 196, np.ascontiguousarray(_osm.reshape(-1)))
+            GL.glUniform4fv(u["u_offset_scale"], 196, np.ascontiguousarray(_os.reshape(-1)))
         else:
             GL.glUniform4fv(u["u_offset_scale"], 196, np.zeros(196 * 4, dtype=np.float32))
         GL.glUniform4fv(u["u_tile_idx"], 196, _arr("tileIdxMatIdArr"))
@@ -1945,6 +2058,7 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUseProgram(self._fs_program)
         fu = self._fs_uniforms
         GL.glUniform1i(fu["u_mode"], mode)
+        GL.glUniform1i(fu["u_debug_mode"], self._debug_mode)
         GL.glUniform2f(fu["u_viewport"], float(w), float(h))
         GL.glUniform3f(fu["u_light_dir"], 0.35, 0.6, 0.72)
         GL.glUniform3f(fu["u_ambient"], 0.12, 0.12, 0.14)
@@ -1991,18 +2105,41 @@ class GeometryViewport(QOpenGLWidget):
             painter.end()
 
     def keyPressEvent(self, event):
-        """Debug 切换：N 循环 0(关)/1(最终法线)/2(挂载点位+名称)/3(所有模型名称)。"""
+        """Debug 切换：N 循环 0..12。9=matId 色带，8=禁用 art 看 base，
+        11=只显示 raw albedo tile，12=只显示 tint。F12=截图到 _temp/。"""
         k = event.key()
+        if k == Qt.Key_F12:
+            self._capture_png()
+            return
         if k == Qt.Key_N:
-            self._debug_mode = (self._debug_mode + 1) % 4
+            self._debug_mode = (self._debug_mode + 1) % 13
             self.update()
             return
-        mapping = {Qt.Key_0: 0, Qt.Key_Escape: 0, Qt.Key_1: 1, Qt.Key_2: 2, Qt.Key_3: 3}
+        mapping = {Qt.Key_0: 0, Qt.Key_Escape: 0,
+                   Qt.Key_1: 1, Qt.Key_2: 2, Qt.Key_3: 3,
+                   Qt.Key_9: 9, Qt.Key_8: 10,
+                   Qt.Key_B: 11, Qt.Key_T: 12}
         if k in mapping:
             self._debug_mode = mapping[k]
             self.update()
             return
         super().keyPressEvent(event)
+
+    def _capture_png(self):
+        """截取当前视口帧并保存到 _temp/render_<n>.png（F12 触发）。"""
+        try:
+            from pathlib import Path
+            out = Path(__file__).resolve().parents[1] / "_temp"
+            out.mkdir(parents=True, exist_ok=True)
+            import time
+            p = out / f"render_{int(time.time())}.png"
+            img = self.grabFramebuffer()
+            img.save(str(p))
+            from app.signals import bus
+            bus.log_message.emit(f"📸 已存截图: {p}")
+        except Exception as exc:  # noqa: BLE001
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 截图失败: {exc}")
 
     def mousePressEvent(self, event: QMouseEvent):
         self._last_pos = event.position().toPoint()
