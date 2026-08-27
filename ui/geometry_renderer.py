@@ -67,12 +67,15 @@ uniform mat3 u_normal_mat;
 out vec4 v_color;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec3 v_world_pos;
 void main() {
     mat4 model = mat4(i_model0, i_model1, i_model2, i_model3);
-    gl_Position = u_mvp * model * vec4(in_position, 1.0);
+    vec4 wp = model * vec4(in_position, 1.0);
+    gl_Position = u_mvp * wp;
     v_normal = u_normal_mat * mat3(model) * in_normal;
     v_color = in_color;
     v_uv = in_uv;
+    v_world_pos = wp.xyz;
 }
 """
 
@@ -81,12 +84,14 @@ TEX_VERT_SRC = """
 out vec4 v_color;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec3 v_world_pos;
 void main() {
     vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
     v_color = vec4(1.0);
     v_normal = vec3(0.0, 0.0, 1.0);
     v_uv = vec2(0.0);
+    v_world_pos = vec3(0.0);
 }
 """
 
@@ -111,22 +116,20 @@ uniform sampler2D u_mg_map;
 uniform int u_has_mg;
 uniform vec3 u_view_dir;              // 观察方向（反射用）
 uniform int u_mrt;
+uniform int u_debug_mode;             // 5=Emissive Debug（显示 _mg.B × emissive_power）
+uniform vec3 u_light_pos;             // 点光源位置（天上）
+uniform float u_normal_strength;      // 法线贴图强度（>1 加强凹凸细节）
+in vec3 v_world_pos;                  // 世界坐标（点光源用）
 out vec4 fragColor;
 out vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）
-// ★ 永久程序化环境（天空/海面/太阳反射，2026-08-27）：不依赖解包，金属反射直接用
-vec3 env_color(vec3 R) {
-    vec3 sky = vec3(0.30, 0.44, 0.58);
-    vec3 sea = vec3(0.05, 0.08, 0.11);
-    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 c = mix(sea, sky, pow(t, 0.85));
-    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
-    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
-    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
-    return c;
-}
-// 统一 PBR: Cook-Torrance GGX + Schlick Fresnel + 金属环境反射(env_color)
-vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
-    vec3 L = normalize(-u_light_dir);
+out vec3 fragWorldPos;                // MRT 附件2：世界坐标（供最终点光源）
+// 统一 PBR：Cook-Torrance GGX + Schlick Fresnel 直接光镜面反射（天上的点光源）。
+// ★ 已移除程序化天空盒环境反射：金属只反射光源高光，不反射天空/海面色相。
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit, vec3 worldPos) {
+    vec3 path = u_light_pos - worldPos;
+    float dist = max(length(path), 1e-4);
+    vec3 L = path / dist;
+    float atten = clamp(1.0 / (1.0 + 0.0008 * dist * dist), 0.0, 1.0);
     vec3 V = normalize(u_view_dir);
     vec3 H = normalize(L + V);
     float NdotL = max(dot(N, L), 0.0);
@@ -144,13 +147,13 @@ vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
     float Gl = NdotL / (NdotL * (1.0 - k) + k);
     float G = Gv * Gl;
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
-    vec3 kd = (1.0 - F) * (1.0 - metallic);
-    vec3 diffuse = albedo * kd * lit;
-    vec3 direct = diffuse * NdotL + specular * NdotL;
-    vec3 R = reflect(-V, N);
-    vec3 env = env_color(R);
-    vec3 env_spec = env * F * metallic;
-    return direct + env_spec;
+    // MG 不影响基础颜色：diffuse 恒定 = albedo*lit（背光面靠 half-Lambert/ambient 保底）。
+    // 点光源：漫反射与高光都随距离衰减；metallic 经 F0 控反射，gloss 控高光宽度。
+    vec3 diffuse = albedo * lit;
+    // 环境光不随点光源距离衰减（保底照亮，照不到的地方不黑）；点光源方向/高光部分随距离衰减。
+    vec3 ambient_part = albedo * u_ambient;
+    vec3 direct = ambient_part + (diffuse - ambient_part) * atten + specular * NdotL * atten * 2.0;
+    return direct;
 }
 void main() {
     vec4 base = v_color;
@@ -168,6 +171,7 @@ void main() {
     if (u_has_normal_map == 1) {
         vec3 nm = texture(u_normal_map, v_uv).rgb;
         vec3 n_ts = vec3(nm.x * 2.0 - 1.0, nm.y * 2.0 - 1.0, 0.0);
+        n_ts.xy *= u_normal_strength;   // ★ 加强法线，突出 _n 凹凸细节
         n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
         N = normalize(n_ts);
     }
@@ -179,25 +183,38 @@ void main() {
     }
     if (u_mrt == 1) {
         // 轻量 deferred surface：标准 PBS/emissive 存未打光 albedo + 世界法线；
-        // a 携带 metallic、fragNormal.a 携带 gloss，供最终 lighting 加金属高光。
+        // a 携带 metallic、fragNormal.a 携带 gloss；fragWorldPos 供最终点光源重建位置。
         fragColor = vec4(base.rgb, metallic);
         fragNormal = vec4(N * 0.5 + 0.5, gloss);
+        fragWorldPos = v_world_pos;
         return;
     }
     vec3 n = N;
-    float diff = max(dot(n, -u_light_dir), 0.0);
+    vec3 litL = normalize(u_light_pos - v_world_pos);   // 点光源方向
+    float diff = max(dot(n, litL), 0.0);
     float hl = diff * 0.5 + 0.5;   // half-Lambert：远侧永不黑
     vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
     vec3 rgb2;
     if (u_mode == 2) {
         rgb2 = base.rgb;
         if (u_emissive > 0.5) {
-            float em = base.b;
-            rgb2 = base.rgb * (1.0 + u_emissive_k * em);
+            // ★ 自发光：颜色 × mask(_mg.B，无 _mg 退回 diffuse.blue) × emissive_power。
+            //   独立加到基础颜色，不受 NdotL/metallic/gloss/阴影影响。
+            float em = (u_has_mg == 1) ? emit : base.b;
+            vec3 emissive = base.rgb * em * u_emissive_k;
+            rgb2 = base.rgb + emissive;
+            if (u_debug_mode == 5) {
+                // Emissive Debug：直接显示 _mg.B × emissive_power 灰度，确认自发光链路。
+                rgb2 = vec3(em * u_emissive_k);
+            }
         }
     } else {
-        rgb2 = pbr_light(base.rgb, n, metallic, gloss, lit);
-        // ★ _mg B 通道（发光/涂装强度）预留：非 emissive 材质不参与，暂不叠加
+        rgb2 = pbr_light(base.rgb, n, metallic, gloss, lit, v_world_pos);
+        if (u_emissive > 0.5) {
+            // 自发光加到最终 PBR 结果之后（独立项，不参与 diffuse/specular）。
+            float em = (u_has_mg == 1) ? emit : base.b;
+            rgb2 += base.rgb * em * u_emissive_k;
+        }
     }
     if (is_tex) {
         rgb2 = pow(rgb2, vec3(1.0 / 2.2));
@@ -208,10 +225,10 @@ void main() {
 
 #: PBS 单输出变体（移除 fragNormal 声明与 MRT 赋值），用于单 drawbuffer 目标。
 FRAG_PBS_SINGLE = FRAG_PBS.replace(
-    "out vec4 fragColor;\nout vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）",
+    "out vec4 fragColor;\nout vec4 fragNormal;                   // MRT 附件1 输出（世界法线，[0,1] 编码）\nout vec3 fragWorldPos;                // MRT 附件2：世界坐标（供最终点光源）",
     "out vec4 fragColor;",
 ).replace(
-    "        fragNormal = vec4(N * 0.5 + 0.5, gloss);\n        return;",
+    "        fragNormal = vec4(N * 0.5 + 0.5, gloss);\n        fragWorldPos = v_world_pos;\n        return;",
     "        return;",
 )
 
@@ -233,21 +250,17 @@ uniform sampler2D u_scene_normal_tex;  // MRT 附件1：船体世界法线
 uniform sampler2D u_scene_final_tex;   // MRT 附件2：Final Normal（Hull+decal 合成）
 uniform vec2 u_viewport;               // 视口尺寸（换算屏幕 UV）
 uniform vec3 u_view_dir;              // 观察方向（反射用）
+uniform vec3 u_light_pos;             // 点光源位置（天上）
+uniform float u_normal_strength;      // 法线强度（加强 _n）
+uniform sampler2D u_scene_world_tex;  // MRT 附件2：世界坐标（点光源重建位置）
 out vec4 fragColor;
-// ★ 永久程序化环境（天空/海面/太阳反射，2026-08-27）：不依赖解包，金属反射直接用
-vec3 env_color(vec3 R) {
-    vec3 sky = vec3(0.30, 0.44, 0.58);
-    vec3 sea = vec3(0.05, 0.08, 0.11);
-    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 c = mix(sea, sky, pow(t, 0.85));
-    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
-    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
-    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
-    return c;
-}
-// 统一 PBR: Cook-Torrance GGX + Schlick Fresnel + 金属环境反射(env_color)
-vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
-    vec3 L = normalize(-u_light_dir);
+// 统一 PBR：Cook-Torrance GGX + Schlick Fresnel 直接光镜面反射（天上的点光源）。
+// ★ 已移除程序化天空盒环境反射：金属只反射光源高光，不反射天空/海面色相。
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit, vec3 worldPos) {
+    vec3 path = u_light_pos - worldPos;
+    float dist = max(length(path), 1e-4);
+    vec3 L = path / dist;
+    float atten = clamp(1.0 / (1.0 + 0.0008 * dist * dist), 0.0, 1.0);
     vec3 V = normalize(u_view_dir);
     vec3 H = normalize(L + V);
     float NdotL = max(dot(N, L), 0.0);
@@ -265,13 +278,11 @@ vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
     float Gl = NdotL / (NdotL * (1.0 - k) + k);
     float G = Gv * Gl;
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
-    vec3 kd = (1.0 - F) * (1.0 - metallic);
-    vec3 diffuse = albedo * kd * lit;
-    vec3 direct = diffuse * NdotL + specular * NdotL;
-    vec3 R = reflect(-V, N);
-    vec3 env = env_color(R);
-    vec3 env_spec = env * F * metallic;
-    return direct + env_spec;
+    // MG 不影响基础颜色。环境光保底不衰减，点光源贡献随距离衰减。
+    vec3 diffuse = albedo * lit;
+    vec3 ambient_part = albedo * u_ambient;
+    vec3 direct = ambient_part + (diffuse - ambient_part) * atten + specular * NdotL * atten * 2.0;
+    return direct;
 }
 void main() {
     vec4 base = v_color;
@@ -310,14 +321,17 @@ void main() {
     }
     if (u_mode == 9) {
         vec2 suv = gl_FragCoord.xy / u_viewport;
-        vec3 hullN = normalize(texture(u_scene_normal_tex, suv).rgb * 2.0 - 1.0);
+        // 读原 Hull Normal(na_tex)：rgb=法线，.a=gloss(Pass1 存的)，合成时保留 gloss
+        vec4 hn = texture(u_scene_normal_tex, suv);
+        vec3 hullN = normalize(hn.rgb * 2.0 - 1.0);
+        float keep_gloss = hn.a;
         vec4 nmap = (u_has_tex == 1) ? texture(u_tex, v_uv) : vec4(0.5, 0.5, 1.0, 1.0);
         vec3 n_ts = vec3(nmap.x * 2.0 - 1.0, nmap.y * 2.0 - 1.0, 0.0);
         n_ts.z = sqrt(max(1.0 - (n_ts.x*n_ts.x + n_ts.y*n_ts.y), 0.0));
         n_ts = normalize(n_ts);
         vec3 decal_n = normalize(n_ts);
         vec3 merged = normalize(hullN + (decal_n - vec3(0.0, 0.0, 1.0)));
-        fragColor = vec4(merged * 0.5 + 0.5, 1.0);
+        fragColor = vec4(merged * 0.5 + 0.5, keep_gloss);
         return;
     }
     if (u_mode == 10) {
@@ -326,7 +340,7 @@ void main() {
         return;
     }
     if (u_mode == 11) {
-        // 最终 Lighting：读 Hull Albedo + Final Normal，用统一 PBR(GGX/Fresnel/env) 打光。
+        // 最终 Lighting：读 Hull Albedo + Final Normal + 世界坐标，用点光源 PBR 打光。
         vec2 suv = gl_FragCoord.xy / u_viewport;
         vec4 scenec = texture(u_scene_tex, suv);
         vec3 albedo = scenec.rgb;
@@ -334,10 +348,12 @@ void main() {
         vec4 scenen = texture(u_scene_final_tex, suv);
         vec3 N = normalize(scenen.rgb * 2.0 - 1.0);
         float gloss = scenen.a;
-        float diff = max(dot(N, -u_light_dir), 0.0);
+        vec3 worldPos = texture(u_scene_world_tex, suv).xyz;
+        vec3 litL = normalize(u_light_pos - worldPos);
+        float diff = max(dot(N, litL), 0.0);
         float hl = diff * 0.5 + 0.5;
         vec3 lit = u_ambient + (1.0 - u_ambient) * hl;
-        vec3 col = pbr_light(albedo, N, metallic, gloss, lit);
+        vec3 col = pbr_light(albedo, N, metallic, gloss, lit, worldPos);
         col = pow(col, vec3(1.0 / 2.2));
         fragColor = vec4(col, 1.0);
         return;
@@ -419,21 +435,19 @@ uniform int u_use_scene_normal;
 uniform vec3 u_view_dir;   // 观察方向（反射用）
 uniform int u_matid_vis;   // 1=输出 matId 伪彩(诊断散块对应材质)
 uniform sampler2D u_scene_final_tex;
+uniform vec3 u_light_pos;             // 点光源位置（天上）
+uniform float u_normal_strength;      // 法线贴图强度（>1 加强凹凸细节）
+in vec3 v_world_pos;                  // 世界坐标（点光源用）
 out vec4 fragColor;
 out vec4 fragNormal;
-// 统一 PBR：环境 + Cook-Torrance GGX + Schlick Fresnel
-vec3 env_color(vec3 R) {
-    vec3 sky = vec3(0.30, 0.44, 0.58);
-    vec3 sea = vec3(0.05, 0.08, 0.11);
-    float t = clamp(R.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 c = mix(sea, sky, pow(t, 0.85));
-    vec3 sun_dir = normalize(vec3(0.35, 0.6, 0.72));
-    float s = pow(max(dot(R, sun_dir), 0.0), 220.0);
-    c += vec3(1.0, 0.95, 0.82) * s * 1.6;
-    return c;
-}
-vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
-    vec3 L = normalize(-u_light_dir);
+out vec3 fragWorldPos;                // MRT 附件2：世界坐标（供最终点光源）
+// 统一 PBR：Cook-Torrance GGX + Schlick Fresnel 直接光镜面反射（天上的点光源）。
+// ★ 已移除程序化天空盒环境反射：金属只反射光源高光，不反射天空/海面色相。
+vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit, vec3 worldPos) {
+    vec3 path = u_light_pos - worldPos;
+    float dist = max(length(path), 1e-4);
+    vec3 L = path / dist;
+    float atten = clamp(1.0 / (1.0 + 0.0008 * dist * dist), 0.0, 1.0);
     vec3 V = normalize(u_view_dir);
     vec3 H = normalize(L + V);
     float NdotL = max(dot(N, L), 0.0);
@@ -451,13 +465,11 @@ vec3 pbr_light(vec3 albedo, vec3 N, float metallic, float gloss, vec3 lit) {
     float Gl = NdotL / (NdotL * (1.0 - k) + k);
     float G = Gv * Gl;
     vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 1e-5);
-    vec3 kd = (1.0 - F) * (1.0 - metallic);
-    vec3 diffuse = albedo * kd * lit;
-    vec3 direct = diffuse * NdotL + specular * NdotL;
-    vec3 R = reflect(-V, N);
-    vec3 env = env_color(R);
-    vec3 env_spec = env * F * metallic;
-    return direct + env_spec;
+    // MG 不影响基础颜色。环境光保底不衰减，点光源贡献随距离衰减。
+    vec3 diffuse = albedo * lit;
+    vec3 ambient_part = albedo * u_ambient;
+    vec3 direct = ambient_part + (diffuse - ambient_part) * atten + specular * NdotL * atten * 2.0;
+    return direct;
 }
 void main() {
     vec4 base = v_color;
@@ -509,6 +521,7 @@ void main() {
         float nza = n_a.x*n_a.x + n_a.y*n_a.y;
         n_a.z = sqrt(max(1.0 - nza, 0.0));
         n_ts = normalize(n_ts + n_a - vec3(0.0, 0.0, 1.0));
+        n_ts.xy *= u_normal_strength;   // ★ 加强法线，突出 _n 凹凸细节
         vec3 n_world = normalize(n_ts);
         float mslice = max(u_tile_idx[matId].z, 0.0);
         vec3 mg = textureGrad(u_mg_tex, vec3(uv, mslice), dudx, dudy).rgb;
@@ -517,6 +530,7 @@ void main() {
         if (u_mrt == 1) {
             fragColor = vec4(c, metallic);
             fragNormal = vec4(n_world * 0.5 + 0.5, gloss);
+            fragWorldPos = v_world_pos;
         } else {
             if (u_matid_vis == 1) {
                 fragColor = vec4(vec3(float(matId) / 195.0), 1.0);
@@ -526,10 +540,11 @@ void main() {
                 vec2 suv2 = gl_FragCoord.xy / u_viewport;
                 n_world = normalize(texture(u_scene_final_tex, suv2).rgb * 2.0 - 1.0);
             }
-            float diff2 = max(dot(n_world, -u_light_dir), 0.0);
+            vec3 litL = normalize(u_light_pos - v_world_pos);   // 点光源方向
+            float diff2 = max(dot(n_world, litL), 0.0);
             float hl2 = diff2 * 0.5 + 0.5;
             vec3 lit2 = u_ambient + (1.0 - u_ambient) * hl2;
-            c = pbr_light(c, n_world, metallic, gloss, lit2);
+            c = pbr_light(c, n_world, metallic, gloss, lit2, v_world_pos);
             c = pow(c, vec3(1.0 / 2.2));
             fragColor = vec4(c, 1.0);
         }
@@ -541,11 +556,11 @@ void main() {
 
 #: FRAG_INDEXED 单输出变体（移除 fragNormal 声明与赋值），用于单 drawbuffer 目标。
 FRAG_INDEXED_SINGLE = FRAG_INDEXED.replace(
-    "out vec4 fragColor;\nout vec4 fragNormal;",
+    "out vec4 fragColor;\nout vec4 fragNormal;\nout vec3 fragWorldPos;                // MRT 附件2：世界坐标（供最终点光源）",
     "out vec4 fragColor;",
 ).replace(
-    "            fragNormal = vec4(n_world * 0.5 + 0.5, gloss);",
-    "",
+    "            fragColor = vec4(c, metallic);\n            fragNormal = vec4(n_world * 0.5 + 0.5, gloss);\n            fragWorldPos = v_world_pos;",
+    "            fragColor = vec4(c, metallic);",
 )
 
 #: 每顶点 12 个 float：position(3) + normal(3) + uv(2) + color(4)
@@ -561,14 +576,14 @@ _UNIFORMS = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_a
              "u_noise_tex", "u_offset_scale", "u_rotation", "u_tile_idx", "u_tint", "u_remove",
              "u_gamma", "u_scene_tex", "u_scene_normal_tex", "u_viewport", "u_mrt",
              "u_normal_map", "u_has_normal_map", "u_mg_map", "u_has_mg", "u_debug_mode", "u_scene_final_tex", "u_use_scene_normal",
-             "u_view_dir")
+             "u_view_dir", "u_light_pos", "u_normal_strength", "u_scene_world_tex")
 
 #: INDEXED 专用 program 的 uniform 表（与 PBS/FS 独立，避免共用造成的单元/状态冲突）
 _UNIFORMS_INDEXED = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_ambient", "u_matid_vis",
                      "u_has_tex", "u_has_normal_map", "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_mg_tex",
                      "u_alpha_n_map", "u_art_tex", "u_noise_tex", "u_offset_scale", "u_rotation",
                      "u_tile_idx", "u_tint", "u_remove", "u_gamma", "u_viewport", "u_mrt",
-                     "u_debug_mode", "u_use_scene_normal", "u_scene_final_tex", "u_view_dir")
+                     "u_debug_mode", "u_use_scene_normal", "u_scene_final_tex", "u_view_dir", "u_light_pos", "u_normal_strength")
 
 
 def _compile_shader(shader_type: int, source: str) -> int:
@@ -601,6 +616,7 @@ def _link_program(vs_src: str, fs_src: str) -> int:
     # 多输出（MRT）：fragColor→附件0（albedo/最终颜色），fragNormal→附件1（世界法线）
     GL.glBindFragDataLocation(prog, 0, "fragColor")
     GL.glBindFragDataLocation(prog, 1, "fragNormal")
+    GL.glBindFragDataLocation(prog, 2, "fragWorldPos")
     GL.glLinkProgram(prog)
     GL.glDeleteShader(vs)
     GL.glDeleteShader(fs)
@@ -749,6 +765,8 @@ def _is_alpha_blend(mesh) -> bool:
     **仅 normal 的**（has_color=False 的 Normal-only decal，如 SHIP_MESHDECAL_NORMAL_tech）**不走**——
     它走独立的 Normal-only pass（只改 Normal，不输出颜色/Alpha，不参与颜色混合）。
     """
+    if mesh.tech_family == "emissive":
+        return True   # 自发光材质：无光照直显（发光叠加 pass），不受 PBR/光照影响
     if mesh.tech_family in ("grid", "transparent"):
         return True
     if mesh.tech_family == "decal":
@@ -1008,13 +1026,14 @@ class GeometryViewport(QOpenGLWidget):
         self._scene_fbo: int = 0
         self._scene_color_tex: int = 0
         self._scene_normal_tex: int = 0
+        self._scene_world_tex: int = 0
         self._scene_depth_rb: int = 0
         self._scene_fbo_size = (0, 0)
         # Normal Ping-Pong FBO（独立，避免 feedback loop）
         self._na_fbo: int = 0; self._na_tex: int = 0
         self._nb_fbo: int = 0; self._nb_tex: int = 0
         self._fullscreen_vao: int = 0; self._fullscreen_vbo: int = 0
-        #: Debug 模式（N 循环 0..2）：0=正常，1=法线效果显示(最终法线)，2=所有模型名称(含挂载点位)
+        #: Debug 模式（N 循环 0..5）：0=正常，1=模型名称，2=最终法线，3=metallic，4=gloss，5=emissive
         self._debug_mode = 0
         #: matId 伪彩诊断（>0 时 INDEXED 输出 matId 值；0=正常渲染）
         self._matid_vis = 0
@@ -1420,7 +1439,8 @@ class GeometryViewport(QOpenGLWidget):
                              for name in ("u_mode", "u_viewport", "u_scene_tex",
                                           "u_scene_normal_tex", "u_scene_final_tex",
                                           "u_light_dir", "u_ambient", "u_debug_mode",
-                                          "u_view_dir")}
+                                          "u_view_dir", "u_light_pos", "u_normal_strength",
+                                          "u_scene_world_tex")}
         GL.glEnable(GL.GL_DEPTH_TEST)
         self._gl_ready = True
         self._build_meshes()
@@ -1466,10 +1486,14 @@ class GeometryViewport(QOpenGLWidget):
 
         GL.glUseProgram(self._program)
         u = self._uniforms
-        GL.glUniform3f(u["u_light_dir"], 0.35, 0.6, 0.72)
-        # 环境光从 0.30 调低到 0.12：半兰伯特原本光照范围仅 [0.65,1.0]，把法线扰动压得几乎不可见；
-        # 降低 ambient 让方向光占主导，以凸显法线贴图(indicated 凹凸)细节，便于验证法线是否生效。
-        GL.glUniform3f(u["u_ambient"], 0.12, 0.12, 0.14)
+        # ★ 光源：u_light_dir 为光照射方向（从天上右前照向模型）。-u_light_dir 即指向太阳的方向。
+        GL.glUniform3f(u["u_light_dir"], -0.35, -0.6, -0.72)
+        # 点光源优先：环境光压低到仅作保底补充，让点光源的方向性/衰减主导明暗。
+        GL.glUniform3f(u["u_ambient"], 0.06, 0.08, 0.10)
+        # 点光源位于场景中心上方（天上）；法线强度加强 _n。
+        _c0 = self._scene_bounds[0] if self._scene_bounds else np.zeros(3)
+        GL.glUniform3f(u["u_light_pos"], float(_c0[0]), float(_c0[1]) + 45.0, float(_c0[2]))
+        GL.glUniform1f(u["u_normal_strength"], 1.5)
 
         try:
             # ── deferred Normal Accumulation ──
@@ -1487,14 +1511,17 @@ class GeometryViewport(QOpenGLWidget):
                 GL.glViewport(0, 0, w, h)
                 GL.glClearColor(0.30, 0.46, 0.60, 1.0)   # 天空背景色
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-                GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
+                GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1, GL.GL_COLOR_ATTACHMENT2])
                 GL.glDisable(GL.GL_BLEND)
                 GL.glDepthMask(GL.GL_TRUE)
                 # MRT 需双输出 program；用独立 _uniforms_mrt（与 _program 的单输出分离）
                 GL.glUseProgram(self._program_mrt)
                 um = self._uniforms_mrt
-                GL.glUniform3f(um["u_light_dir"], 0.35, 0.6, 0.72)
-                GL.glUniform3f(um["u_ambient"], 0.12, 0.12, 0.14)
+                GL.glUniform3f(um["u_light_dir"], -0.35, -0.6, -0.72)
+                GL.glUniform3f(um["u_ambient"], 0.06, 0.08, 0.10)
+                _c0 = self._scene_bounds[0] if self._scene_bounds else np.zeros(3)
+                GL.glUniform3f(um["u_light_pos"], float(_c0[0]), float(_c0[1]) + 45.0, float(_c0[2]))
+                GL.glUniform1f(um["u_normal_strength"], 1.5)
                 GL.glUniform1i(um["u_mrt"], 1)
                 GL.glUniform1i(um["u_use_scene_normal"], 0)
                 self._draw_ship_solid(view, proj, um, mrt_surface=True)
@@ -1620,6 +1647,7 @@ class GeometryViewport(QOpenGLWidget):
             GL.glUniform1i(u["u_mode"], 2)
             GL.glUniform1f(u["u_emissive"], 0.0)
             GL.glUniform1f(u["u_opacity"], 1.0)
+            GL.glUniform1i(u["u_debug_mode"], 5 if self._debug_mode == 5 else 0)
             for mesh in self._meshes:
                 if mesh.kind not in ("hull", "mount"):
                     continue
@@ -1632,6 +1660,13 @@ class GeometryViewport(QOpenGLWidget):
                 if mesh.tech_family == "decal" and not getattr(mesh, "has_color", True):
                     continue   # decal_tech 是法线细节层：其法线已写入 Final Normal，不再输出颜色
                 GL.glUniform1i(u["u_mode"], 2)   # grid/glass/albedo-decal 无光照直显
+                # 自发光材质：启用自发光 + 强度；其余关闭（仅在 u_mode==2 时由 shader 读取）。
+                # ★ u_emissive/u_emissive_k 是 float uniform，须用 glUniform1f。
+                if mesh.tech_family == "emissive":
+                    GL.glUniform1f(u["u_emissive"], 1.0)
+                    GL.glUniform1f(u["u_emissive_k"], float(mesh.emissive_power or 1.0))
+                else:
+                    GL.glUniform1f(u["u_emissive"], 0.0)
                 # 逐实例绘制（每实例 bind 材质 + 更新模型矩阵）
                 insts = getattr(mesh, "instance_matrices", None) or []
                 if insts:
@@ -1764,7 +1799,7 @@ class GeometryViewport(QOpenGLWidget):
                           #   导致后续帧（如旋转相机）跳过 deferred 路径，走 _draw_ship_solid(非MRT) 报 1282
         if self._scene_fbo:
             GL.glDeleteFramebuffers(1, [self._scene_fbo])
-            GL.glDeleteTextures([self._scene_color_tex, self._scene_normal_tex, self._na_tex, self._nb_tex])
+            GL.glDeleteTextures([self._scene_color_tex, self._scene_normal_tex, self._scene_world_tex, self._na_tex, self._nb_tex])
             if self._na_fbo:
                 GL.glDeleteFramebuffers(1, [self._na_fbo])
             if self._nb_fbo:
@@ -1787,6 +1822,16 @@ class GeometryViewport(QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        # 世界坐标附件(RGBA32F)：Pass1 存 hull 世界坐标，供最终点光源(位置+衰减)打光重建位置。
+        self._scene_world_tex = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._scene_world_tex)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA32F, w, h, 0,
+                        GL.GL_RGBA, GL.GL_FLOAT, None)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
         # Normal Ping-Pong FBO：normal_a(存 Hull Normal)、normal_b(存 Final Normal)
         self._na_fbo = GL.glGenFramebuffers(1)
         self._na_tex = GL.glGenTextures(1)
@@ -1827,9 +1872,11 @@ class GeometryViewport(QOpenGLWidget):
                                   GL.GL_TEXTURE_2D, self._scene_color_tex, 0)
         GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT1,
                                   GL.GL_TEXTURE_2D, self._scene_normal_tex, 0)
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT2,
+                                  GL.GL_TEXTURE_2D, self._scene_world_tex, 0)
         GL.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT,
                                      GL.GL_RENDERBUFFER, self._scene_depth_rb)
-        GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
+        GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1, GL.GL_COLOR_ATTACHMENT2])
         ok = GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER) == GL.GL_FRAMEBUFFER_COMPLETE
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
         # fullscreen quad (覆盖 NDC 的两个三角形，完整 attrib 布局，与网格一致)
@@ -1896,8 +1943,11 @@ class GeometryViewport(QOpenGLWidget):
                 GL.glUniform1i(uu["u_mode"], 0)
                 GL.glUniform1i(uu["u_debug_mode"], 0)
                 GL.glUniform1f(uu["u_opacity"], 1.0)
-                GL.glUniform3f(uu["u_light_dir"], 0.35, 0.6, 0.72)
-                GL.glUniform3f(uu["u_ambient"], 0.12, 0.12, 0.14)
+                GL.glUniform3f(uu["u_light_dir"], -0.35, -0.6, -0.72)
+                GL.glUniform3f(uu["u_ambient"], 0.06, 0.08, 0.10)
+                _c0 = self._scene_bounds[0] if self._scene_bounds else np.zeros(3)
+                GL.glUniform3f(uu["u_light_pos"], float(_c0[0]), float(_c0[1]) + 45.0, float(_c0[2]))
+                GL.glUniform1f(uu["u_normal_strength"], 1.5)
                 GL.glUniform1f(uu.get("u_emissive", -1), 0.0)
                 GL.glUniform1f(uu.get("u_emissive_k", -1), 1.0)
                 GL.glUniform1i(uu.get("u_tex", -1), 0)
@@ -1997,6 +2047,16 @@ class GeometryViewport(QOpenGLWidget):
         else:
             GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
             GL.glUniform1i(u["u_has_tex"], 0)
+        # 自发光材质：绑定 _mg (metallicGlossMap) 到 unit5，B 通道作 emissive mask
+        _mgid = (mesh._extra_tex or {}).get("metallicGlossMap", 0)
+        if _mgid:
+            GL.glActiveTexture(GL.GL_TEXTURE5)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, _mgid)
+            GL.glUniform1i(u["u_mg_map"], 5)
+            GL.glUniform1i(u["u_has_mg"], 1)
+        else:
+            GL.glUniform1i(u["u_has_mg"], 0)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
 
     def _draw_alpha_once(self, view, proj, u, mesh, model):
         """透明 pass 单次绘制一个网格（应用模型矩阵 + 绑定贴图）。"""
@@ -2244,11 +2304,19 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUniform1i(fu["u_mode"], mode)
         GL.glUniform1i(fu["u_debug_mode"], 0)   # 法线显示/光照不依赖 shader debug
         GL.glUniform2f(fu["u_viewport"], float(w), float(h))
-        GL.glUniform3f(fu["u_light_dir"], 0.35, 0.6, 0.72)
-        GL.glUniform3f(fu["u_ambient"], 0.12, 0.12, 0.14)
+        GL.glUniform3f(fu["u_light_dir"], -0.35, -0.6, -0.72)
+        GL.glUniform3f(fu["u_ambient"], 0.06, 0.08, 0.10)
         GL.glUniform1i(fu["u_scene_tex"], 5)
         GL.glUniform1i(fu["u_scene_normal_tex"], 1)
         GL.glUniform1i(fu["u_scene_final_tex"], 8)
+        # 点光源：world 坐标纹理绑到 unit7，供最终打光重建世界位置
+        _c0 = self._scene_bounds[0] if self._scene_bounds else np.zeros(3)
+        GL.glUniform3f(fu["u_light_pos"], float(_c0[0]), float(_c0[1]) + 45.0, float(_c0[2]))
+        GL.glUniform1f(fu["u_normal_strength"], 1.5)
+        GL.glUniform1i(fu["u_scene_world_tex"], 7)
+        GL.glActiveTexture(GL.GL_TEXTURE7)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._scene_world_tex)
+        GL.glActiveTexture(GL.GL_TEXTURE0)
         # 观察方向 + 天空盒（反射环境）绑定到 unit6
         _vd = self._camera.eye() - self._camera.target
         _nv = _vd / max(float(np.linalg.norm(_vd)), 1e-6)
@@ -2293,18 +2361,18 @@ class GeometryViewport(QOpenGLWidget):
             painter.end()
 
     def keyPressEvent(self, event):
-        """Debug 切换：N 循环 0..4。0=正常，1=所有模型名称，2=最终法线，3=metallic，4=gloss。F12=截图到 _temp/。"""
+        """Debug 切换：N 循环 0..5。0=正常，1=模型名称，2=最终法线，3=metallic，4=gloss，5=emissive。F12=截图到 _temp/。"""
         k = event.key()
         if k == Qt.Key_F12:
             self._capture_png()
             return
         if k == Qt.Key_N:
-            self._debug_mode = (self._debug_mode + 1) % 5
+            self._debug_mode = (self._debug_mode + 1) % 6
             self.update()
             return
         mapping = {Qt.Key_0: 0, Qt.Key_Escape: 0,
                    Qt.Key_1: 1, Qt.Key_2: 2,
-                   Qt.Key_3: 3, Qt.Key_4: 4}
+                   Qt.Key_3: 3, Qt.Key_4: 4, Qt.Key_5: 5}
         if k in mapping:
             self._debug_mode = mapping[k]
             self.update()
