@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import Qt, QSettings, Signal, QTimer
-from PySide6.QtGui import QPainter, QColor, QPen
+from PySide6.QtCore import Qt, QSettings, Signal, QTimer, QSize
+from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox, QCompleter,
     QPushButton, QCheckBox, QWidget, QProgressBar, QFileDialog, QMessageBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.signals import bus
 from utils.theme import theme
 from utils.threading_utils import run_async
+from utils.path_utils import get_data_dir
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
 
@@ -183,10 +184,7 @@ class GeometryViewerDialog(QDialog):
         self.ship_combo.setInsertPolicy(QComboBox.NoInsert)
         self.ship_combo.setMinimumWidth(180)
         theme.bind(self.ship_combo, "QComboBox { background:@input_bg@; color:@text@; border:1px solid @border@; border-radius:4px; padding:4px 6px; }")
-        self.btn_load = QPushButton("加载")
-        theme.bind(self.btn_load, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:6px 12px; }")
         ship_row.addWidget(self.ship_combo, 1)
-        ship_row.addWidget(self.btn_load)
         self._ship_row_widget = QWidget()
         self._ship_row_widget.setLayout(ship_row)
         self._ship_row_widget.setVisible(False)
@@ -209,6 +207,30 @@ class GeometryViewerDialog(QDialog):
 
         sec_style = "color:@text_muted@; font-size:11px; font-weight:bold; background:transparent; border:none; padding-top:4px;"
         cb_style = "QCheckBox { color:@text@; font-size:12px; spacing:6px; }"
+
+        # ── 涂装切换 ──
+        # ⚠️【临时标记】涂装渲染逻辑尚未完成：camouflage/MSkin/Permoflage/Skin 等几类
+        # 生效方式不同的涂装需分开处理（当前统一走 artMap/composite 是错的，配色1 全灰）。
+        # 临时屏蔽整个涂装入口（标题、camo_combo、加载按钮）；改为**自动加载默认模型**（无涂装）。
+        # 恢复涂装时：取消下面 camo_title/camo_combo/btn_load 的 setVisible(False)，
+        # 并移除 _open_ship_prepare 末尾的 self._on_load() 自动加载调用即可。
+        camo_title = QLabel("涂装")
+        theme.bind(camo_title, sec_style)
+        camo_title.setVisible(False)
+        pl.addWidget(camo_title)
+        camo_row = QHBoxLayout()
+        self.camo_combo = QComboBox()
+        self.camo_combo.setEditable(False)
+        self.camo_combo.setMinimumWidth(200)
+        self.camo_combo.setIconSize(QSize(40, 40))
+        theme.bind(self.camo_combo, "QComboBox { background:@input_bg@; color:@text@; border:1px solid @border@; border-radius:4px; padding:4px 6px; }")
+        camo_row.addWidget(self.camo_combo, 1)
+        self.camo_combo.setVisible(False)  # ⚠️ 临时屏蔽涂装入口
+        self.btn_load = QPushButton("加载")
+        theme.bind(self.btn_load, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:6px 12px; }")
+        camo_row.addWidget(self.btn_load)
+        self.btn_load.setVisible(False)  # ⚠️ 临时屏蔽「加载」按钮：已改为自动加载默认模型
+        pl.addLayout(camo_row)
 
         # ── 显示选项 ──
         self._add_section_title(pl, "显示", sec_style)
@@ -322,6 +344,8 @@ class GeometryViewerDialog(QDialog):
         # ── 信号 ──
         self.btn_load.clicked.connect(self._on_load)
         self.ship_combo.lineEdit().returnPressed.connect(self._on_load)
+        self.ship_combo.activated.connect(self._on_ship_changed)
+        self.camo_combo.currentIndexChanged.connect(self._on_camo_changed)
         self.cb_hull.toggled.connect(self._on_hull_toggled)
         self.cb_armor.toggled.connect(self._on_armor_toggled)
         self.cb_wire.toggled.connect(lambda v: self.viewport.set_view_options(wireframe=v))
@@ -615,10 +639,10 @@ class GeometryViewerDialog(QDialog):
         self._try_load_pending()
 
     def _try_load_pending(self):
-        """舰船列表就绪且空闲时，载入挂起的舰船。"""
+        """舰船列表就绪后，定位到挂起的舰船并准备涂装（不自动加载，由用户点「加载」）。"""
         if self._closed:
             return
-        if not self._pending_ship_id or self._loading or not self._ships:
+        if not self._pending_ship_id or not self._ships:
             return
         ship = next((s for s in self._ships if s.game_key == self._pending_ship_id), None)
         if ship is None:
@@ -626,9 +650,50 @@ class GeometryViewerDialog(QDialog):
             self._pending_ship_id = None
             return
         self._pending_ship_id = None
-        # 同步隐藏 combo 选中项，复用既有加载流程
-        self.ship_combo.setCurrentIndex(self._ships.index(ship))
+        self._open_ship_prepare(ship)
+
+    def _open_ship_prepare(self, ship):
+        """定位指定舰船到组合框，并**自动加载默认模型**（临时：涂装入口与加载按钮已屏蔽）。"""
+        if self._closed:
+            return
+        idx = self._ships.index(ship)
+        self.ship_combo.blockSignals(True)
+        self.ship_combo.setCurrentIndex(idx)
+        self.ship_combo.blockSignals(False)
+        self._reset_viewer_data()
+        self._populate_camos(ship)
+        self.stats_label.setText(f"已选择 {ship.display_name}（{ship.game_key}）")
+        # ⚠️【临时标记】涂装入口已屏蔽；自动加载默认（无涂装）模型
         self._on_load()
+
+    def _reset_viewer_data(self):
+        """清空当前查看数据（模型 + 涂装 + 装甲 + 状态），切船/关闭时调用。"""
+        if self._load_task is not None:
+            self._load_task.cancel()
+            self._load_task = None
+        self._load_generation += 1
+        self._loading = False
+        self.btn_load.setEnabled(True)
+        self.camo_combo.setEnabled(True)
+        self._current_geom = None
+        self._armor_scene = None
+        self._plate_items = {}
+        self._camo_infos = []
+        self.camo_combo.blockSignals(True)
+        self.camo_combo.clear()
+        self.camo_combo.blockSignals(False)
+        self.viewport.clear_scene()
+        self.progress.setVisible(False)
+        self.stats_label.setText("未加载模型（请选择涂装后点击「加载」）")
+        self.sel_label.setText("未选中（点击装甲板块选中）")
+
+    def _on_ship_changed(self):
+        """用户在组合框手动切换舰船：清空旧查看数据并自动加载新舰默认模型。"""
+        if not self._ships:
+            return
+        ship = self._selected_ship()
+        if ship is not None:
+            self._open_ship_prepare(ship)
 
     def _on_ships_error(self, err):
         self._loading_ships = False
@@ -667,6 +732,21 @@ class GeometryViewerDialog(QDialog):
         if ship is None:
             self.stats_label.setText("未找到匹配的舰船")
             return
+        it = self.camo_combo.currentData()
+        scheme = it if it is not None else None
+        model_replace = skin = None
+        if scheme is not None and scheme.origin == "model":
+            model_replace = scheme.model_replace or None
+            skin = scheme.skin or None
+            if scheme.model_folder:
+                from dataclasses import replace as dc_replace
+                ship = dc_replace(ship, model_folder=scheme.model_folder)
+        # 重新加载：先清空上一次渲染记录，避免残留旧场景
+        self.viewport.clear_scene()
+        self._current_geom = None
+        self._armor_scene = None
+        self._plate_items = {}
+        self._set_loading_overlay(False)
         # 取消旧加载任务（若仍在运行），并让旧回调因代数不匹配而失效
         if self._load_task is not None:
             self._load_task.cancel()
@@ -674,17 +754,28 @@ class GeometryViewerDialog(QDialog):
         gen = self._load_generation
         self._loading = True
         self.btn_load.setEnabled(False)
+        self.camo_combo.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setValue(0)
-        self.stats_label.setText(f"正在加载 {ship.display_name}...")
-        self._set_loading_overlay(True, f"正在加载 {ship.display_name}...")
+        label = scheme.display_name if scheme is not None else "无涂装"
+        self.stats_label.setText(f"正在加载 {ship.display_name}（{label}）...")
+        self._set_loading_overlay(True, f"正在加载 {ship.display_name}（{label}）...")
 
         def _work(cancel_event):
             geom = self._get_service().load_ship(
                 ship,
                 progress_cb=lambda p, m: self._on_progress(p, m, gen),
                 cancel_event=cancel_event,
+                model_replace=model_replace,
+                skin=skin,
             )
+            # 材质涂装：模型加载完成后直接套上，再交给 set_scene 展示
+            if scheme is not None and scheme.origin == "mat" and scheme.entry:
+                try:
+                    self._get_service().apply_camo(
+                        geom, scheme.entry, self._get_service()._get_extractor())
+                except Exception as exc:  # noqa: BLE001
+                    bus.log_message.emit(f"⚠️ 涂装应用失败: {exc}")
             # 后台构建装甲聚合场景（拾取/描边/层级数据源）
             from models.armor_scene import ArmorScene
             scene = ArmorScene.build(geom.armor_meshes, cancel_event=cancel_event)
@@ -718,6 +809,7 @@ class GeometryViewerDialog(QDialog):
         geom, scene = result
         self._loading = False
         self.btn_load.setEnabled(True)
+        self.camo_combo.setEnabled(True)
         self.progress.setVisible(False)
         self._set_loading_overlay(False)
         self._current_geom = geom
@@ -732,6 +824,7 @@ class GeometryViewerDialog(QDialog):
         self.viewport.set_armor_display(
             opacity=self.opacity_slider.value() / 100.0,
             show_edges=self.cb_edges.isChecked())
+        # 涂装下拉框在切船/打开时已按该舰填充，这里不再重建（保持用户当前选择）
         # 构建三级结构树（hidden 板默认不勾选）
         n_hidden = self._build_armor_tree()
         self.sel_label.setText("未选中（点击装甲板块选中）")
@@ -783,12 +876,158 @@ class GeometryViewerDialog(QDialog):
             return  # 窗口已关闭或已被新任务取代：丢弃过期结果
         self._loading = False
         self.btn_load.setEnabled(True)
+        self.camo_combo.setEnabled(True)
         self.progress.setVisible(False)
         self._set_loading_overlay(False)
         self.stats_label.setText(f"加载失败: {err}")
         bus.log_message.emit(f"❌ 3D 加载失败: {err}")
         # 加载失败也要兑现挂起请求，避免按钮点击被吞掉
         self._try_load_pending()
+
+    # ── 涂装切换（DB 优先列表 + 预览图 + 应用）─────────────
+
+    def _camo_service(self):
+        from services.camo_service import CamoService
+        svc = self._get_service()
+        cache = None
+        try:
+            cache = svc._get_assets_cache()
+        except Exception:  # noqa: BLE001
+            cache = None
+        bin_folder = ""
+        try:
+            from app.application import app as app_ctx
+            bin_folder = app_ctx.ctx.bin_folder or ""
+        except Exception:  # noqa: BLE001
+            pass
+        return CamoService(extractor=svc._get_extractor(), cache=cache, bin_folder=bin_folder)
+
+    def _populate_camos(self, ship=None):
+        if ship is None:
+            ship = self._selected_ship()
+        if ship is None:
+            return
+        self._camo_infos: list = []
+        self.camo_combo.clear()
+        # 归属权威来源：Ship JSON 的 permoflages（= Vehicle.permoflages()），含 nativePermoflage
+        permo: set[str] = set()
+        try:
+            import json as _json
+            from utils.path_utils import get_split_dir
+            sj = get_split_dir() / "Ship" / f"{ship.game_key}.json"
+            if sj.exists():
+                d = _json.loads(sj.read_text(encoding="utf-8"))
+                permo |= set(d.get("permoflages") or [])
+                npf = d.get("nativePermoflage")
+                if npf:
+                    permo.add(npf)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            infos = self._camo_service().list_camos(
+                {ship.game_key, ship.model_folder}, ship_permoflages=permo)
+        except Exception as exc:  # noqa: BLE001
+            infos = []
+            bus.log_message.emit(f"⚠️ 涂装列表加载失败: {exc}")
+        self._camo_infos = infos
+        self.camo_combo.blockSignals(True)
+        for it in infos:
+            self.camo_combo.addItem(self._camo_icon(it), it.display_name, it)
+        # 默认选中「无涂装」
+        if self.camo_combo.count():
+            self.camo_combo.setCurrentIndex(0)
+        self.camo_combo.blockSignals(False)
+        self._update_camo_icon()
+
+    def _camo_icon(self, it) -> QIcon:
+        path = getattr(it, "icon_path", "") if it is not None else ""
+        if not path:
+            return QIcon()
+        p = get_data_dir() / path
+        if not p.exists():
+            return QIcon()
+        pix = QPixmap(str(p))
+        if pix.isNull():
+            return QIcon()
+        return QIcon(pix)
+
+    def _on_camo_changed(self):
+        self._update_camo_icon()
+        it = self.camo_combo.currentData()
+        if it is not None:
+            self.stats_label.setText(
+                f"已选择涂装：{it.display_name}\n点击「加载」应用")
+
+    def _update_camo_icon(self):
+        idx = self.camo_combo.currentIndex()
+        it = self.camo_combo.currentData()
+        self.camo_combo.setItemIcon(idx, self._camo_icon(it))
+
+    def _apply_camo(self, scheme):
+        geom = self._current_geom
+        if geom is None:
+            return
+        if scheme.origin == "model":
+            self._reload_model_variant(scheme)
+            return
+        if scheme.origin == "none":
+            self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
+                                    show_armor=self.cb_armor.isChecked(),
+                                    armor_scene=self._armor_scene)
+            self.viewport.set_armor_display(opacity=self.opacity_slider.value() / 100.0,
+                                            show_edges=self.cb_edges.isChecked())
+            bus.log_message.emit("🎨 恢复默认模型")
+            return
+        n = 0
+        try:
+            n = self._get_service().apply_camo(geom, scheme.entry,
+                                               self._get_service()._get_extractor())
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 涂装应用失败: {exc}")
+        bus.log_message.emit(f"🎨 应用涂装 {scheme.display_name}：替换 {n} 处材质")
+        if n:
+            self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
+                                    show_armor=self.cb_armor.isChecked(),
+                                    armor_scene=self._armor_scene)
+            self.viewport.set_armor_display(opacity=self.opacity_slider.value() / 100.0,
+                                            show_edges=self.cb_edges.isChecked())
+
+    def _reload_model_variant(self, scheme):
+        """origin="model"：把船体/挂载模型替换成皮肤变体并异步重载。"""
+        if self._loading:
+            return
+        ship = self._selected_ship()
+        if ship is None:
+            return
+        from dataclasses import replace as dc_replace
+        if scheme.model_folder:
+            ship = dc_replace(ship, model_folder=scheme.model_folder)
+        if self._load_task is not None:
+            self._load_task.cancel()
+        self._load_generation += 1
+        gen = self._load_generation
+        self._loading = True
+        self.btn_load.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        self.stats_label.setText(f"应用皮肤 {scheme.display_name}...")
+        self._set_loading_overlay(True, f"应用皮肤 {scheme.display_name}...")
+
+        def _work(ce):
+            geom = self._get_service().load_ship(
+                ship, progress_cb=lambda p, m: self._on_progress(p, m, gen),
+                cancel_event=ce, model_replace=scheme.model_replace or None,
+                skin=scheme.skin or None)
+            from models.armor_scene import ArmorScene
+            scene = ArmorScene.build(geom.armor_meshes, cancel_event=ce)
+            return geom, scene
+
+        self._load_task = run_async(
+            _work,
+            on_finished=lambda r: self._on_ship_loaded(r, gen),
+            on_error=lambda e: self._on_ship_error(e, gen),
+            cancel_event=threading.Event(),
+        )
 
     # ── 模型导出（渲染 / 装甲 分开）─────────────────────
 
@@ -924,6 +1163,15 @@ class GeometryViewerDialog(QDialog):
         # 舰船列表尚未就绪时允许重新打开后重载；模型加载状态复位
         self._loading_ships = False
         self._loading = False
+        # 清空涂装/挂起/查看状态，避免关闭后再打开残留上一次加载数据
+        self._pending_ship_id = None
+        self._camo_infos = []
+        self.camo_combo.blockSignals(True)
+        self.camo_combo.clear()
+        self.camo_combo.blockSignals(False)
+        self.progress.setVisible(False)
+        self.stats_label.setText("未加载模型（请选择涂装后点击「加载」）")
+        self.sel_label.setText("未选中（点击装甲板块选中）")
         # 停止转圈并隐藏加载覆盖层（窗口仍在，控件可安全访问）
         self._set_loading_overlay(False)
         self._save_geometry()

@@ -91,6 +91,10 @@ class LogWriter:
         """把完整 traceback 写入日志文件。"""
         if not self._fh:
             return
+        # _ForceStop 是 kill() 注入的强制终止信号（BaseException），非真实异常，
+        # 不写入日志，避免 "Exception ignored in thread" 的级联报错。
+        if exc_type is not None and exc_type.__name__ == "_ForceStop":
+            return
         with self._lock:
             try:
                 ts = datetime.now().strftime("%H:%M:%S")
@@ -101,7 +105,7 @@ class LogWriter:
                 self._fh.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
                 self._fh.write("\n")
                 self._fh.flush()
-            except Exception:  # noqa: BLE001
+            except BaseException:  # noqa: BLE001  # _ForceStop 等强制终止信号也要吞掉
                 pass
 
     # ── 内部 ─────────────────────────────────────────────

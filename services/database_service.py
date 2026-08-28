@@ -331,6 +331,7 @@ class DatabaseManager:
         except Exception:
             pass
 
+
         # ── 迁移：创建 ship_module_secondary_artillery 表 ──
         try:
             self._conn.execute("""CREATE TABLE IF NOT EXISTS ship_module_secondary_artillery (
@@ -426,6 +427,10 @@ class DatabaseManager:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
             if "rage_mode_name" not in existing:
                 self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN rage_mode_name TEXT DEFAULT ''")
+                self._conn.commit()
+            # buff_params_name 仅 lesta 库需要（WG 战斗指令暂不下拉 buff）
+            if self._wows_type != "Wargaming" and "buff_params_name" not in existing:
+                self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN buff_params_name TEXT DEFAULT ''")
                 self._conn.commit()
         except Exception:
             pass

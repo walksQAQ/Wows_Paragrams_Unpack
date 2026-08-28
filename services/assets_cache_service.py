@@ -20,6 +20,7 @@ assets.bin（约 217MB）每次启动 3D 查看器都要现场提取+解析，�
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import struct
 import threading
@@ -44,7 +45,7 @@ from utils.path_utils import get_data_dir
 #:    一个；现改为汇总节点调色板（并集），供 geometry_service 按多节点实例化。
 #: v11（2026-08-25）：多节点并集**仅对刚性（skinned=0）件**生效；蒙皮 shape 的
 #:    nodes 是蒙皮骨骼调色板，并集会污染（如 TurretShape 的 4 骨骼）。保留首条。
-ASSETS_SCHEMA_VERSION = 11
+ASSETS_SCHEMA_VERSION = 16
 
 
 class AssetsCacheService:
@@ -202,6 +203,37 @@ class AssetsCacheService:
         except Exception:  # noqa: BLE001
             pass
 
+        # 迁移：exteriors 旧库补 icon_path 列（易用包图标列）
+        try:
+            cols = {r[1] for r in self._conn.execute(
+                "PRAGMA table_info(exteriors)").fetchall()}
+            if cols and "icon_path" not in cols:
+                self._conn.execute("ALTER TABLE exteriors ADD COLUMN icon_path TEXT DEFAULT ''")
+                self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 迁移：camouflages 旧库补 icon_path 列
+        try:
+            cols = {r[1] for r in self._conn.execute(
+                "PRAGMA table_info(camouflages)").fetchall()}
+            if cols and "icon_path" not in cols:
+                self._conn.execute("ALTER TABLE camouflages ADD COLUMN icon_path TEXT DEFAULT ''")
+                self._conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 迁移：exteriors / camouflages 补 display_name 列（涂装本地化名）
+        for tbl in ("exteriors", "camouflages"):
+            try:
+                cols = {r[1] for r in self._conn.execute(
+                    f"PRAGMA table_info({tbl})").fetchall()}
+                if cols and "display_name" not in cols:
+                    self._conn.execute(f"ALTER TABLE {tbl} ADD COLUMN display_name TEXT DEFAULT ''")
+                    self._conn.commit()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _init_core_tables_inline(self) -> None:
         """内嵌建表（assets_database.sql 读取失败时的兜底，与 SQL 文件保持一致）。"""
         self._conn.executescript("""
@@ -284,6 +316,63 @@ class AssetsCacheService:
             version INTEGER PRIMARY KEY,
             applied_at TEXT DEFAULT (datetime('now','localtime'))
         );
+        CREATE TABLE IF NOT EXISTS exteriors (
+            version_code TEXT NOT NULL,
+            ext_index    TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            camouflage   TEXT NOT NULL DEFAULT '',
+            species      TEXT NOT NULL DEFAULT '',
+            nation       TEXT NOT NULL DEFAULT '',
+            cost_gold    INTEGER DEFAULT 0,
+            can_buy      INTEGER DEFAULT 0,
+            parts_json   TEXT DEFAULT '[]',
+            custom_json  TEXT DEFAULT '{}',
+            unpeculiar_camouflage TEXT DEFAULT '',
+            color_scheme_id INTEGER DEFAULT 0,
+            icon_path    TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            data_json    TEXT DEFAULT '{}',
+            PRIMARY KEY(version_code, ext_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_exteriors ON exteriors(version_code, species);
+        CREATE TABLE IF NOT EXISTS camouflages (
+            version_code TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            realm        TEXT NOT NULL DEFAULT '',
+            tiled        INTEGER DEFAULT 0,
+            use_color_scheme INTEGER DEFAULT 0,
+            color_scheme TEXT DEFAULT '',
+            textures_json TEXT DEFAULT '{}',
+            uv_json      TEXT DEFAULT '{}',
+            ship_groups_json TEXT DEFAULT '[]',
+            target_ships_json TEXT DEFAULT '[]',
+            icon_path    TEXT DEFAULT '',
+            display_name TEXT DEFAULT '',
+            PRIMARY KEY(version_code, name)
+        );
+        CREATE TABLE IF NOT EXISTS camouflage_color_schemes (
+            version_code TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            color0 TEXT, color1 TEXT, color2 TEXT, color3 TEXT,
+            PRIMARY KEY(version_code, name)
+        );
+        CREATE TABLE IF NOT EXISTS camo_ship_groups (
+            version_code TEXT NOT NULL,
+            group_name  TEXT NOT NULL,
+            ship        TEXT NOT NULL,
+            PRIMARY KEY(version_code, group_name, ship)
+        );
+        CREATE TABLE IF NOT EXISTS camo_thumbs (
+            version_code TEXT NOT NULL,
+            camo_name    TEXT NOT NULL,
+            texture_tag  TEXT NOT NULL DEFAULT 'tile',
+            thumb_path   TEXT NOT NULL DEFAULT '',
+            tex_path     TEXT NOT NULL DEFAULT '',
+            width        INTEGER DEFAULT 0,
+            height       INTEGER DEFAULT 0,
+            updated_at   TEXT DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY(version_code, camo_name, texture_tag)
+        );
         """)
 
     # ── schema 版本管理（同 database_service 规则）───────────
@@ -361,7 +450,9 @@ class AssetsCacheService:
 
         try:
             counts = {"skeleton": 0, "render_sets": 0, "mfm_textures": 0,
-                      "material_full": 0, "skeleton_bones": 0, "shape_names": 0}
+                      "material_full": 0, "skeleton_bones": 0, "shape_names": 0,
+                      "exteriors": 0, "camouflages": 0, "camouflage_color_schemes": 0,
+                      "camo_ship_groups": 0}
             # 共用：字符串 dict + self_id 索引（渲染集/材质解析都要用）
             sdict = self._strings_dict(db)
             self_id_idx = db.build_self_id_index()
@@ -398,11 +489,13 @@ class AssetsCacheService:
                 elif pt.name == "SkeletonExtenderPrototype" and f.path.endswith(".skel_ext"):
                     ext_files.append(f)
 
-            _p(f"解析舰体骨架挂点与骨骼（{len(skel_files)} 个骨架文件，"
-               f"WG 另含 Visual {len(vis_files)} / SkeletonExtender {len(ext_files)}）...")
             if self._is_wg():
+                _p(f"解析舰体骨架挂点与骨骼（{len(skel_files)} 个骨架文件，"
+                   f"Visual {len(vis_files)} / SkeletonExtender {len(ext_files)}）...")
                 _p("WG 服：骨架来自 Visual nodes（HP_ 挂点/骨骼）+ "
                    "SkeletonExtender（MP_/SP_/EP_ 挂点）")
+            else:
+                _p(f"解析舰体骨架挂点与骨骼（{len(skel_files)} 个骨架文件）...")
 
             # 1) 骨架挂点 + 完整骨骼世界矩阵（bind pose 按 parent 累积）
             #    Korabli：SkeletonPrototype；WG：Visual nodes（HP_）+ SkeletonExtender（MP_）
@@ -717,6 +810,154 @@ class AssetsCacheService:
             counts["material_full"] = len(mf_rows)
             del mf_rows
 
+            _p("写入外观（Exterior）与涂装（camouflages.xml）数据...")
+            # 每次加载清空旧选项图，重新提取存储
+            try:
+                cdir = get_data_dir() / "camo_thumbs"
+                if cdir.exists():
+                    shutil.rmtree(cdir)
+                cdir.mkdir(parents=True, exist_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+            icon_map: dict[str, str] = {}
+            material_to_icon: dict[str, str] = {}
+            material_to_display: dict[str, str] = {}
+            # 涂装本地化名：从本地化文件(.po/.mo)按 IDS_<Exterior name 大写> 提取显示名
+            _loc_cands = [str(get_data_dir() / "global.po"), str(get_data_dir() / "global.mo"),
+                          str(get_data_dir() / "global_zh_sg.po"), str(get_data_dir() / "zh_cn.po")]
+            for _base in (Path(r"D:\战舰世界汉化\bin"),):
+                for _fn in ("global_zh_sg.po", "global.po", "global.mo"):
+                    _loc_cands.append(str(_base / _fn))
+            loc_map = self._load_camo_locale(_loc_cands)
+            # 9) Exterior JSON（data/split/Exterior/*.json）→ exteriors 表
+            #    同时扫描 pkg gui/exteriors，按 name 优先/index 次之匹配选项图，
+            #    提取(复制)到 data/camo_thumbs/<bin>/，并把相对 data 的路径写入 icon_path。
+            try:
+                from utils.path_utils import get_split_dir
+                icon_map = self._camo_icon_map(game_dir, bin_folder)
+                ext_dir = get_split_dir() / "Exterior"
+                ext_rows: list[tuple] = []
+                if ext_dir.exists():
+                    for f in sorted(ext_dir.glob("*.json")):
+                        try:
+                            d = json.loads(f.read_text(encoding="utf-8"))
+                        except Exception:  # noqa: BLE001
+                            continue
+                        ti = d.get("typeinfo") or {}
+                        ext_name = d.get("name", f.stem)
+                        ext_index = d.get("index", f.stem)
+                        icon_rel = self._cache_camo_icon(
+                            game_dir, bin_folder,
+                            self._resolve_camo_icon(icon_map, ext_name, ext_index), ext_name)
+                        camo_mat = d.get("camouflage", "") or ""
+                        display_name = loc_map.get("IDS_" + ext_name.upper(), "")
+                        if camo_mat:
+                            material_to_icon[camo_mat.lower()] = icon_rel
+                            material_to_display[camo_mat.lower()] = display_name
+                        ext_rows.append((
+                            bin_folder,
+                            ext_index,
+                            ext_name,
+                            camo_mat,
+                            ti.get("species", "") or "",
+                            ti.get("nation", "") or "",
+                            int(d.get("costGold", 0) or 0),
+                            int(bool(d.get("canBuy"))),
+                            json.dumps(d.get("parts", []), ensure_ascii=False),
+                            json.dumps(d.get("custom", {}), ensure_ascii=False),
+                            d.get("unpeculiarCamouflage", "") or "",
+                            int(d.get("unpeculiarCamouflageColorSchemeId", 0) or 0),
+                            icon_rel,
+                            display_name,
+                            json.dumps(d, ensure_ascii=False),
+                        ))
+                if ext_rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO exteriors "
+                        "(version_code, ext_index, name, camouflage, species, nation, "
+                        "cost_gold, can_buy, parts_json, custom_json, "
+                        "unpeculiar_camouflage, color_scheme_id, icon_path, display_name, data_json) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ext_rows)
+                counts["exteriors"] = len(ext_rows)
+                del ext_rows
+            except Exception:  # noqa: BLE001
+                pass
+
+            # 10) camouflages.xml（包根，含 shipgroups/colorschemes/camouflages 三段）
+            #     → camouflages + camouflage_color_schemes 表，供涂装切换器按索引查询。
+            try:
+                from services.camo_service import parse_camouflages
+                camo_xml: bytes | None = None
+                if game_dir:
+                    rp = Path(game_dir) / "res_unpack" / "camouflages.xml"
+                    if rp.exists():
+                        camo_xml = rp.read_bytes()
+                if camo_xml is None and game_dir:
+                    from data_extractor import GameExtractor
+                    ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+                    try:
+                        hits = ext.list_files(["camouflages.xml"])
+                        if hits:
+                            e = hits[0]
+                            camo_xml = ext.pkg_reader.read_file(e.volume.filename, e.file_info)
+                    finally:
+                        ext.close()
+                if camo_xml:
+                    parsed = parse_camouflages(camo_xml)
+                    crows: list[tuple] = []
+                    csrows: list[tuple] = []
+                    for name, variants in (parsed.get("entries") or {}).items():
+                        if not variants:
+                            continue
+                        entry = variants[0]
+                        icon_rel = material_to_icon.get(entry.name.lower(), "")
+                        display_name = material_to_display.get(entry.name.lower(), "")
+                        crows.append((
+                            bin_folder, name, entry.realm, int(entry.tiled),
+                            int(entry.use_color_scheme),
+                            ",".join(entry.color_schemes
+                                     or ([entry.color_scheme] if entry.color_scheme else [])),
+                            json.dumps(entry.textures, ensure_ascii=False),
+                            json.dumps(
+                                {k: {"scale": list(v.scale), "offset": list(v.offset)}
+                                 for k, v in entry.uv_transforms.items()},
+                                ensure_ascii=False),
+                            json.dumps(entry.ship_groups, ensure_ascii=False),
+                            json.dumps(entry.target_ships, ensure_ascii=False),
+                            icon_rel,
+                            display_name,
+                        ))
+                    for cname, cs in (parsed.get("color_schemes") or {}).items():
+                        cols = cs.colors or [[0.0] * 4 for _ in range(4)]
+                        csrows.append((bin_folder, cname) + tuple(
+                            json.dumps(list(cols[i]), ensure_ascii=False) for i in range(4)))
+                    if crows:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO camouflages "
+                            "(version_code, name, realm, tiled, use_color_scheme, "
+                            "color_scheme, textures_json, uv_json, "
+                            "ship_groups_json, target_ships_json, icon_path, display_name) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", crows)
+                    if csrows:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO camouflage_color_schemes "
+                            "(version_code, name, color0, color1, color2, color3) "
+                            "VALUES (?,?,?,?,?,?)", csrows)
+                    # shipgroups.xml 全局船组映射
+                    sgrows: list[tuple] = []
+                    for gname, ships in (parsed.get("ship_groups") or {}).items():
+                        for s in ships:
+                            sgrows.append((bin_folder, gname, s))
+                    if sgrows:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO camo_ship_groups "
+                            "(version_code, group_name, ship) VALUES (?,?,?)", sgrows)
+                    counts["camouflages"] = len(crows)
+                    counts["camouflage_color_schemes"] = len(csrows)
+                    counts["camo_ship_groups"] = len(sgrows)
+            except Exception:  # noqa: BLE001
+                pass
+
             self._conn.commit()
             return counts
         finally:
@@ -724,6 +965,336 @@ class AssetsCacheService:
 
     # ── 查询（3D 查看器用）─────────────────────────────────
 
+
+    def get_exteriors(self, bin_folder: str) -> list[dict]:
+        """该版本全部外观/涂装（Exterior JSON 索引）：[{index,name,species,nation,icon_path,display_name,...}]。"""
+        out: list[dict] = []
+        try:
+            rows = self._conn.execute(
+                "SELECT ext_index, name, camouflage, species, nation, cost_gold, can_buy, "
+                "parts_json, custom_json, unpeculiar_camouflage, color_scheme_id, "
+                "icon_path, display_name, data_json "
+                "FROM exteriors WHERE version_code=? ORDER BY ext_index",
+                (bin_folder,)).fetchall()
+            for r in rows:
+                out.append({
+                    "index": r["ext_index"],
+                    "name": r["name"],
+                    "camouflage": r["camouflage"],
+                    "species": r["species"],
+                    "nation": r["nation"],
+                    "cost_gold": r["cost_gold"],
+                    "can_buy": bool(r["can_buy"]),
+                    "parts": json.loads(r["parts_json"] or "[]"),
+                    "custom": json.loads(r["custom_json"] or "{}"),
+                    "unpeculiar_camouflage": r["unpeculiar_camouflage"],
+                    "color_scheme_id": r["color_scheme_id"],
+                    "icon_path": r["icon_path"] or "",
+                    "display_name": r["display_name"] or r["name"],
+                    "data": json.loads(r["data_json"] or "{}"),
+                })
+        except (sqlite3.OperationalError, ValueError):
+            out = []
+        return out
+
+    def get_camouflage(self, bin_folder: str, name: str) -> dict | None:
+        """按索引取一条 camo（camouflages.xml 条目）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT name, realm, tiled, use_color_scheme, color_scheme, textures_json, "
+                "uv_json, ship_groups_json, target_ships_json, icon_path, display_name "
+                "FROM camouflages WHERE version_code=? AND name=?",
+                (bin_folder, name)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row:
+            return None
+        return {
+            "name": row["name"],
+            "realm": row["realm"],
+            "tiled": bool(row["tiled"]),
+            "use_color_scheme": bool(row["use_color_scheme"]),
+            "color_scheme": row["color_scheme"],
+            "textures": json.loads(row["textures_json"] or "{}"),
+            "uv": json.loads(row["uv_json"] or "{}"),
+            "ship_groups": json.loads(row["ship_groups_json"] or "[]"),
+            "target_ships": json.loads(row["target_ships_json"] or "[]"),
+            "icon_path": row["icon_path"] or "",
+            "display_name": row["display_name"] or row["name"],
+        }
+
+    def get_camouflage_color_scheme(self, bin_folder: str, name: str) -> dict | None:
+        """取一条颜色方案（默认/若干 color0..3，各 4 float）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT name, color0, color1, color2, color3 "
+                "FROM camouflage_color_schemes WHERE version_code=? AND name=?",
+                (bin_folder, name)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row:
+            return None
+        colors = []
+        for i in range(4):
+            txt = row[f"color{i}"]
+            try:
+                colors.append(json.loads(txt) if txt else [0.0] * 4)
+            except Exception:
+                colors.append([0.0] * 4)
+        return {"name": row["name"], "colors": colors}
+
+    def get_all_camouflages(self, bin_folder: str) -> list[dict]:
+        """该版本全部 camouflages.xml 条目。"""
+        out: list[dict] = []
+        try:
+            rows = self._conn.execute(
+                "SELECT name, realm, tiled, use_color_scheme, color_scheme, textures_json, "
+                "uv_json, ship_groups_json, target_ships_json, icon_path, display_name "
+                "FROM camouflages WHERE version_code=? ORDER BY name",
+                (bin_folder,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        for r in rows:
+            out.append({
+                "name": r["name"], "realm": r["realm"],
+                "tiled": bool(r["tiled"]), "use_color_scheme": bool(r["use_color_scheme"]),
+                "color_scheme": r["color_scheme"] or "",
+                "textures": json.loads(r["textures_json"] or "{}"),
+                "uv": json.loads(r["uv_json"] or "{}"),
+                "ship_groups": json.loads(r["ship_groups_json"] or "[]"),
+                "target_ships": json.loads(r["target_ships_json"] or "[]"),
+                "icon_path": r["icon_path"] or "",
+                "display_name": r["display_name"] or r["name"],
+            })
+        return out
+
+    def get_all_camo_color_schemes(self, bin_folder: str) -> dict[str, list]:
+        """该版本全部颜色方案：{name: [color0..3] 各 4 float}。"""
+        out: dict[str, list] = {}
+        try:
+            rows = self._conn.execute(
+                "SELECT name, color0, color1, color2, color3 "
+                "FROM camouflage_color_schemes WHERE version_code=?",
+                (bin_folder,)).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        for r in rows:
+            cols = []
+            for i in range(4):
+                txt = r[f"color{i}"]
+                try:
+                    cols.append(json.loads(txt) if txt else [0.0] * 4)
+                except Exception:
+                    cols.append([0.0] * 4)
+            out[r["name"]] = cols
+        return out
+
+    def get_all_camo_ship_groups(self, bin_folder: str) -> dict[str, set]:
+        """该版本全部船组映射：{group_name: set(ship)}。"""
+        out: dict[str, set] = {}
+        try:
+            rows = self._conn.execute(
+                "SELECT group_name, ship FROM camo_ship_groups WHERE version_code=?",
+                (bin_folder,)).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        for r in rows:
+            out.setdefault(r["group_name"], set()).add(r["ship"])
+        return out
+
+    # ── 涂装选项图缓存：文件存 data/camo_thumbs，DB 记录路径/尺寸/来源贴图 ──
+    @staticmethod
+    def camo_thumbs_dir(bin_folder: str = "") -> Path:
+        """涂装预览缩略图缓存目录（放 data 目录，符合「解包数据入 data」约定）。
+
+        ⚠️ 不按 bin 分级：所有涂装图平铺在 data/camo_thumbs/，每次加载时整体清空重提取。
+        """
+        return get_data_dir() / "camo_thumbs"
+
+    def get_camo_thumb(self, bin_folder: str, camo_name: str,
+                       texture_tag: str = "tile") -> str | None:
+        """返回已缓存缩略图路径；未生成则 None（由调用方拆图后 put_camo_thumb 写回）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT thumb_path FROM camo_thumbs "
+                "WHERE version_code=? AND camo_name=? AND texture_tag=?",
+                (bin_folder, camo_name, texture_tag)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row:
+            return None
+        p = Path(row["thumb_path"])
+        return str(p) if p.exists() else None
+
+    def put_camo_thumb(self, bin_folder: str, camo_name: str, texture_tag: str,
+                       thumb_path: str, tex_path: str = "",
+                       width: int = 0, height: int = 0) -> None:
+        """记录已生成的涂装缩略图（文件已在 data/camo_thumbs，此处写索引）。"""
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO camo_thumbs "
+                "(version_code, camo_name, texture_tag, thumb_path, tex_path, "
+                "width, height, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,datetime('now','localtime'))",
+                (bin_folder, camo_name, texture_tag, str(thumb_path),
+                 tex_path, int(width), int(height)))
+            self._conn.commit()
+        except (sqlite3.OperationalError, ValueError):
+            pass
+
+    @staticmethod
+    def _load_camo_locale(source_paths) -> dict[str, str]:
+        """从本地化文件(.po/.mo)读取 {msgid.upper(): msgstr}（仅保留翻译非空、非 IDS_ 前缀）。
+
+        涂装本地化 msgid 形如 IDS_<Exterior name 大写>，如 IDS_PFES330_AQUITAINE_WHITE。
+        """
+        out: dict[str, str] = {}
+        for p in source_paths:
+            if not p:
+                continue
+            p = Path(p)
+            if not p.exists():
+                continue
+            try:
+                if p.suffix.lower() == ".po":
+                    import polib
+                    po = polib.pofile(str(p))
+                    for e in po:
+                        mid = (e.msgid or "").strip()
+                        st = (e.msgstr or "").strip()
+                        if mid and st and not st.startswith("IDS_"):
+                            out[mid.upper()] = st
+                else:
+                    import gettext
+                    with p.open("rb") as f:
+                        m = gettext.GNUTranslations(f)
+                    for k, v in (m._catalog or {}).items():
+                        if isinstance(k, str) and k.startswith("IDS_") and v and not v.startswith("IDS_"):
+                            out[k.upper()] = v
+            except Exception:  # noqa: BLE001
+                continue
+        return out
+
+    # ── 涂装选项图来源（pkg gui/exteriors）扫描与 name/index 匹配 ──
+    def _camo_icon_map(self, game_dir, bin_folder: str = "") -> dict[str, str]:
+        """扫描 gui/exteriors 包图标：{key_lower: png 路径}。
+
+        key 取文件名 stem（camouflages/skins/permoflages 平铺）或 colored 目录名
+        （camouflages_colored/expendable/<DIR>）。优先 res_unpack 文件系统，回退包列表。
+        """
+        icon_map: dict[str, str] = {}
+        if not game_dir:
+            return icon_map
+
+        # 1) 文件系统 res_unpack（快）
+        try:
+            base = Path(game_dir) / "res_unpack" / "gui" / "exteriors"
+            bad = {"ensigns", "decals_dds_scale"}   # 绝不属涂装系统，明确排除
+            if base.is_dir():
+                for p in base.rglob("*.png"):
+                    rel = p.relative_to(base).parts
+                    if any(seg.lower() in bad for seg in rel):
+                        continue
+                    low = p.as_posix().lower()
+                    if len(rel) >= 2 and rel[0].lower() == "camouflages_colored":
+                        if len(rel) >= 3 and rel[1].lower() == "expendable":
+                            key = rel[2].lower()
+                            if key not in icon_map or "color_0" in low:
+                                icon_map[key] = p.as_posix()
+                        continue
+                    key = p.stem.lower()
+                    icon_map.setdefault(key, p.as_posix())
+                return icon_map
+        except Exception:  # noqa: BLE001
+            pass
+
+        # 2) 包内列表（无 res_unpack 时）
+        try:
+            from data_extractor import GameExtractor
+            ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+            bad = {"ensigns", "decals_dds_scale"}   # 绝不属涂装系统，明确排除
+            try:
+                for f in ext.list_files(["gui/exteriors/**/*"]):
+                    path = getattr(f, "path", "") or ""
+                    if not path.lower().endswith(".png"):
+                        continue
+                    parts = path.split("/")
+                    if any(seg.lower() in bad for seg in parts):
+                        continue
+                    low = path.lower()
+                    if "camouflages_colored" in low:
+                        try:
+                            exp = parts.index("expendable")
+                            key = parts[exp + 1].lower()
+                        except ValueError:
+                            continue
+                        if key not in icon_map or "color_0" in low:
+                            icon_map[key] = path
+                        continue
+                    stem = path.rsplit("/", 1)[-1][:-4]
+                    icon_map.setdefault(stem.lower(), path)
+            finally:
+                ext.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return icon_map
+
+    @staticmethod
+    def _resolve_camo_icon(icon_map: dict[str, str], name: str, index: str) -> str:
+        """按 name 优先、index 次之匹配 gui/exteriors 图标路径。"""
+        for key in (name or "", index or ""):
+            k = key.strip().lower()
+            if k and k in icon_map:
+                return icon_map[k]
+        return ""
+
+    @staticmethod
+    def _gui_ext_rel(icon_src: str) -> str | None:
+        """从图标路径提取相对 gui/exteriors 的子路径（posix），用于按原始目录分文件夹存储。"""
+        s = (icon_src or "").replace("\\", "/")
+        marker = "gui/exteriors/"
+        idx = s.find(marker)
+        if idx >= 0:
+            rel = s[idx + len(marker):].strip("/")
+            return rel or None
+        return None
+
+    def _cache_camo_icon(self, game_dir, bin_folder: str, icon_src: str, name: str = "") -> str:
+        """把命中的选项图提取/复制到 data/camo_thumbs/<原始相对子目录>，返回相对 data 的路径。
+
+        按原始 gui/exteriors 目录结构存放：camouflages/ · skins/ · permoflages/ · camouflages_colored/...
+        如 camo_thumbs/camouflages_colored/expendable/<DIR>/color_0.png。
+        icon_src 可能是 res_unpack 文件系统路径（绝对）或 pkg 内路径（相对、无盘符）。
+        """
+        if not icon_src:
+            return ""
+        try:
+            rel_sub = self._gui_ext_rel(icon_src)
+            if not rel_sub:
+                return ""
+            dest = get_data_dir() / "camo_thumbs" / rel_sub
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src = Path(icon_src)
+            if src.is_absolute():
+                if not src.exists():
+                    return ""
+                shutil.copyfile(src, dest)
+            else:
+                # pkg 内路径：从包读出字节写盘
+                from data_extractor import GameExtractor
+                ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+                try:
+                    hits = ext.list_files([icon_src])
+                    if not hits:
+                        return ""
+                    e = hits[0]
+                    data = ext.pkg_reader.read_file(e.volume.filename, e.file_info)
+                    dest.write_bytes(data)
+                finally:
+                    ext.close()
+            return dest.relative_to(get_data_dir()).as_posix()
+        except Exception:  # noqa: BLE001
+            return ""
 
     def get_skeleton_mounts(self, bin_folder: str, stem: str) -> dict:
         """某舰体骨架的 HP_ 挂点：{hp_name: (4,4) 行主序渲染空间矩阵（由解码值重建）}。"""

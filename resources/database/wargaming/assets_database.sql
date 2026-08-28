@@ -106,3 +106,73 @@ CREATE TABLE IF NOT EXISTS meta_schema_version (
     version INTEGER PRIMARY KEY,
     applied_at TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- 涂装/外观（Exterior JSON 索引，数据源 data/split/Exterior/*.json）：species 区分类别
+-- （Camouflage/皮肤/Decal/旗帜等）；parts/custom 等按 JSON 存，供涂装切换器按索引查询。
+CREATE TABLE IF NOT EXISTS exteriors (
+    version_code TEXT NOT NULL,
+    ext_index    TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    camouflage   TEXT NOT NULL DEFAULT '',
+    species      TEXT NOT NULL DEFAULT '',
+    nation       TEXT NOT NULL DEFAULT '',
+    cost_gold    INTEGER DEFAULT 0,
+    can_buy      INTEGER DEFAULT 0,
+    parts_json   TEXT DEFAULT '[]',
+    custom_json  TEXT DEFAULT '{}',
+    unpeculiar_camouflage TEXT DEFAULT '',
+    color_scheme_id INTEGER DEFAULT 0,
+    icon_path    TEXT DEFAULT '',
+    display_name TEXT DEFAULT '',
+    data_json    TEXT DEFAULT '{}',
+    PRIMARY KEY(version_code, ext_index)
+);
+CREATE INDEX IF NOT EXISTS idx_exteriors ON exteriors(version_code, species);
+
+-- camouflages.xml 条目（包根，含 shipgroups/colorschemes/camouflages 三段），按索引 name
+-- 查询贴图/UV/船组/目标舰。
+CREATE TABLE IF NOT EXISTS camouflages (
+    version_code TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    realm        TEXT NOT NULL DEFAULT '',
+    tiled        INTEGER DEFAULT 0,
+    use_color_scheme INTEGER DEFAULT 0,
+    color_scheme TEXT DEFAULT '',
+    textures_json TEXT DEFAULT '{}',
+    uv_json      TEXT DEFAULT '{}',
+    ship_groups_json TEXT DEFAULT '[]',
+    target_ships_json TEXT DEFAULT '[]',
+    icon_path    TEXT DEFAULT '',
+    display_name TEXT DEFAULT '',
+    PRIMARY KEY(version_code, name)
+);
+
+-- colorschemes.xml 颜色方案（color0..3 各 4 float，JSON）
+CREATE TABLE IF NOT EXISTS camouflage_color_schemes (
+    version_code TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    color0 TEXT, color1 TEXT, color2 TEXT, color3 TEXT,
+    PRIMARY KEY(version_code, name)
+);
+
+-- shipgroups.xml 全局船组映射（组名 → 船 index），供涂装切换器判断某 camo 是否命中某船
+CREATE TABLE IF NOT EXISTS camo_ship_groups (
+    version_code TEXT NOT NULL,
+    group_name  TEXT NOT NULL,
+    ship        TEXT NOT NULL,
+    PRIMARY KEY(version_code, group_name, ship)
+);
+
+-- 涂装选项图缓存：拆出的预览缩略图文件存 data/camo_thumbs/，本表只记录路径/尺寸/来源贴图
+-- （避免每次涂装切换都重新拆图）。texture_tag 标识预览用的部件贴图（默认 tile 主贴图）。
+CREATE TABLE IF NOT EXISTS camo_thumbs (
+    version_code TEXT NOT NULL,
+    camo_name    TEXT NOT NULL,
+    texture_tag  TEXT NOT NULL DEFAULT 'tile',
+    thumb_path   TEXT NOT NULL DEFAULT '',
+    tex_path     TEXT NOT NULL DEFAULT '',
+    width        INTEGER DEFAULT 0,
+    height       INTEGER DEFAULT 0,
+    updated_at   TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY(version_code, camo_name, texture_tag)
+);

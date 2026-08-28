@@ -1231,15 +1231,15 @@ class LestaAnalysisStore:
         self.conn.execute("""INSERT OR REPLACE INTO ship_rage_mode
             (version_code, ship_id, display_name_id, boost_duration, max_activation_count,
              is_auto_usage, is_modifier_works_always, decrement_delay, decrement_period, decrement_count,
-             description_id, rage_mode_name, modifiers_json, triggers_json)
+             description_id, rage_mode_name, buff_params_name, modifiers_json, triggers_json)
             VALUES (?,?,(SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?,?,?,?,?,?,
-                    (SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?,?)""",
+                    (SELECT id FROM name_mappings WHERE category='rage_mode' AND key_name=?),?,?,?,?)""",
                           (version_code, ship_id, base_msgid, _v(rage.get("boostDuration"), 0),
                            str(rage.get("maxActivationCount", 0)),
                            _bn(rage.get("isAutoUsage")), _bn(rage.get("isModifierWorksAlways")),
                            _v(rage.get("decrementDelay"), 0), _v(rage.get("decrementPeriod"), 0),
                            _v(rage.get("decrementCount"), 0), desc_msgid,
-                           base_msgid, _json_dumps(rage.get("modifiers", {})), _json_dumps(triggers)))
+                           base_msgid, rage.get("buffParamsName", ""), _json_dumps(rage.get("modifiers", {})), _json_dumps(triggers)))
     def store_projectile(self, proj_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
         species = raw_data.get("typeinfo", {}).get("species", "")
@@ -1654,7 +1654,9 @@ class LestaAnalysisService:
             store.store_skill_definition(skill_key, raw_data, version_code=version_code)
         elif entity_id.startswith("PCOL"):
             store.store_skill_container(entity_id, raw_data, version_code=version_code)
-        elif entity_id.startswith("PCOM"):
+        elif re.match(r'^P[A-Z]OM', entity_id):
+            # P?OM 前缀为消费/战斗指令增益 buff：PCOM（消耗品）、PGOM/PVOM/PXOM（战斗指令）等，
+            # 均按各等级存入 consumable_buff；typeinfo.species=Modifier 作为兜底兼容
             store.store_consumable_buff(entity_id, raw_data, version_code=version_code)
 
     def _store_skills_and_minefields(self, db, other_dir, raw_conn, version_code=""):

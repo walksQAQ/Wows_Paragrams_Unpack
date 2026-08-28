@@ -828,6 +828,14 @@ class LestaShipPresenter(LestaBasePresenter):
             "GameLogicTrigger": "进度积累",
         }
 
+        # 进度标识（RageModeProgressAction.progressName）→ 中文描述
+        PROGRESS_NAME_MAP = {
+            "stay_visible": "被发现",
+            "main_gun_hit": "主炮命中",
+            "secondary_gun_hit": "副炮命中",
+            "torpedo_hit": "鱼雷命中",
+        }
+
         def _strip_idx(key):
             # 归一化带数字索引后缀的键（GameLogicTrigger_1 → GameLogicTrigger / Activator_1 → Activator）
             return re.sub(r'_\d+$', '', key)
@@ -845,24 +853,51 @@ class LestaShipPresenter(LestaBasePresenter):
                     # 提取所有动作数据
                     actions_found = {k: v for k, v in tdata.items() if k.startswith("Action") and isinstance(v, dict)}
 
-                    if tkey in ("GameLogicTrigger", "GameLogicTriggerProgress") and atype == "RibbonActivator":
-                        # 进度积累专用格式：每获得N个xx/yy勋带时获得M进度
-                        ribbons = act.get("subRibbons", [])
-                        rnames = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
-                        req = act.get("requiredCount", 1)
-                        progress_val = ""
-                        for ak, aln in actions_found.items():
-                            if aln.get("type") == "RageModeProgressAction":
-                                progress_val = str(aln.get("progress", ""))
-                        ribbon_str = "/".join(rnames) if rnames else ""
-                        if ribbon_str:
-                            display = f"每获得{req}个{ribbon_str}勋带时"
-                            if progress_val:
-                                display += f"获得{progress_val}进度"
+                    # 从 RageModeProgressAction 提取进度值/进度名（用于进度积累描述）
+                    progress_val = ""
+                    progress_name = ""
+                    for aln in actions_found.values():
+                        if aln.get("type") == "RageModeProgressAction":
+                            progress_val = str(aln.get("progress", ""))
+                            progress_name = aln.get("progressName", "")
+
+                    if tkey in ("GameLogicTrigger", "GameLogicTriggerProgress"):
+                        # 进度积累：按激活器类型描述如何获得进度
+                        cond_parts = []
+                        if atype == "RibbonActivator":
+                            ribbons = act.get("subRibbons", [])
+                            rnames = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
+                            req = act.get("requiredCount", 1)
+                            ribbon_str = "/".join(rnames) if rnames else ""
+                            if ribbon_str:
+                                cond_parts.append(f"获得{req}个{ribbon_str}勋带时")
+                        elif atype == "TimerActivator":
+                            dur = act.get("duration", 0)
+                            pn = PROGRESS_NAME_MAP.get(progress_name, progress_name or "状态")
+                            if dur:
+                                cond_parts.append(f"保持{pn}达{dur:g}s时")
+                            else:
+                                cond_parts.append(f"保持{pn}时")
+                        elif atype == "PotentialDamageActivator":
+                            pds = act.get("potentialDamageShift", 0)
+                            if pds:
+                                cond_parts.append(f"承受{pds:.0f}潜在伤害时")
+                        elif atype == "RageModeStateChangedActivator":
+                            st = act.get("stateName", "")
+                            if st:
+                                cond_parts.append(f"状态切换为{st}时")
+                        else:
+                            req = act.get("requiredCount", 0)
+                            if req:
+                                cond_parts.append(f"触发{req}次时")
+                        display = "每" + "，".join(cond_parts) if cond_parts else ""
+                        if progress_val:
+                            display += f"获得{progress_val}进度"
+                        if display:
                             items.append(self.make_item(trigger_label, display, o)); o += 1
                         continue
 
-                    # 构建激活条件描述（其他触发类型）
+                    # ── 触发效果（GameLogicTriggerOnActivation 等）──
                     cond_parts = []
                     if atype == "RageModeStateChangedActivator":
                         st = act.get("stateName", "")
@@ -877,6 +912,15 @@ class LestaShipPresenter(LestaBasePresenter):
                         pds = act.get("potentialDamageShift", 0)
                         if pds:
                             cond_parts.append(f"承受{pds:.0f}潜在伤害")
+                    elif atype == "TimerActivator":
+                        dur = act.get("duration", 0)
+                        if dur:
+                            cond_parts.append(f"持续{dur:g}s")
+                    elif atype == "VisibilityChangedActivator":
+                        if act.get("isVisible"):
+                            cond_parts.append("被点亮时")
+                        else:
+                            cond_parts.append("隐蔽时")
                     req = act.get("requiredCount", 0)
                     if req:
                         cond_parts.append(f"次数: {req}")
@@ -899,17 +943,17 @@ class LestaShipPresenter(LestaBasePresenter):
                                 pn = aln.get("progressName", "")
                                 if pn and pn != "default":
                                     effect_parts.append(f"进度: {pn}")
+                            elif atype2 == "ToggleRageModeProgressAction":
+                                # 开关类动作：启用/关闭对应进度积累，避免转储原始字段
+                                if aln.get("isEnabled"):
+                                    effect_parts.append("开启进度积累")
+                                else:
+                                    effect_parts.append("关闭进度积累")
                             else:
                                 extra = {k: v for k, v in aln.items() if k != "type"}
                                 for ek, ev in extra.items():
                                     label = NM.DETAIL_MAP.get(ek, ek)
                                     effect_parts.append(f"{label}: {ev}")
-
-                    # 从 RageModeProgressAction 提取进度数值
-                    progress_val = ""
-                    for ak, aln in actions_found.items():
-                        if aln.get("type") == "RageModeProgressAction":
-                            progress_val = str(aln.get("progress", ""))
 
                     cond_str = ', '.join(cond_parts) if cond_parts else ""
                     effect_str = '; '.join(effect_parts) if effect_parts else ""
@@ -917,13 +961,8 @@ class LestaShipPresenter(LestaBasePresenter):
                     if tkey == "GameLogicTriggerOnActivation":
                         if effect_str:
                             items.append(self.make_item(trigger_label, effect_str, o)); o += 1
-                    elif tkey in ("GameLogicTriggerProgress", "GameLogicTrigger"):
-                        # 进度积累：显示积累条件（每获得xx/承受xx时获得M进度）
-                        if cond_str:
-                            display = f"每{cond_str}时获得{progress_val}进度" if progress_val else f"每{cond_str}"
-                            items.append(self.make_item(trigger_label, display, o)); o += 1
-                        elif effect_str:
-                            items.append(self.make_item(trigger_label, effect_str, o)); o += 1
+                        elif cond_str:
+                            items.append(self.make_item(trigger_label, cond_str, o)); o += 1
                     else:
                         display = effect_str or cond_str
                         if display:
@@ -937,34 +976,74 @@ class LestaShipPresenter(LestaBasePresenter):
                 if isinstance(mods, dict) and mods:
                     for mk, mv in sorted(mods.items()):
                         label = Mapping.MODIFIER_MAP.get(mk, mk)
-                        if isinstance(mv, dict) and mv and all(k in NM.SHIP_CLASS_MAP for k in mv) \
-                                and all(isinstance(v, (int, float)) for v in mv.values()):
-                            # 分舰种加成（AAAuraDamage 等）：按当前舰船所属舰种取唯一值显示
+                        # 分舰种字典 → 取当前舰种/默认值；其余舰种回退为附加行
+                        if isinstance(mv, dict):
                             factor = mv.get(current_species)
                             if factor is None:
                                 factor = mv.get("default")
                             if factor is not None:
-                                items.append(self.make_item(label, f"{(factor - 1) * 100:+.0f}%", o)); o += 1
+                                ft = Mapping.format_modifier(mk, factor)
+                                if ft:
+                                    items.append(self.make_item(label, ft, o, color=Mapping.get_modifier_color(mk, factor))); o += 1
                             else:
-                                # 当前舰种不在分舰种表中 → 回退列出全部舰种
                                 for species_key, f2 in mv.items():
                                     cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
-                                    items.append(self.make_item(f"{label}({cn})", f"{(f2 - 1) * 100:+.0f}%", o)); o += 1
-                        elif isinstance(mv, dict):
-                            for species_key, factor in mv.items():
-                                cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
-                                items.append(self.make_item(f"{label}({cn})", f"{(factor - 1) * 100:+.0f}%", o)); o += 1
-                        elif mk == "healthRegen":
-                            items.append(self.make_item(label, f"每秒回复 {mv:.0f} HP", o)); o += 1
-                        elif isinstance(mv, (float, int)):
-                            if mv > 10.0:
-                                items.append(self.make_item(label, f"+{mv:.0f}", o)); o += 1
-                            else:
-                                items.append(self.make_item(label, f"{(mv - 1) * 100:+.0f}%", o)); o += 1
-                        else:
-                            items.append(self.make_item(label, f"{mv}", o)); o += 1
+                                    ft = Mapping.format_modifier(mk, f2)
+                                    if ft:
+                                        items.append(self.make_item(f"{label}({cn})", ft, o, color=Mapping.get_modifier_color(mk, f2))); o += 1
+                            continue
+                        if not isinstance(mv, (int, float)):
+                            continue
+                        ft = Mapping.format_modifier(mk, mv)
+                        if not ft:
+                            continue
+                        items.append(self.make_item(label, ft, o, color=Mapping.get_modifier_color(mk, mv))); o += 1
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        # ── 关联增益（buffParamsName 指向的 buff 配置）──
+        buff_params = str(rage['buff_params_name']) if 'buff_params_name' in rage.keys() else ''
+        if buff_params:
+            try:
+                b_row = conn.execute(
+                    "SELECT buff_json FROM consumable_buff WHERE version_code=? AND buff_id=? "
+                    "ORDER BY buff_level ASC LIMIT 1", (vc, buff_params)).fetchone()
+            except Exception:
+                b_row = None
+            bmods = {}
+            if b_row:
+                try:
+                    bmods = json.loads(b_row['buff_json'] or '{}')
+                except (json.JSONDecodeError, TypeError):
+                    bmods = {}
+            if isinstance(bmods, dict) and bmods:
+                # items.append(self.make_item("关联增益", buff_params, o)); o += 1
+                for bk, bv in sorted(bmods.items()):
+                    blabel = Mapping.MODIFIER_MAP.get(bk, bk)
+                    # 分舰种字典 → 取当前舰种/默认值；其余舰种回退为附加行
+                    if isinstance(bv, dict):
+                        f = bv.get(current_species)
+                        if f is None:
+                            f = bv.get("default")
+                        if f is not None:
+                            ft = Mapping.format_modifier(bk, f)
+                            if ft:
+                                items.append(self.make_item(blabel, ft, o, color=Mapping.get_modifier_color(bk, f))); o += 1
+                        else:
+                            for sk2, f2 in bv.items():
+                                cn = NM.SHIP_CLASS_MAP.get(sk2, sk2)
+                                ft = Mapping.format_modifier(bk, f2)
+                                if ft:
+                                    items.append(self.make_item(f"{blabel}({cn})", ft, o, color=Mapping.get_modifier_color(bk, f2))); o += 1
+                        continue
+                    if not isinstance(bv, (int, float)):
+                        continue
+                    ft = Mapping.format_modifier(bk, bv)
+                    if not ft:
+                        continue
+                    items.append(self.make_item(blabel, ft, o, color=Mapping.get_modifier_color(bk, bv))); o += 1
+            # else:
+                # items.append(self.make_item("关联增益", buff_params, o)); o += 1
 
         sections.append(self.make_section("战斗指令", items))
 
