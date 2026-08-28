@@ -565,21 +565,232 @@ class GeometryService:
     # ── 舰船几何加载 ────────────────────────────────────
 
     def load_ship(self, ship: ShipInfo, progress_cb=None,
-                  cancel_event: threading.Event | None = None) -> ShipGeometry:
+                  cancel_event: threading.Event | None = None,
+                  model_replace: dict | None = None,
+                  skin: dict | None = None) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型。
 
-        实际逻辑见 _load_ship_impl；此处保证**每次加载结束（成功/失败/取消）
-        立即释放本船产生的挂载几何/贴图/快照等缓存**——本服务不跨船复用缓存，
-        避免内存随多次加载累积（返回的 ShipGeometry 已持有所需数组引用）。
+        model_replace：皮肤变体（origin="model"）的「原始 .model 路径 → 替换路径」映射
+        （Exterior.peculiarityModels），用于把船体/挂载模型替换成皮肤变体。
+        skin：Exterior 皮肤的完整数据（hull_config/nodes_config/peculiarity_models），
+        用于整体替换船体模型 + 各挂载模型 + miscFilter 过滤。
         """
         try:
             return self._load_ship_impl(ship, progress_cb=progress_cb,
-                                        cancel_event=cancel_event)
+                                        cancel_event=cancel_event,
+                                        model_replace=model_replace, skin=skin)
         finally:
             self._clear_per_load_caches()
 
+    def apply_camo(self, geom: ShipGeometry, camo, extractor=None) -> int:
+        # ⚠️【临时标记】涂装渲染逻辑尚未正确：camouflage/MSkin/Permoflage/通用永久等几类
+        # 生效方式不同的涂装需**分开处理**，当前统一 artMap/composite 覆盖是错的（配色1 全灰）。
+        # 此函数按涂装类型拆分前，先屏蔽涂装入口（见 geometry_viewer 临时标记），勿继续在
+        # 这条统一路径上调试。拆分点建议：标准 PBS 用 composite 到 diffuse；
+        # INDEXED（视觉 2.0）用 artMap 叠加；二者对 colorScheme 的 zone 掩膜判定需分别验证。
+        """把 camo（CamouflageEntry 或 dict）的贴图按部件分类覆盖到标准(PBS)材质 mesh，返回替换数。
+
+        INDEXED 图集（albedoArray 等）需单独 artMap/tint 覆盖，暂回退不改；仅处理单张 diffuseMap 的标准材质。
+        """
+        if camo is None:
+            return 0
+        texs = getattr(camo, "textures", None)
+        if texs is None and isinstance(camo, dict):
+            texs = camo.get("textures") or {}
+        texs = texs or {}
+        if not texs:
+            return 0
+        from services.camo_service import classify_part_category
+        extractor = extractor or self._get_extractor()
+        import numpy as np
+        count = 0
+        meshes = list(geom.hull_meshes) + [m for m in getattr(geom, "mounts", [])]
+        for hm in meshes:
+            is_idx = getattr(hm, "tech_family", "pbs") == "indexed"
+            name = getattr(hm, "material", "") or ""
+            cat = classify_part_category(name)
+            tp = texs.get(cat) or texs.get("hull") or texs.get("tile")
+            if not tp:
+                continue
+            base = tp[:-4] if tp.endswith(".dds") else tp
+            try:
+                vp, td = self._load_texture_tier(base, extractor)
+            except Exception:  # noqa: BLE001
+                continue
+            if not td:
+                continue
+            ucs = self._camo_attr(camo, "use_color_scheme", False)
+            colors = self._camo_attr(camo, "colors", None)
+            tiled = bool(self._camo_attr(camo, "tiled", False))
+            if is_idx:
+                # INDEXED 涂装：zone mask 按颜色方案烘焙 → artMap 叠加。
+                # 覆盖量 = art alpha(图案遮罩) × 材质 art 强度；non-tiled 黑区 α=0 透出底色。
+                art_td = td
+                if ucs and colors:
+                    baked = self._bake_camo_art(td, colors, tiled=tiled)
+                    if baked is not None:
+                        art_td = baked
+                mt = dict(getattr(hm, "material_textures", {}) or {})
+                mt["artMap"] = (vp, art_td)
+                hm.material_textures = mt
+                ip = dict(hm.indexed_params or {})
+                arrays = dict(ip.get("arrays") or {})
+                asa = np.zeros((196, 4), dtype=np.float32)
+                asa[:, 0] = 1.0
+                arrays["artStrengthMatIdArr"] = asa
+                ip["arrays"] = arrays
+                hm.indexed_params = ip
+                hm.has_color = True
+                count += 1
+            else:
+                # 标准（PBS）：烘焙并按颜色方案**叠加到底色**后作为 diffuseMap
+                diff_td = td
+                if ucs and colors:
+                    baked = self._bake_camo_art(td, colors, tiled=tiled)
+                    if baked is not None:
+                        comp = self._composite_camo_over_base(
+                            getattr(hm, "texture_dds", None), baked)
+                        diff_td = comp if comp is not None else baked
+                hm.texture_path, hm.texture_dds = vp, diff_td
+                mt = dict(getattr(hm, "material_textures", {}) or {})
+                mt["diffuseMap"] = (vp, diff_td)
+                hm.material_textures = mt
+                hm.has_color = True
+                count += 1
+        return count
+
+    @staticmethod
+    def _camo_attr(camo, name: str, default=None):
+        """从 CamouflageEntry 或 dict 取属性。"""
+        if camo is None:
+            return default
+        if isinstance(camo, dict):
+            return camo.get(name, default)
+        return getattr(camo, name, default)
+
+    @staticmethod
+    def _rgba_to_dds_bgra(rgba) -> bytes | None:
+        """RGBA (H,W,4) uint8 → 未压缩 DDS（BGRA 像素，供 _upload_texture 未压缩分支上传）。"""
+        import struct
+        import numpy as np
+        h, w, _ = rgba.shape
+        bgra = rgba[:, :, [2, 1, 0, 3]].copy()
+        hdr = bytearray(128)
+        hdr[0:4] = b"DDS "
+        struct.pack_into("<I", hdr, 4, 124)        # dwSize
+        struct.pack_into("<I", hdr, 8, 0x1007)     # flags: caps|height|width|pixelformat
+        struct.pack_into("<I", hdr, 12, h)         # height
+        struct.pack_into("<I", hdr, 16, w)         # width
+        struct.pack_into("<I", hdr, 20, w * 4)     # pitch
+        struct.pack_into("<I", hdr, 24, 0)         # depth
+        struct.pack_into("<I", hdr, 28, 1)         # mip count
+        struct.pack_into("<I", hdr, 76, 32)        # pixel format size
+        struct.pack_into("<I", hdr, 80, 0x41)      # DDPF_RGB | DDPF_ALPHAPIXELS
+        struct.pack_into("<I", hdr, 84, 0)         # fourcc = 0（未压缩）
+        struct.pack_into("<I", hdr, 88, 32)        # RGB bit count
+        struct.pack_into("<I", hdr, 92, 0x00ff0000)
+        struct.pack_into("<I", hdr, 96, 0x0000ff00)
+        struct.pack_into("<I", hdr, 100, 0x000000ff)
+        struct.pack_into("<I", hdr, 104, 0xff000000)
+        struct.pack_into("<I", hdr, 108, 0x1000)   # DDSCAPS_TEXTURE
+        return bytes(hdr) + np.ascontiguousarray(bgra).tobytes()
+
+    def _bake_camo_art(self, dds_bytes: bytes, colors, tiled: bool = False) -> bytes | None:
+        """把 camo zone mask 按颜色方案 CPU 上色为 RGBA，再包成未压缩 DDS（作为 artMap）。
+
+        对齐 wows-toolkit bake_tiled_camo_png：
+        - zone 由**主色通道**判定：红→color1、绿→color2、蓝→color3、黑→color0。
+        - 颜色为线性 [0,1]，写回前转 sRGB（linear→sRGB）。
+        - black_passthrough = !tiled：非 tiled（整船涂装）黑区 α=0（透出底涂），
+          tiled（重复图案）黑区 α=255（作为真实图案色）。
+        - 若纹理由真实烘焙贴图而非 zone mask 组成（zone 像素占比 < 0.90），返回 None，
+          由调用方回退未上色的原始贴图。
+        """
+        import numpy as np
+        try:
+            from services.export_service import dds_to_rgba
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            rgba = dds_to_rgba(dds_bytes)
+        except Exception:  # noqa: BLE001
+            return None
+        if rgba is None:
+            return None
+        h, w, _ = rgba.shape
+        r = rgba[..., 0].astype(np.int32)
+        g = rgba[..., 1].astype(np.int32)
+        b = rgba[..., 2].astype(np.int32)
+        red_zone = (r > g) & (r > b) & (r > 30)
+        green_zone = (g > r) & (g > b) & (g > 30)
+        blue_zone = (b > r) & (b > g) & (b > 30)
+        near_black = (r <= 30) & (g <= 30) & (b <= 30)
+        black_zone = ~(red_zone | green_zone | blue_zone)
+        # zone_mask_fraction：主色通道或近黑的像素占比，过低则视为真实烘焙贴图 → 回退
+        frac = (red_zone | green_zone | blue_zone | near_black).sum() / float(h * w)
+        if frac < 0.90:
+            return None
+        c = np.asarray(colors, dtype=np.float64).reshape(4, 4)
+        if c.max() > 1.001:
+            c = c / 255.0
+
+        def _lin2srgb(x):
+            x = np.clip(x, 0.0, 1.0)
+            return (np.where(x <= 0.0031308, x * 12.92,
+                             1.055 * np.power(x, 1.0 / 2.4) - 0.055) * 255.0).astype(np.uint8)
+
+        srgb = [_lin2srgb(c[i][:3]) for i in range(4)]
+        black_alpha = 0 if not tiled else 255
+        out = np.zeros((h, w, 4), np.uint8)
+        for i, mask in enumerate((black_zone, red_zone, green_zone, blue_zone)):
+            if not mask.any():
+                continue
+            col = srgb[i]
+            out[..., 0][mask] = col[0]
+            out[..., 1][mask] = col[1]
+            out[..., 2][mask] = col[2]
+        out[..., 3] = 255
+        if not tiled:
+            out[..., 3][black_zone] = 0
+        return self._rgba_to_dds_bgra(out)
+
+    def _composite_camo_over_base(self, base_dds, camo_baked) -> bytes | None:
+        """把烘焙后的 camo RGBA（alpha = 覆盖遮罩）叠加到底色 diffuse 上，返回未压缩 DDS。
+
+        对齐 wows-toolkit 导出流程：zone mask 黑区（= 未涂装，α=0）透出底色，
+        涂装区（α=255）用 camo 颜色。两者 UV 均为 0..1，分辨率不同则重采样到底色尺寸。
+        """
+        import numpy as np
+        if not base_dds:
+            return None
+        try:
+            from services.export_service import dds_to_rgba
+            base = dds_to_rgba(base_dds)
+            camo = dds_to_rgba(camo_baked)
+        except Exception:  # noqa: BLE001
+            return None
+        if base is None or camo is None:
+            return None
+        if camo.shape[:2] != base.shape[:2]:
+            try:
+                from PIL import Image
+                ci = Image.fromarray(camo)
+                ci = ci.resize((base.shape[1], base.shape[0]), Image.BILINEAR)
+                camo = np.asarray(ci, dtype=np.uint8)
+            except Exception:  # noqa: BLE001
+                return None
+        a = camo[..., 3:4].astype(np.float32) / 255.0
+        comp = (base[..., :3].astype(np.float32) * (1.0 - a)
+                + camo[..., :3].astype(np.float32) * a)
+        out = np.zeros_like(base)
+        out[..., :3] = np.clip(comp, 0, 255).astype(np.uint8)
+        out[..., 3] = 255
+        return self._rgba_to_dds_bgra(out)
+
     def _load_ship_impl(self, ship: ShipInfo, progress_cb=None,
-                        cancel_event: threading.Event | None = None) -> ShipGeometry:
+                        cancel_event: threading.Event | None = None,
+                        model_replace: dict | None = None,
+                        skin: dict | None = None) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型（实现）。
 
         - 舰体：模型目录内全部 .geometry 分段（已处于舰船坐标系，直接合并）
@@ -598,11 +809,36 @@ class GeometryService:
         # 读取该舰的装甲厚度字典（A_Hull.armor + 各挂载 HP_*.armor）
         armor_thickness = self._load_armor_thickness(ship)
 
+        # 皮肤变体（origin="model"）：把船体 model 目录替换成皮肤变体目录
+        #   优先 hullConfig 的 model；其次 peculiarityModels 的船体替换；最后原 model_folder
+        use_mf = ship.model_folder
+        skin_nodes: dict = {}
+        if skin:
+            if not model_replace:
+                model_replace = skin.get("peculiarity_models") or None
+            for hv in (skin.get("hull_config") or {}).values():
+                if isinstance(hv, dict) and hv.get("model"):
+                    use_mf_override = hv["model"].rsplit("/", 2)[-2] if "/" in hv["model"] else ""
+                    if use_mf_override:
+                        use_mf = use_mf_override
+                    break
+            for nodes in (skin.get("nodes_config") or {}).values():
+                if isinstance(nodes, dict):
+                    for hp, nv in nodes.items():
+                        if isinstance(nv, dict):
+                            skin_nodes[hp] = nv
+        if use_mf == ship.model_folder and model_replace:
+            for _k, _v in model_replace.items():
+                _d = _k.rsplit("/", 2)[-2] if "/" in _k else ""
+                if _d and _d == ship.model_folder:
+                    use_mf = _v.rsplit("/", 2)[-2] if "/" in _v else use_mf
+                    break
+
         # 舰体分段：模型目录内全部 .geometry（已处于舰船坐标系）
-        entries = self._geometry_folder_index(extractor).get(ship.model_folder) or []
+        entries = self._geometry_folder_index(extractor).get(use_mf) or []
         if not entries:
             # 回退：按 model_folder 全树匹配任意路径下的 geometry
-            pattern = f"content/**/{ship.model_folder}/{ship.model_folder}*.geometry"
+            pattern = f"content/**/{use_mf}/{use_mf}*.geometry"
             try:
                 entries = [
                     e for e in extractor.list_files([pattern])
@@ -612,7 +848,7 @@ class GeometryService:
                 raise RuntimeError(f"列出几何文件失败: {exc}") from exc
 
         if not entries:
-            raise RuntimeError(f"未找到 {ship.model_folder} 的 .geometry 文件")
+            raise RuntimeError(f"未找到 {use_mf} 的 .geometry 文件")
 
         # 去重（相同路径+大小只加载一次）
         seen = set()
@@ -630,7 +866,7 @@ class GeometryService:
         seg_uniq = []
         for e in uniq:
             stem = e.path.rsplit('/', 1)[-1][:-len('.geometry')]
-            if stem == ship.model_folder:
+            if stem == use_mf:
                 main_entries.append(e)
                 continue
             seg_uniq.append(e)
@@ -639,20 +875,20 @@ class GeometryService:
         elif uniq:
             # 只有主文件（无分段模型）：明确报错提示，而非静默用主文件回退
             raise RuntimeError(
-                f"未找到 {ship.model_folder} 的分段模型文件"
-                f"（仅存在主文件 {ship.model_folder}.geometry）")
+                f"未找到 {use_mf} 的分段模型文件"
+                f"（仅存在主文件 {use_mf}.geometry）")
 
         # 该船全部渲染集索引（含整合模型：高模 shape 渲染集可能在别的分段记录）
-        ship_rs = self._ship_render_sets(ship.model_folder)
+        ship_rs = self._ship_render_sets(use_mf)
 
         geom = ShipGeometry(
             game_key=ship.game_key,
             display_name=ship.display_name,
-            model_folder=ship.model_folder,
+            model_folder=use_mf,
         )
 
         # 蒙皮 bind pose 骨架 stem（舰船模型目录；_apply_skinning 用它查骨骼矩阵）
-        self._current_skinning_stem = ship.model_folder
+        self._current_skinning_stem = use_mf
 
         bmin = np.full(3, np.inf, dtype=np.float32)
         bmax = np.full(3, -np.inf, dtype=np.float32)
@@ -799,7 +1035,8 @@ class GeometryService:
         # ── 挂载模型（骨架定位 + 每个部件独立贴图） ──
         self._raise_if_cancelled(cancel_event)
         self._load_mounts(geom, ship, extractor, armor_thickness, progress_cb,
-                          cancel_event=cancel_event)
+                          cancel_event=cancel_event, model_replace=model_replace,
+                          skin_nodes=skin_nodes)
 
         if progress_cb:
             progress_cb(100, "加载完成")
@@ -905,14 +1142,16 @@ class GeometryService:
 
     def _load_mounts(self, geom: ShipGeometry, ship: ShipInfo, extractor,
                      armor_thickness: dict, progress_cb=None,
-                     cancel_event: threading.Event | None = None):
+                     cancel_event: threading.Event | None = None,
+                     model_replace: dict | None = None,
+                     skin_nodes: dict | None = None):
         """加载 GameParams 各 HP_* 挂载模型并按骨架挂点定位。
 
         同一模型目录（如 JGM178 炮塔）只解析一次几何，按每个挂点实例化；
         每个挂载使用该模型自己的贴图（`{stem}_a.dd0` 命名约定）。
         """
         refs = self._load_mount_refs(
-            ship, warnings=geom.stats.setdefault("warnings", []))
+            ship, warnings=geom.stats.setdefault("warnings", []), skin_nodes=skin_nodes)
         transforms = self._load_mount_transforms(ship)
         if not refs and not transforms:
             geom.stats["mounts"] = 0
@@ -937,6 +1176,8 @@ class GeometryService:
         n_refs = len(refs)
         for idx, (hp, comp, model_path, misc_filter, custom_battle) in enumerate(refs):
             self._raise_if_cancelled(cancel_event)
+            if model_replace:
+                model_path = model_replace.get(model_path, model_path)
             # 挂载加载阶段同样报进度（66%→99%），避免进度条停在分段解析末尾
             if progress_cb:
                 progress_cb(66 + 33 * idx / max(1, n_refs), f"加载挂载 {hp}")
@@ -1151,7 +1392,8 @@ class GeometryService:
         return data
 
     def _load_mount_refs(self, ship: ShipInfo,
-                         warnings: list | None = None) -> list[tuple[str, str, str, list, list]]:
+                         warnings: list | None = None,
+                         skin_nodes: dict | None = None) -> list[tuple[str, str, str, list, list]]:
         """从舰船实体快照收集所有 HP_ 挂载引用：
         [(hp_name, component, model_path, misc_filter, custom_battle)]。
 
@@ -1186,6 +1428,22 @@ class GeometryService:
                 cb = cm.get("battle") or []
                 if not isinstance(cb, list):
                     cb = []
+                # 皮肤 nodesConfig 覆盖：替换挂载 model / miscFilter / customMiscs
+                if skin_nodes and hp in skin_nodes:
+                    ov = skin_nodes[hp]
+                    if ov.get("model"):
+                        model = ov["model"]
+                    if ov.get("miscFilter"):
+                        mf = ov["miscFilter"]
+                        if not isinstance(mf, list):
+                            mf = []
+                    if ov.get("customMiscs"):
+                        cm = ov["customMiscs"]
+                        if not isinstance(cm, dict):
+                            cm = {}
+                        cb = cm.get("battle") or []
+                        if not isinstance(cb, list):
+                            cb = []
                 out.append((hp, category, str(model),
                             [str(x) for x in mf if isinstance(x, str)],
                             [str(x) for x in cb if isinstance(x, str)]))

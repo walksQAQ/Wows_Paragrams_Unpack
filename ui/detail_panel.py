@@ -1706,13 +1706,18 @@ class DetailPanel(QWidget):
             rl.setSpacing(12) # 键值对之间的横向间距拉开
 
             name_lbl = QLabel(name)
+            name_lbl.setWordWrap(True)
             name_lbl.setStyleSheet(theme.qss("font-size:11px; color:@text_hint@; background:transparent;"))
-            name_lbl.setFixedWidth(80)
+            name_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            name_lbl.setMaximumWidth(140)
             rl.addWidget(name_lbl)
 
             display_value = f"{value} {unit}" if unit and value else (value or unit or "")
+            # 优先使用 item 携带的统一加成颜色（与消耗品一致），否则回退到 +/- 启发式
             fg = theme["text"]
-            if "%" in display_value:
+            if item.get("color", ""):
+                fg = item["color"]
+            elif "%" in display_value:
                 stripped = display_value.strip()
                 if stripped.startswith("+"):
                     fg = "#1b8a1b"

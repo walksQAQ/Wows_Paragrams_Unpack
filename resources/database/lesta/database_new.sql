@@ -504,6 +504,7 @@ CREATE TABLE IF NOT EXISTS ship_rage_mode (
     decrement_count REAL,
     description_id INTEGER REFERENCES name_mappings(id),
     rage_mode_name TEXT DEFAULT '',      -- 战斗指令原始名称（用于本地化回退）
+    buff_params_name TEXT DEFAULT '',    -- 战斗指令关联 buff（buffParamsName）配置 id
     modifiers_json TEXT DEFAULT '{}',
     triggers_json TEXT DEFAULT '[]',
     PRIMARY KEY (version_code, ship_id),

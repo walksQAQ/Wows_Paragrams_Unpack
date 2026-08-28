@@ -116,7 +116,7 @@ uniform sampler2D u_mg_map;
 uniform int u_has_mg;
 uniform vec3 u_view_dir;              // 观察方向（反射用）
 uniform int u_mrt;
-uniform int u_debug_mode;             // 5=Emissive Debug（显示 _mg.B × emissive_power）
+uniform int u_debug_mode;             // 5=涂装覆盖强度 Debug（PBS 显示 _mg.B；INDEXED 显示 art 覆盖）
 uniform vec3 u_light_pos;             // 点光源位置（天上）
 uniform float u_normal_strength;      // 法线贴图强度（>1 加强凹凸细节）
 in vec3 v_world_pos;                  // 世界坐标（点光源用）
@@ -203,10 +203,6 @@ void main() {
             float em = (u_has_mg == 1) ? emit : base.b;
             vec3 emissive = base.rgb * em * u_emissive_k;
             rgb2 = base.rgb + emissive;
-            if (u_debug_mode == 5) {
-                // Emissive Debug：直接显示 _mg.B × emissive_power 灰度，确认自发光链路。
-                rgb2 = vec3(em * u_emissive_k);
-            }
         }
     } else {
         rgb2 = pbr_light(base.rgb, n, metallic, gloss, lit, v_world_pos);
@@ -215,6 +211,10 @@ void main() {
             float em = (u_has_mg == 1) ? emit : base.b;
             rgb2 += base.rgb * em * u_emissive_k;
         }
+    }
+    if (u_debug_mode == 5) {
+        // 涂装覆盖强度 debug：显示 _mg.B（camo/mg 蓝通道）灰度，无 _mg 则 0。
+        rgb2 = vec3(emit);
     }
     if (is_tex) {
         rgb2 = pow(rgb2, vec3(1.0 / 2.2));
@@ -508,9 +508,20 @@ void main() {
         float sum = abs(albedo.x-ref.x) + abs(albedo.y-ref.y) + abs(albedo.z-ref.z);
         float k = clamp((sum + 0.001) / max(u_tint[matId].w, 1e-4), 0.0, 1.0);
         vec3 c = mix(tint_lin, albedo_lin, k);
+        // 涂装：烘焙后的 camo 仅对 diffuse 直接覆盖，不影响法线/金属/光泽。
+        // 花纹强度 = art alpha(图案遮罩；non-tiled 黑区 α=0 透出底色) × 材质 art 强度。
+        float mslice = max(u_tile_idx[matId].z, 0.0);
+        vec3 mg = textureGrad(u_mg_tex, vec3(uv, mslice), dudx, dudy).rgb;
+        float metallic = mg.r;
+        float gloss = mg.g;
         vec4 art4 = texture(u_art_tex, v_uv);
         float am = clamp(art4.a * u_rotation[matId].y, 0.0, 1.0);
         c = mix(c, art4.rgb, am);
+        if (u_debug_mode == 5) {
+            // 涂装覆盖强度 debug：显示 art alpha × art 强度灰度。
+            fragColor = vec4(vec3(am), 1.0);
+            return;
+        }
         float nslice = max(u_tile_idx[matId].y, 0.0);
         vec3 ntex = textureGrad(u_normal_tex, vec3(uv, nslice), dudx, dudy).rgb;
         vec3 n_ts = vec3(ntex.x * 2.0 - 1.0, ntex.y * 2.0 - 1.0, 0.0);
@@ -523,10 +534,6 @@ void main() {
         n_ts = normalize(n_ts + n_a - vec3(0.0, 0.0, 1.0));
         n_ts.xy *= u_normal_strength;   // ★ 加强法线，突出 _n 凹凸细节
         vec3 n_world = normalize(n_ts);
-        float mslice = max(u_tile_idx[matId].z, 0.0);
-        vec3 mg = textureGrad(u_mg_tex, vec3(uv, mslice), dudx, dudy).rgb;
-        float metallic = mg.r;
-        float gloss = mg.g;
         if (u_mrt == 1) {
             fragColor = vec4(c, metallic);
             fragNormal = vec4(n_world * 0.5 + 0.5, gloss);
@@ -1941,7 +1948,7 @@ class GeometryViewport(QOpenGLWidget):
                 GL.glUseProgram(prog)
                 prev_prog = prog
                 GL.glUniform1i(uu["u_mode"], 0)
-                GL.glUniform1i(uu["u_debug_mode"], 0)
+                GL.glUniform1i(uu["u_debug_mode"], 5 if self._debug_mode == 5 else 0)
                 GL.glUniform1f(uu["u_opacity"], 1.0)
                 GL.glUniform3f(uu["u_light_dir"], -0.35, -0.6, -0.72)
                 GL.glUniform3f(uu["u_ambient"], 0.06, 0.08, 0.10)
@@ -2361,7 +2368,7 @@ class GeometryViewport(QOpenGLWidget):
             painter.end()
 
     def keyPressEvent(self, event):
-        """Debug 切换：N 循环 0..5。0=正常，1=模型名称，2=最终法线，3=metallic，4=gloss，5=emissive。F12=截图到 _temp/。"""
+        """Debug 切换：N 循环 0..5。0=正常，1=模型名称，2=最终法线，3=metallic，4=gloss，5=涂装覆盖强度。F12=截图到 _temp/。"""
         k = event.key()
         if k == Qt.Key_F12:
             self._capture_png()

@@ -109,6 +109,20 @@ class _AppTask:
         return not thread.is_alive()
 
     def _run(self) -> None:
+        # 外层兜底：_ForceStop 由 kill() 在**任意字节码边界**注入（可能落在 finally /
+        # emit 等内层 try/except 之外）。若它逃出工作线程，会触发 threading.excepthook
+        # 的 "Exception ignored in thread"（_ForceStop 是 BaseException，log 钩子
+        # 用 except Exception 捕不到）。这里把它与一切逃逸的 BaseException 一并吞掉，
+        # 绝不让它逃出线程；日志交给主线程 excepthook 兜底。
+        try:
+            self._run_body()
+        except _ForceStop:
+            self._cancelled = True
+        except BaseException:
+            # 兜底：吞掉任何其它未经处理的逃逸异常（仅作线程收尾，不再上抛）
+            self._cancelled = True
+
+    def _run_body(self) -> None:
         # 尚未开始执行即已取消 → 直接退出（不运行 fn、不回调）
         if self._cancel_event.is_set():
             self._cancelled = True
