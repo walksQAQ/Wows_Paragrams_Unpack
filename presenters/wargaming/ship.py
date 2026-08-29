@@ -444,11 +444,6 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 if row.get('bullet_detonator_threshold'):
                     items.append(self.make_item("引信触发阈值", f"{row['bullet_detonator_threshold']:.0f}", o, unit="mm")); o += 1
 
-            if ammo_type == "HE":
-                he_value = row.get('alpha_piercing_he') or 0
-                if he_value:
-                    items.append(self.make_item("HE 固定穿深", f"{float(he_value):.0f}", o, unit="mm")); o += 1
-
             # AP 穿深摘要：固定显示在最后一条
             if ammo_type == "AP":
                 summary = self._build_ap_pen_summary(row, max_range_km)

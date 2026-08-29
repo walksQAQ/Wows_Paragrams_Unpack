@@ -1683,22 +1683,10 @@ class DetailPanel(QWidget):
         data_layout.setContentsMargins(4, 4, 4, 4)
         data_layout.setSpacing(8)
 
-        for item in items:
-            row_type = item.get("row_type", "kv")
-            name = item.get("name", "")
-            value = item.get("value", "")
-            unit = item.get("unit", "")
-
-            if row_type == "header":
-                hlbl = QLabel(name)
-                hlbl.setStyleSheet(theme.qss("font-size:11px; font-weight:bold; color:@text_muted@; background:transparent; padding-top: 4px;"))
-                hlbl.setFixedHeight(24)
-                data_layout.addWidget(hlbl)
-                continue
-
+        def _add_kv(name, value, unit, color, target_layout):
+            """构建一行键值对并加入 target_layout（复用统一加成颜色逻辑）"""
             if not name.strip():
-                continue
-
+                return
             row_w = QWidget()
             rl = QHBoxLayout(row_w)
             # 增加每一行的纵向微调间距
@@ -1715,8 +1703,8 @@ class DetailPanel(QWidget):
             display_value = f"{value} {unit}" if unit and value else (value or unit or "")
             # 优先使用 item 携带的统一加成颜色（与消耗品一致），否则回退到 +/- 启发式
             fg = theme["text"]
-            if item.get("color", ""):
-                fg = item["color"]
+            if color:
+                fg = color
             elif "%" in display_value:
                 stripped = display_value.strip()
                 if stripped.startswith("+"):
@@ -1730,12 +1718,98 @@ class DetailPanel(QWidget):
             # 通过样式增加 line-height，确保长文本多行折叠时，行与行之间有空隙不重叠
             val_lbl.setStyleSheet(f"font-size:11px; color:{fg}; background:transparent; line-height: 1.3;")
             rl.addWidget(val_lbl, stretch=1)
-            data_layout.addWidget(row_w)
+            target_layout.addWidget(row_w)
 
             val_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
             row_w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
 
+        for item in items:
+            row_type = item.get("row_type", "kv")
+            name = item.get("name", "")
+
+            if row_type == "header":
+                hlbl = QLabel(name)
+                hlbl.setStyleSheet(theme.qss("font-size:11px; font-weight:bold; color:@text_muted@; background:transparent; padding-top: 4px;"))
+                hlbl.setFixedHeight(24)
+                data_layout.addWidget(hlbl)
+                continue
+
+            _add_kv(name, item.get("value", ""), item.get("unit", ""), item.get("color", ""), data_layout)
+
         layout.addWidget(data_widget)
+
+        # ── 关联增益（buff 多级切换：- / 等级 / + 步进器）──
+        buff_levels = raw.get("buff_levels", []) or []
+        if buff_levels:
+            buff_box = QGroupBox("")
+            buff_box.setStyleSheet(card_style())
+            buff_layout = QVBoxLayout(buff_box)
+            buff_layout.setContentsMargins(4, 4, 4, 4)
+            buff_layout.setSpacing(6)
+
+            if len(buff_levels) > 1:
+                # 多级：水平居中 - / 等级 / + 步进器
+                step_row = QWidget()
+                sr = QHBoxLayout(step_row)
+                sr.setContentsMargins(0, 0, 0, 0)
+                sr.setSpacing(8)
+                sr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                def _btn(txt: str) -> QPushButton:
+                    b = QPushButton(txt)
+                    b.setFixedSize(28, 24)
+                    b.setStyleSheet(theme.qss("""
+                        QPushButton { font-size:14px; font-weight:bold; color:@text@; background:@panel_alt@; border:1px solid @border@; border-radius:4px; }
+                        QPushButton:disabled { color:@text_muted@; background:@panel_alt@; border-color:@border@; }
+                        QPushButton:hover:!disabled { background:@hover_bg@; }
+                    """))
+                    return b
+
+                minus_btn = _btn("-")
+                plus_btn = _btn("+")
+                lvl_lbl = QLabel("")
+                lvl_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                lvl_lbl.setMinimumWidth(48)
+                lvl_lbl.setStyleSheet(theme.qss("font-size:11px; color:@text@; background:transparent;"))
+
+                sr.addWidget(minus_btn)
+                sr.addWidget(lvl_lbl)
+                sr.addWidget(plus_btn)
+                buff_layout.addWidget(step_row)
+
+                items_host = QWidget()
+                items_host_layout = QVBoxLayout(items_host)
+                items_host_layout.setContentsMargins(0, 0, 0, 0)
+                items_host_layout.setSpacing(6)
+                buff_layout.addWidget(items_host)
+
+                cur = [0]
+                max_idx = len(buff_levels) - 1
+
+                def _render(idx: int):
+                    cur[0] = max(0, min(max_idx, idx))
+                    lvl = buff_levels[cur[0]]
+                    lvl_lbl.setText(f"等级 {lvl['level']}")
+                    # 边界锁定：最低级锁定 -，最高级锁定 +
+                    minus_btn.setEnabled(cur[0] > 0)
+                    plus_btn.setEnabled(cur[0] < max_idx)
+                    while items_host_layout.count():
+                        w = items_host_layout.takeAt(0)
+                        if w.widget():
+                            w.widget().deleteLater()
+                    for it in lvl["items"]:
+                        _add_kv(it.get("name", ""), it.get("value", ""), it.get("unit", ""), it.get("color", ""), items_host_layout)
+
+                minus_btn.clicked.connect(lambda: _render(cur[0] - 1))
+                plus_btn.clicked.connect(lambda: _render(cur[0] + 1))
+                _render(0)
+            else:
+                # 单级：直接展示
+                for it in buff_levels[0]["items"]:
+                    _add_kv(it.get("name", ""), it.get("value", ""), it.get("unit", ""), it.get("color", ""), buff_layout)
+
+            layout.addWidget(buff_box)
+
         return container
 
     @staticmethod

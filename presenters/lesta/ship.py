@@ -15,6 +15,40 @@ from services.ballistics_service import BallisticsCalculator
 from utils.path_utils import get_data_dir
 
 
+def _format_modifier_map_items(mods: dict, species: str) -> list[dict]:
+    """把修饰符字典格式化为 [{name, value, color}]（与消耗品统一）。
+
+    - name: MODIFIER_MAP 本地化名
+    - value: format_modifier 统一格式
+    - color: get_modifier_color 颜色（"" 表示不指定）
+    """
+    out = []
+    for mk, mv in sorted(mods.items()):
+        label = Mapping.MODIFIER_MAP.get(mk, mk)
+        if isinstance(mv, dict):
+            # 分舰种词典 → 取当前舰种/默认；其余舰种回退为附加行
+            f = mv.get(species)
+            if f is None:
+                f = mv.get("default")
+            if f is not None:
+                ft = Mapping.format_modifier(mk, f)
+                if ft:
+                    out.append({"name": label, "value": ft, "color": Mapping.get_modifier_color(mk, f)})
+            else:
+                for sk2, f2 in mv.items():
+                    cn = NM.SHIP_CLASS_MAP.get(sk2, sk2)
+                    ft = Mapping.format_modifier(mk, f2)
+                    if ft:
+                        out.append({"name": f"{label}({cn})", "value": ft, "color": Mapping.get_modifier_color(mk, f2)})
+            continue
+        if not isinstance(mv, (int, float)):
+            continue
+        ft = Mapping.format_modifier(mk, mv)
+        if ft:
+            out.append({"name": label, "value": ft, "color": Mapping.get_modifier_color(mk, mv)})
+    return out
+
+
 class LestaShipPresenter(LestaBasePresenter):
     """将舰船数据库记录组装为显示结构"""
 
@@ -558,11 +592,6 @@ class LestaShipPresenter(LestaBasePresenter):
                 if row.get('bullet_detonator_threshold'):
                     items.append(self.make_item("引信触发阈值", f"{row['bullet_detonator_threshold']:.0f}", o, unit="mm")); o += 1
 
-            if ammo_type == "HE":
-                he_value = row.get('alpha_piercing_he') or 0
-                if he_value:
-                    items.append(self.make_item("HE 固定穿深", f"{float(he_value):.0f}", o, unit="mm")); o += 1
-
             # AP 穿深摘要：固定显示在最后一条
             if ammo_type == "AP":
                 summary = self._build_ap_pen_summary(row, max_range_km)
@@ -974,76 +1003,34 @@ class LestaShipPresenter(LestaBasePresenter):
             try:
                 mods = json.loads(mods_raw)
                 if isinstance(mods, dict) and mods:
-                    for mk, mv in sorted(mods.items()):
-                        label = Mapping.MODIFIER_MAP.get(mk, mk)
-                        # 分舰种字典 → 取当前舰种/默认值；其余舰种回退为附加行
-                        if isinstance(mv, dict):
-                            factor = mv.get(current_species)
-                            if factor is None:
-                                factor = mv.get("default")
-                            if factor is not None:
-                                ft = Mapping.format_modifier(mk, factor)
-                                if ft:
-                                    items.append(self.make_item(label, ft, o, color=Mapping.get_modifier_color(mk, factor))); o += 1
-                            else:
-                                for species_key, f2 in mv.items():
-                                    cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
-                                    ft = Mapping.format_modifier(mk, f2)
-                                    if ft:
-                                        items.append(self.make_item(f"{label}({cn})", ft, o, color=Mapping.get_modifier_color(mk, f2))); o += 1
-                            continue
-                        if not isinstance(mv, (int, float)):
-                            continue
-                        ft = Mapping.format_modifier(mk, mv)
-                        if not ft:
-                            continue
-                        items.append(self.make_item(label, ft, o, color=Mapping.get_modifier_color(mk, mv))); o += 1
+                    for md in _format_modifier_map_items(mods, current_species):
+                        items.append(self.make_item(md["name"], md["value"], o, color=md["color"])); o += 1
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # ── 关联增益（buffParamsName 指向的 buff 配置）──
+        # ── 关联增益（buffParamsName 指向的 buff 配置，含分级供 UI 切换）──
         buff_params = str(rage['buff_params_name']) if 'buff_params_name' in rage.keys() else ''
+        buff_levels = []
         if buff_params:
             try:
-                b_row = conn.execute(
-                    "SELECT buff_json FROM consumable_buff WHERE version_code=? AND buff_id=? "
-                    "ORDER BY buff_level ASC LIMIT 1", (vc, buff_params)).fetchone()
+                b_rows = conn.execute(
+                    "SELECT buff_level, buff_json FROM consumable_buff WHERE version_code=? AND buff_id=? "
+                    "ORDER BY buff_level ASC", (vc, buff_params)).fetchall()
             except Exception:
-                b_row = None
-            bmods = {}
-            if b_row:
+                b_rows = []
+            for b_row in b_rows:
                 try:
                     bmods = json.loads(b_row['buff_json'] or '{}')
                 except (json.JSONDecodeError, TypeError):
                     bmods = {}
-            if isinstance(bmods, dict) and bmods:
-                # items.append(self.make_item("关联增益", buff_params, o)); o += 1
-                for bk, bv in sorted(bmods.items()):
-                    blabel = Mapping.MODIFIER_MAP.get(bk, bk)
-                    # 分舰种字典 → 取当前舰种/默认值；其余舰种回退为附加行
-                    if isinstance(bv, dict):
-                        f = bv.get(current_species)
-                        if f is None:
-                            f = bv.get("default")
-                        if f is not None:
-                            ft = Mapping.format_modifier(bk, f)
-                            if ft:
-                                items.append(self.make_item(blabel, ft, o, color=Mapping.get_modifier_color(bk, f))); o += 1
-                        else:
-                            for sk2, f2 in bv.items():
-                                cn = NM.SHIP_CLASS_MAP.get(sk2, sk2)
-                                ft = Mapping.format_modifier(bk, f2)
-                                if ft:
-                                    items.append(self.make_item(f"{blabel}({cn})", ft, o, color=Mapping.get_modifier_color(bk, f2))); o += 1
-                        continue
-                    if not isinstance(bv, (int, float)):
-                        continue
-                    ft = Mapping.format_modifier(bk, bv)
-                    if not ft:
-                        continue
-                    items.append(self.make_item(blabel, ft, o, color=Mapping.get_modifier_color(bk, bv))); o += 1
-            # else:
-                # items.append(self.make_item("关联增益", buff_params, o)); o += 1
+                if not isinstance(bmods, dict) or not bmods:
+                    continue
+                lvl_items = _format_modifier_map_items(bmods, current_species)
+                if lvl_items:
+                    buff_levels.append({
+                        "level": int(b_row['buff_level']),
+                        "items": lvl_items,
+                    })
 
         sections.append(self.make_section("战斗指令", items))
 
@@ -1055,6 +1042,8 @@ class LestaShipPresenter(LestaBasePresenter):
         sections[-1]["raw_rage_mode"] = {
             "rage_mode_name": raw_rm_name,
             "display_name": dname,
+            "buff_params": buff_params,
+            "buff_levels": buff_levels,
         }
 
     # ── 模块 ───────────────────────────────────────────────
