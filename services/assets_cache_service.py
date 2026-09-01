@@ -448,6 +448,9 @@ class AssetsCacheService:
                 except Exception:  # noqa: BLE001
                     pass
 
+        # 共享 pkg 提取器（Exterior/涂装图标；仅在需要时惰性创建），最后由 finally 统一关闭
+        _shared_ext = None
+
         try:
             counts = {"skeleton": 0, "render_sets": 0, "mfm_textures": 0,
                       "material_full": 0, "skeleton_bones": 0, "shape_names": 0,
@@ -822,6 +825,15 @@ class AssetsCacheService:
             icon_map: dict[str, str] = {}
             material_to_icon: dict[str, str] = {}
             material_to_display: dict[str, str] = {}
+            # 共享单个 GameExtractor（仅当需要从 pkg 读图标/涂装时才建）：原实现对每个
+            # 命中的外观图标都 new 一个 GameExtractor（重载全部 IDX + 整棵文件树），外观文件
+            # 数以千计 → 反复重建巨大文件树，长时间无输出，看起来像卡死。这里惰性建一次复用。
+            def _ext_factory():
+                nonlocal _shared_ext
+                if _shared_ext is None and game_dir:
+                    from data_extractor import GameExtractor
+                    _shared_ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+                return _shared_ext
             # 涂装本地化名：从本地化文件(.po/.mo)按 IDS_<Exterior name 大写> 提取显示名
             _loc_cands = [str(get_data_dir() / "global.po"), str(get_data_dir() / "global.mo"),
                           str(get_data_dir() / "global_zh_sg.po"), str(get_data_dir() / "zh_cn.po")]
@@ -834,11 +846,15 @@ class AssetsCacheService:
             #    提取(复制)到 data/camo_thumbs/<bin>/，并把相对 data 的路径写入 icon_path。
             try:
                 from utils.path_utils import get_split_dir
-                icon_map = self._camo_icon_map(game_dir, bin_folder)
+                icon_map = self._camo_icon_map(game_dir, bin_folder, ext_factory=_ext_factory)
                 ext_dir = get_split_dir() / "Exterior"
                 ext_rows: list[tuple] = []
                 if ext_dir.exists():
-                    for f in sorted(ext_dir.glob("*.json")):
+                    ext_files = sorted(ext_dir.glob("*.json"))
+                    ext_total = len(ext_files)
+                    # 外观文件极多，分批输出进度，避免长时间无任何日志（显得卡死）
+                    ext_batch = max(1, ext_total // 20 or 1)
+                    for _i, f in enumerate(ext_files, 1):
                         try:
                             d = json.loads(f.read_text(encoding="utf-8"))
                         except Exception:  # noqa: BLE001
@@ -848,7 +864,8 @@ class AssetsCacheService:
                         ext_index = d.get("index", f.stem)
                         icon_rel = self._cache_camo_icon(
                             game_dir, bin_folder,
-                            self._resolve_camo_icon(icon_map, ext_name, ext_index), ext_name)
+                            self._resolve_camo_icon(icon_map, ext_name, ext_index), ext_name,
+                            ext_factory=_ext_factory)
                         camo_mat = d.get("camouflage", "") or ""
                         display_name = loc_map.get("IDS_" + ext_name.upper(), "")
                         if camo_mat:
@@ -871,6 +888,8 @@ class AssetsCacheService:
                             display_name,
                             json.dumps(d, ensure_ascii=False),
                         ))
+                        if ext_total > ext_batch and _i % ext_batch == 0:
+                            _p(f"外观数据入库进度 {_i}/{ext_total} ...")
                 if ext_rows:
                     self._conn.executemany(
                         "INSERT OR REPLACE INTO exteriors "
@@ -879,6 +898,7 @@ class AssetsCacheService:
                         "unpeculiar_camouflage, color_scheme_id, icon_path, display_name, data_json) "
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ext_rows)
                 counts["exteriors"] = len(ext_rows)
+                _p(f"外观数据已入库: {counts['exteriors']} 条")
                 del ext_rows
             except Exception:  # noqa: BLE001
                 pass
@@ -893,16 +913,17 @@ class AssetsCacheService:
                     if rp.exists():
                         camo_xml = rp.read_bytes()
                 if camo_xml is None and game_dir:
-                    from data_extractor import GameExtractor
-                    ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
-                    try:
-                        hits = ext.list_files(["camouflages.xml"])
-                        if hits:
-                            e = hits[0]
-                            camo_xml = ext.pkg_reader.read_file(e.volume.filename, e.file_info)
-                    finally:
-                        ext.close()
+                    ext = _ext_factory()
+                    if ext is not None:
+                        try:
+                            hits = ext.list_files(["camouflages.xml"])
+                            if hits:
+                                e = hits[0]
+                                camo_xml = ext.pkg_reader.read_file(e.volume.filename, e.file_info)
+                        except Exception:  # noqa: BLE001
+                            pass
                 if camo_xml:
+                    _p("解析 camouflages.xml（涂装/配色/船组）...")
                     parsed = parse_camouflages(camo_xml)
                     crows: list[tuple] = []
                     csrows: list[tuple] = []
@@ -955,6 +976,9 @@ class AssetsCacheService:
                     counts["camouflages"] = len(crows)
                     counts["camouflage_color_schemes"] = len(csrows)
                     counts["camo_ship_groups"] = len(sgrows)
+                    _p(f"涂装数据已入库: {counts['camouflages']} 条 / "
+                       f"配色 {counts['camouflage_color_schemes']} 条 / "
+                       f"船组 {counts['camo_ship_groups']} 条")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -962,6 +986,12 @@ class AssetsCacheService:
             return counts
         finally:
             svc.close()
+            # 关闭共享 pkg 提取器（释放 IDX/文件树内存）
+            if _shared_ext is not None:
+                try:
+                    _shared_ext.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ── 查询（3D 查看器用）─────────────────────────────────
 
@@ -1176,11 +1206,13 @@ class AssetsCacheService:
         return out
 
     # ── 涂装选项图来源（pkg gui/exteriors）扫描与 name/index 匹配 ──
-    def _camo_icon_map(self, game_dir, bin_folder: str = "") -> dict[str, str]:
+    def _camo_icon_map(self, game_dir, bin_folder: str = "", ext_factory=None) -> dict[str, str]:
         """扫描 gui/exteriors 包图标：{key_lower: png 路径}。
 
         key 取文件名 stem（camouflages/skins/permoflages 平铺）或 colored 目录名
         （camouflages_colored/expendable/<DIR>）。优先 res_unpack 文件系统，回退包列表。
+        ext_factory: 可选，返回可复用 GameExtractor 的工厂；提供时包列表分支本方法
+        不再自建/关闭，用于批量复制图标时避免每个图标重载全部 IDX/文件树导致卡死。
         """
         icon_map: dict[str, str] = {}
         if not game_dir:
@@ -1210,9 +1242,13 @@ class AssetsCacheService:
 
         # 2) 包内列表（无 res_unpack 时）
         try:
-            from data_extractor import GameExtractor
-            ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
             bad = {"ensigns", "decals_dds_scale"}   # 绝不属涂装系统，明确排除
+            own = ext_factory is None
+            if own:
+                from data_extractor import GameExtractor
+                ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+            else:
+                ext = ext_factory()
             try:
                 for f in ext.list_files(["gui/exteriors/**/*"]):
                     path = getattr(f, "path", "") or ""
@@ -1234,7 +1270,8 @@ class AssetsCacheService:
                     stem = path.rsplit("/", 1)[-1][:-4]
                     icon_map.setdefault(stem.lower(), path)
             finally:
-                ext.close()
+                if own:
+                    ext.close()
         except Exception:  # noqa: BLE001
             pass
         return icon_map
@@ -1259,12 +1296,15 @@ class AssetsCacheService:
             return rel or None
         return None
 
-    def _cache_camo_icon(self, game_dir, bin_folder: str, icon_src: str, name: str = "") -> str:
+    def _cache_camo_icon(self, game_dir, bin_folder: str, icon_src: str, name: str = "",
+                         ext_factory=None) -> str:
         """把命中的选项图提取/复制到 data/camo_thumbs/<原始相对子目录>，返回相对 data 的路径。
 
         按原始 gui/exteriors 目录结构存放：camouflages/ · skins/ · permoflages/ · camouflages_colored/...
         如 camo_thumbs/camouflages_colored/expendable/<DIR>/color_0.png。
         icon_src 可能是 res_unpack 文件系统路径（绝对）或 pkg 内路径（相对、无盘符）。
+        ext_factory: 可选，返回可复用 GameExtractor 的工厂，用于批量复制图标时避免每图标
+        重建提取器（重载全部 IDX/文件树）卡死。
         """
         if not icon_src:
             return ""
@@ -1280,18 +1320,27 @@ class AssetsCacheService:
                     return ""
                 shutil.copyfile(src, dest)
             else:
-                # pkg 内路径：从包读出字节写盘
-                from data_extractor import GameExtractor
-                ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+                # pkg 内路径：复用传入工厂的提取器（避免每图标重载 IDX/文件树，防卡死）
+                own = ext_factory is None
+                if own:
+                    from data_extractor import GameExtractor
+                    ext = GameExtractor(str(game_dir), bin_folder=bin_folder)
+                else:
+                    ext = ext_factory()
                 try:
-                    hits = ext.list_files([icon_src])
-                    if not hits:
-                        return ""
-                    e = hits[0]
+                    # 精确路径优先直接用文件树 O(1) 取，避免 list_files 对整棵树做
+                    # fnmatch 全扫描（每个图标一次 O(N)，数百个图标会显著拖慢）
+                    e = ext.file_tree.get(icon_src)
+                    if e is None or getattr(e, "is_directory", False):
+                        hits = ext.list_files([icon_src])
+                        if not hits:
+                            return ""
+                        e = hits[0]
                     data = ext.pkg_reader.read_file(e.volume.filename, e.file_info)
                     dest.write_bytes(data)
                 finally:
-                    ext.close()
+                    if own:
+                        ext.close()
             return dest.relative_to(get_data_dir()).as_posix()
         except Exception:  # noqa: BLE001
             return ""
