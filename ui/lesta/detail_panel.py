@@ -1174,9 +1174,11 @@ class LestaDetailPanel(DetailPanel):
                             if icon_path:
                                 pix = QPixmap(icon_path)
                                 if pix.isNull(): pix = None
-                                if not pix.isNull():
+                                if pix and not pix.isNull():
                                     btn.setIcon(QIcon(pix))
                                     btn.setIconSize(QSize(22, 22))
+                                else:
+                                    btn.setText("缺少图片")
                             else:
                                 # 无图标时显示文字缩写
                                 short = skey.split('_')[-1] if '_' in skey else skey[:6]

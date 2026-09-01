@@ -46,6 +46,7 @@ class SignalBus(QObject):
 
     # ── 操作请求 ──────────────────────────────────────────
     copy_ship_info = Signal()           # 请求将当前信息面板完整内容复制到剪贴板（文本）
+    copy_panel_screenshot = Signal()    # 请求将当前 DetailPanel 整页内容渲染为长图并复制到剪贴板
 
     # ── 版本检测 ──────────────────────────────────────────
     update_check_done = Signal(object)  # 参数: UpdateCheckResult（后台检测完成，主线程接收）

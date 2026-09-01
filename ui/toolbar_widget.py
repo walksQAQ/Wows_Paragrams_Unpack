@@ -92,8 +92,10 @@ class TopToolbar(QWidget):
         # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
         self.btn_copy = QPushButton("📋  复制当前信息")
         self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
+        self.btn_copy_panel = QPushButton("📸  复制完整界面")
+        self.btn_copy_panel.setToolTip("将当前 DetailPanel 全页内容渲染为长图并复制到系统剪贴板")
 
-        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_copy):
+        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics, self.btn_copy, self.btn_copy_panel):
             layout.addWidget(b)
 
         layout.addStretch()
@@ -139,6 +141,7 @@ class TopToolbar(QWidget):
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_ballistics.clicked.connect(self._on_ballistics)
         self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
+        self.btn_copy_panel.clicked.connect(lambda: bus.copy_panel_screenshot.emit())
         self.btn_check_update.clicked.connect(lambda: self.check_update(force=True))
         bus.update_check_done.connect(self._on_update_check_done)
         bus.task_progress.connect(self._on_progress)

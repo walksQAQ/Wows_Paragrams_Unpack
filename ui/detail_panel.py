@@ -116,6 +116,8 @@ class DetailPanel(QWidget):
         self._active_con_keys: dict[int, str] = {}
         # 当前选中的消耗品按钮引用（跨槽位/跨区域唯一高亮）
         self._active_con_btn = None
+        # 截图累积模式：为“复制完整界面”临时开启，点击多个消耗品时累积所有详情页
+        self._capture_accumulate_con = False
         # WG 信号旗选中态：mod_id → flag_data（多选可叠加，默认全选参与计算）
         self._selected_wg_signal_flags: dict[str, dict] = {}
 
@@ -130,6 +132,7 @@ class DetailPanel(QWidget):
         # 启动时不通知 ModuleSelect，保持空白占位
         bus.file_selected.connect(self._on_file_selected)
         bus.copy_ship_info.connect(self._copy_ship_info_to_clipboard)
+        bus.copy_panel_screenshot.connect(self._copy_panel_screenshot)
         # 主题切换后刷新默认页文字/背景颜色
         bus.theme_changed.connect(self._on_theme_changed)
 
@@ -2486,115 +2489,96 @@ class DetailPanel(QWidget):
 
     # ── 面板截图复制（展开折叠后整页截图）────────────────────
 
+    def get_capture_components(self) -> list[QWidget]:
+        """返回需要纳入“复制完整界面”长图的主要组件。
+
+        只取页面直属的顶层滚动区（如配置栏 + 卡片流），并把每个滚动区的完整内容
+        一次性渲染；绝不要把卡片内部嵌套的 QStackedWidget/QScrollArea 拆出来单独
+        拼接，否则同一块区域会被重复渲染、并被错位拼到图片底部。
+        """
+        page = self.stack.currentWidget()
+        if page is None:
+            return []
+
+        # 纯文本页：整页作为一个单元
+        if isinstance(page, QTextEdit):
+            return [page]
+
+        # 卡片/舰船页：仅返回直接挂在页面布局上的顶层滚动区
+        top_scrolls = [
+            sa for sa in page.findChildren(QScrollArea)
+            if sa.parentWidget() is page and sa.widget() is not None
+        ]
+        if top_scrolls:
+            return top_scrolls
+
+        return [page]
+
     def _copy_panel_screenshot(self) -> None:
-        """展开信息面板所有折叠内容并整页截图复制到剪贴板。"""
-        if not self._current_filename:
+        """渲染当前 DetailPanel 页面为长图并复制到系统剪贴板。"""
+        if not self._current_filename and not self._is_ship_mode:
             bus.log_message.emit("ℹ️ 当前未选中实体，无法截图复制")
             return
         try:
-            self._expand_all_collapsible()
-            from PySide6.QtCore import QTimer
-            # 展开按钮后布局会变化，等下一轮事件循环再渲染（绑定 receiver=self）
-            QTimer.singleShot(0, self, self._do_panel_screenshot)
-        except Exception as e:
-            bus.log_message.emit(f"⚠️ 截图准备失败: {e}")
-
-    def _do_panel_screenshot(self) -> None:
-        try:
+            from services.data_interface_capture_service import DataInterfaceCaptureService
             from PySide6.QtWidgets import QApplication
-            pm = self._render_current_page_complete()
-            if pm is None or pm.isNull():
-                bus.log_message.emit("⚠️ 截图失败: 无法渲染当前面板")
+
+            service = DataInterfaceCaptureService()
+            # 先执行一次布局更新，确保当前页面已渲染完所有隐藏/动态内容。
+            self._expand_all_collapsible()
+            QApplication.processEvents()
+            page = self.stack.currentWidget()
+            if page is None:
+                bus.log_message.emit("⚠️ 截图失败: 当前页面为空")
                 return
-            QApplication.clipboard().setPixmap(pm)
-            _show_name = (self._current_analyzed or {}).get("title") or self._current_filename
-            bus.log_message.emit(
-                f"📸 已复制「{_show_name}」面板截图到剪贴板 ({pm.width()}×{pm.height()}px)")
+
+            components = self.get_capture_components()
+            if not components:
+                bus.log_message.emit("⚠️ 截图失败: 未找到可截图组件")
+                return
+
+            pixmap = service.capture_detail_panel(self)
+            if pixmap is None or pixmap.isNull():
+                bus.log_message.emit("⚠️ 截图失败: 无法渲染当前页面")
+                return
+
+            QApplication.clipboard().setPixmap(pixmap)
+            _show_name = (self._current_analyzed or {}).get("title") or self._current_filename or "当前页面"
+            bus.log_message.emit(f"📸 已复制「{_show_name}」完整界面截图到剪贴板 ({pixmap.width()}×{pixmap.height()}px)")
         except Exception as e:
             import traceback
             bus.log_message.emit(f"⚠️ 截图失败: {e}\n{traceback.format_exc()}")
 
     def _expand_all_collapsible(self) -> None:
-        """点击信息面板内所有折叠/切换按钮展开详情。
-
-        跳过会弹模态框的"自定义"按钮与已展开（checkable 且 checked）的按钮，
-        避免收折已展开内容或卡住界面。
-        """
-        from PySide6.QtWidgets import QPushButton, QToolButton
+        """仅展开真正的折叠/展开控件；忽略选项按钮、信号旗、动作型按钮和查看弹窗入口。"""
+        from PySide6.QtWidgets import QToolButton
         page = self.stack.currentWidget()
         if page is None:
             return
-        for btn in page.findChildren(QPushButton) + page.findChildren(QToolButton):
+
+        def _is_expand_toggle(btn: QToolButton) -> bool:
+            text = (btn.text() or "").strip()
+            tip = (btn.toolTip() or "").strip()
+            combined = f"{text} {tip}".lower()
+            if any(k in combined for k in ["展开", "收起", "更多", "详细", "筛选", "显示", "隐藏", "选项"]):
+                return True
+            if btn.isCheckable() and not text and btn.autoRaise() and btn.popupMode() != QToolButton.ToolButtonPopupMode.DelayedPopup:
+                return True
+            return False
+
+        for btn in list(page.findChildren(QToolButton)):
             try:
                 if not btn.isEnabled() or not btn.isVisible():
                     continue
-                text = (btn.text() or "").strip()
-                if "自定义" in text or "复制" in text:
+                if not _is_expand_toggle(btn):
                     continue
                 if btn.isCheckable() and btn.isChecked():
                     continue
                 btn.click()
             except RuntimeError:
-                continue  # 底层 C++ 对象已被重建删除
+                continue
             except Exception:
                 continue
-
-    def _render_current_page_complete(self):
-        """渲染当前信息面板为完整长图（含滚动区全部内容，不裁剪）。"""
-        from PySide6.QtCore import QRectF, QSizeF, Qt
-        from PySide6.QtGui import QPainter, QPixmap
-        from PySide6.QtWidgets import QScrollArea, QTextEdit
-        page = self.stack.currentWidget()
-        if page is None:
-            return None
-
-        # 舰船模式：由多个滚动区（顶部配置栏 + 下方卡片流）组成 → 内容拼接
-        scrollers = page.findChildren(QScrollArea)
-        if scrollers:
-            pms = []
-            width = 0
-            for sa in scrollers:
-                cw = sa.widget()
-                if cw is None:
-                    continue
-                p = cw.grab()
-                if not p.isNull():
-                    pms.append(p)
-                    width = max(width, p.width())
-            if pms:
-                gap = 8
-                total_h = sum(p.height() for p in pms) + gap * (len(pms) - 1)
-                canvas = QPixmap(width, total_h)
-                canvas.fill(Qt.GlobalColor.white)
-                pt = QPainter(canvas)
-                y = 0
-                for p in pms:
-                    pt.drawPixmap(0, y, p)
-                    y += p.height() + gap
-                pt.end()
-                return canvas
-            return page.grab()
-
-        # 通用模式：QTextEdit 整篇文档渲染为长图（含超出视口部分）
-        if isinstance(page, QTextEdit):
-            te = page
-            viewport = te.viewport()
-            doc = te.document()
-            old_page_size = doc.pageSize()
-            try:
-                doc.setPageSize(QSizeF(viewport.width(), -1))
-                h = int(doc.size().height())
-                w = viewport.width()
-                pm = QPixmap(max(w, 1), max(h, 1))
-                pm.fill(Qt.GlobalColor.white)
-                pt = QPainter(pm)
-                doc.drawContents(pt, QRectF(0, 0, w, h))
-                pt.end()
-                return pm
-            finally:
-                doc.setPageSize(old_page_size)
-
-        return page.grab()
 
     def _render_default_pages_to_text(self, scope: str) -> str:
         """渲染通用模式页面（详情/数据）为纯文本（不含原始 JSON）。"""
@@ -2686,10 +2670,12 @@ class DetailPanel(QWidget):
         _act[_sid] = _key
 
         # 移除旧详情页（保留索引 0 的提示页）
-        while _stack.count() > 1:
-            w = _stack.widget(1)
-            _stack.removeWidget(w)
-            w.deleteLater()
+        # 截图累积模式下不移除，使多个消耗品详情卡同时存在，便于整图展开渲染
+        if not getattr(self, '_capture_accumulate_con', False):
+            while _stack.count() > 1:
+                w = _stack.widget(1)
+                _stack.removeWidget(w)
+                w.deleteLater()
 
         # 查询消耗品配置
         items = []
