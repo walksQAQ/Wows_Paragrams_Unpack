@@ -1036,6 +1036,8 @@ class GeometryViewport(QOpenGLWidget):
         self._scene_world_tex: int = 0
         self._scene_depth_rb: int = 0
         self._scene_fbo_size = (0, 0)
+        #: 默认帧缓冲是否有可匹配的深度附件（决定能否跨 FBO blit 深度）
+        self._depth_blit_ok: bool = True
         # Normal Ping-Pong FBO（独立，避免 feedback loop）
         self._na_fbo: int = 0; self._na_tex: int = 0
         self._nb_fbo: int = 0; self._nb_tex: int = 0
@@ -1634,7 +1636,7 @@ class GeometryViewport(QOpenGLWidget):
                     self._draw_fullscreen(11, w, h)
             # ★ 把 scene 深度拷到默认 FBO：透明 pass（玻璃/线网/螺旋桨等）深度测试需要
             #   船体深度，否则全过 → 模型穿透显示。仅 deferred 路径有 scene 深度。
-            if use_surface:
+            if use_surface and self._depth_blit_ok:
                 GL.glDepthMask(GL.GL_TRUE)   # 全屏光照后 mask=FALSE，会抑制 depth blit
                 GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, self._scene_fbo)
                 GL.glBindFramebuffer(GL.GL_DRAW_FRAMEBUFFER, dflt)
@@ -1794,12 +1796,43 @@ class GeometryViewport(QOpenGLWidget):
 
         GL.glUseProgram(0)
 
+    def _probe_default_depth_format(self) -> int:
+        """探测默认帧缓冲的深度缓冲内部格式。
+
+        glBlitFramebuffer(DEPTH) 要求读/写帧缓冲深度格式一致，否则报
+        GL_INVALID_OPERATION(1282)。部分平台/驱动的默认 FBO 深度格式为
+        DEPTH24_STENCIL8 等（与离屏场景固定的 DEPTH_COMPONENT24 不同），
+        导致设备差异：本机正常、他人机器每帧 1282。这里返回默认 FBO 的精确
+        深度格式供离屏深度 RBO 匹配；无深度附件时返回 GL_NONE 并关闭 blit。
+        只在 _ensure_scene_fbo 建/重建时调用（GL 上下文内）。
+        """
+        self._depth_blit_ok = False
+        try:
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
+            obj_type = GL.glGetFramebufferAttachmentParameteriv(
+                GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT,
+                GL.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE)
+            if obj_type == GL.GL_RENDERBUFFER:
+                name = GL.glGetFramebufferAttachmentParameteriv(
+                    GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT,
+                    GL.GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME)
+                GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, int(name))
+                fmt = int(GL.glGetRenderbufferParameteriv(
+                    GL.GL_RENDERBUFFER, GL.GL_RENDERBUFFER_INTERNAL_FORMAT))
+                GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, 0)
+                if fmt:
+                    self._depth_blit_ok = True
+                    return fmt
+        except Exception:  # noqa: BLE001
+            pass
+        return GL.GL_DEPTH_COMPONENT24
+
     def _ensure_scene_fbo(self, w: int, h: int):
         """创建/重建离屏 MRT FBO（未打光 albedo + 世界法线 + 深度）。
 
         轻量局部 deferred compositing：船体 surface 渲到此 MRT，供 decal_tech
         读取覆盖位置的船体 albedo/世界法线，在光照前合成 decal 法线。
-        附件0=albedo(RGBA8 linear)，附件1=世界法线(RGBA8 [0,1] 编码)，深度=DEPTH24。
+        附件0=albedo(RGBA8 linear)，附件1=世界法线(RGBA8 [0,1] 编码)，深度=默认 FBO 深度格式。
         """
         if self._scene_fbo and self._scene_fbo_size == (w, h):
             return True   # ★ 已存在且尺寸匹配：必须返回 True，否则 use_surface 变 falsy，
@@ -1864,9 +1897,10 @@ class GeometryViewport(QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
         # 深度 RBO 先创建：同时挂到 scene_fbo 与 nb_fbo（共享深度，供 decal pass 遮挡）
+        # ★ 用默认 FBO 的深度格式，保证 glBlitFramebuffer(DEPTH) 读/写格式一致，避免 1282。
         self._scene_depth_rb = GL.glGenRenderbuffers(1)
         GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, self._scene_depth_rb)
-        GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_DEPTH_COMPONENT24, w, h)
+        GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, self._probe_default_depth_format(), w, h)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._nb_fbo)
         GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
                                   GL.GL_TEXTURE_2D, self._nb_tex, 0)

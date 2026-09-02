@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,19 @@ from data_extractor.idx_parser import (
     get_file_tree_stats,
 )
 from data_extractor.pkg_reader import PkgReader, PkgError
+
+
+def _log_error(message: str) -> None:
+    """把错误发到应用日志总线（`bus.log_message`），保证进日志面板/文件。
+
+    提取器可能在子进程（ProcessPoolExecutor）里被调用，那里没有 Qt 事件循环，
+    bus.log_message 发不到主界面；因此只在父进程编排处调用此函数，失败时回退 stderr。
+    """
+    try:
+        from app.signals import bus
+        bus.log_message.emit(message)
+    except Exception:  # noqa: BLE001
+        print(message, file=sys.stderr)
 
 
 # 每个 worker 进程内复用的 PkgReader 缓存 (pkgs_dir -> reader)
@@ -303,7 +317,7 @@ class GameExtractor:
                 self._pkg_reader.decode_bc7prep_file(out_path)
                 extracted.append(out_path)
             except (PkgError, OSError) as e:
-                print(f"[ERROR] 提取失败 {match.vfs_path}: {e}")
+                _log_error(f"⚠️ 提取失败 {match.vfs_path}: {e}")
 
         return extracted
 
@@ -359,7 +373,7 @@ class GameExtractor:
                 task = futures[fut]
                 out_path, err = fut.result()
                 if err:
-                    print(f"[ERROR] 提取失败 {task[1]}: {err}")
+                    _log_error(f"⚠️ 提取失败 {task[1]}: {err}")
                 else:
                     extracted.append(out_path)
 

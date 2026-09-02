@@ -178,8 +178,7 @@ class LestaShipPresenter(LestaBasePresenter):
         except Exception as e:
             import traceback
             from app.signals import bus
-            traceback.print_exc()
-            bus.log_message.emit(f"⚠️ [LestaShipPresenter] {ship_id} 构建失败: {e}")
+            bus.log_message.emit(f"⚠️ [LestaShipPresenter] {ship_id} 构建失败: {e}\n{traceback.format_exc()}")
             return None
 
     def _get_mod_value(self, mod_val, ship_type: str = "") -> float:

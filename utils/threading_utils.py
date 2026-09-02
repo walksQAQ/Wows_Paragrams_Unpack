@@ -179,6 +179,15 @@ def _on_dispatched(task: _AppTask, is_error: bool) -> None:
 _running_tasks: list[_AppTask] = []
 
 
+def _default_error(err_msg: str) -> None:
+    """默认错误回调：后台任务异常未被显式处理时落入日志，避免静默吞错。"""
+    try:
+        from app.signals import bus
+        bus.log_message.emit(f"⚠️ 后台任务失败: {err_msg}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_async(fn: Callable[[], Any], on_finished=None, on_error=None,
               cancel_event: threading.Event | None = None) -> _AppTask:
     """提交一个任务到后台线程，返回任务句柄。
@@ -191,7 +200,8 @@ def run_async(fn: Callable[[], Any], on_finished=None, on_error=None,
         便于在长循环中检查取消；未传入则保持 fn() 调用（旧调用方兼容）；
       - 已取消的任务不会再执行 on_finished / on_error 回调。
     """
-    task = _AppTask(fn, on_finished=on_finished, on_error=on_error,
+    task = _AppTask(fn, on_finished=on_finished,
+                    on_error=on_error or _default_error,
                     cancel_event=cancel_event)
     _running_tasks.append(task)
     task.start()
