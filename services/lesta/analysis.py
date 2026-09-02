@@ -622,8 +622,8 @@ class LestaAnalysisStore:
                     horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json,
                     rotation_speed_h, rotation_speed_v, num_barrels, barrel_diameter, shot_delay)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ [分析] ship_turret_arcs 写入失败: {exc}")
 
     def _write_upgrade_info(self, ship_id: str, raw_data: dict, version_code: str = ""):
         """解析 ShipUpgradeInfo 并存入库，同时提取模块名称映射"""
@@ -664,7 +664,8 @@ class LestaAnalysisStore:
         try:
             existing_keys = {r[0] for r in self.conn.execute(
                 "SELECT key_name FROM name_mappings").fetchall()}
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
             existing_keys = set()
         name_items = []
         for mid in all_module_ids:
@@ -686,8 +687,8 @@ class LestaAnalysisStore:
                 self.conn.executemany(
                     "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                     name_items)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                bus.log_message.emit(f"⚠️ [分析] 模块名映射入库失败: {exc}")
 
     def _write_hulls(self, ship_id: str, raw_data: dict, version_code: str = ""):
         conn = self.conn
@@ -1476,8 +1477,8 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
             conn.execute(
                 "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                 ("crew", name_key, person_name or crew_id))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ [分析] 船员名映射入库失败({name_key}): {exc}")
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
             (version_code, crew_id, display_name_id, crew_index, crew_id_num, person_name, nation,
              is_unique, is_animated, is_elite, is_person, is_retrainable, skills_container, base_training_level)

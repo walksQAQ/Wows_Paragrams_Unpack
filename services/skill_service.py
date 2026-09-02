@@ -229,8 +229,9 @@ class SkillService:
                     sst = json.loads(row["ship_type_subtypes"]) if row["ship_type_subtypes"] else {}
                     if ship_type_en in sst:
                         rarity = sst[ship_type_en]
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                from app.signals import bus
+                bus.log_message.emit(f"⚠️ 技能稀有度查询失败({icon_name}/{container_id}): {exc}，取默认 REGULAR")
 
         # 从定义取 modifiers 和 trigger 数据
         mods = {}

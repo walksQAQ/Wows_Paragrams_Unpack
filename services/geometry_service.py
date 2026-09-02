@@ -558,8 +558,8 @@ class GeometryService:
                 name = names.get(prefix) or names.get(game_key)
                 if name:
                     return name
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 舰船名解析失败({game_key}): {exc}，回退到 game_key")
         return game_key
 
     # ── 舰船几何加载 ────────────────────────────────────

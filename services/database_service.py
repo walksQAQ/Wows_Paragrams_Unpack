@@ -117,6 +117,27 @@ class DatabaseManager:
 
     # ── Schema ─────────────────────────────────────────────
 
+    def _log_ddl_error(self, exc: Exception, table: str = "") -> None:
+        """把 DDL/迁移失败写入日志总线（避免静默吞错）。"""
+        try:
+            from app.signals import bus
+            bus.log_message.emit(f"⚠️ 数据库迁移失败 {table}: {exc}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _add_column(self, table: str, col_name: str, col_type: str) -> None:
+        """给表添加一列（幂等：列已存在视为成功），失败时记录到日志。
+
+        调用方应先用 PRAGMA table_info 判断列是否缺失，再调用本方法；
+        这里对「列已存在」的报错静默忽略，其余错误写入日志。
+        """
+        try:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate column" in str(exc).lower():
+                return
+            self._log_ddl_error(exc, f"{table}.{col_name}")
+
     def _drop_all_tables(self) -> None:
         conn = self._conn
         conn.execute("PRAGMA foreign_keys=OFF")
@@ -189,10 +210,7 @@ class DatabaseManager:
             ]
             for col_name, col_type in expected:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("plane_basic_info", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -202,10 +220,7 @@ class DatabaseManager:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_aa)").fetchall()}
             for col_name, col_type in [("explosion_count", "REAL"), ("hit_chance", "REAL"), ("max_distance", "REAL"), ("min_distance", "REAL"), ("type", "TEXT")]:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE ship_module_aa ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("ship_module_aa", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -218,10 +233,7 @@ class DatabaseManager:
                                        ("fly_away_time", "REAL"), ("time_from_heaven", "REAL"),
                                        ("auto_use", "INTEGER"), ("available_buoyancy_states_json", "TEXT")]:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE ship_module_air_support ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("ship_module_air_support", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -236,10 +248,7 @@ class DatabaseManager:
                                        ("dc_timer", "REAL"), ("dc_max_depth", "REAL"),
                                        ("depth_splash_size", "REAL")]:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE ship_module_depth_charge ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("ship_module_depth_charge", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -252,10 +261,7 @@ class DatabaseManager:
                                        ("forward_engine_up_time", "REAL"),
                                        ("backward_engine_up_time", "REAL")]:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE ship_module_engine ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("ship_module_engine", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -265,10 +271,7 @@ class DatabaseManager:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(plane_basic_info)").fetchall()}
             for col_name, col_type in [("forsage_regeneration", "REAL"), ("forsage_regeneration_delay", "REAL")]:
                 if col_name not in existing:
-                    try:
-                        self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col_name} {col_type}")
-                    except Exception:
-                        pass
+                    self._add_column("plane_basic_info", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -277,7 +280,7 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}
             if "tonnage" not in existing:
-                self._conn.execute("ALTER TABLE ship_module_hulls ADD COLUMN tonnage REAL")
+                self._add_column("ship_module_hulls", "tonnage", "REAL")
                 self._conn.commit()
         except Exception:
             pass
@@ -387,7 +390,7 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_torpedo_sub_guidance_ext)").fetchall()}
             if "params_json" not in existing:
-                self._conn.execute("ALTER TABLE projectile_torpedo_sub_guidance_ext ADD COLUMN params_json TEXT")
+                self._add_column("projectile_torpedo_sub_guidance_ext", "params_json", "TEXT")
                 self._conn.commit()
         except Exception:
             pass
@@ -398,7 +401,7 @@ class DatabaseManager:
             for col, typ in [("burn_prob", "REAL DEFAULT 0"), ("uw_critical", "REAL DEFAULT 0"),
                              ("distance_of_damage_json", "TEXT")]:
                 if col not in existing:
-                    self._conn.execute(f"ALTER TABLE projectile_torpedo_ext ADD COLUMN {col} {typ}")
+                    self._add_column("projectile_torpedo_ext", col, typ)
             self._conn.commit()
         except Exception:
             pass
@@ -407,7 +410,7 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(projectile_bomb_ext)").fetchall()}
             if "max_skip_angle" not in existing:
-                self._conn.execute("ALTER TABLE projectile_bomb_ext ADD COLUMN max_skip_angle REAL")
+                self._add_column("projectile_bomb_ext", "max_skip_angle", "REAL")
                 self._conn.commit()
         except Exception:
             pass
@@ -417,7 +420,7 @@ class DatabaseManager:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_hulls)").fetchall()}
             for col, typ in [("length", "REAL"), ("width", "REAL"), ("height", "REAL")]:
                 if col not in existing:
-                    self._conn.execute(f"ALTER TABLE ship_module_hulls ADD COLUMN {col} {typ}")
+                    self._add_column("ship_module_hulls", col, typ)
             self._conn.commit()
         except Exception:
             pass
@@ -426,11 +429,11 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_rage_mode)").fetchall()}
             if "rage_mode_name" not in existing:
-                self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN rage_mode_name TEXT DEFAULT ''")
+                self._add_column("ship_rage_mode", "rage_mode_name", "TEXT DEFAULT ''")
                 self._conn.commit()
             # buff_params_name 仅 lesta 库需要（WG 战斗指令暂不下拉 buff）
             if self._wows_type != "Wargaming" and "buff_params_name" not in existing:
-                self._conn.execute("ALTER TABLE ship_rage_mode ADD COLUMN buff_params_name TEXT DEFAULT ''")
+                self._add_column("ship_rage_mode", "buff_params_name", "TEXT DEFAULT ''")
                 self._conn.commit()
         except Exception:
             pass
@@ -439,7 +442,7 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(crew_unique_skills)").fetchall()}
             if "icon_path" not in existing:
-                self._conn.execute("ALTER TABLE crew_unique_skills ADD COLUMN icon_path TEXT DEFAULT ''")
+                self._add_column("crew_unique_skills", "icon_path", "TEXT DEFAULT ''")
                 self._conn.commit()
         except Exception:
             pass
@@ -456,7 +459,7 @@ class DatabaseManager:
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(ship_module_torpedoes)").fetchall()}
             if "rotation_speed" not in existing:
-                self._conn.execute("ALTER TABLE ship_module_torpedoes ADD COLUMN rotation_speed REAL")
+                self._add_column("ship_module_torpedoes", "rotation_speed", "REAL")
                 self._conn.commit()
         except Exception:
             pass
@@ -468,7 +471,7 @@ class DatabaseManager:
                                         ("torpedo_angles_wide", "REAL DEFAULT 0"),
                                         ("use_one_shot", "INTEGER DEFAULT 0")]:
                 if col_name not in existing:
-                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+                    self._add_column("ship_module_torpedoes", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -479,7 +482,7 @@ class DatabaseManager:
             for col_name, col_type in [("top_module_key", "TEXT DEFAULT ''"),
                                         ("launcher_name", "TEXT DEFAULT ''")]:
                 if col_name not in existing:
-                    self._conn.execute(f"ALTER TABLE ship_module_torpedoes ADD COLUMN {col_name} {col_type}")
+                    self._add_column("ship_module_torpedoes", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -491,10 +494,10 @@ class DatabaseManager:
             try:
                 _existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({_tbl})").fetchall()}
                 if "launcher_name" not in _existing:
-                    self._conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN launcher_name TEXT DEFAULT ''")
+                    self._add_column(_tbl, "launcher_name", "TEXT DEFAULT ''")
                 self._conn.commit()
-            except Exception:
-                pass
+            except Exception as _e:
+                self._log_ddl_error(_e, _tbl)
 
         # ── 迁移：创建 ship_module_torpedo_config 表 ──
         try:
@@ -524,7 +527,7 @@ class DatabaseManager:
             for col_name, col_type in [("groups_counts_json", "TEXT"), ("loaders_json", "TEXT"),
                                         ("ammo_switch_coeff", "REAL DEFAULT 0")]:
                 if col_name not in existing:
-                    self._conn.execute(f"ALTER TABLE ship_module_torpedo_config ADD COLUMN {col_name} {col_type}")
+                    self._add_column("ship_module_torpedo_config", col_name, col_type)
             self._conn.commit()
         except Exception:
             pass
@@ -559,7 +562,7 @@ class DatabaseManager:
                              ("jato_duration", "REAL"),
                              ("jato_speed_mult", "REAL")]:
                 if col not in existing:
-                    self._conn.execute(f"ALTER TABLE plane_basic_info ADD COLUMN {col} {typ}")
+                    self._add_column("plane_basic_info", col, typ)
             self._conn.commit()
         except Exception:
             pass
