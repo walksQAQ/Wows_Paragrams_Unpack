@@ -517,6 +517,52 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
     }
 
 
+def decode_model_wg(data: bytes, db: PrototypeDatabase) -> dict:
+    """解码 WG 服 ModelPrototype（0x28B/条，blob 3；wows-toolkit model.rs）。
+
+    WG 布局（与 Korabli 0x20 完全不同）：
+      +0x00 u64 visualResourceId   # -> .visual 路径（selfId）  —— 模型引用的视觉
+      +0x08 u8  skelExtResIdCount  # 骨架扩展资源数
+      +0x09 u8  miscType
+      +0x0A u8  animationsCount
+      +0x0B u8  dyesCount
+      +0x0C u32 (padding)
+      +0x10 i64 skelExtResIdsPtr   # relptr -> u64[]
+      +0x18 i64 animationsPtr      # relptr -> AnimationEntry[]
+      +0x20 i64 dyesPtr            # relptr -> DyeEntry[]
+
+    返回：把「模型引用」与其「视觉」明确拆开（visual 为解析后的 .visual 路径）。
+    """
+    if len(data) < 0x28:
+        raise ParseError(f"ModelPrototype(WG) 数据过短: {len(data)}")
+    index = db.build_self_id_index()
+
+    def path_of(self_id: int) -> str:
+        if self_id == 0:
+            return ""
+        idx = index.get(self_id)
+        return db.reconstruct_path(idx, index) if idx is not None else f"0x{self_id:016X}"
+
+    visual_id = B.read_u64(data, 0x00)
+    skel_ext_count = data[0x08]
+    misc_type = data[0x09]
+    animations_count = data[0x0A]
+    dyes_count = data[0x0B]
+    return {
+        "_type": "ModelPrototype",
+        "visualResourceId": f"0x{visual_id:016X}",
+        "visual": path_of(visual_id),            # 该模型引用的 .visual（独立展示）
+        "skelExtResIdCount": skel_ext_count,
+        "miscType": misc_type,
+        "animationsCount": animations_count,
+        "dyesCount": dyes_count,
+        "skelExtResIdsPtr": f"0x{B.read_u64(data, 0x10):016X}",
+        "animationsPtr": f"0x{B.read_u64(data, 0x18):016X}",
+        "dyesPtr": f"0x{B.read_u64(data, 0x20):016X}",
+        "raw_hex": data[:0x28].hex(),
+    }
+
+
 # ── SkeletonPrototype（Korabli 独有）──────────────────────────────────────
 
 def decode_skeleton(data: bytes, db: PrototypeDatabase) -> dict:
@@ -895,7 +941,7 @@ def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[Prot
         return decode_visual(data, db, record_base)
     if name == "ModelPrototype":
         if wg:
-            return decode_generic(data, db, name, item_size)
+            return decode_model_wg(data, db)
         return decode_model(data, db)
     if name == "SkeletonPrototype":
         return decode_skeleton(data, db)
