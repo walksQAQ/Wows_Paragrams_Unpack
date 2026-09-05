@@ -71,18 +71,24 @@ class CustomWeaponDialog(QDialog):
         self.f_radius_zero = QDoubleSpinBox(); self.f_radius_zero.setRange(0, 10); self.f_radius_zero.setDecimals(3); self.f_radius_zero.setValue(0.2)
         self.f_radius_delim = QDoubleSpinBox(); self.f_radius_delim.setRange(0, 10); self.f_radius_delim.setDecimals(3); self.f_radius_delim.setValue(0.5)
         self.f_radius_max = QDoubleSpinBox(); self.f_radius_max.setRange(0, 10); self.f_radius_max.setDecimals(3); self.f_radius_max.setValue(0.6)
-        self.f_delim = QDoubleSpinBox(); self.f_delim.setRange(0, 2); self.f_delim.setDecimals(2); self.f_delim.setValue(0.5)
+        self.f_delim = QDoubleSpinBox(); self.f_delim.setRange(0.01, 2); self.f_delim.setDecimals(2); self.f_delim.setValue(0.5)
         self.f_norm = QDoubleSpinBox(); self.f_norm.setRange(0, 90); self.f_norm.setDecimals(1); self.f_norm.setValue(0.0); self.f_norm.setSuffix(" °")
+        _formula_hint = QLabel("散布公式：横向(m)=距离(km)×ha+hb；纵向(m)=横向×系数\n"
+                               "其中 ha=(散布理想半径-散布最小半径)/散布理想距离(km)；hb=散布最小半径×30；td=散布理想半径×散布分界点/散布最小半径")
+        _formula_hint.setWordWrap(True)
+        _formula_hint.setStyleSheet("color:#888; font-size:10px;")
+        gg.addWidget(_formula_hint, 0, 0, 1, 2)
         _gun_rows = [
             ("最大射程", self.f_max_range), ("Sigma", self.f_sigma),
-            ("最小散布半径", self.f_min_radius), ("理想散布半径", self.f_ideal_radius),
-            ("理想距离", self.f_ideal_distance), ("零距离散布系数", self.f_radius_zero),
-            ("分隔点散布系数", self.f_radius_delim), ("最大散布系数", self.f_radius_max),
-            ("delim", self.f_delim), ("归一化角(0=按口径)", self.f_norm),
+            ("散布最小半径", self.f_min_radius), ("散布理想半径", self.f_ideal_radius),
+            ("散布理想距离", self.f_ideal_distance),
+            ("散布 0 距离系数", self.f_radius_zero), ("散布分界系数", self.f_radius_delim),
+            ("散布最大系数", self.f_radius_max),
+            ("散布分界点", self.f_delim), ("归一化角(0=按口径)", self.f_norm),
         ]
         for _i, (_lb, _w) in enumerate(_gun_rows):
-            gg.addWidget(QLabel(_lb), _i, 0)
-            gg.addWidget(_w, _i, 1)
+            gg.addWidget(QLabel(_lb), _i + 1, 0)
+            gg.addWidget(_w, _i + 1, 1)
         root.addWidget(gun_box)
 
         # 自定义加成（Buff）：射程 / 散布倍率
@@ -470,7 +476,8 @@ class PenetrationCalculatorDialog(QDialog):
         self.mods_scroll.setWidgetResizable(True)  # 内容随视口自适应宽度；末尾 stretch 保证超宽时出现横向滚动条
         self.mods_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.mods_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.mods_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # 始终显示水平（左右）滑条：按钮多时一定能左右滚动查看全部，避免显示不全
+        self.mods_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.mods_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         theme.bind(self.mods_scroll,
             "QScrollArea { background: transparent; border: none; }"
@@ -1443,18 +1450,20 @@ class PenetrationCalculatorDialog(QDialog):
             try:
                 from services.database_service import get_db
                 db = get_db()
+                vc = getattr(self, "_cur_version_code", "") or ""
                 basic = db._conn.execute(
-                    "SELECT shiptype, tier, group_status_key FROM ship_basic_info WHERE ship_id=? LIMIT 1", (ship_id,)
+                    "SELECT shiptype, tier, group_status_key FROM ship_basic_info WHERE ship_id=? AND version_code=? LIMIT 1", (ship_id, vc)
                 ).fetchone()
                 ship_type = basic["shiptype"] or "" if basic else ""
                 ship_tier = int(basic["tier"] or 0) if basic else 0
                 ship_group = basic["group_status_key"] or "" if basic else ""
                 nat_row = db._conn.execute(
-                    "SELECT nation FROM entity_registry WHERE entity_id=? LIMIT 1", (ship_id,)
+                    "SELECT nation FROM entity_registry WHERE entity_id=? AND version_code=? LIMIT 1", (ship_id, vc)
                 ).fetchone()
                 ship_nation = nat_row["nation"] or "" if nat_row else ""
                 for r in db._conn.execute(
-                    "SELECT mod_id, name, slot, modifiers_json, ships_json, excludes_json, nations_json, shiptype_json, shiplevel_json, groups_json FROM modernization_basic_info WHERE slot>=0"
+                    "SELECT mod_id, name, slot, modifiers_json, ships_json, excludes_json, nations_json, shiptype_json, shiplevel_json, groups_json FROM modernization_basic_info WHERE slot>=0 AND version_code=?",
+                    (vc,)
                 ).fetchall():
                     mods = json.loads(r["modifiers_json"] or "{}")
                     if range_key not in mods and acc_key not in mods:
@@ -1491,26 +1500,28 @@ class PenetrationCalculatorDialog(QDialog):
         n = self.mods_grid.count()
         if n == 0 or self.mods_grid.itemAt(n - 1).spacerItem() is None:
             self.mods_grid.addStretch(1)
-        # 容器最小高度 = 最高按钮高度 + 边距，保证多行文本（名称+加成）不被 QScrollArea 压缩
+        # 容器最小高度 = 最高按钮高度，保证多行文本（名称+加成）不被 QScrollArea 压缩
         _max_h = 28
         for _b in getattr(self, "_mod_buttons", []):
             try:
                 _max_h = max(_max_h, _b["btn"].sizeHint().height())
             except Exception:
                 pass
-        # QScrollArea 视口高度 = 最高按钮高度 + 横向滚动条(10)，确保 3 行按钮完整可见不被滚动条遮住
-        _viewport_h = _max_h + 10
-        self.mods_container.setMinimumHeight(_viewport_h)
-        # 直接约束 viewport 高度（含余量）：QScrollArea 自身高度含边框，viewport 才真正容纳内容
+        # 水平滚动条高度（QSS 定义 10px）
+        _sb_h = 10
+        # 视口 / 容器内容高度 = 按钮内容高度
+        self.mods_container.setMinimumHeight(_max_h)
         try:
-            self.mods_scroll.viewport().setMinimumHeight(_max_h + 4)
+            self.mods_scroll.viewport().setMinimumHeight(_max_h)
         except Exception:
             pass
-        self.mods_scroll.setMinimumHeight(_viewport_h + 6)
-        # 外层 mods_frame 固定高度：标题行(~26) + 视口高度 + 边距。
+        # mods_scroll 高度 = 按钮 + 滚动条，确保滚动条不被裁剪
+        self.mods_scroll.setMinimumHeight(_max_h + _sb_h)
+        # 外层 mods_frame 固定高度：margins(上4+下4=8) + 标题行(~34) + spacing(4) + mods_scroll。
+        # ⚠️ 必须给水平滚动条留足空间，否则按钮多时滚动条会被外层高度裁掉（显示不全）。
         # 用 setFixedHeight 而非 setMinimumHeight：防止下方 chart_tabs(Expanding)
         # 布局波动（如拖动散布射程滑条重建画布）时重新分配 mods_frame 高度，导致上面 UI 抖动
-        self.mods_frame.setFixedHeight(26 + _viewport_h + 8)
+        self.mods_frame.setFixedHeight(8 + 34 + 4 + _max_h + _sb_h)
 
     def _add_mod_button(self, mod_id: str, gmmd: float, gm: float, kind: str = "modernization",
                         name: str = "", bonus_lines: list[str] | None = None,
@@ -1590,13 +1601,14 @@ class PenetrationCalculatorDialog(QDialog):
     def _load_special_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """加载该船提供对应炮种射程/精度加成的消耗品（侦察机，仅主炮）与战斗指令（rage_mode）。"""
         from models.name_mapping import Mapping as NMM
+        vc = getattr(self, "_cur_version_code", "") or ""
         range_key, acc_key = self._mod_keys_for_kind(kind)
         # ── 侦察机消耗品：仅主炮显示（主炮射程 ×artilleryDistCoeff、主炮精度 ×GMIdealRadius）──
         if kind == "main":
             seen: set = set()
             for s in conn.execute(
-                "SELECT consumable_id, config_key FROM ship_consumable_slots WHERE ship_id=? ORDER BY slot_index, item_index",
-                (ship_id,)).fetchall():
+                "SELECT consumable_id, config_key FROM ship_consumable_slots WHERE ship_id=? AND version_code=? ORDER BY slot_index, item_index",
+                (ship_id, vc)).fetchall():
                 cid = s["consumable_id"]
                 if not cid or cid in seen:
                     continue
@@ -1632,8 +1644,8 @@ class PenetrationCalculatorDialog(QDialog):
                                      icon_path=pic_path(f"consumables/consumable_{cid}_0.png"))
         # ── 战斗指令（rage_mode）：对应炮种射程、精度 ──
         for rm in conn.execute(
-            "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=?",
-            (ship_id,)).fetchall():
+            "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=? AND version_code=?",
+            (ship_id, vc)).fetchall():
             try:
                 mods = json.loads(rm["modifiers_json"] or "{}")
             except Exception:
@@ -1738,10 +1750,11 @@ class PenetrationCalculatorDialog(QDialog):
         buff 不叠加 → 固定只取一份）。
         """
         from models.name_mapping import Mapping as NMM
+        vc = getattr(self, "_cur_version_code", "") or ""
         # 所属战舰状态为被禁用（group_status_key='disabled'）时不显示辅助机组
         st = conn.execute(
-            "SELECT group_status_key FROM ship_basic_info WHERE ship_id=? LIMIT 1",
-            (ship_id,)).fetchone()
+            "SELECT group_status_key FROM ship_basic_info WHERE ship_id=? AND version_code=? LIMIT 1",
+            (ship_id, vc)).fetchone()
         if st and (st["group_status_key"] or "") == "disabled":
             return
         # 任选一架 scout 支援机作为飞机名来源（友军提供的，与当前船无关）
@@ -1903,6 +1916,8 @@ class PenetrationCalculatorDialog(QDialog):
         for _mod in mods:
             max_range_km *= float(_mod[0])
             disp_coeff *= float(_mod[1])
+        # 散布系数均由原始散布参数（散布最小/理想半径、理想距离、分界点等）导出：
+        # td=散布理想半径×散布分界点/散布最小半径；ha=(散布理想半径-散布最小半径)/散布理想距离(km)；hb=散布最小半径×30。
         min_radius = float(gun_row.get("min_radius") or 1.0)
         ideal_radius = float(gun_row.get("ideal_radius") or 0.0)
         ideal_distance = float(gun_row.get("ideal_distance") or 1.0)

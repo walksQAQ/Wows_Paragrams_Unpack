@@ -27,7 +27,7 @@ from .decoders import (
 )
 from .errors import AssetsBinError
 from .parser import PrototypeDatabase, parse_assets_bin
-from .types import PrototypeType, type_from_magic
+from .types import PrototypeType, set_wows_type, type_from_magic
 from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
@@ -54,9 +54,8 @@ class AssetsBinService:
             wows_type: 服务器类型（'Wargaming'→WG 10 类型表；其余→Korabli 12 类型表）。
                       需在解析**之前**传入，内部按服务器设置类型表上下文。
         """
-        if wows_type:
-            from .types import set_wows_type
-            set_wows_type(wows_type)
+        self._wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
+        set_wows_type(self._wows_type)
         self._db: Optional[PrototypeDatabase] = None
         self._vfs: Optional[AssetsBinVfs] = None
         self._game_dir: Optional[Path] = None
@@ -137,12 +136,13 @@ class AssetsBinService:
                 # 混用会错位（Material/Visual/Model 记录偏移全错）。不匹配则重建。
                 if idx.get("wows_type") != get_wows_type():
                     raise ValueError("缓存服务器与当前不符，需重建")
-                self._vfs = AssetsBinVfs.from_index(self._db, idx["files"], idx["dirs"])
+                self._vfs = AssetsBinVfs.from_index(
+                    self._db, idx["files"], idx["dirs"], wows_type=self._wows_type)
                 self._from_cache = True
                 return
             except Exception:  # noqa: BLE001
                 pass
-        self._vfs = AssetsBinVfs(self._db)
+        self._vfs = AssetsBinVfs(self._db, wows_type=self._wows_type)
         self._from_cache = False
         if cache_path is not None:
             try:
@@ -240,6 +240,7 @@ class AssetsBinService:
 
     def decode_path(self, path: str) -> dict:
         """解码指定路径的 prototype 记录。"""
+        set_wows_type(self._wows_type)
         return self.vfs.decode_file(path)
 
     def decode_skeleton_path(self, path: str) -> dict:
@@ -284,6 +285,7 @@ class AssetsBinService:
 
     def decode_path_json(self, path: str) -> str:
         """解码指定路径为 JSON 字符串。"""
+        set_wows_type(self._wows_type)
         f = self.vfs.get_file(path)
         if f is None:
             raise AssetsBinError(f"虚拟文件不存在: {path}")

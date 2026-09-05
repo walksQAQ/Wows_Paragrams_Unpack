@@ -160,6 +160,9 @@ class MainWindow(QMainWindow):
         assets_action = tools_menu.addAction("assets.bin 浏览器...")
         assets_action.triggered.connect(self._on_open_assets_viewer)
 
+        space_action = tools_menu.addAction("港口 / 地图场景浏览器...")
+        space_action.triggered.connect(self._on_open_space_viewer)
+
         diff_action = tools_menu.addAction("版本数据比对...")
         diff_action.triggered.connect(self._on_open_version_diff)
 
@@ -185,6 +188,16 @@ class MainWindow(QMainWindow):
         from uncode_assets.gui import AssetsBinViewer
         from utils.window_utils import ensure_dialog_shown
         ensure_dialog_shown(self, "_assets_viewer", AssetsBinViewer, self)
+
+    def _on_open_space_viewer(self) -> None:
+        """打开港口 / 地图场景浏览器（独立顶层窗口，懒创建单实例）。
+
+        默认使用当前游戏目录（SpaceBrowser 构造时取 app 配置）；窗口内可另选
+        目录，后台线程扫描场景与关联模型/材质。
+        """
+        from uncode_assets.space_gui import SpaceBrowser
+        from utils.window_utils import ensure_dialog_shown
+        ensure_dialog_shown(self, "_space_viewer", SpaceBrowser, self)
 
     def _on_open_version_diff(self) -> None:
         """打开版本数据比对对话框（独立顶层窗口，懒创建单实例，复刻 assets 浏览器）。"""
