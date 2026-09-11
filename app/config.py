@@ -20,7 +20,9 @@ from utils.path_utils import get_config_path
 @dataclass
 class AppConfig:
     """应用配置数据类"""
-    game_path: str = "未设置"
+    # 各服务器独立保存的游戏安装路径（"未设置" 表示未配置）
+    game_path_lesta: str = "未设置"
+    game_path_wargaming: str = "未设置"
     game_version: str = "Unknown"
     game_data_state: bool = False
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
@@ -29,6 +31,43 @@ class AppConfig:
     theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark"
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
+
+    # ── 游戏路径（按当前服务器动态解析） ──────────────────
+    @property
+    def game_path(self) -> str:
+        """当前选中服务器对应的游戏安装路径。"""
+        if self.wows_type == "Wargaming":
+            return self.game_path_wargaming
+        if self.wows_type == "Lesta":
+            return self.game_path_lesta
+        # 未选择服务器：返回任一已设置路径（优先 Lesta）
+        if self.game_path_lesta and self.game_path_lesta != "未设置":
+            return self.game_path_lesta
+        return self.game_path_wargaming
+
+    def set_server_path(self, server: str, value: str) -> None:
+        """写入指定服务器的游戏路径。"""
+        if server == "Wargaming":
+            self.game_path_wargaming = value
+        else:
+            self.game_path_lesta = value
+
+    @staticmethod
+    def _path_valid(path: str) -> bool:
+        """路径字段是否有效（非空且未用「未设置」占位）。"""
+        return bool(path) and path != "未设置"
+
+    def is_path_set(self, server: str) -> bool:
+        """指定服务器是否已设置有效路径。
+
+        当 server 为「未选择」时，任一服务器已设置路径即视为可用，
+        避免首次启动未选服务器时因只检查单一路径而误判为不可用。
+        """
+        if server == "Wargaming":
+            return self._path_valid(self.game_path_wargaming)
+        if server == "Lesta":
+            return self._path_valid(self.game_path_lesta)
+        return self._path_valid(self.game_path_lesta) or self._path_valid(self.game_path_wargaming)
 
     @classmethod
     def default(cls) -> AppConfig:
@@ -50,7 +89,31 @@ class ConfigManager:
 
     @game_path.setter
     def game_path(self, value: str) -> None:
-        self._config.game_path = value
+        # 写入当前选中服务器（wows_type）对应的专用路径字段
+        self._config.set_server_path(self._config.wows_type, value)
+        self.save()
+
+    @property
+    def game_path_lesta(self) -> str:
+        return self._config.game_path_lesta
+
+    @game_path_lesta.setter
+    def game_path_lesta(self, value: str) -> None:
+        self._config.game_path_lesta = value
+        self.save()
+
+    @property
+    def game_path_wargaming(self) -> str:
+        return self._config.game_path_wargaming
+
+    @game_path_wargaming.setter
+    def game_path_wargaming(self, value: str) -> None:
+        self._config.game_path_wargaming = value
+        self.save()
+
+    def set_server_path(self, server: str, value: str) -> None:
+        """为指定服务器设置游戏路径并保存。"""
+        self._config.set_server_path(server, value)
         self.save()
 
     @property
@@ -136,6 +199,24 @@ class ConfigManager:
 
     # ── 读写方法 ──────────────────────────────────────────
 
+    @staticmethod
+    def _migrate_legacy_paths(raw: dict) -> dict:
+        """把旧版 config.json 的单一 game_path 迁移到对应服务器的专用路径字段。
+
+        仅当旧配置里只有 game_path（没有服务器专用路径字段）时执行迁移，
+        避免覆盖用户后来分别设置的两条路径。迁移目标按旧 wows_type 判定。
+        """
+        if "game_path_lesta" in raw or "game_path_wargaming" in raw:
+            return raw  # 已是新格式，无需迁移
+        legacy = raw.get("game_path")
+        if not legacy:
+            return raw
+        if raw.get("wows_type", "未选择") == "Wargaming":
+            raw["game_path_wargaming"] = legacy
+        else:
+            raw["game_path_lesta"] = legacy
+        return raw
+
     def _load(self) -> AppConfig:
         """从磁盘加载配置，缺失字段用默认值填充"""
         default = AppConfig.default()
@@ -148,6 +229,8 @@ class ConfigManager:
                 raw = json.load(f)
             if not isinstance(raw, dict):
                 return default
+            # 旧版配置迁移：把单一 game_path 拆到对应服务器的专用路径字段
+            raw = self._migrate_legacy_paths(raw)
             # 只取 dataclass 定义的字段，抛弃多余字段
             valid_keys = {f.name for f in default.__dataclass_fields__.values()}
             filtered = {k: v for k, v in raw.items() if k in valid_keys}

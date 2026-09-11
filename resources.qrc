@@ -10,12 +10,14 @@
     <file>resources/fx_mapping_lesta.md</file>
     <file>resources/fx_mapping_wargaming.md</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_depthcharge_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_airsupport_fighter_fighter_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_he_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_scout_scout_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_scout_smoke_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_scout_spy_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_seamine_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_ap_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_ap_gorynych_sec_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_ap_sec_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_bomb_ap_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_bomb_he_0.png</file>
@@ -35,6 +37,7 @@
     <file>resources/pictures/lesta/ammo_types/ammo_fighter_he_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_fighter_he_alt_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_he_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_he_gorynych_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_he_sec_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_manualairdefense_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_mine_0.png</file>
@@ -44,6 +47,8 @@
     <file>resources/pictures/lesta/ammo_types/ammo_missile_alpha_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_missile_beta_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_missileairdefense_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_pinger_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_projectile_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_projectile_ap_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_projectile_he_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_skip_bomb_he_0.png</file>
@@ -61,12 +66,17 @@
     <file>resources/pictures/lesta/ammo_types/ammo_torpedo_subburn_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_torpedo_subdefault_improve_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_torpedo_supership_0.png</file>
+    <file>resources/pictures/lesta/ammo_types/ammo_torpedo_vodyanoi_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY001_CrashCrew_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY002_RegenCrew_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY003_AirDefenseDisp_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY004_Fighter_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY005_Spotter_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY006_SmokeGenerator_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY006_SmokeGeneratorCrawler_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY006_SmokeGeneratorOil_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY007_SpeedBooster_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY008_SonarSearch_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY009_CrashCrew_Limited_Premium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY009_CrashCrewPremium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY010_RegenCrew_Eheal_Premium_0.png</file>
@@ -85,24 +95,59 @@
     <file>resources/pictures/lesta/consumables/consumable_PCY015_SpeedBoosterPremium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY016_SonarSearch_Short_Premium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY016_SonarSearchPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY017_TorpedoReloader_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY018_TorpedoReloaderPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY019_RLSSearch_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY020_RLSSearchPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY021_ArtilleryBooster_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY022_ArtilleryBoosterPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY023_CrashCrewSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY024_RegenCrewSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY025_AirDefenseDispSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY026_FighterSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY027_SpotterSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY028_SmokeGeneratorSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY029_SpeedBoosterSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY030_SonarSearchSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY031_TorpedoReloaderSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY032_RLSSearchSuper_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY033_ArtilleryBoosterSuper_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY034_ForsageBooster_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY035_CallFighters_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY035_CallFighters_Upgrade_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY036_RegenerateHealth_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY036_RegenerateHealth_Long_Premium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY037_CrashCrewAuto_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY038_FighterAuto_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY044_DepthCharges_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY045_Hydrophone_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY046_FastDeepRudders_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY047_SubmarineEnergyFreeze_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY048_SubmarineLocator_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY049_PlaneSmokeGenerator_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY051_VampireDamage_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY052_Shield_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY053_SupportBuoy_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY053_SupportBuoy_RU_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY053_SupportBuoy_US_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PCY054_MassHeal_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY055_AbilityClones_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PCY900_RegenCrewDE_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY001_MindControl_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY002_Agggr_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY003_Protection_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY004_HealAura_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY005_HealAll_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY006_CrashAll_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY007_SpeedBooster_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY008_HolyWeapon_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY009_TorpedoReloader_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY010_RLSSearch_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY011_SonarSearch_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY012_SmokeGenerator_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY013_CrashCrew_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY014_RegenCrew_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY015_SpeedBoosterH18_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY021_CrashCrew_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY022_RegenCrew_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY023_ArtilleryBooster_0.png</file>
@@ -110,10 +155,86 @@
     <file>resources/pictures/lesta/consumables/consumable_PXY025_SonarSearch_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY026_TorpedoReloader_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY027_SpeedBooster_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY101_MindControlPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY103_ProtectionPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY104_HealAuraPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY105_HealAllPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY106_CrashAllPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY107_SpeedBoosterPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY108_HolyWeaponPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY109_TorpedoReloaderPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY110_RLSSearchPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY112_SmokeGeneratorPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY113_CrashCrewPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY114_RegenCrewPremium_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY115_SpeedBoosterH18Premium_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY201_SmokeGenerator_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY202_SmokeGenerator_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY203_SmokeGenerator_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY301_Immortal_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY302_HealShell_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY303_AddConsumable_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY305_MindControl_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY306_Vampiric_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY307_LivingArmor_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY308_HealAll_PVP_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY309_Sniper_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY310_HealZone_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY311_LifeDrain_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY312_FilthPower_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY313_Silence_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY314_TurnAround_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY315_SmokeGenerator_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY316_CrashCrew_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY317_SonarSearch_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY318_RLSSearch_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY319_SpeedBooster_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY320_TorpedoReloader_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY321_Invulnerable_PVP_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY322_Resist_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY323_Improve_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY324_Ressurection_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY325_ImproveRegen_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY326_InvulnerableZone_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY327_ImproveSpeed_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY328_TurnAround_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY329_Immortal_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY330_SpeedBooster_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY331_ArtilleryBooster_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY332_RegenCrew_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY333_HealAll_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY334_HealShell_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY335_RegenResist_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY336_Vampiric_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY337_LifeDrain_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY338_HealZone_H2019_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY401_CrashCrew_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY402_Regen_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY403_SpeedBooster_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY404_HealZone_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY405_InvulnerableZone_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY406_HealAll_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY407_ResistAllBuff_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY408_HealBuff_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY409_SpeedBuff_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY410_DrainZone_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY411_CircleWave_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY412_InvisibleRegen_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY413_TurnAround_H2020_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY414_BuffsShift_ShotDelay_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY415_BuffsShift_EngineBoost_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY416_BuffsShift_Regeneration_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY417_BuffsShift_GSShotDelay_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY418_BuffsShift_DamageResist_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY500_GoDeep_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY501_BuffsShift_Vampyre_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY502_GSShotDelay_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY503_GMShotDelay_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY506_SpeedBooster_FA2022_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY507_RegenCrew_FA2022_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY508_CrashCrew_FA2022_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY509_SpeedBooster_SMF2024_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY510_TurnAround_SMF2024_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY511_2025WT_AddDD_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY512_2025WT_AddCR_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY513_2025WT_AddBB_0.png</file>
@@ -147,17 +268,34 @@
     <file>resources/pictures/lesta/consumables/consumable_PXY545_2025WT_AddBB3_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY546_2025WT_HoundsInvader_0.png</file>
     <file>resources/pictures/lesta/consumables/consumable_PXY547_2025WT_WT3_Teleport2_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY548_2026WT_Gorynych_Charge_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY549_2026WT_Gorynych_Greed_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY550_2026WT_Gorynych_GMSbuff_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY551_2026WT_Vodyanoi_Turn_0.png</file>
+    <file>resources/pictures/lesta/consumables/consumable_PXY552_2026WT_CRASH_CREW_AUTO_0.png</file>
     <file>resources/pictures/lesta/icon_epic_skill.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM001_MainGun_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM002_Torpedo_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM003_Airplanes_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM004_AirDefense_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM005_SecondaryGun_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM006_MainGun_Mod_II.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM007_Torpedo_Mod_II.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM008_FireControl_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM009_FlightControl_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM010_Airplanes_Mod_II.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM011_AirDefense_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM012_SecondaryGun_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM013_MainGun_Mod_III.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM014_Torpedo_Mod_III.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM015_FireControl_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM016_FlightControl_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM017_Airplanes_Mod_III.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM018_AirDefense_Mod_III.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM019_SecondaryGun_Mod_III.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM020_DamageControl_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM021_Engine_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM022_SteeringGear_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM023_DamageControl_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM024_Engine_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM025_SteeringGear_Mod_II.png</file>
@@ -166,7 +304,9 @@
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM028_FireControl_Mod_I_US.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM029_FireControl_Mod_II_US.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM030_MainWeapon_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM031_SecondaryWeapon_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM033_Guidance_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM034_Guidance_Mod_0.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM035_SteeringGear_Mod_III.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM036_SpeedBooster_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM037_SmokeGenerator_Mod_I.png</file>
@@ -216,9 +356,12 @@
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM081_SkipBomber_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM082_Autonomy_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM083_Hydrophone_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM084_Pinger_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM085_Pinger_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM086_Autonomy_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM087_AirSupport_Mod_I.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM088_AirSupport_Mod_II.png</file>
+    <file>resources/pictures/lesta/modernization/icon_modernization_PCM089_DepthCharges_Mod_I.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM090_SteeringGearSubmarine_Mod_II.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM091_SteeringGearSubmarine_Mod_III.png</file>
     <file>resources/pictures/lesta/modernization/icon_modernization_PCM092_SkipBomber_Mod_I.png</file>
@@ -275,6 +418,7 @@
     <file>resources/pictures/lesta/ragemode/rageMode_atba_alt_firepower_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_atba_firepower_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_atba_hits_preview_0.png</file>
+    <file>resources/pictures/lesta/ragemode/rageMode_botomancer_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_citadel_hits_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_close_combat_boost_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_consumable_vampiredamage_increase_preview_0.png</file>
@@ -283,8 +427,11 @@
     <file>resources/pictures/lesta/ragemode/rageMode_main_gun_accuracy_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_main_gun_dist_accuracy_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_maneuverability_accuracy_preview_0.png</file>
+    <file>resources/pictures/lesta/ragemode/rageMode_nw_gorynych_preview_0.png</file>
+    <file>resources/pictures/lesta/ragemode/rageMode_nw_vodyanoi_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_potential_damage_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_potential_damage_shinano_preview_0.png</file>
+    <file>resources/pictures/lesta/ragemode/rageMode_secondary_artillery_buff_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_ship_frag_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_sniper_main_guns_preview_0.png</file>
     <file>resources/pictures/lesta/ragemode/rageMode_tanking_boost_preview_0.png</file>
@@ -332,6 +479,7 @@
     <file>resources/pictures/lesta/skills/armament_reload_aa_damage.png</file>
     <file>resources/pictures/lesta/skills/armament_reload_submarine.png</file>
     <file>resources/pictures/lesta/skills/atba_accuracy.png</file>
+    <file>resources/pictures/lesta/skills/atba_accuracy_inactive.png</file>
     <file>resources/pictures/lesta/skills/atba_range.png</file>
     <file>resources/pictures/lesta/skills/atba_upgrade.png</file>
     <file>resources/pictures/lesta/skills/buoyancy_speed.png</file>
@@ -416,6 +564,8 @@
     <file>resources/pictures/lesta/skills/trigger_speed_bb.png</file>
     <file>resources/pictures/lesta/skills/trigger_spreading.png</file>
     <file>resources/pictures/lesta/skills/trigger_torpedo_speed_reload.png</file>
+    <file>resources/pictures/lesta/talents/PAW100_ACHIEVEMENT_24.png</file>
+    <file>resources/pictures/lesta/talents/PAW100_ACHIEVEMENT_25.png</file>
     <file>resources/pictures/lesta/talents/PAW102_ACHIEVEMENT_2.png</file>
     <file>resources/pictures/lesta/talents/PAW102_ACHIEVEMENT_3.png</file>
     <file>resources/pictures/lesta/talents/PBW100_ACHIEVEMENT_2.png</file>
@@ -552,6 +702,7 @@
     <file>resources/pictures/wargaming/consumables/consumable_PCY010_RegenCrew_Eheal_Premium.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PCY010_RegenCrew_Long.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PCY010_RegenCrewPremium.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PCY010_RegenCrewPremium_alt.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PCY011_AirDefenseDispPremium.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PCY012_FighterPremium.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PCY013_JAP_BC.png</file>
@@ -771,6 +922,7 @@
     <file>resources/pictures/wargaming/consumables/consumable_PXY629_TriggerSabotage.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PXY630_TacticalMinefield.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PXY631_TriggerHeal.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_undefined.png</file>
     <file>resources/pictures/wargaming/consumables/features/auto_activation.png</file>
     <file>resources/pictures/wargaming/consumables/features/time_based.png</file>
     <file>resources/pictures/wargaming/consumables/unit_carrier.png</file>

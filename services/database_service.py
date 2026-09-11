@@ -17,7 +17,7 @@ from typing import Optional
 from utils.path_utils import get_data_dir, get_bundled_dir
 
 
-DB_SCHEMA_VERSION = 47
+DB_SCHEMA_VERSION = 48
 
 ENTITY_TYPES: list[str] = [
     "ship", "gun", "projectile", "plane", "consumable", "modernization", "crew",
@@ -822,6 +822,65 @@ class DatabaseManager:
                 "VALUES (?,?,?,?,?)", rows)
         self._conn.commit()
         return len(rows)
+
+    # ── 舰船模块溅射防护口径 ───────────────────────────────
+
+    def save_ship_splash_protection(self, version_code: str, ship_id: str,
+                                    results: dict[str, list[dict]]) -> int:
+        """写入舰船各模块的溅射防护口径（Splash 有效装甲）。
+
+        results 结构来自 services.splash_protection_service.compute_*：
+            {module_type: [{config, module_key, boxes, effective_armor, protection_caliber}]}
+        返回写入行数。
+        """
+        import json
+        rows = []
+        for mtype, items in (results or {}).items():
+            for it in items:
+                rows.append((
+                    version_code, ship_id, mtype,
+                    it.get("config", ""), it.get("module_key", ""),
+                    json.dumps(it.get("boxes", []), ensure_ascii=False),
+                    it.get("effective_armor"), it.get("protection_caliber"),
+                ))
+        if not rows:
+            return 0
+        self._conn.execute(
+            "DELETE FROM ship_module_splash_protection "
+            "WHERE version_code=? AND ship_id=?", (version_code, ship_id))
+        self._conn.executemany(
+            "INSERT OR REPLACE INTO ship_module_splash_protection "
+            "(version_code, ship_id, module_type, config_group, module_key, "
+            " boxes_json, effective_armor, protection_caliber) "
+            "VALUES (?,?,?,?,?,?,?,?)", rows)
+        # 无独立 commit：由外层分析批事务（_process_batch）统一提交，避免每船一次 fsync
+        return len(rows)
+
+    def load_ship_splash_protection(self, ship_id: str,
+                                    version_code: str = "") -> list[dict]:
+        """读取舰船模块溅射防护口径（最新版本）。"""
+        version_code = self._resolve_vc(version_code)
+        if not version_code:
+            return []
+        try:
+            cur = self._conn.execute(
+                "SELECT module_type, config_group, module_key, boxes_json, "
+                "effective_armor, protection_caliber "
+                "FROM ship_module_splash_protection "
+                "WHERE version_code=? AND ship_id=? ORDER BY module_type, config_group",
+                (version_code, ship_id))
+            out = []
+            for r in cur.fetchall():
+                d = dict(r)
+                import json
+                try:
+                    d["boxes"] = json.loads(d.pop("boxes_json") or "[]")
+                except (ValueError, TypeError):
+                    d["boxes"] = []
+                out.append(d)
+            return out
+        except sqlite3.OperationalError:
+            return []
 
     def load_ship_models(self, version_code: str = "") -> list[dict]:
         """读取可载入舰船列表（最新版本，空则返回空列表）。"""

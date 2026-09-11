@@ -37,22 +37,18 @@ class AdvancedSettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # ── 游戏目录 ──────────────────────────────────
+        # ── 游戏目录（按服务器分别保存） ───────────────
         grp_path = QGroupBox("游戏目录")
         glay = QVBoxLayout(grp_path)
 
-        path_row = QHBoxLayout()
-        self._path_edit = QLineEdit()
-        self._path_edit.setPlaceholderText("请选择游戏安装目录...")
-        self._path_edit.setReadOnly(True)
-        self._path_edit.setStyleSheet(theme.qss("padding: 4px 8px; color: @text@; background-color: @input_bg@;"))
-        btn_browse = QPushButton("浏览...")
-        btn_browse.clicked.connect(self._on_browse)
-        path_row.addWidget(self._path_edit, stretch=1)
-        path_row.addWidget(btn_browse)
-        glay.addLayout(path_row)
+        row_lesta, self._path_edit_lesta = self._make_path_row("Lesta 服：", "Lesta")
+        glay.addLayout(row_lesta)
 
-        lbl_hint = QLabel("提示：选择 World_of_Warships 或 Korabli 的安装根目录")
+        row_wg, self._path_edit_wargaming = self._make_path_row("Wargaming 服：", "Wargaming")
+        glay.addLayout(row_wg)
+
+        lbl_hint = QLabel("两个服务器可分别指定各自的游戏安装目录；"
+                          "切换服务器后会自动读取对应目录的数据")
         lbl_hint.setStyleSheet(theme.qss("color: @text_hint@; font-size: 11px;"))
         glay.addWidget(lbl_hint)
         layout.addWidget(grp_path)
@@ -138,10 +134,30 @@ class AdvancedSettingsDialog(QDialog):
 
     # ── 加载/保存 ───────────────────────────────────────
 
+    def _make_path_row(self, label: str, server: str) -> tuple:
+        """创建一行路径编辑（标签 + 只读输入框 + 浏览按钮）。
+
+        返回 (QHBoxLayout, QLineEdit)，调用方需保存 edit 引用以便读取/回填。
+        """
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(110)
+        edit = QLineEdit()
+        edit.setPlaceholderText("请选择游戏安装目录...")
+        edit.setReadOnly(True)
+        edit.setStyleSheet(theme.qss("padding: 4px 8px; color: @text@; background-color: @input_bg@;"))
+        btn = QPushButton("浏览...")
+        btn.clicked.connect(lambda _=False, s=server: self._on_browse(s))
+        row.addWidget(lbl)
+        row.addWidget(edit, stretch=1)
+        row.addWidget(btn)
+        return row, edit
+
     def _load_settings(self) -> None:
         """从 app_ctx 加载当前配置到界面控件"""
         ctx = app_ctx.ctx
-        self._path_edit.setText(ctx.game_path)
+        self._path_edit_lesta.setText(ctx.config.game_path_lesta)
+        self._path_edit_wargaming.setText(ctx.config.game_path_wargaming)
         self._keep_split_cb.setChecked(app_ctx.config.keep_split_json)
         # 主题模式
         _mode = app_ctx.config.theme_mode or "auto"
@@ -153,13 +169,20 @@ class AdvancedSettingsDialog(QDialog):
         self._version_label.setText(ctx.game_version or "未知")
         self._data_state_label.setText("是" if ctx.game_data_state else "否")
 
-    def _on_browse(self) -> None:
-        """浏览选择游戏目录"""
+    def _on_browse(self, server: str) -> None:
+        """浏览选择指定服务器的游戏目录"""
         from PySide6.QtWidgets import QFileDialog
+        if server == "Wargaming":
+            current = self._path_edit_wargaming.text()
+        else:
+            current = self._path_edit_lesta.text()
         d = QFileDialog.getExistingDirectory(
-            self, "选择游戏目录", self._path_edit.text() or app_ctx.ctx.game_path)
+            self, "选择游戏目录", current or app_ctx.ctx.game_path)
         if d:
-            self._path_edit.setText(d)
+            if server == "Wargaming":
+                self._path_edit_wargaming.setText(d)
+            else:
+                self._path_edit_lesta.setText(d)
 
     def _on_open_log_dir(self) -> None:
         """在系统文件管理器中打开日志文件夹（不存在则先创建）。"""
@@ -174,10 +197,13 @@ class AdvancedSettingsDialog(QDialog):
 
     def _on_ok(self) -> None:
         """点击确定：保存所有设置"""
-        # 游戏目录
-        path = self._path_edit.text().strip()
-        if path and path != app_ctx.ctx.game_path:
-            app_ctx.set_game_path(path)
+        # 游戏目录（按服务器分别保存）
+        lesta = self._path_edit_lesta.text().strip()
+        if lesta and lesta != app_ctx.ctx.config.game_path_lesta:
+            app_ctx.set_game_path_for_server("Lesta", lesta)
+        wg = self._path_edit_wargaming.text().strip()
+        if wg and wg != app_ctx.ctx.config.game_path_wargaming:
+            app_ctx.set_game_path_for_server("Wargaming", wg)
         # 保留 split JSON
         app_ctx.config.keep_split_json = self._keep_split_cb.isChecked()
         # 主题模式（变更时立即刷新全局样式并广播信号）

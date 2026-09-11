@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter
 
 from services.database_service import DatabaseManager
@@ -265,7 +266,13 @@ class WargamingAnalysisStore:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
-        self.conn = db._conn
+        #: name_mappings 全体 key_name 缓存（整批入库期间复用，避免每船一次全表扫描）
+        self._nm_keys: set[str] | None = None
+
+    @property
+    def conn(self):
+        """始终返回当前线程的数据库连接（DatabaseManager._conn 可能重建）。"""
+        return self.db._conn
 
     def _gf(self, raw_data: dict, field_spec, default=None):
         if callable(field_spec):
@@ -674,14 +681,15 @@ class WargamingAnalysisStore:
                     all_module_ids.add(m)
 
         # 尝试从原始 JSON 中为模块 ID 提取名称
-        # 一次性取全部已有 name_mappings key_name 到内存集合，
-        # 替代逐 module id 单独 SELECT（N+1 → 1 次查询）
-        try:
-            existing_keys = {r[0] for r in self.conn.execute(
-                "SELECT key_name FROM name_mappings").fetchall()}
-        except Exception as exc:  # noqa: BLE001
-            bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
-            existing_keys = set()
+        # name_mappings 全体 key 在整批入库期间只查一次并跨船复用（惰性缓存），
+        # 替代每船一次全表扫描（约 9 ms × 上千船）。
+        if self._nm_keys is None:
+            try:
+                self._nm_keys = {r[0] for r in self.conn.execute(
+                    "SELECT key_name FROM name_mappings").fetchall()}
+            except Exception as exc:  # noqa: BLE001
+                bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
+        existing_keys = self._nm_keys if self._nm_keys is not None else set()
         name_items = []
         for mid in all_module_ids:
             # 跳过系统内部名称
@@ -702,6 +710,9 @@ class WargamingAnalysisStore:
                 self.conn.executemany(
                     "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                     name_items)
+                # 同步缓存，避免下一条船重新全表扫描
+                if self._nm_keys is not None:
+                    self._nm_keys.update(k for _c, k, _v in name_items)
             except Exception as exc:  # noqa: BLE001
                 bus.log_message.emit(f"⚠️ [分析] 模块名映射入库失败: {exc}")
 
@@ -1522,9 +1533,11 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
         name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
         try:
             # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                 ("crew", name_key, person_name or crew_id))
+            if cur.rowcount and self._nm_keys is not None:
+                self._nm_keys.add(name_key)  # 同步缓存
         except Exception as exc:  # noqa: BLE001
             bus.log_message.emit(f"⚠️ [分析] 船员名映射入库失败({name_key}): {exc}")
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
@@ -1711,6 +1724,28 @@ class WargamingAnalysisService:
 
     def __init__(self):
         self._ready = True
+        # 舰船溅射防护共用的 GameExtractor（勿每船新建：重载 IDX 文件树极贵）
+        self._splash_extractor = None
+        self._splash_extractor_failed = False
+        # 整批复用同一个 Store 实例（保留 name_mappings key 等跨实体缓存）
+        self._store: WargamingAnalysisStore | None = None
+        # 溅射防护提取缓存目录（按构建分级，惰性计算）
+        self._splash_cache_dir: str = ""
+
+    def _get_store(self, db: DatabaseManager) -> WargamingAnalysisStore:
+        st = self._store
+        if st is None or st.db is not db:
+            st = self._store = WargamingAnalysisStore(db)
+        return st
+
+    def _splash_out_dir(self) -> str:
+        """按游戏构建号分级的 splash/geometry 提取缓存目录（跨构建不复用，避免旧几何）。"""
+        if not self._splash_cache_dir:
+            from utils.path_utils import get_data_dir
+            from app.application import app as _app
+            bf = str(getattr(_app.ctx, "bin_folder", "") or "")
+            self._splash_cache_dir = str(get_data_dir() / "_splash" / (bf or "default"))
+        return self._splash_cache_dir
 
     def initialize(self) -> None:
         self._ready = True
@@ -1726,7 +1761,7 @@ class WargamingAnalysisService:
         # （wg_compat.WG_NORMALIZE_ENTITY 未实现时对 WG 原样返回，走 Lesta 读取路径）
         raw_data = wg_compat.normalize_entity(app_ctx.ctx.wows_type, raw_data)
         from services.database_service import get_db as _get_db
-        store = WargamingAnalysisStore(db or _get_db())
+        store = self._get_store(db or _get_db())
         func_map = {
             "Ship": store.store_ship, "Projectile": store.store_projectile,
             "Aircraft": store.store_plane, "Ability": store.store_consumable,
@@ -1742,8 +1777,50 @@ class WargamingAnalysisService:
                 m(entity_id, raw_data, None, version_code=version_code)
             else:
                 m(entity_id, raw_data, version_code=version_code)
+            if category == "Ship":
+                # ⚠️【临时跳过】由 splash_protection_service.FEATURE_ENABLED 总闸控制
+                from services import splash_protection_service as _sps
+                if _sps.FEATURE_ENABLED:
+                    self._store_ship_splash_protection(raw_data, entity_id, db or _get_db(), version_code)
         except Exception as e:
             bus.log_message.emit(f"⚠️ [分析] {category}/{entity_id} 失败: {e}")
+
+    def _store_ship_splash_protection(self, raw_data: dict, ship_id: str,
+                                      db: DatabaseManager, version_code: str):
+        """计算并保存舰船模块溅射防护口径（守护式）。"""
+        try:
+            has_boxes = any(
+                isinstance(modv, dict) and any(
+                    isinstance(regv, dict) and (regv.get("splashBoxes") or [])
+                    for regv in modv.values()
+                )
+                for modv in raw_data.values()
+            )
+            if not has_boxes:
+                return
+            from app.application import app as _app
+            game_dir = getattr(_app.ctx, "game_path", "") or ""
+            if not game_dir or game_dir == "未设置":
+                return
+            # 懒建共享的 GameExtractor：整批只建一次，避免每船重载 IDX 文件树
+            if self._splash_extractor is None and not self._splash_extractor_failed:
+                try:
+                    from data_extractor import GameExtractor
+                    self._splash_extractor = GameExtractor(game_dir)
+                except Exception:
+                    # 创建失败（如 idx/pkg 目录异常）→ 标记，后续舰船不再反复重试
+                    self._splash_extractor_failed = True
+                    return
+            if self._splash_extractor is None:
+                return
+            from services.splash_protection_service import compute_ship_protection_from_pkg
+            results = compute_ship_protection_from_pkg(raw_data, game_dir,
+                                                       extractor=self._splash_extractor,
+                                                       out_dir=self._splash_out_dir())
+            if results:
+                db.save_ship_splash_protection(version_code, ship_id, results)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _store_other(self, entity_id, raw_data, version_code="", db=None):
         """处理 Other 类型实体（雷场、技能定义/容器等）"""
@@ -1816,6 +1893,7 @@ class WargamingAnalysisService:
             raw_conn.execute("BEGIN TRANSACTION")
             success = 0
             n = len(items)
+            batch_t0 = time.perf_counter()
             bus.log_message.emit(f"数据入库: 开始 [{cat_label}]（{n} 条）")
             # 日志区详细进度：约每 5% 更新一条（小类别则逐条显示）
             log_step = max(1, n // 20)
@@ -1833,7 +1911,8 @@ class WargamingAnalysisService:
                     bus.log_message.emit(
                         f"⏳ 数据入库 [{cat_label}] {i}/{n}（{cat_pct}%）｜累计 {total_processed}")
             raw_conn.commit()
-            bus.log_message.emit(f"数据入库: 完成 [{cat_label}] {success} 条")
+            bus.log_message.emit(
+                f"数据入库: 完成 [{cat_label}] {success} 条（耗时 {time.perf_counter() - batch_t0:.1f}s）")
             return success
 
         use_memory = data_by_category is not None
@@ -1894,8 +1973,19 @@ class WargamingAnalysisService:
             bus.task_progress.emit(95, f"步骤 3/3: 数据入库完成: {total_processed} 实体")
 
         bus.task_progress.emit(98, "步骤 3/3: 完成")
+        # 关闭舰船溅射防护共用的 GameExtractor，释放 pkg 文件句柄
+        self._close_splash_extractor()
 
         return results
+
+    def _close_splash_extractor(self) -> None:
+        if self._splash_extractor is not None:
+            try:
+                self._splash_extractor.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._splash_extractor = None
+        self._splash_extractor_failed = False
 
 
 # ── 弹夹炮数据识别（Lesta 版，从 wg_compat 迁移内联） ────────────────

@@ -148,8 +148,11 @@ class TopToolbar(QWidget):
         bus.localization_ready.connect(self._enable_all)
         bus.data_loaded.connect(self._on_extract_done)
         bus.data_processed.connect(lambda _: self._enable_all())
+        # 游戏路径变更（如高级设置里为该服务器选路径）后同步按钮可用状态
+        bus.game_path_changed.connect(self._update_path_buttons)
 
         self._sync_server()
+        self._update_path_buttons()
 
     # ── 信号处理 ──────────────────────────────────────────
 
@@ -225,8 +228,14 @@ class TopToolbar(QWidget):
         if server == app_ctx.ctx.wows_type:
             return  # 未变更
         app_ctx.set_wows_type(server)
-        # 切换服务器提醒：需更换游戏路径（wows_type 已切换，game_path 需用户手动改）
-        self._prompt_server_path(server)
+        self._sync_server()
+        # 根据当前服务器路径是否已设置，更新「加载数据/加载文本」按钮状态
+        self._update_path_buttons()
+        if not app_ctx.ctx.game_path_is_set:
+            # 路径未设置：禁用加载按钮并弹出提醒
+            self._prompt_server_path(server)
+        else:
+            bus.log_message.emit(f"✅ 已切换到 {server} 服务器，游戏路径：{app_ctx.ctx.game_path}")
         # 切换服务器时，先做一次只读 schema 版本检查（在 get_db/initialize 重建前），
         # 不匹配则弹出提示；再重置数据库单例刷新界面
         from services.database_service import check_schema_mismatches, reset_db, get_db
@@ -251,24 +260,29 @@ class TopToolbar(QWidget):
             bus.folder_selected.emit("__REFRESH__")
 
     def _prompt_server_path(self, server: str) -> None:
-        """切换服务器后提醒：需要更换游戏路径。
+        """当前服务器路径未设置时的提醒弹窗。
 
-        服务器单选按钮切换后 game_path 不会自动变，用户需到「高级设置」手动指向
-        对应客户端，再点「加载数据」；否则会用当前路径加载错误客户端的数据。
+        当用户切换到某个服务器，但该服务器还没有配置游戏路径时弹出：
+          1. 提示该服务器路径未设置；
+          2. 说明「加载数据」「加载文本」按钮已被禁用；
+          3. 提供「打开高级设置」快捷入口，方便直接为该服务器指定路径。
         """
         from PySide6.QtWidgets import QMessageBox
-        cur = app_ctx.ctx.game_path
         if server == "Wargaming":
+            stored = app_ctx.ctx.config.game_path_wargaming
             hint = "Wargaming 客户端（如 D:\\World_of_Warships）"
         else:
-            hint = "Lesta 客户端（如 D:\\World_of_Warships_RU\\Korabli_PT）"
+            stored = app_ctx.ctx.config.game_path_lesta
+            hint = "Lesta 客户端（如 D:\\World_of_Warships_RU\\Korabli）"
         box = QMessageBox(self.window())
-        box.setWindowTitle("切换服务器")
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"已切换到 {server} 服务器")
+        box.setWindowTitle("未设置服务器路径")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"{server} 服务器的游戏路径未设置")
         box.setInformativeText(
-            "⚠️ 切换服务器后，请到「高级设置」把游戏路径指向对应客户端，再点「加载数据」。\n\n"
-            f"当前游戏路径：{cur}\n目标：{hint}"
+            "请到「高级设置」为该服务器指定游戏安装目录，"
+            "设置完成后「加载数据」「加载文本」按钮才能使用。\n\n"
+            f"当前 {server} 路径：{stored or '未设置'}\n"
+            f"示例路径：{hint}"
         )
         btn_ok = box.addButton("知道了", QMessageBox.ButtonRole.AcceptRole)
         btn_go = box.addButton("打开高级设置", QMessageBox.ButtonRole.ActionRole)
@@ -293,10 +307,19 @@ class TopToolbar(QWidget):
         self.btn_ballistics.setEnabled(False)
 
     def _enable_all(self):
-        self.btn_load.setEnabled(True)
-        self.btn_lang.setEnabled(True)
         self.btn_ballistics.setEnabled(True)
+        self._update_path_buttons()
         # 不隐藏进度条，由下个任务覆盖
+
+    def _update_path_buttons(self):
+        """根据当前服务器路径是否已设置，启用/禁用「加载数据」「加载文本」按钮。
+
+        若当前服务器未配置游戏路径，则禁用这两个按钮（用户需先到「高级设置」
+        为该服务器指定路径，否则加载时无法定位游戏文件）。
+        """
+        path_ok = app_ctx.ctx.game_path_is_set
+        self.btn_load.setEnabled(path_ok)
+        self.btn_lang.setEnabled(path_ok)
 
     def _track_app_task(self, task):
         """记录应用级后台任务句柄（供主窗口关闭时取消）；顺带清理已结束的。"""

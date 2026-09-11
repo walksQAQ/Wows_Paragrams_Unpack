@@ -46,6 +46,11 @@ class AppContext:
         return self.config.game_path
 
     @property
+    def game_path_is_set(self) -> bool:
+        """当前选中服务器是否已设置有效游戏路径。"""
+        return self.config.is_path_set(self.wows_type)
+
+    @property
     def game_version(self) -> str:
         return self.config.game_version
 
@@ -126,8 +131,14 @@ class Application(QObject):
         bus.wows_type_changed.emit(value)
 
     def set_game_path(self, value: str) -> None:
-        """设置游戏目录并保存"""
-        self._config_manager.game_path = value
+        """设置当前选中服务器的游戏目录并保存"""
+        self._config_manager.set_server_path(self._ctx.wows_type, value)
+        self._refresh_ctx()
+        bus.game_path_changed.emit(value)
+
+    def set_game_path_for_server(self, server: str, value: str) -> None:
+        """为指定服务器设置游戏目录并保存（不依赖当前选中服务器）。"""
+        self._config_manager.set_server_path(server, value)
         self._refresh_ctx()
         bus.game_path_changed.emit(value)
 

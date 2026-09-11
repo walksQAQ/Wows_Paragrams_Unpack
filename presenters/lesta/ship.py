@@ -1361,6 +1361,33 @@ class LestaShipPresenter(LestaBasePresenter):
             if h['has_citadel'] is not None:
                 items.append(self.make_item("是否有核心区", "是" if h['has_citadel'] else "否", o)); o += 1
 
+            # 模块溅射防护口径（引擎/舵机/弹药库等，Splash 有效装甲 → 防溅口径）
+            # ⚠️【临时跳过】由 splash_protection_service.FEATURE_ENABLED 总闸控制
+            from services import splash_protection_service as _sps
+            if _sps.FEATURE_ENABLED:
+                SP_TYPE_CN = {
+                    "engine": "引擎", "steering": "舵机", "magazine": "弹药库",
+                    "torpedo": "鱼雷管", "sonar": "声呐",
+                }
+                try:
+                    sp_rows = conn.execute(
+                        "SELECT module_type, protection_caliber FROM ship_module_splash_protection "
+                        "WHERE version_code=? AND ship_id=? ORDER BY module_type",
+                        (vc, ship_id)).fetchall()
+                except Exception:  # noqa: BLE001
+                    sp_rows = []
+                sp_seen: set[str] = set()
+                for r in sp_rows:
+                    mt = r['module_type']
+                    if mt in sp_seen:
+                        continue
+                    sp_seen.add(mt)
+                    cal = r['protection_caliber']
+                    if cal:
+                        items.append(self.make_item(
+                            f"{SP_TYPE_CN.get(mt, mt)}防溅口径",
+                            f"{cal:.0f}", o, unit="mm")); o += 1
+
             # 潜艇扩展数据
             ext = conn.execute(
                 "SELECT * FROM ship_module_hulls_ext WHERE version_code=? AND ship_id=? AND config_group=? AND module_key=?",

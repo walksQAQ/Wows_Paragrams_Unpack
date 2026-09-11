@@ -1026,3 +1026,17 @@ CREATE TABLE IF NOT EXISTS meta_schema_version (
     version INTEGER PRIMARY KEY,
     applied_at TEXT DEFAULT (datetime('now','localtime'))
 );
+-- 舰船模块溅射防护口径（Splash 有效装甲）
+CREATE TABLE IF NOT EXISTS ship_module_splash_protection (
+    version_code TEXT NOT NULL,
+    ship_id TEXT NOT NULL,
+    module_type TEXT NOT NULL,             -- 'engine','steering','magazine',...
+    config_group TEXT NOT NULL,            -- 配置字母簇（A/AB1/...）
+    module_key TEXT NOT NULL,              -- 模块 key（如 A_Engine）
+    boxes_json TEXT,                       -- 关联 splash 盒名(JSON)
+    effective_armor REAL,                  -- 有效装甲(mm)
+    protection_caliber REAL,               -- 防溅口径(mm)
+    PRIMARY KEY (version_code, ship_id, module_type, config_group, module_key),
+    FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ship_splash_ship ON ship_module_splash_protection(version_code, ship_id);
