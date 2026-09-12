@@ -24,7 +24,16 @@ from OpenGL.error import GLError
 
 # 关闭 PyOpenGL 每次调用自动抛 GL 错误异常：避免 paintGL 中途因单个 GL 错误
 # 中断导致整帧渲染缺失。错误改为静默/手动检查。
-GL.ERROR_CHECKING = False
+# ★ 只写 `GL.ERROR_CHECKING = False` 是**无效**的：PyOpenGL 读取的是
+#   `OpenGL._configflags.ERROR_CHECKING`（见 OpenGL/platform/baseplatform.py 的
+#   `if error_checker and _configflags.ERROR_CHECKING`，error.py 同理），
+#   GL 子模块上的同名属性从来不会被读取 → 单个 GL 错误（如 1282）依旧抛 GLError
+#   打断整帧渲染。这正是「一个 GL 错误 = 整帧空白 + 日志刷屏」的放大器。
+import OpenGL as _OpenGL
+from OpenGL import _configflags as _gl_configflags
+
+_OpenGL.ERROR_CHECKING = False
+_gl_configflags.ERROR_CHECKING = False
 
 from models.camera import OrbitCamera
 from models.geometry_transform import prepare_render_mesh
@@ -64,12 +73,20 @@ layout(location = 10) in vec4 i_model2;
 layout(location = 11) in vec4 i_model3;
 uniform mat4 u_mvp;
 uniform mat3 u_normal_mat;
+uniform int u_instanced;      // 1=实例化绘制（乘 i_model0..3）；0=忽略实例矩阵（单次绘制）
 out vec4 v_color;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec3 v_world_pos;
 void main() {
-    mat4 model = mat4(i_model0, i_model1, i_model2, i_model3);
+    // ★ 属性 8..11（i_model0..3）在 GpuMesh 的 VAO 里**始终 enabled**（divisor=1），
+    //   非实例化 glDrawElements 也会读到 _inst_vbo 的第 0 个元素。render_instanced 上传过
+    //   实例矩阵后，若不忽略它，非实例化绘制（线框叠加 / debug 点位 / 逐实例透明件）会被
+    //   「再乘一次 inst_0」→ 位置明显偏离模型实际位置。
+    mat4 model = mat4(1.0);
+    if (u_instanced == 1) {
+        model = mat4(i_model0, i_model1, i_model2, i_model3);
+    }
     vec4 wp = model * vec4(in_position, 1.0);
     gl_Position = u_mvp * wp;
     v_normal = u_normal_mat * mat3(model) * in_normal;
@@ -577,7 +594,7 @@ _NRM_OFFSET = 12
 _UV_OFFSET = 24
 _COL_OFFSET = 32
 
-_UNIFORMS = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_ambient",
+_UNIFORMS = ("u_mvp", "u_normal_mat", "u_instanced", "u_mode", "u_opacity", "u_light_dir", "u_ambient",
              "u_tex", "u_has_tex", "u_emissive", "u_emissive_k",
              "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_mg_tex", "u_alpha_n_map", "u_art_tex",
              "u_noise_tex", "u_offset_scale", "u_rotation", "u_tile_idx", "u_tint", "u_remove",
@@ -586,7 +603,7 @@ _UNIFORMS = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_a
              "u_view_dir", "u_light_pos", "u_normal_strength", "u_scene_world_tex")
 
 #: INDEXED 专用 program 的 uniform 表（与 PBS/FS 独立，避免共用造成的单元/状态冲突）
-_UNIFORMS_INDEXED = ("u_mvp", "u_normal_mat", "u_mode", "u_opacity", "u_light_dir", "u_ambient", "u_matid_vis",
+_UNIFORMS_INDEXED = ("u_mvp", "u_normal_mat", "u_instanced", "u_mode", "u_opacity", "u_light_dir", "u_ambient", "u_matid_vis",
                      "u_has_tex", "u_has_normal_map", "u_matid_tex", "u_tiles_tex", "u_normal_tex", "u_mg_tex",
                      "u_alpha_n_map", "u_art_tex", "u_noise_tex", "u_offset_scale", "u_rotation",
                      "u_tile_idx", "u_tint", "u_remove", "u_gamma", "u_viewport", "u_mrt",
@@ -1038,6 +1055,8 @@ class GeometryViewport(QOpenGLWidget):
         self._scene_fbo_size = (0, 0)
         #: 默认帧缓冲是否有可匹配的深度附件（决定能否跨 FBO blit 深度）
         self._depth_blit_ok: bool = True
+        #: 离屏 FBO 创建失败只记一次日志（避免每帧刷屏）
+        self._scene_fbo_fail_logged: bool = False
         # Normal Ping-Pong FBO（独立，避免 feedback loop）
         self._na_fbo: int = 0; self._na_tex: int = 0
         self._nb_fbo: int = 0; self._nb_tex: int = 0
@@ -1598,6 +1617,25 @@ class GeometryViewport(QOpenGLWidget):
                     GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
                     GL.glDepthMask(GL.GL_TRUE)
                     GL.glDepthFunc(GL.GL_LESS)
+            if not use_surface:
+                # ★ 离屏 deferred 不可用（FBO 建不起来 / 驱动不支持该深度格式）：
+                #   回退为「直渲路径」，把船体/挂载以光照色直接画到默认 FBO，
+                #   避免整屏空白（宁可少 deferred 细节，也不要用户看到空场景）。
+                GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
+                GL.glViewport(0, 0, w, h)
+                GL.glClearColor(0.30, 0.46, 0.60, 1.0)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+                GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0])
+                GL.glDisable(GL.GL_BLEND)
+                GL.glEnable(GL.GL_DEPTH_TEST)
+                GL.glDepthFunc(GL.GL_LESS)
+                GL.glDepthMask(GL.GL_TRUE)
+                GL.glUseProgram(self._program)
+                GL.glUniform1i(u["u_mrt"], 0)
+                GL.glUniform1i(u["u_use_scene_normal"], 0)
+                self._draw_ship_solid(view, proj, u, mrt_surface=False)
+                GL.glUseProgram(self._program)
+
             # PassC：最终 lighting（fullscreen quad 读 Albedo + Final Normal）→ 默认 FBO
             dflt = self.defaultFramebufferObject()
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, dflt)
@@ -1761,6 +1799,7 @@ class GeometryViewport(QOpenGLWidget):
 
             # ── 线框叠加 ──
             if self._wireframe:
+                GL.glUseProgram(self._program)      # ★ 显式绑定：线框走单输出 PBS 程序（u 表即 _uniforms）
                 GL.glDisable(GL.GL_BLEND)
                 GL.glDepthMask(GL.GL_FALSE)
                 GL.glUniform1i(u["u_mode"], 1)
@@ -1796,17 +1835,50 @@ class GeometryViewport(QOpenGLWidget):
 
         GL.glUseProgram(0)
 
-    def _probe_default_depth_format(self) -> int:
-        """探测默认帧缓冲的深度缓冲内部格式。
+    #: 深度 RBO 内部格式候选（顺序即优先级）：探测到的默认 FBO 格式排第一，
+    #: 其余为跨驱动兜底（某格式在个别驱动上无法建 RBO 时按序降级）。
+    _DEPTH_RBO_FALLBACKS = ("GL_DEPTH_COMPONENT24", "GL_DEPTH24_STENCIL8",
+                            "GL_DEPTH_COMPONENT32F", "GL_DEPTH_COMPONENT16")
 
-        glBlitFramebuffer(DEPTH) 要求读/写帧缓冲深度格式一致，否则报
-        GL_INVALID_OPERATION(1282)。部分平台/驱动的默认 FBO 深度格式为
-        DEPTH24_STENCIL8 等（与离屏场景固定的 DEPTH_COMPONENT24 不同），
-        导致设备差异：本机正常、他人机器每帧 1282。这里返回默认 FBO 的精确
-        深度格式供离屏深度 RBO 匹配；无深度附件时返回 GL_NONE 并关闭 blit。
-        只在 _ensure_scene_fbo 建/重建时调用（GL 上下文内）。
+    def _renderbuffer_format_usable(self, fmt: int) -> bool:
+        """实测某内部格式能否真的用于 glRenderbufferStorage（建 1×1 RBO 试探）。
+
+        历史教训：beta4 直接在 glRenderbufferStorage 的参数里调探测函数，探测过程
+        把 GL_RENDERBUFFER 绑定清成了 0 → storage 作用在「未绑定的 renderbuffer 0」
+        上 → GL_INVALID_OPERATION(1282)。用本函数预检（gen+bind 后 storage 并查错）
+        可以同时兜住「格式不被驱动接受」这类隐患，避免整条 deferred 管线崩掉。
+        ★ 本函数会改动 GL_RENDERBUFFER / GL_FRAMEBUFFER 绑定：调用方**不要**依赖
+          调用前的 renderbuffer 绑定（结束后绑定为 0）。
         """
-        self._depth_blit_ok = False
+        rb = 0
+        ok = False
+        try:
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
+            while GL.glGetError():        # 清空历史错误，避免把旧错误误判为本次的
+                pass
+            rb = GL.glGenRenderbuffers(1)
+            GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, rb)
+            GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, int(fmt), 1, 1)
+            ok = GL.glGetError() == GL.GL_NO_ERROR
+            if ok:
+                ok = int(GL.glGetRenderbufferParameteriv(
+                    GL.GL_RENDERBUFFER, GL.GL_RENDERBUFFER_WIDTH)) == 1
+        except Exception:  # noqa: BLE001 —— PyOpenGL 自动抛错未关闭时也不中断
+            ok = False
+        finally:
+            try:
+                GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, 0)
+                if rb:
+                    GL.glDeleteRenderbuffers(1, [rb])
+                GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
+                while GL.glGetError():
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
+    def _probe_default_depth_attachment_format(self) -> int:
+        """读取默认 FBO 深度附件的内部格式；非 RBO 附件 / 无深度附件时返回 0。"""
         try:
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
             obj_type = GL.glGetFramebufferAttachmentParameteriv(
@@ -1820,23 +1892,66 @@ class GeometryViewport(QOpenGLWidget):
                 fmt = int(GL.glGetRenderbufferParameteriv(
                     GL.GL_RENDERBUFFER, GL.GL_RENDERBUFFER_INTERNAL_FORMAT))
                 GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, 0)
-                if fmt:
-                    self._depth_blit_ok = True
-                    return fmt
+                return fmt
         except Exception:  # noqa: BLE001
             pass
+        return 0
+
+    def _probe_default_depth_format(self) -> int:
+        """选定离屏场景 FBO 深度 RBO 的内部格式（并同步 _depth_blit_ok）。
+
+        glBlitFramebuffer(DEPTH) 要求读/写帧缓冲深度格式一致，否则报
+        GL_INVALID_OPERATION(1282)。部分平台/驱动的默认 FBO 深度格式为
+        DEPTH24_STENCIL8 等（与离屏场景固定的 DEPTH_COMPONENT24 不同），
+        导致设备差异 → 优先采用默认 FBO 的深度格式。
+        ★ 再实测一下该格式确实能建出离屏 RBO（_renderbuffer_format_usable），
+          不可用时按候选项降级，避免盲信探测值。
+        ★ 仅当最终采用的格式与默认 FBO 完全一致时才开启深度 blit（_depth_blit_ok），
+          否则关掉 blit —— 宁可少一层透明遮挡，也不要每帧 1282。
+        ★ 调用后 GL_RENDERBUFFER 绑定为 0，调用方必须自行 glBindRenderbuffer。
+        只在 _ensure_scene_fbo 建/重建时调用（GL 上下文内）。
+        """
+        probed = self._probe_default_depth_attachment_format()
+        candidates: list[int] = [probed] if probed else []
+        for _name in self._DEPTH_RBO_FALLBACKS:
+            _val = getattr(GL, _name, 0) or 0
+            if _val and _val not in candidates:
+                candidates.append(int(_val))
+        self._depth_blit_ok = False
+        for fmt in candidates:
+            if self._renderbuffer_format_usable(fmt):
+                self._depth_blit_ok = bool(probed) and int(fmt) == int(probed)
+                return int(fmt)
         return GL.GL_DEPTH_COMPONENT24
 
     def _ensure_scene_fbo(self, w: int, h: int):
-        """创建/重建离屏 MRT FBO（未打光 albedo + 世界法线 + 深度）。
+        """创建/重建离屏 MRT FBO；**失败不抛异常**，返回 False 由调用方回退直渲。"""
+        if self._scene_fbo and self._scene_fbo_size == (w, h):
+            return True   # ★ 已存在且尺寸匹配：必须返回 True，否则 use_surface 变 falsy，
+                          #   导致后续帧（如旋转相机）跳过 deferred 路径，走 _draw_ship_solid(非MRT) 报 1282
+        try:
+            return self._build_scene_fbo(w, h)
+        except Exception as exc:  # noqa: BLE001 —— 驱动不支持时回退直渲，绝不打断 paintGL
+            self._scene_fbo_size = (0, 0)
+            if not self._scene_fbo_fail_logged:
+                self._scene_fbo_fail_logged = True
+                import sys as _sys
+                msg = f"⚠️ 离屏渲染 FBO 创建失败，已回退直渲路径: {exc!r}"
+                print(msg, file=_sys.stderr)
+                try:
+                    from app.signals import bus
+                    bus.log_message.emit(msg)
+                except Exception:
+                    pass
+            return False
+
+    def _build_scene_fbo(self, w: int, h: int) -> bool:
+        """实际构建离屏 MRT FBO（未打光 albedo + 世界法线 + 深度）。
 
         轻量局部 deferred compositing：船体 surface 渲到此 MRT，供 decal_tech
         读取覆盖位置的船体 albedo/世界法线，在光照前合成 decal 法线。
         附件0=albedo(RGBA8 linear)，附件1=世界法线(RGBA8 [0,1] 编码)，深度=默认 FBO 深度格式。
         """
-        if self._scene_fbo and self._scene_fbo_size == (w, h):
-            return True   # ★ 已存在且尺寸匹配：必须返回 True，否则 use_surface 变 falsy，
-                          #   导致后续帧（如旋转相机）跳过 deferred 路径，走 _draw_ship_solid(非MRT) 报 1282
         if self._scene_fbo:
             GL.glDeleteFramebuffers(1, [self._scene_fbo])
             GL.glDeleteTextures([self._scene_color_tex, self._scene_normal_tex, self._scene_world_tex, self._na_tex, self._nb_tex])
@@ -1898,9 +2013,15 @@ class GeometryViewport(QOpenGLWidget):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
         # 深度 RBO 先创建：同时挂到 scene_fbo 与 nb_fbo（共享深度，供 decal pass 遮挡）
         # ★ 用默认 FBO 的深度格式，保证 glBlitFramebuffer(DEPTH) 读/写格式一致，避免 1282。
+        # ★★ beta3→beta4 回归根因（务必保持此顺序）：必须**先探测格式、再 gen/bind RBO**。
+        #    探测过程会改动 GL_RENDERBUFFER 绑定（结束时为 0）；若把探测调用直接写在
+        #    glRenderbufferStorage 的参数里，storage 就作用在「未绑定的 renderbuffer 0」
+        #    上 → GL_INVALID_OPERATION(1282) → _ensure_scene_fbo 崩溃 → deferred 管线
+        #    从未建立 → 3D 全黑 + 每帧「渲染异常」刷日志。
+        _depth_fmt = self._probe_default_depth_format()
         self._scene_depth_rb = GL.glGenRenderbuffers(1)
         GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, self._scene_depth_rb)
-        GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, self._probe_default_depth_format(), w, h)
+        GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, _depth_fmt, w, h)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._nb_fbo)
         GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0,
                                   GL.GL_TEXTURE_2D, self._nb_tex, 0)
@@ -2063,7 +2184,9 @@ class GeometryViewport(QOpenGLWidget):
             self._apply_model(view, proj, matrices[0], u)
             mesh.render(GL.GL_TRIANGLES if not line else GL.GL_LINES, line=line)
             return
-        self._apply_model(view, proj, None, u)
+        # ★ 多实例：u_mvp 只含 view*proj，实例矩阵由 shader 里的 i_model0..3 提供，
+        #   所以必须显式打开 u_instanced（单次绘制路径会把它关掉，见 _apply_model）。
+        self._apply_model(view, proj, None, u, instanced=True)
         mesh.render_instanced(GL.GL_TRIANGLES if not line else GL.GL_LINES, matrices, line=line)
 
     @staticmethod
@@ -2369,11 +2492,14 @@ class GeometryViewport(QOpenGLWidget):
         GL.glUseProgram(self._program)
 
     def _apply_model(self, view: np.ndarray, proj: np.ndarray,
-                     model: np.ndarray | None, u=None):
+                     model: np.ndarray | None, u=None, instanced: bool = False):
         """按网格模型矩阵设置 u_mvp / u_normal_mat（None = 恒等）。
 
         model 为行主序 4x4（渲染空间）；挂载网格需矩阵定位，舰体/装甲恒等。
         u：uniform 表；None = 单输出 program（_uniforms）。MRT 传 _uniforms_mrt。
+        instanced：True = 本次为 render_instanced（顶点着色器按 i_model0..3 逐实例做变换，
+        u_mvp 只含 view*proj）；False = 单次绘制，着色器必须**忽略** i_model*，
+        否则会再乘一次 _inst_vbo 里的实例矩阵 → 线框/点位位置错乱。
         """
         if u is None:
             u = self._uniforms
@@ -2385,6 +2511,9 @@ class GeometryViewport(QOpenGLWidget):
         nm = np.ascontiguousarray(m[:3, :3].T, dtype=np.float32)
         GL.glUniformMatrix4fv(u["u_mvp"], 1, GL.GL_FALSE, mvp)
         GL.glUniformMatrix3fv(u["u_normal_mat"], 1, GL.GL_FALSE, nm)
+        _inst = u.get("u_instanced")
+        if _inst is not None:
+            GL.glUniform1i(_inst, 1 if instanced else 0)
 
     # ── 交互 ─────────────────────────────────────────────
 
