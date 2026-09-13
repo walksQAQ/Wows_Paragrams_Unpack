@@ -605,6 +605,7 @@
     <file>resources/pictures/ui/check_checked.png</file>
     <file>resources/pictures/ui/check_indeterminate.png</file>
     <file>resources/pictures/ui/combo_arrow.png</file>
+    <file>resources/pictures/ui/ship_silhouette.svg</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap_inactive.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_depthcharge.png</file>

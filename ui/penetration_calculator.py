@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import re
+from functools import lru_cache
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QSize, Signal
 from PySide6.QtGui import QIcon, QPixmap, QIntValidator
@@ -16,6 +19,181 @@ from PySide6.QtWidgets import (
 
 from utils.theme import theme
 from utils.image_paths import pic_path
+
+# 纵向"落到水面"的投影下限：水面纵向 = 垂直面纵向量 ÷ sin(落弹角)。
+# 落弹角→0（极近距离/超平直弹道）时 1/sin 会发散，故夹到 sin(2°) ≈ 0.0349（≈28.6× 上限），
+# 避免散点图被极端值撑爆。官方 wiki 口径：距离方向散布恒大于侧向散布。
+_PROJ_MIN_SIN = math.sin(math.radians(2.0))
+
+# ── 舰船俯视剪影（散布椭圆图的中心参照）──────────────────────────────────
+# 资源来源：客户端**原生** SVG `gui/battle_hud/new_doll_svg/destroyer.svg`
+# （50×188；同一文件也被客户端圆盘面板当舰体轮廓用）。
+# `resources/pictures/ui/ship_silhouette.svg` 是它的**原样拷贝**，未做描边/矢量化改写。
+_SILHOUETTE_QRC = ":/resources/pictures/ui/ship_silhouette.svg"
+_SILHOUETTE_DISK = (Path(__file__).resolve().parent.parent
+                    / "resources" / "pictures" / "ui" / "ship_silhouette.svg")
+
+# SVG path 支持的命令及参数个数；贝塞尔按 _SILHOUETTE_CURVE_STEPS 段折线逼近
+_SVG_PATH_ARGS = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "T": 2, "Z": 0}
+_SILHOUETTE_CURVE_STEPS = 16
+
+
+def _read_silhouette_svg() -> str:
+    """读取剪影 SVG 文本：优先 QRC，未注册（未打包/裸源码跑）时回退磁盘。"""
+    try:
+        from PySide6.QtCore import QFile, QIODevice
+        qf = QFile(_SILHOUETTE_QRC)
+        if qf.open(QIODevice.OpenModeFlag.ReadOnly):
+            try:
+                return str(qf.readAll(), encoding="utf-8")
+            finally:
+                qf.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return _SILHOUETTE_DISK.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _abs_pt(rel: bool, base: tuple[float, float], px: float, py: float) -> tuple[float, float]:
+    """SVG path 坐标点：相对命令需叠加当前点。"""
+    return (base[0] + px, base[1] + py) if rel else (px, py)
+
+
+def _cubic_points(p0: tuple[float, float], c1: tuple[float, float],
+                  c2: tuple[float, float], p1: tuple[float, float],
+                  steps: int) -> list[tuple[float, float]]:
+    """三次贝塞尔采样（不含起点 p0）。"""
+    out = []
+    for s in range(1, steps + 1):
+        t = s / steps
+        u = 1.0 - t
+        out.append((
+            u * u * u * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t * t * t * p1[0],
+            u * u * u * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t * t * t * p1[1],
+        ))
+    return out
+
+
+def _flatten_svg_path(d: str, steps: int = _SILHOUETTE_CURVE_STEPS) -> list[tuple[float, float]]:
+    """把 SVG ``<path>`` 的 ``d`` 串展平成折线点列。
+
+    支持 M/L/H/V/C/S/Q/T/Z（绝对与相对，含隐式重复）；二次贝塞尔按
+    「二次→三次」等价控制点转换后统一采样。遇到不支持的命令（如 A 圆弧）
+    即停止并返回已解析部分。
+    """
+    tokens = re.findall(r"[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", d)
+    pts: list[tuple[float, float]] = []
+    cur = (0.0, 0.0)
+    sub = (0.0, 0.0)                          # 子路径起点（Z 回位用）
+    ctrl: tuple[float, float] | None = None   # 上一段曲线的末控制点（S/T 反射用）
+    cmd = ""
+    i = 0
+    while i < len(tokens):
+        if tokens[i].isalpha():
+            cmd = tokens[i]
+            i += 1
+            if cmd in "Zz":
+                cur, ctrl = sub, None
+                continue
+        up = cmd.upper()
+        n = _SVG_PATH_ARGS.get(up, 0)
+        if not cmd or n == 0 or i + n > len(tokens):
+            break
+        try:
+            v = [float(t) for t in tokens[i:i + n]]
+        except ValueError:
+            break
+        i += n
+        rel = cmd.islower()
+
+        if up == "M":
+            cur = _abs_pt(rel, cur, v[0], v[1])
+            sub = cur
+            pts.append(cur)
+            ctrl = None
+            cmd = "l" if rel else "L"          # 后续隐式重复按直线处理
+        elif up == "L":
+            cur = _abs_pt(rel, cur, v[0], v[1])
+            pts.append(cur)
+            ctrl = None
+        elif up == "H":
+            cur = (cur[0] + v[0], cur[1]) if rel else (v[0], cur[1])
+            pts.append(cur)
+            ctrl = None
+        elif up == "V":
+            cur = (cur[0], cur[1] + v[0]) if rel else (cur[0], v[0])
+            pts.append(cur)
+            ctrl = None
+        elif up in ("C", "S"):
+            if up == "C":
+                c1, c2 = _abs_pt(rel, cur, v[0], v[1]), _abs_pt(rel, cur, v[2], v[3])
+                end = _abs_pt(rel, cur, v[4], v[5])
+            else:
+                c1 = (2 * cur[0] - ctrl[0], 2 * cur[1] - ctrl[1]) if ctrl else cur
+                c2, end = _abs_pt(rel, cur, v[0], v[1]), _abs_pt(rel, cur, v[2], v[3])
+            pts.extend(_cubic_points(cur, c1, c2, end, steps))
+            cur, ctrl = end, c2
+        elif up in ("Q", "T"):
+            if up == "Q":
+                q, end = _abs_pt(rel, cur, v[0], v[1]), _abs_pt(rel, cur, v[2], v[3])
+            else:
+                q = (2 * cur[0] - ctrl[0], 2 * cur[1] - ctrl[1]) if ctrl else cur
+                end = _abs_pt(rel, cur, v[0], v[1])
+            # 二次 → 等价的三个三次控制点
+            c1 = (cur[0] + 2.0 / 3.0 * (q[0] - cur[0]), cur[1] + 2.0 / 3.0 * (q[1] - cur[1]))
+            c2 = (end[0] + 2.0 / 3.0 * (q[0] - end[0]), end[1] + 2.0 / 3.0 * (q[1] - end[1]))
+            pts.extend(_cubic_points(cur, c1, c2, end, steps))
+            cur, ctrl = end, q
+    return pts
+
+
+@lru_cache(maxsize=1)
+def _ship_silhouette_points() -> tuple[tuple[float, float], ...]:
+    """解析舰船剪影 SVG，得到居中、等比归一化的轮廓点。
+
+    取 SVG 里**第一条实心轮廓**（``<path>`` 中 ``fill`` 非 none 者优先，
+    退化时取首个 ``<path>``，再退化取 ``<polygon points>``），展平后居中，
+    并**只按船长轴等比归一化**：x ∈ [-0.5, 0.5]（舰首 = +0.5），
+    y 轴（舰宽方向）保持素材**原始长宽比**，不做拉伸。
+    解析失败返回空元组，调用方跳过绘制。
+    """
+    text = _read_silhouette_svg()
+    if not text:
+        return ()
+    candidates: list[tuple[bool, str]] = []
+    for tag in re.finditer(r"<path\b([^>]*)>", text):
+        attrs = tag.group(1)
+        d = re.search(r'\bd\s*=\s*"([^"]*)"', attrs)
+        if not d:
+            continue
+        fill = re.search(r'\bfill\s*=\s*"([^"]*)"', attrs)
+        filled = bool(fill) and fill.group(1).strip().lower() != "none"
+        candidates.append((filled, d.group(1)))
+    pts: list[tuple[float, float]] = []
+    for _filled, d in sorted(candidates, key=lambda c: not c[0]):
+        pts = _flatten_svg_path(d)
+        if len(pts) >= 3:
+            break
+    if len(pts) < 3:
+        poly = re.search(r'<polygon[^>]*\bpoints\s*=\s*"([^"]+)"', text)
+        if poly:
+            pts = [(float(px), float(py)) for px, py in
+                   re.findall(r"(-?[\d.]+)[,\s]+(-?[\d.]+)", poly.group(1))]
+    if len(pts) < 3:
+        return ()
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    cx = (max(xs) + min(xs)) / 2.0
+    cy = (max(ys) + min(ys)) / 2.0
+    hy = max(max(ys) - cy, cy - min(ys))       # 船长方向半长（归一化基准）
+    if hy <= 0.0:
+        return ()
+    # 单一比例系数：船长铺满 [-0.5, 0.5]，舰宽随素材原始长宽比
+    # SVG 中舰首在 y=0、y 轴向下 → 船长轴取反，使舰首落在 +x
+    k = 0.5 / hy
+    return tuple(((cy - y) * k, (x - cx) * k) for x, y in pts)
 
 
 class CustomWeaponDialog(QDialog):
@@ -74,7 +252,9 @@ class CustomWeaponDialog(QDialog):
         self.f_delim = QDoubleSpinBox(); self.f_delim.setRange(0.01, 2); self.f_delim.setDecimals(2); self.f_delim.setValue(0.5)
         self.f_norm = QDoubleSpinBox(); self.f_norm.setRange(0, 90); self.f_norm.setDecimals(1); self.f_norm.setValue(0.0); self.f_norm.setSuffix(" °")
         _formula_hint = QLabel("散布公式：横向(m)=距离(km)×ha+hb；纵向(m)=横向×系数\n"
-                               "其中 ha=(散布理想半径-散布最小半径)/散布理想距离(km)；hb=散布最小半径×30；td=散布理想半径×散布分界点/散布最小半径")
+                               "其中 ha=(散布理想半径-散布最小半径)/散布理想距离(km)；hb=散布最小半径×30；td=散布理想半径×散布分界点/散布最小半径\n"
+                               "已核对客户端脚本 getEllipse()：横向半轴=minRadius+距离×(idealRadius-minRadius)/idealDistance，"
+                               "纵向半轴=横向×纵向系数，公式里不包含落弹角（不做水面投影）")
         _formula_hint.setWordWrap(True)
         _formula_hint.setStyleSheet("color:#888; font-size:10px;")
         gg.addWidget(_formula_hint, 0, 0, 1, 2)
@@ -573,6 +753,11 @@ class PenetrationCalculatorDialog(QDialog):
         self.ellipse_hide_scatter_cb.setToolTip("隐藏高斯模拟散点，仅显示散布椭圆轮廓，便于多炮弹对比")
         theme.bind(self.ellipse_hide_scatter_cb, "QCheckBox { color:@text@; font-size:11px; }")
         ellipse_ctl.addWidget(self.ellipse_hide_scatter_cb)
+        # 纵向两图并排（见 _build_dispersion_ellipse）：
+        #   左 = 垂直面（游戏模型，纵向 = 横向 × 纵向系数）
+        #   右 = 水面投影（实验，纵向 ÷ sin(落弹角)）
+        # ❗ 经客户端内核验证（脚本 getEllipse）：游戏 getEllipse() 里没有弹道/落角输入，
+        #   故**左图才是游戏模型**，右图仅供对照。
         ellipse_ctl.addStretch()
         self.ellipse_layout.addLayout(ellipse_ctl)
         # 散布信息区：左侧“当前设定射程” + 右侧炮弹信息（每炮弹一行、左对齐），垂直居中
@@ -1987,9 +2172,14 @@ class PenetrationCalculatorDialog(QDialog):
             else:
                 _vc = radius_delim + (radius_max - radius_delim) * ((distance - _delim_km) / (max_range_km - _delim_km)) if (max_range_km - _delim_km) else radius_delim
             formula = f"横={h_expr}；纵=横×{_vc:.3f}"
+            # 实验用：把纵向再 ÷sin(落弹角)。❗ 游戏的真实模型不做这一步。
+            # 客户端 getEllipse() 只返回 (横向半轴, 横向半轴×纵向系数)，无弹道/落角输入。
+            # 落弹角→0 时除法会发散，故夹到 sin(2°) 下限。
+            _sin_ia = math.sin(math.radians(max(impact, 0.0)))
+            vert_water = vert / max(_sin_ia, _PROJ_MIN_SIN)
             # 存全精度（悬浮提示已自行格式化为 2 位小数）；不再对 fly/impact 四舍五入，
             # 否则曲线被量化为 0.1s/0.1° 的阶梯状（锐角）
-            rows.append((distance, horiz, vert, area, fly, pen, impact, formula))
+            rows.append((distance, horiz, vert, area, fly, pen, impact, formula, vert_water))
         return rows
 
     def _build_curve_chart(self, rows, compare_series=None):
@@ -2343,6 +2533,20 @@ class PenetrationCalculatorDialog(QDialog):
             return
         self._build_dispersion_ellipse()
 
+    @staticmethod
+    def _ship_outline(length: float) -> tuple[list[float], list[float]]:
+        """俯视舰船轮廓（舰首朝 +x、船体沿 x 轴），返回 (xs, ys)。
+
+        外形与长宽比均取自客户端原生 SVG `resources/pictures/ui/ship_silhouette.svg`
+        （原样拷贝自 `gui/battle_hud/new_doll_svg/destroyer.svg`），**等比缩放**到船长
+        `length`（舰宽 = ``length × 素材原始长宽比``）。仅作散布椭圆图的尺度参照。
+        资源缺失/解析失败时返回空列表，调用方跳过绘制。
+        """
+        pts = _ship_silhouette_points()
+        if not pts:
+            return [], []
+        return [p[0] * length for p in pts], [p[1] * length for p in pts]
+
     def _build_dispersion_ellipse(self):
         series_list = getattr(self, "_last_compare_series", None) or []
         if not series_list:
@@ -2362,7 +2566,7 @@ class PenetrationCalculatorDialog(QDialog):
             matplotlib.rcParams["axes.unicode_minus"] = False
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-            from matplotlib.patches import Ellipse
+            from matplotlib.patches import Ellipse, Polygon
         except Exception as exc:
             self._set_ellipse_text("当前设定射程：—", f"散布椭圆：matplotlib 不可用（{exc}）")
             return
@@ -2377,14 +2581,10 @@ class PenetrationCalculatorDialog(QDialog):
         target_dist = self._ellipse_dist_km()
         count = self._scatter_value()
 
-        figure = Figure(figsize=(5.5, 4.4), dpi=100)
-        ax = figure.add_subplot(111)
-        self._style_matplotlib_figure(figure, ax)
-        ax.set_aspect("equal")
-        max_lateral = 0.0
-        max_long = 0.0
+        figure = Figure(figsize=(10.6, 4.6), dpi=100)
         info_parts = []
         shown_dist = target_dist
+        items: list[dict] = []
         for idx, series in enumerate(series_list):
             rows = series.get("rows") or []
             if not rows:
@@ -2392,53 +2592,97 @@ class PenetrationCalculatorDialog(QDialog):
             best_row = next((r for r in rows if abs(float(r[0]) - target_dist) <= 0.0001), None)
             if best_row is None:
                 best_row = min(rows, key=lambda r: abs(float(r[0]) - target_dist))
-            dist = float(best_row[0])
-            shown_dist = dist
-            lateral = float(best_row[1])        # 横向 = 水平散布（=最大散布半径，100% 弹丸落点在此椭圆内）
-            # 纵向 = 垂直散布（垂直面命中椭圆）：随距离单调递增，最大射程处椭圆最大。
-            # 不投影到水面(vert/sin 落弹角)——近距落弹角→0 时纵向会爆炸，导致中间距离椭圆反超最远（非单调）
-            longitudinal = float(best_row[2])
+            shown_dist = float(best_row[0])
+            lateral = float(best_row[1])        # 横向 = 椭圆宽度（侧向，=港口"最大散布"）
+            vert_plane = float(best_row[2])     # 纵向(垂直面) = 横向 × 纵向散布系数
+            # 纵向 = 横向 × 纵向散布系数（= 游戏 getEllipse 的真实返回值，不做落角投影）。
+            # row[8] 是「垂直面散布 ÷ sin(落弹角) 投影到水面」的实验版本（右图）。
+            vert_water = float(best_row[8]) if len(best_row) > 8 else vert_plane
             if self.ellipse_unlocked_cb.isChecked():
                 # 未锁定目标 → 散布椭圆 ×2（莱斯塔 wiki 明确规则）
                 lateral *= 2.0
-                longitudinal *= 2.0
+                vert_plane *= 2.0
+                vert_water *= 2.0
             sigma = float(series.get("sigma") or getattr(self, "_last_sigma", 1.0) or 1.0)
-            color = series.get("color") or self.COLOR_POOL[idx % len(self.COLOR_POOL)]
             label = series.get("label") or f"炮弹{idx + 1}"
-            points = BallisticsCalculator.gaussian_dispersion_points(sigma, count, seed=idx + 1)
-            # 椭圆：水平(x) = 横向，垂直(y) = 纵向（每炮弹一个，分色显示）
-            ax.add_patch(Ellipse(
-                (0, 0), width=lateral * 2, height=longitudinal * 2,
-                facecolor=color, alpha=0.10, edgecolor=color, linewidth=2, label=label,
-            ))
-            # 隐藏散点：勾选时仅绘制椭圆轮廓，不绘制高斯模拟散点（多炮弹对比可读性更高）
-            if not getattr(self, "ellipse_hide_scatter_cb", None) or not self.ellipse_hide_scatter_cb.isChecked():
-                xs = [p[1] * lateral for p in points]
-                ys = [p[0] * longitudinal for p in points]
-                ax.scatter(xs, ys, s=7, alpha=0.4, color=color, linewidths=0)
-            max_lateral = max(max_lateral, lateral)
-            max_long = max(max_long, longitudinal)
+            items.append({
+                "label": label,
+                "color": series.get("color") or self.COLOR_POOL[idx % len(self.COLOR_POOL)],
+                "lateral": lateral,
+                "vert_plane": vert_plane,
+                "vert_water": vert_water,
+                "points": BallisticsCalculator.gaussian_dispersion_points(sigma, count, seed=idx + 1),
+            })
             info_parts.append(
-                f"{label}: 横向半径: {lateral:.0f} m * 纵向半径: {longitudinal:.0f} m; sigma: {sigma:.2f}"
+                f"{label}: 横向半径 {lateral:.0f} m | "
+                f"纵向 {vert_plane:.0f} m(垂直面·游戏) / {vert_water:.0f} m(水面投影) | "
+                f"sigma {sigma:.2f}"
             )
 
-        if not info_parts:
+        if not items:
             self._set_ellipse_text("当前设定射程：—", "散布椭圆：无可用数据")
             return
-        ax.plot([0], [0], marker="+", color="#d43a00", markersize=10)
-        ax.axhline(0, color="#cccccc", linewidth=0.8)
-        ax.axvline(0, color="#cccccc", linewidth=0.8)
-        margin = max(max_long, max_lateral) * 1.15 + 5
-        ax.set_xlim(-margin, margin)
-        ax.set_ylim(-margin, margin)
+        _panels = (
+            ("vert_plane", "纵向：垂直面"),
+            ("vert_water", "纵向：水面投影"),
+        )
+        # 每图**各自**取坐标范围：两图纵向量级相差 1/sin(落弹角) 倍，
+        # 若统一范围，小的一侧（垂直面）会被压成一点看不见。
+        # 舰船剪影（125 m）是两图共同的尺度参照，仍可直接目测比例。
+        margin_of = {
+            _k: max(max(it["lateral"] for it in items), max(it[_k] for it in items)) * 1.15 + 5
+            for _k, _t in _panels
+        }
+        # ── 中心舰船剪影（两图都画）：外形与长宽比均取自客户端原生 SVG（见 _ship_outline）──
+        # 等比绘制，船长取 125 m（原参考目标 250 m 的一半），舰宽随素材比例 ≈ 33 m。
+        _ship_l = 125.0
+        _dark = bool(getattr(theme, "dark", False))
+        _ship_face = "#8f99a6" if _dark else "#b3bcc9"
+        _ship_edge = "#e8eef6" if _dark else "#46525f"
+        _sx, _sy = self._ship_outline(_ship_l)
+        _hide_scatter = bool(getattr(self, "ellipse_hide_scatter_cb", None)
+                             and self.ellipse_hide_scatter_cb.isChecked())
         _lock_note = " ×2" if self.ellipse_unlocked_cb.isChecked() else ""
-        ax.set_title(f"{shown_dist:.1f} km 命中散布{_lock_note}（{count} 发模拟/弹，σ 越大越密集）")
-        ax.set_xlabel("横向半径 (m)")
-        ax.set_ylabel("纵向半径 (m)")
-        ax.grid(True, alpha=0.25)
-        if len(series_list) > 1:
-            ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
-            figure.subplots_adjust(right=0.76)
+        for _col, (_key, _title) in enumerate(_panels):
+            _ax = figure.add_subplot(1, 2, _col + 1)
+            self._style_matplotlib_figure(figure, _ax)
+            _ax.set_aspect("equal")
+            _margin = margin_of[_key]
+            _ax.set_xlim(-_margin, _margin)
+            _ax.set_ylim(-_margin, _margin)
+            _ax.plot([0], [0], marker="+", color="#d43a00", markersize=10)
+            _ax.axhline(0, color="#cccccc", linewidth=0.8)
+            _ax.axvline(0, color="#cccccc", linewidth=0.8)
+            if _sx:
+                _ax.add_patch(Polygon(list(zip(_sx, _sy)), closed=True,
+                                      facecolor=_ship_face, edgecolor=_ship_edge,
+                                      linewidth=1.5, alpha=0.95, zorder=1.6))
+            for it in items:
+                _lon = it[_key]
+                _ax.add_patch(Ellipse(
+                    (0, 0), width=it["lateral"] * 2, height=_lon * 2,
+                    facecolor=it["color"], alpha=0.10,
+                    edgecolor=it["color"], linewidth=2, label=it["label"],
+                ))
+                # 隐藏散点：勾选时仅绘制椭圆轮廓（多炮弹对比可读性更高）；
+                # 两图各自按本图的纵向半轴缩放同一组高斯点
+                if not _hide_scatter:
+                    _ax.scatter([p[1] * it["lateral"] for p in it["points"]],
+                                [p[0] * _lon for p in it["points"]],
+                                s=7, alpha=0.4, color=it["color"], linewidths=0)
+            _ax.set_title(_title, fontsize=10)
+            _ax.set_xlabel("横向半径 (m)")
+            if _col == 0:
+                _ax.set_ylabel("纵向半径 (m)")
+            _ax.grid(True, alpha=0.25)
+        figure.suptitle(
+            f"{shown_dist:.1f} km 命中散布{_lock_note}（{count} 发模拟/弹，σ 越大越密集）",
+            fontsize=11, color="#d4d4d4" if _dark else "#222222")
+        if len(items) > 1:
+            _h, _l = figure.axes[0].get_legend_handles_labels()
+            figure.legend(_h, _l, loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8)
+            figure.subplots_adjust(right=0.80)
+        figure.subplots_adjust(top=0.84, wspace=0.18)
 
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
