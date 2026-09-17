@@ -259,7 +259,10 @@ class DatabaseManager:
             for col_name, col_type in [("forward_forsage_max_speed", "REAL"),
                                        ("backward_forsage_max_speed", "REAL"),
                                        ("forward_engine_up_time", "REAL"),
-                                       ("backward_engine_up_time", "REAL")]:
+                                       ("backward_engine_up_time", "REAL"),
+                                       # 引擎受损（瘫痪）：出力乘数 -0.6 / 满功率时间乘数 5.5/6.5/7.0
+                                       ("damaged_engine_power_multiplier", "REAL"),
+                                       ("damaged_engine_power_time_multiplier", "REAL")]:
                 if col_name not in existing:
                     self._add_column("ship_module_engine", col_name, col_type)
             self._conn.commit()
@@ -853,7 +856,7 @@ class DatabaseManager:
             "(version_code, ship_id, module_type, config_group, module_key, "
             " boxes_json, effective_armor, protection_caliber) "
             "VALUES (?,?,?,?,?,?,?,?)", rows)
-        # 无独立 commit：由外层分析批事务（_process_batch）统一提交，避免每船一次 fsync
+        self._conn.commit()
         return len(rows)
 
     def load_ship_splash_protection(self, ship_id: str,

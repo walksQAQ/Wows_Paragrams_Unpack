@@ -195,7 +195,7 @@ def export_ship_glb(
 | G5 | 大船性能 | 导出不超过内存红线，后台 UI 不冻结，临时文件可清理 |
 | G6 | 打包版 | onefile 中点击导出可用，输出 GLB 不依赖临时解压目录 |
 
-必须保留一份探针到 `_temp/scripts/`：使用真实舰船导出 GLB，再用 glTF 解析器检查
+必须用**真实舰船**导出 GLB 验收：再用 glTF 解析器检查
 buffer、accessor、image 和 node matrix；必要时用 Blender 或 Three.js 做一次人工
 截图验收。不同服务器、缺失贴图、无装甲数据和空模型都应有明确警告而不是静默失败。
 
@@ -404,7 +404,7 @@ CREASE_DOT = 0.7       # 折角阈值（法线点积）
 1. **主炮塔装甲模型方向反转**（`services/geometry_service.py`）
    - 根因：视觉网格与装甲共用含 `Root_BlendBone` 修正的 `mtx`；wows-toolkit（ship.rs L1124-1133）中装甲用**原始** hp_transform（装甲几何已与挂点对齐，不做旋转修正），多套一次 rb 导致方向反转。
    - 修复：三处（HP 主循环 / MP 甲板设备循环 / `_place_skeleton_mps`）为 ArmorMesh 单独计算 `armor_mtx = negz @ m_raw @ negz`（不含 rb）；视觉 MountMesh 保持 `mtx` 不变。
-   - 验证：`_temp/scripts/probe_turret_armor.py` post-fix check 3/3 大和主炮塔装甲矩阵已不含 rb（centroid_err 0.271→0.178）。
+   - 验证：post-fix check 3/3，大和主炮塔装甲矩阵已不含 rb（centroid_err 0.271→0.178）。
 2. **0mm 装甲仍显示**（`_build_armor_mesh`）
    - 修复：`thickness <= 0` 的三角形**硬剔除**（不进数组），全部剔除时返回 None；与 `hidden`（厚度>0 的通用 Hull 材质，可勾选恢复）语义分离。
    - 验证：大和 11,305 装甲三角形中 0mm 计数 = 0。
@@ -414,10 +414,10 @@ CREASE_DOT = 0.7       # 折角阈值（法线点积）
    - 结构：`{version, description, materials:{id:str}, zones:{英文:中文}}`（206 条材质 + 11 区词条）。
    - `collision_materials.py` 加载器：文件系统（`get_bundled_dir()/resources/database/...`，源码模式热改即时生效）→ QRC（`:/resources/database/collision_materials.json`，打包模式）→ 硬编码兜底；JSON 条目覆盖同名硬编码。`gen_qrc.py` 自动纳入打包（build.bat 无需改动）。
 
-验证（大和 PJSB018，探针 `_temp/scripts/`）：
-- `probe_turret_armor.py`：post-fix check 3/3 炮塔装甲矩阵已应用 armor_mtx，centroid_err 0.271→0.178
+验证（大和 PJSB018）：
+- post-fix check 3/3：炮塔装甲矩阵已应用 armor_mtx，centroid_err 0.271→0.178
 - 0mm 计数 = 0（11,305 三角形全部 thickness>0）
-- `probe_ui_tree.py`：ALL PASS（10 装甲区/71 板块，级联显隐与高亮联动正常）
+- 结构树 ALL PASS（10 装甲区/71 板块，级联显隐与高亮联动正常）
 - 树顶层节点：舰艏/副炮区/核心区/船体/其他/舵机舱/舰艉/上层建筑/防雷带/炮塔
 
 ---

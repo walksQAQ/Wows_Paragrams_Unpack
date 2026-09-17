@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from collections import Counter
 
 from services.database_service import DatabaseManager
@@ -265,13 +264,7 @@ class LestaAnalysisStore:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
-        #: name_mappings 全体 key_name 缓存（整批入库期间复用，避免每船一次全表扫描）
-        self._nm_keys: set[str] | None = None
-
-    @property
-    def conn(self):
-        """始终返回当前线程的数据库连接（DatabaseManager._conn 可能重建）。"""
-        return self.db._conn
+        self.conn = db._conn
 
     def _gf(self, raw_data: dict, field_spec, default=None):
         if callable(field_spec):
@@ -666,15 +659,14 @@ class LestaAnalysisStore:
                     all_module_ids.add(m)
 
         # 尝试从原始 JSON 中为模块 ID 提取名称
-        # name_mappings 全体 key 在整批入库期间只查一次并跨船复用（惰性缓存），
-        # 替代每船一次全表扫描（约 9 ms × 上千船）。
-        if self._nm_keys is None:
-            try:
-                self._nm_keys = {r[0] for r in self.conn.execute(
-                    "SELECT key_name FROM name_mappings").fetchall()}
-            except Exception as exc:  # noqa: BLE001
-                bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
-        existing_keys = self._nm_keys if self._nm_keys is not None else set()
+        # 一次性取全部已有 name_mappings key_name 到内存集合，
+        # 替代逐 module id 单独 SELECT（N+1 → 1 次查询）
+        try:
+            existing_keys = {r[0] for r in self.conn.execute(
+                "SELECT key_name FROM name_mappings").fetchall()}
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
+            existing_keys = set()
         name_items = []
         for mid in all_module_ids:
             # 跳过系统内部名称
@@ -695,9 +687,6 @@ class LestaAnalysisStore:
                 self.conn.executemany(
                     "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                     name_items)
-                # 同步缓存，避免下一条船重新全表扫描
-                if self._nm_keys is not None:
-                    self._nm_keys.update(k for _c, k, _v in name_items)
             except Exception as exc:  # noqa: BLE001
                 bus.log_message.emit(f"⚠️ [分析] 模块名映射入库失败: {exc}")
 
@@ -837,8 +826,9 @@ class LestaAnalysisStore:
                     forward_forsage_power, backward_forsage_power,
                     forward_forsage_max_speed, backward_forsage_max_speed,
                     forward_engine_up_time, backward_engine_up_time,
-                    forward_speed_on_flood, backward_speed_on_flood, speed_coef)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    forward_speed_on_flood, backward_speed_on_flood, speed_coef,
+                    damaged_engine_power_multiplier, damaged_engine_power_time_multiplier)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (version_code, ship_id, letter, ek,
                  engine_type, engine_power, fwd_speed, bwd_speed,
                  eng.get("forwardEngineForsag"),
@@ -849,7 +839,9 @@ class LestaAnalysisStore:
                  _v(eng.get("backwardEngineUpTime")),
                  _v(eng.get("forwardSpeedOnFlood")),
                  _v(eng.get("backwardSpeedOnFlood")),
-                 speed_coef))
+                 speed_coef,
+                 _v(eng.get("damagedEnginePowerMultiplier")),
+                 _v(eng.get("damagedEnginePowerTimeMultiplier"))))
 
     def _write_fire_control(self, ship_id: str, raw_data: dict, version_code: str = ""):
         """提取火控配件数据"""
@@ -1485,11 +1477,9 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
         name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
         try:
             # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
-            cur = conn.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                 ("crew", name_key, person_name or crew_id))
-            if cur.rowcount and self._nm_keys is not None:
-                self._nm_keys.add(name_key)  # 同步缓存
         except Exception as exc:  # noqa: BLE001
             bus.log_message.emit(f"⚠️ [分析] 船员名映射入库失败({name_key}): {exc}")
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
@@ -1625,25 +1615,6 @@ class LestaAnalysisService:
         # 舰船溅射防护共用的 GameExtractor（勿每船新建：重载 IDX 文件树极贵）
         self._splash_extractor = None
         self._splash_extractor_failed = False
-        # 整批复用同一个 Store 实例（保留 name_mappings key 等跨实体缓存）
-        self._store: LestaAnalysisStore | None = None
-        # 溅射防护提取缓存目录（按构建分级，惰性计算）
-        self._splash_cache_dir: str = ""
-
-    def _get_store(self, db: DatabaseManager) -> LestaAnalysisStore:
-        st = self._store
-        if st is None or st.db is not db:
-            st = self._store = LestaAnalysisStore(db)
-        return st
-
-    def _splash_out_dir(self) -> str:
-        """按游戏构建号分级的 splash/geometry 提取缓存目录（跨构建不复用，避免旧几何）。"""
-        if not self._splash_cache_dir:
-            from utils.path_utils import get_data_dir
-            from app.application import app as _app
-            bf = str(getattr(_app.ctx, "bin_folder", "") or "")
-            self._splash_cache_dir = str(get_data_dir() / "_splash" / (bf or "default"))
-        return self._splash_cache_dir
 
     def initialize(self) -> None:
         self._ready = True
@@ -1659,7 +1630,7 @@ class LestaAnalysisService:
         # （wg_compat.WG_NORMALIZE_ENTITY 未实现时对 WG 原样返回，走 Lesta 读取路径）
         raw_data = wg_compat.normalize_entity(app_ctx.ctx.wows_type, raw_data)
         from services.database_service import get_db as _get_db
-        store = self._get_store(db or _get_db())
+        store = LestaAnalysisStore(db or _get_db())
         func_map = {
             "Ship": store.store_ship, "Projectile": store.store_projectile,
             "Aircraft": store.store_plane, "Ability": store.store_consumable,
@@ -1676,11 +1647,8 @@ class LestaAnalysisService:
             else:
                 m(entity_id, raw_data, version_code=version_code)
             # 舰船：额外计算并保存模块溅射防护口径（守护式；需游戏目录可提取 splash/geometry）
-            # ⚠️【临时跳过】由 splash_protection_service.FEATURE_ENABLED 总闸控制
             if category == "Ship":
-                from services import splash_protection_service as _sps
-                if _sps.FEATURE_ENABLED:
-                    self._store_ship_splash_protection(raw_data, entity_id, db or _get_db(), version_code)
+                self._store_ship_splash_protection(raw_data, entity_id, db or _get_db(), version_code)
         except Exception as e:
             bus.log_message.emit(f"⚠️ [分析] {category}/{entity_id} 失败: {e}")
 
@@ -1714,9 +1682,7 @@ class LestaAnalysisService:
             if self._splash_extractor is None:
                 return
             from services.splash_protection_service import compute_ship_protection_from_pkg
-            results = compute_ship_protection_from_pkg(raw_data, game_dir,
-                                                       extractor=self._splash_extractor,
-                                                       out_dir=self._splash_out_dir())
+            results = compute_ship_protection_from_pkg(raw_data, game_dir, extractor=self._splash_extractor)
             if results:
                 db.save_ship_splash_protection(version_code, ship_id, results)
         except Exception:  # noqa: BLE001
@@ -1795,7 +1761,6 @@ class LestaAnalysisService:
             raw_conn.execute("BEGIN TRANSACTION")
             success = 0
             n = len(items)
-            batch_t0 = time.perf_counter()
             bus.log_message.emit(f"数据入库: 开始 [{cat_label}]（{n} 条）")
             # 日志区详细进度：约每 5% 更新一条（小类别则逐条显示）
             log_step = max(1, n // 20)
@@ -1813,8 +1778,7 @@ class LestaAnalysisService:
                     bus.log_message.emit(
                         f"⏳ 数据入库 [{cat_label}] {i}/{n}（{cat_pct}%）｜累计 {total_processed}")
             raw_conn.commit()
-            bus.log_message.emit(
-                f"数据入库: 完成 [{cat_label}] {success} 条（耗时 {time.perf_counter() - batch_t0:.1f}s）")
+            bus.log_message.emit(f"数据入库: 完成 [{cat_label}] {success} 条")
             return success
 
         use_memory = data_by_category is not None

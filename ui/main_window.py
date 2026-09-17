@@ -327,37 +327,33 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """主窗口关闭时，一并关闭所有独立子窗口，避免残留。"""
-        # 主界面直接打开的独立子窗口
-        for _w in (getattr(self, "_assets_viewer", None), getattr(self, "_version_diff_dlg", None)):
-            if _w is not None:
-                try:
-                    _w.close()
-                except Exception:
-                    pass
-        # 工具栏的穿深计算器
+        # 工具栏：取消应用级后台任务（提取/解析/本地化/刷新），避免退出后继续回调
         _tb = getattr(self, "toolbar", None)
         if _tb is not None:
-            # 取消应用级后台任务（提取/解析/本地化/刷新），避免退出后继续回调
             try:
                 _tb.cancel_app_tasks()
             except Exception:  # noqa: BLE001
                 pass
-            for _attr in ("_ballistics_dialog",):
-                _w = getattr(_tb, _attr, None)
-                if _w is not None:
-                    try:
-                        _w.close()
-                    except Exception:
-                        pass
-        # 详情面板的 3D 模型查看器（入口在「基础属性」卡片）
-        _detail = getattr(self, "detail", None)
-        if _detail is not None:
-            _w = getattr(_detail, "_geometry_viewer", None)
-            if _w is not None:
+
+        # 关闭所有独立子窗口（单例弹窗：场景/资产浏览器、版本比对、穿深计算器、
+        # 3D 模型查看器、加速曲线、射界查看器 …）
+        #   为什么要逐个显式 close()：这些弹窗都是**无父窗口**的顶层窗口，
+        #   QDialog/QWidget 作为顶层窗口默认带 WA_QuitOnClose。只要还剩一个可见，
+        #   Qt 就认为主窗口不是「最后一个窗口」→ 主窗口关了应用不退出，弹窗也留在屏幕上。
+        #   故这里扫描 self / toolbar / detail 上持有的窗口属性统一关闭；
+        #   新增弹窗挂在上述任一对象上即可自动联动，无需再手工登记。
+        for _holder in (self, _tb, getattr(self, "detail", None)):
+            if _holder is None:
+                continue
+            for _name, _w in list(getattr(_holder, "__dict__", {}).items()):
+                if _w is None or _w is self or not isinstance(_w, QWidget):
+                    continue
                 try:
-                    _w.close()
-                except Exception:
+                    if _w.isWindow():   # 只关独立窗口，内嵌控件不动
+                        _w.close()
+                except Exception:  # noqa: BLE001
                     pass
+
         super().closeEvent(event)
 
     def _center_window(self) -> None:

@@ -28,6 +28,20 @@ import sys
 from pathlib import Path
 
 
+#: 是否 Nuitka 编译产物（发布版 exe）。
+#: 必须在**模块级**求值：Nuitka 会把 `__compiled__` 注入每个被编译模块的 globals。
+IS_COMPILED: bool = "__compiled__" in globals()
+
+
+def is_debug_build() -> bool:
+    """是否「调试模式」——即按源码方式启动（非 Nuitka 编译的发布版）。
+
+    用途：把只有排障时才需要的信息（引擎功率基准 P、阻力系数 k、弹射功率倍率…）
+    限制在源码/调试运行时显示，发布版 exe 不显示。
+    """
+    return not IS_COMPILED
+
+
 def _get_source_root() -> Path:
     """源码模式下的项目根目录"""
     return Path(__file__).resolve().parent.parent
@@ -73,7 +87,7 @@ def get_config_path() -> Path:
 # ── 游戏目录辅助 ────────────────────────────────────────
 
 def find_latest_bin_folder(game_path) -> str | None:
-    """在游戏目录 bin/ 下查找最大的数字版本号子目录，返回目录名（如 '<bin目录名>'）。
+    """在游戏目录 bin/ 下查找最大的数字版本号子目录，返回该目录名。
 
     供 extractor_service / data_extractor / localization_service 共用，
     消除三处"找最新 bin 目录"的重复实现。无 bin 目录或无版本文件夹返回 None。

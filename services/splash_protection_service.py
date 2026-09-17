@@ -2,7 +2,8 @@
 splash_protection_service —— 舰船模块溅射防护口径（Splash 有效装甲）计算。
 
 背景：
-  游戏内 `溅射有效装甲计算`（与客户端实现一致）：
+  游戏内「溅射有效装甲」的实现（具体地址/符号名不记录在本仓库，
+  需要时用 Ghidra 在公开客户端主程序里现场定位）：
       dist[i] = |splash_pos[i]| - half_extent[i]        # 仅 >0 计入
       effective_armor = (dist_x·thk_x + dist_y·thk_y + dist_z·thk_z) / sum(dist)
   其中 half_extent = 炮弹口径 / 6（溅射立方体半边），thk_x/y/z 为每轴穿透的装甲厚度。
@@ -16,13 +17,12 @@ splash_protection_service —— 舰船模块溅射防护口径（Splash 有效�
   - pkg 内 `.geometry` 文件：装甲模型三角形（材质+厚度）。
   用盒所在区域的装甲厚度作为每轴 thk，按公式求有效装甲 → 防溅口径。
 
-说明：`溅射装甲判定` 的精确 thk 由游戏 C++ 在加载 splash mesh 时赋予，
+说明：溅射装甲判定的精确 thk 由游戏 C++ 在加载 splash mesh 时赋予，
 本实现用「模块盒区域内装甲三角形的主导厚度」近似，数量级与游戏一致，可用于展示/对比。
 """
 
 from __future__ import annotations
 
-import os
 import struct
 from typing import Optional
 
@@ -32,13 +32,6 @@ from utils.path_utils import get_data_dir
 
 
 # ── 常量 ────────────────────────────────────────────────────
-#: ⚠️【临时开关】模块溅射防护（splashBoxes）功能总闸：
-#:   False = 入库计算与 UI 显示全部跳过（缩短「加载数据」耗时，加速主流程）；
-#:   True  = 恢复逐船「提取 .splash/.geometry → 射线求交 → 入库 → 卡片显示」。
-#:   注：DB 表 ship_module_splash_protection 与代码均保留，改回 True 即可恢复，
-#:       无需重载数据（旧数据仍在；若期间换过游戏构建，需重跑数据加载）。
-FEATURE_ENABLED: bool = False
-
 #: HE 穿甲系数（HER 大部分 = 口径/4，部分巡洋 = 口径/6，英巡 = 口径/5）
 HE_PEN_FRACTION = 0.25
 #: 溅射立方体半边 = 口径 / 6
@@ -97,127 +90,101 @@ def _parse_splash(path) -> dict[str, tuple[float, float, float, float, float, fl
     return boxes
 
 
-def _parse_armor_triangles(path_geometry, armor_map) -> "_ArmorMesh":
-    """解析 `.geometry` 装甲三角形 → 预计算 (N,3) 数组的装甲网格（供批量射线求交）。"""
+def _parse_armor_triangles(path_geometry, armor_map):
+    """解析 `.geometry` 装甲三角形。
+
+    返回 (顶点列表, 中心列表, 厚度列表, 材质列表)。
+    顶点用于真实射线-三角形求交（游戏 C++ 逐面射线找防护板的依据）。
+    """
     from models.geometry_parser import parse_geometry
-    with open(path_geometry, "rb") as f:
-        geom = parse_geometry(f.read(), path_geometry)
-    verts, thks = [], []
+    geom = parse_geometry(open(path_geometry, "rb").read(), path_geometry)
+    verts, tris, thks, mats = [], [], [], []
     for m in geom.armor_models:
         for t in m.triangles:
             thk = armor_map.get((t.layer_index, t.material_id), 0.0)
             if thk > 0:
-                verts.append(t.vertices)
+                verts.append(np.array(t.vertices, dtype=float))
+                tris.append(np.mean(t.vertices, axis=0))
                 thks.append(thk)
-    return _ArmorMesh(verts, thks)
+                mats.append(t.material_id)
+    return verts, tris, thks, mats
 
 
-# ── 射线-三角形求交（游戏 溅射装甲判定 逐面防护板依据）─────
+# ── 射线-三角形求交（游戏内逐面防护板厚度依据）─────
 _AXES = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0],
                   [0, 0, 1], [0, 0, -1]], dtype=float)
 
-#: 批量射线求交的射线分块大小（限制 (M,N,3) 临时数组内存；M×N ≈ 20 万元素/块）
-_RAY_CHUNK = 32
-#: Möller–Trumbore 判定容差（与旧逐三角形实现严格一致）
-_EPS = 1e-6
-_DET_EPS = 1e-9
+
+def _ray_first_hit(origin, direction, verts):
+    """从 origin 沿 direction 求交所有三角形，返回最近的 (命中距离, 三角形序号)。"""
+    d = direction / np.linalg.norm(direction)
+    best = None
+    for i, v in enumerate(verts):
+        a, b, c = v[0], v[1], v[2]
+        e1 = b - a
+        e2 = c - a
+        h = np.cross(d, e2)
+        a1 = np.dot(e1, h)
+        if abs(a1) < 1e-9:
+            continue
+        s = origin - a
+        u = np.dot(s, h) / a1
+        if u < -1e-6 or u > 1 + 1e-6:
+            continue
+        q = np.cross(s, e1)
+        vv = np.dot(d, q) / a1
+        if vv < -1e-6 or u + vv > 1 + 1e-6:
+            continue
+        t_ = np.dot(e2, q) / a1
+        if t_ <= 1e-6:
+            continue
+        if best is None or t_ < best[0]:
+            best = (t_, i)
+    return best
 
 
-class _ArmorMesh:
-    """装甲三角形网格：预计算 (N,3) 数组，射线求交一次向量化。
+def _box_face_thicknesses(box, verts, thks):
+    """对每个盒，从盒中心沿 ±x/±y/±z 六方向射线求交，取各方向最近防护板厚度。
 
-    旧实现逐三角形跑 Python 循环（射线数 × 三角形数 ≈ 100 万次/船 → 6–28 s/船）；
-    这里用批量 Möller–Trumbore，单船降到几十毫秒（实测 277–403×，结果逐条一致）。
+    返回 6 元组 (thk_x+, thk_x-, thk_y+, thk_y-, thk_z+, thk_z-)，无命中为 0。
     """
-
-    __slots__ = ("a", "e1", "e2", "thk")
-
-    def __init__(self, verts, thks):
-        if verts:
-            a = np.asarray([v[0] for v in verts], dtype=float)
-            e1 = np.asarray([v[1] for v in verts], dtype=float) - a
-            e2 = np.asarray([v[2] for v in verts], dtype=float) - a
+    mn = np.array(box[0:3], dtype=float)
+    mx = np.array(box[3:6], dtype=float)
+    center = (mn + mx) / 2
+    out = []
+    for d in _AXES:
+        hit = _ray_first_hit(center, d, verts)
+        if hit is None:
+            out.append(0.0)
         else:
-            a = e1 = e2 = np.zeros((0, 3), dtype=float)
-        self.a, self.e1, self.e2 = a, e1, e2
-        self.thk = np.asarray(thks, dtype=float)
-
-    def __len__(self) -> int:
-        return len(self.a)
-
-    def first_hit_thickness(self, origins, directions) -> np.ndarray:
-        """批量射线求交，返回每根射线最近命中三角形的装甲厚度（未命中为 0.0）。"""
-        origins = np.asarray(origins, dtype=float).reshape(-1, 3)
-        directions = np.asarray(directions, dtype=float).reshape(-1, 3)
-        out = np.zeros(len(origins), dtype=float)
-        if len(self.a) == 0 or len(origins) == 0:
-            return out
-        norms = np.linalg.norm(directions, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        dirs = directions / norms
-        a1, e11, e21 = self.a[None, :, :], self.e1[None, :, :], self.e2[None, :, :]
-        for s0 in range(0, len(origins), _RAY_CHUNK):
-            s1 = min(s0 + _RAY_CHUNK, len(origins))
-            o = origins[s0:s1, None, :]                 # (M,1,3)
-            d = dirs[s0:s1]                             # (M,3)
-            h = np.cross(d[:, None, :], e21)            # (M,N,3)
-            det = np.einsum("mnj,mnj->mn", e11, h)      # (M,N)
-            valid = np.abs(det) > _DET_EPS
-            inv = np.where(valid, det, 1.0)
-            s = o - a1
-            u = np.einsum("mnj,mnj->mn", s, h) / inv
-            q = np.cross(s, e11)
-            vv = np.einsum("mnj,mj->mn", q, d) / inv
-            t = np.einsum("mnj,mnj->mn", e21, q) / inv
-            valid &= ((u >= -_EPS) & (u <= 1.0 + _EPS) & (vv >= -_EPS)
-                      & (u + vv <= 1.0 + _EPS) & (t > _EPS))
-            t_all = np.where(valid, t, np.inf)
-            t_min = t_all.min(axis=1)
-            rows = np.nonzero(np.isfinite(t_min))[0]
-            if rows.size:
-                out[s0 + rows] = self.thk[np.argmin(t_all, axis=1)[rows]]
-        return out
-
-    def box_face_thicknesses(self, box) -> np.ndarray:
-        """盒中心沿 ±x/±y/±z 六方向射线求交，返回各方向最近防护板厚度（无命中 0）。"""
-        mn = np.asarray(box[0:3], dtype=float)
-        mx = np.asarray(box[3:6], dtype=float)
-        center = (mn + mx) / 2
-        return self.first_hit_thickness(
-            np.repeat(center[None, :], len(_AXES), axis=0), _AXES)
+            out.append(float(thks[hit[1]]))
+    return out
 
 
 # ── 核心计算 ────────────────────────────────────────────────
 
-def _module_effective_armor(box_names, splash_boxes, mesh) -> tuple[Optional[float], Optional[float]]:
+def _module_effective_armor(box_names, splash_boxes, verts, thks) -> tuple[Optional[float], Optional[float]]:
     """对一组 splash 盒，逐面射线求交各盒防护板厚度，返回 (有效装甲, 防溅口径)。
 
     依据：
-      游戏 `溅射装甲判定` 每盒有 6 个面厚度 thk（x±/y±/z±），
+      游戏内实现中每盒有 6 个面厚度 thk（x±/y±/z±），
       由 C++/游戏脚本从装甲模型按方向射线求交得到；有效装甲为其距离加权平均。
     此处按「模块所有盒、所有面」的平均防护厚度近似有效装甲。
     """
-    origins = []
+    faces: list[float] = []
     for n in box_names:
         v = splash_boxes.get(n)
         if v is None:
             continue
-        mn = np.asarray(v[0:3], dtype=float)
-        mx = np.asarray(v[3:6], dtype=float)
-        origins.append(np.repeat(((mn + mx) / 2)[None, :], len(_AXES), axis=0))
-    if not origins:
-        return None, None
-    # 一次性把所有盒 × 6 方向射线交给向量化求交，摊薄 Python 侧开销
-    origins = np.concatenate(origins, axis=0)
-    directions = np.tile(_AXES, (len(origins) // len(_AXES), 1))
-    thicknesses = mesh.first_hit_thickness(origins, directions)
-    faces = thicknesses[thicknesses > 0]
-    if not faces.size:
+        faces.extend(_box_face_thicknesses(v, verts, thks))
+    faces = [f for f in faces if f > 0]
+    if not faces:
         return None, None
 
     # 有效装甲 = 模块盒各面防护厚度均值（游戏为距离加权，此处均匀近似）
-    effective = float(faces.mean())
-    return effective, effective / HE_PEN_FRACTION
+    effective = float(np.mean(faces))
+    caliber = effective / HE_PEN_FRACTION
+    return effective, caliber
 
 
 def compute_ship_splash_protection(ship_data: dict, game_dir: str, ship_splash_path: str,
@@ -235,9 +202,9 @@ def compute_ship_splash_protection(ship_data: dict, game_dir: str, ship_splash_p
     """
     armor_map = _build_armor_map(ship_data)
     splash_boxes = _parse_splash(ship_splash_path)
-    mesh = _parse_armor_triangles(ship_geometry_path, armor_map)
+    verts, _tris, _thks, _mats = _parse_armor_triangles(ship_geometry_path, armor_map)
 
-    if not len(mesh):
+    if not verts:
         return {}
 
     # 收集各模块（含引擎/舵机/弹药库等带 splashBoxes 的命中位置）
@@ -266,7 +233,7 @@ def compute_ship_splash_protection(ship_data: dict, game_dir: str, ship_splash_p
                     break
             if mtype is None:
                 continue
-            eff, cal = _module_effective_armor(boxes, splash_boxes, mesh)
+            eff, cal = _module_effective_armor(boxes, splash_boxes, verts, _thks)
             if cal is None:
                 continue
             results.setdefault(mtype, []).append({
@@ -298,41 +265,16 @@ def locate_ship_files(game_dir: str, hull_model: str) -> tuple[Optional[str], Op
     return splash, geom
 
 
-def _cached_file(path: str) -> Optional[str]:
-    """返回已存在且非空的提取缓存路径（0 字节/半成品视为未缓存）。"""
-    try:
-        return path if os.path.getsize(path) > 0 else None
-    except OSError:
-        return None
-
-
-def _extract_or_reuse(g, vfs: str, dst: str, legacy_dir: str = "") -> Optional[str]:
-    """优先复用已提取文件（本构建缓存目录 → 旧扁平目录），缺才从 pkg 提取。
-
-    单船 2 个文件重提取约 84–184 ms，命中缓存可直接省掉（本仓库 pkg 解压是主要开销）。
-    """
-    p = _cached_file(dst)
-    if p is None and legacy_dir:
-        if os.path.abspath(legacy_dir) != os.path.abspath(os.path.dirname(dst)):
-            p = _cached_file(os.path.join(legacy_dir, os.path.basename(dst)))
-    if p is not None:
-        return p
-    try:
-        g.extract_single(vfs, dst)
-    except Exception:  # noqa: BLE001
-        return None
-    return _cached_file(dst)
-
-
 def extract_ship_files(game_dir: str, ship_data: dict, out_dir: str | None = None,
                        extractor=None):
-    """用 GameExtractor 从 pkg 提取某船的 .splash 与 .geometry（已缓存则跳过提取）。
+    """用 GameExtractor 从 pkg 提取某船的 .splash 与 .geometry。
 
     extractor: 可选，传入可复用的 GameExtractor（批量调用时共用，避免每个文件
                重载全部 IDX + 文件树）。提供时内部不创建/不关闭；否则自建并在结束时关闭。
 
     返回 (splash_path, geometry_path) 本地路径；找不到/提取失败返回 (None, None)。
     """
+    import os
     from data_extractor import GameExtractor
     from data_extractor.extractor import ExtractorError
 
@@ -350,12 +292,19 @@ def extract_ship_files(game_dir: str, ship_data: dict, out_dir: str | None = Non
         g = extractor
     out = out_dir or str(get_data_dir() / "_splash")
     os.makedirs(out, exist_ok=True)
-    # 旧版提取目录（未按构建分级）：作为只读回退复用，避免重复解压
-    legacy = str(get_data_dir() / "_splash")
-    splash_path = _extract_or_reuse(g, splash_vfs,
-                                    os.path.join(out, os.path.basename(splash_vfs)), legacy)
-    geometry_path = _extract_or_reuse(g, geom_vfs,
-                                      os.path.join(out, os.path.basename(geom_vfs)), legacy)
+    splash_path, geometry_path = None, None
+    try:
+        sp = os.path.join(out, os.path.basename(splash_vfs))
+        g.extract_single(splash_vfs, sp)
+        splash_path = sp
+    except Exception:  # noqa: BLE001
+        splash_path = None
+    try:
+        gp = os.path.join(out, os.path.basename(geom_vfs))
+        g.extract_single(geom_vfs, gp)
+        geometry_path = gp
+    except Exception:  # noqa: BLE001
+        geometry_path = None
     if own:
         try:
             g.close()
@@ -364,15 +313,12 @@ def extract_ship_files(game_dir: str, ship_data: dict, out_dir: str | None = Non
     return splash_path, geometry_path
 
 
-def compute_ship_protection_from_pkg(ship_data: dict, game_dir: str, extractor=None,
-                                     out_dir: str | None = None) -> dict[str, list[dict]]:
+def compute_ship_protection_from_pkg(ship_data: dict, game_dir: str, extractor=None) -> dict[str, list[dict]]:
     """从 pkg 自动提取 splash/geometry 并计算舰船模块防溅口径。
 
     extractor: 可选，传入可复用的 GameExtractor（见 extract_ship_files）。
-    out_dir: 可选，提取缓存目录（建议按 bin_folder 分级，便于复用且不跨版本串用）。
     """
-    splash_path, geometry_path = extract_ship_files(game_dir, ship_data,
-                                                    out_dir=out_dir, extractor=extractor)
+    splash_path, geometry_path = extract_ship_files(game_dir, ship_data, extractor=extractor)
     if not splash_path or not geometry_path:
         return {}
     return compute_ship_splash_protection(ship_data, game_dir, splash_path, geometry_path)

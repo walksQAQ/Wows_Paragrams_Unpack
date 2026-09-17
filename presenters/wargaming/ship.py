@@ -44,6 +44,20 @@ class WargamingShipPresenter(WargamingBasePresenter):
             return 0.0
         return float(mod_val)
 
+    def _mod_value(self, key: str, default: float = 0.0) -> float:
+        """取已合并的升级品/技能修饰符数值（加性键为和、乘性键为积）；无则 default。
+
+        合并规则见 `ui/detail_panel.py` 的 `_ADDITIVE_KEYS_BASE`：
+        加性键（如 `boostCoeffForsage` +0.22）取和，其余键相乘。
+        """
+        spec = (getattr(self, "_modifiers", None) or {}).get(key)
+        if spec is None:
+            return default
+        try:
+            return float(self._get_mod_value(spec, getattr(self, "_mod_ship_type", "") or ""))
+        except (TypeError, ValueError):
+            return default
+
     def _apply_modifiers(self, sections: list[dict], modifiers: dict, section_label: str = "") -> None:
         """将升级品修饰符应用到 section items 的值上"""
         if not modifiers:
@@ -67,7 +81,18 @@ class WargamingShipPresenter(WargamingBasePresenter):
         """将修饰符应用到单组 items 列表"""
         if not items:
             return
-        for item in items:
+        # 消耗品块作用域：只有 `类型: speedBoosters` 那一块才吃「加力作用时间」类修饰符，
+        # 否则会把其它消耗品（维修/发烟器…）的持续时间一起改掉
+        _scope: list[str] = []
+        _cur_ct = ""
+        for _it in items:
+            _nm = str(_it.get("name", "")).strip()
+            if _nm.startswith("("):
+                _cur_ct = ""
+            elif _nm.startswith("类型:"):
+                _cur_ct = _nm.split(":", 1)[1].strip()
+            _scope.append(_cur_ct)
+        for _idx, item in enumerate(items):
             name = item.get("name", "")
             val_str = item.get("value", "")
             if not val_str:
@@ -111,6 +136,13 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 # planeAdditionalConsumables 影响"数量"（消耗品次数，加算）
                 elif mod_key in ("planeAdditionalConsumables", "additionalConsumables") and name == "数量":
                     field = name
+                # speedBoostersWorkTimeCoeff：仅对引擎加力（speedBoosters）消耗品的"持续时间"生效
+                elif mod_key == "speedBoostersWorkTimeCoeff":
+                    if "speedBoosters" not in (_scope[_idx] if _idx < len(_scope) else ""):
+                        continue
+                    field = "持续时间"
+                    if field != name.strip():
+                        continue
                 # healForsageReloadCoeff：仅对引擎加力（healForsage）消耗品的"冷却时间"生效（精确匹配，避免误伤"引擎加速冷却时间"）
                 elif mod_key == "healForsageReloadCoeff":
                     if not any(i.get("name") == "类型" and "healForsage" in str(i.get("value", "")) for i in items):
@@ -205,6 +237,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
         sections.append(self.make_section("基础属性", items, icon="📋"))
 
         # ── 2. 消耗品数据 ─────────────────────────────────
+        # 升级品/技能修饰符要先就位：消耗品卡片要按它们修正「数量 / 持续时间 / 最高航速」
+        self._modifiers = modifiers or {}
+        self._mod_ship_type = basic['shiptype'] or ''
         self._append_consumables(conn, vc, ship_id, sections)
 
         # ── 3. 战斗指令 ───────────────────────────────────
@@ -212,6 +247,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
 
         # ── 4. 各类型模块数据 ────────────────────────────
         self._aircraft_sub_info = {}
+        #: 提速模型取数上下文（按配置字母）—— 「加速曲线」弹窗复用卡片同一条记录
+        self._accel_ctx = {}
+        self._modifiers = modifiers or {}
+        self._mod_ship_type = basic['shiptype'] or ''
         self._append_modules(conn, vc, ship_id, sections, engine_letter, fire_control_key, active_module_keys, sonar_key)
 
         # ── 5. 应用升级品修饰符 ─────────────────────────
@@ -723,6 +762,18 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 cd_time = float(cfgd.get('reloadTime', 0) or 0)
                 wt = float(cfgd.get('workTime', 0) or 0)
                 auto = cfgd.get('isAutoConsumable', False)
+                # 升级品/技能对「引擎增压消耗品」的修饰（同 Lesta 口径）：可用次数加性、
+                # 作用时间乘性、boostCoeffForsage **加性**加到自带 boostCoeff（0.08→0.30）
+                _boost_uses = 0.0
+                _boost_speed_extra = 0.0
+                if ct == "speedBoosters":
+                    _boost_uses = self._mod_value("speedBoostersAdditionalConsumables")
+                    _boost_speed_extra = self._mod_value("boostCoeffForsage")
+                    if _boost_uses and str(num_raw) != '-1':
+                        try:
+                            num_raw = int(float(num_raw) + _boost_uses)
+                        except (TypeError, ValueError):
+                            pass
                 items.append(self.make_item(f"        类型: {ct}", "", len(items)))
                 if num_raw not in ('0', 0):
                     items.append(self.make_item(f"        数量: {'无限' if str(num_raw)=='-1' else str(num_raw)}", "", len(items)))
@@ -790,9 +841,13 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     if sp or lt:
                         items.append(self.make_item(f"          速度限制: {sp}kts | 扩散: {lt}s", "", len(items)))
                 elif ct == "speedBoosters":
-                    # boostCoeff 已是小数加成（0.08 = +8%）；forwardEngineForsag/backwardEngineForsag 为倍率
+                    # boostCoeff 已是小数加成（0.08 = +8%）；升级品/技能按**加性**追加
+                    # （boostCoeffForsage，如埃尔宾传奇插 +0.12/+0.22 ⇒ +8% 变成 +30%）
                     bc = float(cfgd.get('boostCoeff', 0) or 0)
-                    items.append(self.make_item(f"          最高航速: {bc*100:+.0f}%", "", len(items)))
+                    _bc_txt = f"{(bc + _boost_speed_extra) * 100:+.0f}%"
+                    if _boost_speed_extra:
+                        _bc_txt += (f"（自带 {bc*100:+.0f}% + 升级品 {_boost_speed_extra*100:+.0f}%）")
+                    items.append(self.make_item(f"          最高航速: {_bc_txt}", "", len(items)))
                     fef = float(cfgd.get('forwardEngineForsag', 0) or 1)
                     bef = float(cfgd.get('backwardEngineForsag', 0) or 1)
                     items.append(self.make_item(f"          推力: 前进 ×{fef:g} / 后退 ×{bef:g}", "", len(items)))
@@ -1214,6 +1269,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     if len(e_letters) > 1:
                         e_sec["_config_letters"] = e_letters
                         e_sec["_items_by_letter"] = e_items
+                    if getattr(self, "_accel_ctx", None):
+                        e_sec["_accel_by_letter"] = self._accel_ctx
                     sections.append(e_sec)
         # 舰载机独立处理：一个 section + 次级菜单
         plane_section = self._build_aircraft_panel(conn, vc, ship_id, letters, sections)
@@ -1438,31 +1495,28 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 items.append(self.make_item("是否有核心区", "是" if h['has_citadel'] else "否", o)); o += 1
 
             # 模块溅射防护口径（引擎/舵机/弹药库等）
-            # ⚠️【临时跳过】由 splash_protection_service.FEATURE_ENABLED 总闸控制
-            from services import splash_protection_service as _sps
-            if _sps.FEATURE_ENABLED:
-                SP_TYPE_CN = {
-                    "engine": "引擎", "steering": "舵机", "magazine": "弹药库",
-                    "torpedo": "鱼雷管", "sonar": "声呐",
-                }
-                try:
-                    sp_rows = conn.execute(
-                        "SELECT module_type, protection_caliber FROM ship_module_splash_protection "
-                        "WHERE version_code=? AND ship_id=? ORDER BY module_type",
-                        (vc, ship_id)).fetchall()
-                except Exception:  # noqa: BLE001
-                    sp_rows = []
-                sp_seen: set[str] = set()
-                for r in sp_rows:
-                    mt = r['module_type']
-                    if mt in sp_seen:
-                        continue
-                    sp_seen.add(mt)
-                    cal = r['protection_caliber']
-                    if cal:
-                        items.append(self.make_item(
-                            f"{SP_TYPE_CN.get(mt, mt)}防溅口径",
-                            f"{cal:.0f}", o, unit="mm")); o += 1
+            SP_TYPE_CN = {
+                "engine": "引擎", "steering": "舵机", "magazine": "弹药库",
+                "torpedo": "鱼雷管", "sonar": "声呐",
+            }
+            try:
+                sp_rows = conn.execute(
+                    "SELECT module_type, protection_caliber FROM ship_module_splash_protection "
+                    "WHERE version_code=? AND ship_id=? ORDER BY module_type",
+                    (vc, ship_id)).fetchall()
+            except Exception:  # noqa: BLE001
+                sp_rows = []
+            sp_seen: set[str] = set()
+            for r in sp_rows:
+                mt = r['module_type']
+                if mt in sp_seen:
+                    continue
+                sp_seen.add(mt)
+                cal = r['protection_caliber']
+                if cal:
+                    items.append(self.make_item(
+                        f"{SP_TYPE_CN.get(mt, mt)}防溅口径",
+                        f"{cal:.0f}", o, unit="mm")); o += 1
 
             # 潜艇扩展数据
             ext = conn.execute(
@@ -1528,7 +1582,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
         # 船体基础航速（用于 speedCoef 修正显示）
         base_speed = None
         hrow = conn.execute(
-            "SELECT max_speed, tonnage FROM ship_module_hulls WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key LIMIT 1",
+            "SELECT max_speed, tonnage, module_key, config_group FROM ship_module_hulls WHERE version_code=? AND ship_id=? AND config_group LIKE ? ORDER BY module_key LIMIT 1",
             (vc, ship_id, f"{letter}%")).fetchone()
         if hrow:
             base_speed = hrow['max_speed']
@@ -1577,8 +1631,115 @@ class WargamingShipPresenter(WargamingBasePresenter):
         if bwd is not None and cur_max_speed is not None:
             items.append(self.make_item("进水时后退速度", f"{cur_max_speed * (1 + bwd):.2f}", o, unit="kts")); o += 1
 
+        # ── 提速模型取数上下文（与卡片同一组引擎/船体数据）──
+        self._record_accel_ctx(letter, eng_row, hrow, cur_max_speed, tonnage, ship_id)
+
         if items:
             result[letter] = items
+
+    def _accel_mod_mult(self, key: str):
+        """取引擎类升级品（PCM等）对该属性的乘性倍率；无则返回 None。
+
+        ``key`` ∈ engineForwardForsagePower / engineForwardForsageMaxSpeed /
+        engineForwardUpTime（这些键不在 MODIFIER_FIELD_MAP 里，卡片文字不受它们影响，
+        但提速模型必须算进去，否则升级品对曲线无效）。
+        """
+        mods = getattr(self, "_modifiers", None) or {}
+        spec = mods.get(key)
+        if spec is None:
+            return None
+        try:
+            v = float(self._get_mod_value(spec, getattr(self, "_mod_ship_type", "") or ""))
+        except (TypeError, ValueError):
+            return None
+        return v if v and abs(v - 1.0) > 1e-9 else None
+
+    def _record_accel_ctx(self, letter, eng_row, hrow, cur_max_speed, tonnage,
+                          ship_id: str = "") -> None:
+        """构建提速模型并记入 ``self._accel_ctx[letter]``（供加速曲线弹窗复用）。
+
+        弹射/升级品跟随主界面：升级品修饰符（弹射区间/倍率/满功率时间）本就来自 ``self._modifiers``；
+        引擎增压消耗品则在**该舰有可用加力时**单独算一份「增压方案」模型（区间/倍率是**覆盖**）。
+        """
+        if not cur_max_speed or not tonnage:
+            return
+        try:
+            from services import acceleration_service as _accel
+            from services import engine_boost_service as _boost
+            from services import engine_damage_service as _dmg
+            m_fp = self._accel_mod_mult("engineForwardForsagePower")
+            m_fz = self._accel_mod_mult("engineForwardForsageMaxSpeed")
+            m_ft = self._accel_mod_mult("engineForwardUpTime")
+            # 航速加成：引擎自带 speedCoef 为加性，旗/技能/升级品为乘性（与卡片取值口径一致）
+            coef = _accel.clamp_speed_coef(eng_row['speed_coef'])
+            m_sc = self._accel_mod_mult("speedCoef")
+            if m_sc:
+                coef = _accel.clamp_speed_coef((1.0 + coef) * float(m_sc) - 1.0)
+            base_speed = hrow['max_speed'] if hrow is not None else None
+            raw_fp = eng_row['forward_forsage_power']
+            raw_fz = eng_row['forward_forsage_max_speed']
+            raw_ut = eng_row['forward_engine_up_time']
+            up_mul = (float(raw_ut) * m_ft) if (m_ft and raw_ut) else None
+            model = _accel.build_model(
+                eng_row, base_speed or cur_max_speed, tonnage,
+                speed_coef=coef,
+                forsage_power=(float(raw_fp) * m_fp) if (m_fp and raw_fp) else None,
+                forsage_zone=(float(raw_fz) * m_fz) if (m_fz and raw_fz) else None,
+                up_time=up_mul)
+            if not model:
+                return
+            bmodel = _accel.backward_model(eng_row, model["power"],
+                                           mods=(m_fp, m_fz, m_ft), tonnage=tonnage,
+                                           speed_coef=coef)
+            if bmodel:
+                model["backward"] = bmodel
+            # ── 引擎增压方案（该舰有加力消耗品时才建）──
+            boost = _boost.load(self.conn, ship_id, str(eng_row['version_code'] or "")) \
+                if ship_id else None
+            boost_model = None
+            if boost:
+                # 复制：服务层可能返回缓存对象，不可就地改写
+                boost = dict(boost)
+                # 升级品/技能对加力「最高航速加成」的**加性**修饰（boostCoeffForsage）
+                _bc_extra = self._mod_value("boostCoeffForsage")
+                if _bc_extra:
+                    boost["boost_coeff"] = float(boost["boost_coeff"] or 0.0) + _bc_extra
+                b_coef = _accel.clamp_speed_coef((1.0 + coef) + float(boost["boost_coeff"] or 0.0)
+                                                 - 1.0)
+                boost_model = _accel.build_model(
+                    eng_row, base_speed or cur_max_speed, tonnage,
+                    speed_coef=b_coef,
+                    forsage_power=boost["forward_forsag"],
+                    forsage_zone=boost["forward_zone"],
+                    up_time=up_mul)
+                if boost_model:
+                    b_bwd = _accel.backward_model(
+                        eng_row, boost_model["power"], mods=(None, None, m_ft), tonnage=tonnage,
+                        speed_coef=b_coef, forsage_power=boost["backward_forsag"],
+                        forsage_zone=boost["backward_zone"])
+                    if b_bwd:
+                        boost_model["backward"] = b_bwd
+            # ── 降速状态参数（进水 / 引擎受损）：只存参数，弹窗按当前方案建模型 ──
+            dmg_info = _dmg.load(self.conn, ship_id, str(eng_row['version_code'] or "")) \
+                if ship_id else None
+            self._accel_ctx[letter] = {
+                "model": model,
+                "backward_model": bmodel,
+                "boost": boost,
+                "boost_model": boost_model,
+                "damage_info": dmg_info,
+                "flood_coef": eng_row['forward_speed_on_flood'],
+                "engine_key": eng_row['module_key'],
+                "engine_config": eng_row['config_group'],
+                "engine_power": eng_row['engine_power'],
+                "speed_coef": coef,
+                "hull_key": hrow['module_key'] if hrow is not None else "",
+                "hull_config": hrow['config_group'] if hrow is not None else "",
+                "applied_mods": {k: v for k, v in (("弹射功率", m_fp), ("弹射区间", m_fz),
+                                                     ("全功率时间", m_ft)) if v},
+            }
+        except Exception:  # noqa: BLE001
+            return
 
     def _build_artillery(self, conn, vc, ship_id, letter, result, fire_control_key=""):
         """构建主炮数据（按 _build_hull 风格：直接 DB 查询 → kv 条目）"""
@@ -2995,6 +3156,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                 if lt: con_detail.append(self.make_item("扩散时间", str(lt), cd2, unit="s")); cd2 += 1
                             elif ct == "speedBoosters":
                                 bc = float(cd.get('boostCoeff', 0) or 0)
+                                # 升级品/技能的加性加成（boostCoeffForsage）也要算进去
+                                bc += self._mod_value("boostCoeffForsage")
                                 con_detail.append(self.make_item("最高航速", f"{bc*100:+.2f}", cd2, unit="%")); cd2 += 1
                             elif ct == "airDefenseDisp":
                                 adm = cd.get('areaDamageMultiplier', 0); bdm = cd.get('bubbleDamageMultiplier', 0)

@@ -20,11 +20,12 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QHBoxLayout, QLabel, QButtonGroup,
-    QSizePolicy, QScrollArea,
+    QSizePolicy, QScrollArea, QApplication, QToolTip,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QCursor
 
+from app.signals import bus
 from utils.theme import theme
 
 
@@ -71,6 +72,12 @@ TABLE_STYLE = """
         color: inherit;
     }
 """
+
+# 右列数值「点击复制」的行：左列标签 → 命中即启用复制（如「舰船 ID」）
+COPYABLE_LABELS: tuple[str, ...] = (
+    "舰船 ID",
+)
+
 
 # 左列（标签）/右列（数值）字体颜色 —— 跟随主题（函数动态求值）
 def label_color() -> str:
@@ -126,8 +133,8 @@ class ShipCardWidget(QGroupBox):
                 ]}
             firing_arc: 射界入口信息（{"ship_id", "slot_type", "summary"}），
                         非空时在卡片底部追加可点击的射界按钮行
-            action: 卡片最下方动作按钮（{"text", "tooltip", "data"}），
-                    点击发射 action_clicked(data)
+            action: 卡片最下方动作行（{"label": 左列标题, "text": 按钮文字,
+                    "tooltip", "data"}），点击发射 action_clicked(data)
         """
         super().__init__(parent)
         self.setProperty("class", "ShipCardWidget")
@@ -169,6 +176,13 @@ class ShipCardWidget(QGroupBox):
         # 单元格文本不省略号截断（setTextElideMode 属于视图，而非 QTableWidgetItem）
         self._table.setTextElideMode(Qt.TextElideMode.ElideNone)
 
+        #: 行号 → 可复制的文本（点击右列数值即写入剪贴板）
+        self._copy_cells: dict[int, str] = {}
+        # 悬停可复制行时显示手型光标（cellEntered 需要开启鼠标跟踪）
+        self._table.setMouseTracking(True)
+        self._table.cellEntered.connect(self._on_cell_entered)
+        self._table.cellClicked.connect(self._on_cell_clicked)
+
         self._populate_items(section.get("items", []))
 
         # 射界入口：卡片底部追加可点击按钮（不显示炮塔数量）
@@ -191,9 +205,27 @@ class ShipCardWidget(QGroupBox):
         QTimer.singleShot(0, self._adjust_height)
 
     def _add_action_row(self, action: dict) -> None:
-        """在卡片最下方添加全宽动作按钮（点击发射 action_clicked(data)）。"""
-        btn = QPushButton(action.get("text", ""))
+        """在卡片最下方添加动作行：左列标题 + 右列（数据区）按钮。
+
+        与表格内其它行保持同一格式；点击发射 action_clicked(data)。
+        action: {"label": 左列标题, "text": 按钮文字, "button": 按钮文字（优先）, "tooltip", "data"}
+                为兼容旧调用：未给 label 时用 text 作左列标题；未给 text/button 时按钮显示「打开」。
+        """
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+
+        label = action.get("label") or action.get("text", "")
+        name_item = QTableWidgetItem(label)
+        name_item.setForeground(QColor(label_color()))
+        name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        self._table.setItem(row, 0, name_item)
+
+        # 按钮文字：button > text > 「打开」
+        # （曾写成“给了 label 就强制显示『打开』”，导致调用方传的 text「查看/详情」被吞掉）
+        btn_text = action.get("button") or action.get("text") or "打开"
+        btn = QPushButton(btn_text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setMinimumWidth(76)
         tip = action.get("tooltip", "")
         if tip:
             btn.setToolTip(tip)
@@ -201,13 +233,19 @@ class ShipCardWidget(QGroupBox):
             QPushButton {
                 background: @panel_alt@; color: @text@;
                 border: 1px solid @border@; border-radius: 4px;
-                padding: 5px 8px; font-size: 12px; text-align: center;
+                padding: 4px 10px; font-size: 12px;
             }
             QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
         """))
         data = action.get("data")
         btn.clicked.connect(lambda _=False: self.action_clicked.emit(data))
-        self.layout().addWidget(btn)
+
+        holder = QWidget()
+        holder_lay = QHBoxLayout(holder)
+        holder_lay.setContentsMargins(0, 0, 0, 0)
+        holder_lay.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        holder_lay.addWidget(btn)
+        self._table.setCellWidget(row, 1, holder)
 
     def _add_firing_arc_row(self, fa: dict) -> None:
         """在卡片底部添加射界行：左列标签 + 右列可点击的值按钮（齐射角）"""
@@ -321,6 +359,42 @@ class ShipCardWidget(QGroupBox):
             if tip_lines:
                 name_item.setToolTip("\n".join(tip_lines))
                 value_item.setToolTip("\n".join(tip_lines))
+
+        # 可点击复制：默认「舰船 ID」等行，或 item 里显式给 copyable=True
+        _copy_text = display_value.strip()
+        if _copy_text and (item.get("copyable") or name in COPYABLE_LABELS):
+            self._copy_cells[row] = _copy_text
+            # 允许选中（样式表把选中态设为透明，视觉不变），确保点击信号稳定触发
+            value_item.setFlags(value_item.flags() | Qt.ItemFlag.ItemIsSelectable)
+            _tip = value_item.toolTip()
+            _copy_tip = f"点击复制：{_copy_text}"
+            value_item.setToolTip(f"{_copy_tip}\n{_tip}" if _tip else _copy_tip)
+
+    # ── 点击复制 ─────────────────────────────────────────
+
+    def _on_cell_entered(self, row: int, col: int) -> None:
+        """鼠标进入单元格：可复制行的数值列显示手型光标。"""
+        try:
+            if col == 1 and row in self._copy_cells:
+                self._table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                self._table.viewport().unsetCursor()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        """点击可复制行的数值单元格 → 写入系统剪贴板。"""
+        if col != 1:
+            return
+        text = self._copy_cells.get(row)
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        QToolTip.showText(QCursor.pos(), f"已复制：{text}")
+        try:
+            bus.log_message.emit(f"📋 已复制：{text}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _add_header_row(self, item: dict) -> None:
         """添加分段标题行"""

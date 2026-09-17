@@ -671,7 +671,9 @@ class Mapping:
         "regenerateHealthAdditionalConsumables": "raw_int",
         "regenerateHealthWorkTimeCoeff": "coeff",
         "speedBoostersAdditionalConsumables": "raw_int",
-        "boostCoeffForsage": "coeff",
+        # boostCoeffForsage 是**加性**百分比（0.22 = +22%），不是倍率；
+        # 它直接加到加力消耗品自带的 boostCoeff 上（0.08 ⇒ 0.30）
+        "boostCoeffForsage": "raw_pct",
         "smokeGeneratorAdditionalConsumables": "raw_int",
         "regenCrewReloadCoeff": "coeff",
         "regenCrewAdditionalConsumables": "raw_int",

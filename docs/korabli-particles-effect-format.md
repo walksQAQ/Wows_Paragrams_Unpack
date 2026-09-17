@@ -109,6 +109,3 @@ EffectPrototype → EmitterPrototype[] → PSPrototype（粒子系统）
    └─ ValueGeneratorPrototype[]（Ramp/Constant/Cumulative/Random → 关键帧）
    └─ RendererPrototype / TrailPrototype（粒子轨迹）/ LightSourcePrototype
 ```
-
----
-

@@ -35,6 +35,8 @@ _ADDITIVE_KEYS_BASE = frozenset({
     "extraFighterCount", "asNumPacksBonus", "healthPerLevel", "planeHealthPerLevel",
     "speedBoostersAdditionalConsumables", "smokeGeneratorAdditionalConsumables",
     "torpedoReloaderAdditionalConsumables", "crashCrewWorkTimeBonus",
+    # boostCoeffForsage 是加性百分点（+0.22 表示加力最高航速 +22%），多个来源相加
+    "boostCoeffForsage",
 })
 
 
@@ -888,25 +890,68 @@ class DetailPanel(QWidget):
                     elif label == "支援":
                         widget = self._build_support_widget(sec)
                     else:
-                        # 「基础属性」卡片最下方追加 3D 模型查看入口按钮
+                        # 卡片底部入口行：「基础属性」→ 3D 模型查看；「引擎」→ 加速曲线详情
                         action = None
                         if label == "基础属性" and self._current_filename:
                             action = {
-                                "text": "⛵  3D 模型查看",
+                                "label": "⛵  3D 模型",
+                                "text": "查看",
                                 "tooltip": "打开当前舰船的 3D 模型 / 装甲查看器（自动载入本舰模型）",
                                 "data": self._current_filename,
+                            }
+                        elif label == "引擎" and self._current_filename:
+                            # 带上卡片本体的取数上下文（同一条引擎/船体记录 + 已算好的模型）
+                            _by = sec.get("_accel_by_letter") or {}
+                            _letter = getattr(self, "_active_config_letter", "A")
+                            _actx = (_by.get(_letter) or (next(iter(_by.values())) if _by else None))
+                            action = {
+                                "label": "📈  加速曲线（测试功能）",
+                                "text": "详情",
+                                "tooltip": "打开加速曲线：加速时间、弹射区间、达到弹射速度 / 90% 航速的时间\n"
+                                           "（与卡片同一组引擎/船体数据）",
+                                "data": {"kind": "accel", "ship_id": self._current_filename,
+                                         "accel_ctx": _actx},
                             }
                         widget = ShipCardWidget(sec, firing_arc=sec.get("_firing_arc"),
                                                 action=action)
                         widget.firing_arc_clicked.connect(self._open_firing_arc)
                         if action:
-                            widget.action_clicked.connect(self._open_3d_viewer)
+                            widget.action_clicked.connect(self._on_card_action)
 
                     col_layout.addWidget(widget)
 
         finally:
             self._ship_rebuilding = False
         self.stack.setCurrentIndex(0)
+
+    def _on_card_action(self, data):
+        """卡片底部按钮分发：加速曲线（dict） / 3D 模型（ship_id 字符串）。"""
+        if isinstance(data, dict) and data.get("kind") == "accel":
+            self._open_accel_dialog(data.get("ship_id") or self._current_filename,
+                                    data.get("accel_ctx"))
+        else:
+            self._open_3d_viewer(data)
+
+    def _open_accel_dialog(self, ship_id, accel_ctx=None):
+        """打开加速曲线详情窗口（懒创建单实例）。
+
+        accel_ctx：引擎卡片的取数上下文（presenter 构建卡片用的那条引擎/船体记录
+        + 已算好的模型），传入后弹窗直接复用，保证与卡片数值一致。
+        """
+        if not ship_id:
+            return
+        try:
+            from ui.acceleration_dialog import AccelerationDialog
+            from utils.window_utils import center_on_screen
+            if not hasattr(self, "_accel_dialog") or self._accel_dialog is None:
+                self._accel_dialog = AccelerationDialog()
+                center_on_screen(self._accel_dialog, self.window())
+            self._accel_dialog.open_for(ship_id, accel_ctx)
+            self._accel_dialog.show()
+            self._accel_dialog.raise_()
+            self._accel_dialog.activateWindow()
+        except Exception as exc:
+            bus.log_message.emit(f"❌ 打开加速曲线失败: {exc}")
 
     def _open_firing_arc(self, fa: dict):
         """打开炮塔射界查看窗口并定位到指定舰船/武器槽位。"""
@@ -2624,6 +2669,47 @@ class DetailPanel(QWidget):
         """
         raise NotImplementedError("_consumable_detail_items 由服务器子类实现")
 
+    def _merged_mod_value(self, key: str, default: float = 0.0) -> float:
+        """已选**升级品 + 技能**里某个修饰符键的数值（加性键取和、其余相乘）；无则 default。
+
+        与 `_refresh_data_only` 的合并口径一致（`_ADDITIVE_KEYS_BASE` 决定加/乘），
+        供消耗品详情这类不经 presenter 的局部渲染取用。
+        """
+        _st = ""
+        try:
+            _st = ((self._current_analyzed or {}).get("config_bar") or {}).get("shiptype_en", "")
+        except Exception:  # noqa: BLE001
+            _st = ""
+
+        def _extract(_mv):
+            if isinstance(_mv, dict):
+                _mv = _mv.get(_st) or next((x for x in _mv.values() if isinstance(x, (int, float))), None)
+            try:
+                return float(_mv)
+            except (TypeError, ValueError):
+                return None
+
+        vals: list[float] = []
+        for _m in (getattr(self, '_selected_mods', {}) or {}).values():
+            _mods = _m.get("modifiers", {}) if isinstance(_m, dict) else {}
+            if key in _mods:
+                _v = _extract(_mods[key])
+                if _v is not None:
+                    vals.append(_v)
+        for _sk in (getattr(self, '_selected_skill_mods', {}) or {}).values():
+            if isinstance(_sk, dict) and key in _sk:
+                _v = _extract(_sk[key])
+                if _v is not None:
+                    vals.append(_v)
+        if not vals:
+            return default
+        if key in _ADDITIVE_KEYS_BASE:
+            return float(sum(vals))
+        _out = 1.0
+        for _v in vals:
+            _out *= _v
+        return _out
+
     def _on_consumable_btn_click(self, cid: str, dname: str, ckey: str, parent_container: QWidget,
                                   extra_count: int = 0, btn=None, all_btns=None,
                                   stack: QStackedWidget | None = None) -> None:
@@ -2750,6 +2836,21 @@ class DetailPanel(QWidget):
                             elif _field == _duration_label and wt:
                                 wt = wt * _mv_f if _fmt == "coeff" else wt + _mv_f
                 ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
+                # 引擎增压消耗品专属：升级品/技能的加性加成也要落到按钮详情里
+                #   boostCoeffForsage（+0.22 ⇒ 最高航速 +8% → +30%）
+                #   speedBoostersAdditionalConsumables（+1 ⇒ 可用次数 +1）
+                # 仅在**舰船消耗品**这条路径生效（舰载机消耗品用的是自己的 stack）
+                if (ct == "speedBoosters" and _stack is not None
+                        and _stack is getattr(self, '_con_detail_stack', None)):
+                    _bc_extra = self._merged_mod_value("boostCoeffForsage")
+                    if _bc_extra:
+                        cfgd['boostCoeff'] = float(cfgd.get('boostCoeff', 0) or 0) + _bc_extra
+                    _uses_extra = self._merged_mod_value("speedBoostersAdditionalConsumables")
+                    if _uses_extra and str(num_raw) not in ('0', '-1'):
+                        try:
+                            num_raw = str(int(float(num_raw) + _uses_extra))
+                        except (TypeError, ValueError):
+                            pass
                 is_auto = cfgd.get('isAutoConsumable', False)
                 self._consumable_detail_items(
                     items, bp, cfgd, conn, vc, kv,

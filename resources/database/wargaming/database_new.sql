@@ -494,6 +494,8 @@ CREATE TABLE IF NOT EXISTS ship_module_engine (
     forward_speed_on_flood REAL,       -- 进水时前进速度惩罚系数
     backward_speed_on_flood REAL,      -- 进水时后退速度惩罚系数
     speed_coef REAL,                   -- 航速修正系数：实际航速=船体基础航速×(1+speed_coef)
+    damaged_engine_power_multiplier REAL,      -- 引擎受损时出力乘数（如 -0.6 → 出力 ×0.4）
+    damaged_engine_power_time_multiplier REAL, -- 引擎受损时满功率时间乘数（如 5.5）
     PRIMARY KEY (version_code, ship_id, config_group, module_key),
     FOREIGN KEY (version_code, ship_id) REFERENCES ship_basic_info(version_code, ship_id) ON DELETE CASCADE
 );

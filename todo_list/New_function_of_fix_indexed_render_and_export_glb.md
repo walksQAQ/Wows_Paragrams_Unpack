@@ -13,9 +13,7 @@
 
 ---
 
-## 一、已确证事实（2026-08-20 数据库探针结论）
-
-探针脚本（`_temp/scripts/`）：`probe_indexed_material.py` / `probe_indexed_arrays.py` / `probe_indexed_tint.py`。
+## 一、已确证事实（2026-08-20 数据库核查结论）
 
 1. **INDEXED 材质共 162 个**（`assets_data.db / material_full`，`family='indexed'`，shader_id 高 16 位 `0x0009`）。
 2. **每材质 9 张贴图**（全部已入库 `material_full.textures`）：
