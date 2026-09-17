@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS data_version_registry (
 -- 滚动剪枝索引：快速定位最旧版本
 CREATE INDEX IF NOT EXISTS idx_version_seq ON data_version_registry(version_id);
 
+-- 「入库完成」标记：只有完整跑完（含分析阶段）的版本才有一行。
+-- 入库被中途强杀（如打包前 taskkill）时不会有行 ⇒ 半成品不会被当成可用数据。
+CREATE TABLE IF NOT EXISTS meta_import_state (
+    version_code TEXT PRIMARY KEY,                    -- 跑完的版本代号
+    completed_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
 
 -- ═════════════════════════════════════════════════════════════════════
 -- 1. 本地化层 (Localization)  — 不绑定 version_code，跨版本共享

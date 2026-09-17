@@ -1421,6 +1421,8 @@ class LestaShipPresenter(LestaBasePresenter):
                 items.append(self.make_item("是否有核心区", "是" if h['has_citadel'] else "否", o)); o += 1
 
             # 模块溅射防护口径（引擎/舵机/弹药库等，Splash 有效装甲 → 防溅口径）
+            # ⚠️【临时跳过】由 splash_protection_service.FEATURE_ENABLED 总闸控制
+            from services import splash_protection_service as _sps
             SP_TYPE_CN = {
                 "engine": "引擎", "steering": "舵机", "magazine": "弹药库",
                 "torpedo": "鱼雷管", "sonar": "声呐",
@@ -1432,6 +1434,8 @@ class LestaShipPresenter(LestaBasePresenter):
                     (vc, ship_id)).fetchall()
             except Exception:  # noqa: BLE001
                 sp_rows = []
+            if not _sps.FEATURE_ENABLED:
+                sp_rows = []          # 总闸关闭时不显示（模型未定稿）
             sp_seen: set[str] = set()
             for r in sp_rows:
                 mt = r['module_type']

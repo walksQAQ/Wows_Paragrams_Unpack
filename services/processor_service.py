@@ -287,6 +287,11 @@ def run_process() -> "_AppTask":
             if not assets_ok[0]:
                 # assets_data.db 写入失败/超时 → 主流程以报错方式终止（不标「全部完成」）
                 return False, "3D 缓存（assets_data.db）写入失败，已终止加载流程"
+            # 全部写完才把版本标成「入库完成」（写 meta_import_state）——中途被强杀时不会执行，
+            # 于是半成品不会被 get_latest_version_code() 当成可用数据
+            n = db.mark_version_complete(version_code)
+            db.checkpoint("TRUNCATE")          # 大 WAL 会拖慢后续开库/写入，收主库里
+            bus.log_message.emit(f"✅ 入库完成（{n} 个实体），已回收 WAL")
         return True, msg
 
     def _ok(ret):

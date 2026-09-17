@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import struct
 import threading
+import time
 from pathlib import Path
 
 from utils.path_utils import get_data_dir
@@ -46,6 +47,18 @@ from utils.path_utils import get_data_dir
 #: v11（2026-08-25）：多节点并集**仅对刚性（skinned=0）件**生效；蒙皮 shape 的
 #:    nodes 是蒙皮骨骼调色板，并集会污染（如 TurretShape 的 4 骨骼）。保留首条。
 ASSETS_SCHEMA_VERSION = 16
+
+# ── 分批落库阈值（模块级常量，便于测试时覆盖）────────────────
+# 背景：Lesta 有 39793 个骨架 / 119631 个 visual → 骨骼 100 万+ 行、渲染集 40 万行。
+# 若先全部攒在 Python 列表里最后一次性 executemany，峰值可达 1.5GB+（叠在本服务自身
+# ~800MB 之上）→ 触发换页，看起来像卡死。改为边解析边分批写库，峰值内存恒定。
+SKEL_FLUSH = 1500          # 骨架：每 N 个骨架写一批
+SKEL_LOG = 2000            # 骨架：每 N 个骨架报一次进度
+RS_LOG = 20000             # 渲染集：每 N 条记录报一次进度
+RS_CHUNK = 20000           # 渲染集：末尾写库时每批 N 条
+MF_FLUSH = 3000            # 材质：行数超过 N 条写一批
+MF_LOG = 4000              # 材质：每 N 个文件报一次进度
+EXT_FLUSH = 400            # 外观：行数超过 N 条写一批（单条 data_json 可能很大）
 
 
 class AssetsCacheService:
@@ -82,49 +95,51 @@ class AssetsCacheService:
     # ── 连接 ────────────────────────────────────────────────
 
     @staticmethod
-    def _merge_render_set_rows(rows: list[tuple]) -> list[tuple]:
-        """汇总同一 (geom_path, shape) 的多条渲染集项：合并 node 调色板（并集）。
+    def _merge_render_set_into(merged: dict, row: tuple) -> None:
+        """把一条渲染集行并入汇总字典（按 PK = (bin_folder, geom_path, shape)）。
 
         原始资产里同一 shape 可绑定多个骨骼节点（左右舷实例化，如 motor_cutter），
         但 render_sets 表 PK 是 (bin_folder, geom_path, shape)，INSERT OR REPLACE 会把
         多条折叠成一条 → 丢失其余节点 → 只渲染一个实例。此处按 PK 合并，把节点并集
         写回单行 nodes 数组，供 geometry_service 逐节点实例化。
 
-        输入 tuple: (bin_folder, geom_path, shape, material, mfm, damage, skinned, nodes_json)
+        populate 现为**流式**调用本方法（内存有界）；_merge_render_set_rows 为批量包装。
         """
+        key = (row[0], row[1], row[2])
+        sk = int(row[6])
+        m = merged.get(key)
+        if m is None:
+            nodeset: set = set()
+            if row[7]:
+                try:
+                    nodeset.update(json.loads(row[7]))
+                except Exception:  # noqa: BLE001
+                    pass
+            # 首条：无论刚性/蒙皮都用它的节点调色板（蒙皮 shape 的调色板 = 蒙皮骨骼）
+            merged[key] = [row[3], row[4], row[5], sk, nodeset]
+        else:
+            m[3] = int(m[3]) or sk
+            # ★ 仅**刚性（skinned=0）**项并入额外节点（多实例，如左右舷）；
+            #   蒙皮项节点是蒙皮调色板，保留首条即可，并集会污染骨骼调色板。
+            if sk == 0 and row[7]:
+                try:
+                    m[4].update(json.loads(row[7]))
+                except Exception:  # noqa: BLE001
+                    pass
+
+    @staticmethod
+    def _materialize_render_set(merged: dict) -> list[tuple]:
+        """汇总字典 → 待写库行（nodes 排序后 JSON）。"""
+        return [(k[0], k[1], k[2], v[0], v[1], v[2], int(v[3]),
+                 json.dumps(sorted(v[4]))) for k, v in merged.items()]
+
+    @staticmethod
+    def _merge_render_set_rows(rows: list[tuple]) -> list[tuple]:
+        """批量汇总（等价于流式 _merge_render_set_into + _materialize_render_set）。"""
         merged: dict[tuple, list] = {}
-        order: list[tuple] = []
         for r in rows:
-            bin_folder, gp, shp, mat, mfm, damage, skinned, nodes_json = r
-            key = (bin_folder, gp, shp)
-            sk = int(skinned)
-            if key not in merged:
-                nodeset: set = set()
-                if nodes_json:
-                    try:
-                        nodeset.update(json.loads(nodes_json))
-                    except Exception:  # noqa: BLE001
-                        pass
-                # 首条：无论刚性/蒙皮都用它的节点调色板（蒙皮 shape 的调色板 = 蒙皮骨骼）
-                merged[key] = [mat, mfm, damage, sk, nodeset]
-                order.append(key)
-            else:
-                m = merged[key]
-                m[3] = int(m[3]) or sk
-                # ★ 仅**刚性（skinned=0）**项并入额外节点（多实例，如左右舷）；
-                #   蒙皮项节点是蒙皮调色板，保留首条即可，并集会污染骨骼调色板。
-                if sk == 0 and nodes_json:
-                    try:
-                        m[4].update(json.loads(nodes_json))
-                    except Exception:  # noqa: BLE001
-                        pass
-        out: list[tuple] = []
-        for key in order:
-            bin_folder, gp, shp = key
-            mat, mfm, damage, skinned, nodeset = merged[key]
-            out.append((bin_folder, gp, shp, mat, mfm, damage,
-                        int(skinned), json.dumps(sorted(nodeset))))
-        return out
+            AssetsCacheService._merge_render_set_into(merged, r)
+        return AssetsCacheService._materialize_render_set(merged)
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -502,11 +517,52 @@ class AssetsCacheService:
 
             # 1) 骨架挂点 + 完整骨骼世界矩阵（bind pose 按 parent 累积）
             #    Korabli：SkeletonPrototype；WG：Visual nodes（HP_）+ SkeletonExtender（MP_）
+            #
+            # ⚠️ 必须**分批落库**：Lesta 有 39793 个骨架 → 约 102 万骨骼行 + 66 万挂点行。
+            #    若先把它们全部攒在 Python 列表里、最后再一次性 executemany，光这些 13 元组
+            #    就要 ~800MB 常驻（叠在本服务自身 ~800MB 之上）→ 触发换页，整个阶段看起来
+            #    像卡死（用户实测：日志停在「解析舰体骨架挂点与骨骼」不再前进）。
+            #    每 SKEL_FLUSH 个骨架写一批并 clear()，峰值内存恒定在几十 MB。
+            #    事务仍然只有一个（末尾统一 commit）→ 中途被强杀时整体回滚，不会留半成品。
             import numpy as np
             skel_rows: list[tuple] = []
             bone_rows: list[tuple] = []
             skel_failed: list[str] = []
-            for f in skel_files:
+            n_skel = len(skel_files)
+            tot_mounts = 0
+            tot_bones = 0
+            _t_skel = time.time()
+
+            def _flush_skel() -> None:
+                """把已累积的挂点/骨骼行写库并清空（内存有界）。"""
+                nonlocal tot_mounts, tot_bones
+                if skel_rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO skeleton_mounts "
+                        "(bin_folder, stem, hp_name, "
+                        "pos_x, pos_y, pos_z, rot_qx, rot_qy, rot_qz, rot_qw, "
+                        "scale_x, scale_y, scale_z) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        skel_rows)
+                    tot_mounts += len(skel_rows)
+                    skel_rows.clear()
+                if bone_rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO skeleton_bones "
+                        "(bin_folder, stem, bone_name, "
+                        "pos_x, pos_y, pos_z, rot_qx, rot_qy, rot_qz, rot_qw, "
+                        "scale_x, scale_y, scale_z) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        bone_rows)
+                    tot_bones += len(bone_rows)
+                    bone_rows.clear()
+
+            for _si, f in enumerate(skel_files, 1):
+                if _si % SKEL_FLUSH == 0:
+                    _flush_skel()
+                if _si % SKEL_LOG == 0 and n_skel > SKEL_LOG:
+                    _p(f"骨架解析 {_si}/{n_skel}"
+                       f"（骨骼 {tot_bones + len(bone_rows):,} / "
+                       f"挂点 {tot_mounts + len(skel_rows):,}，"
+                       f"已用 {time.time() - _t_skel:.0f}s）...")
                 stem = self._stem_of_skeleton(f.path)
                 if not stem:
                     continue
@@ -563,34 +619,62 @@ class AssetsCacheService:
             if self._is_wg():
                 self._populate_wg_skeleton(
                     svc, db, sdict, self_id_idx, bin_folder,
-                    vis_files, ext_files, skel_rows, bone_rows, skel_failed)
+                    vis_files, ext_files, skel_rows, bone_rows, skel_failed,
+                    flush_cb=_flush_skel,
+                    log_cb=lambda i, n: _p(
+                        f"WG 骨架解析 {i}/{n}"
+                        f"（骨骼 {tot_bones + len(bone_rows):,} / "
+                        f"挂点 {tot_mounts + len(skel_rows):,}，"
+                        f"已用 {time.time() - _t_skel:.0f}s）..."))
+            _flush_skel()
             if skel_failed:
                 sample = ", ".join(skel_failed[:5])
                 more = f" 等 {len(skel_failed)} 个" if len(skel_failed) > 5 else ""
                 _p(f"⚠️ {len(skel_failed)} 个骨架解码失败: {sample}{more}")
-            if skel_rows:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO skeleton_mounts "
-                    "(bin_folder, stem, hp_name, "
-                    "pos_x, pos_y, pos_z, rot_qx, rot_qy, rot_qz, rot_qw, "
-                    "scale_x, scale_y, scale_z) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    skel_rows)
-            counts["skeleton"] = len(skel_rows)
-            del skel_rows
-            if bone_rows:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO skeleton_bones "
-                    "(bin_folder, stem, bone_name, "
-                    "pos_x, pos_y, pos_z, rot_qx, rot_qy, rot_qz, rot_qw, "
-                    "scale_x, scale_y, scale_z) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    bone_rows)
-            counts["skeleton_bones"] = len(bone_rows)
-            del bone_rows
+            counts["skeleton"] = tot_mounts
+            counts["skeleton_bones"] = tot_bones
+            skel_rows.clear()
+            bone_rows.clear()
 
             _p("解析视觉渲染集（shape → 材质/mfm 引用）...")
 
             # 2) 视觉渲染集（VisualPrototype 渲染集区 → shape/材质/mfm）
-            rs_rows: list[tuple] = []
+            #    行数可达 40 万+，直接攒成列表要几百 MB → 改为**边解析边按 PK 汇总到字典**
+            #    （字典比原始行省内存：同 PK 折叠），解析全部完成后分块写库。
+            #    ★ 字典**不能中途清空**：同一 (geom_path, shape) 可能出现在多个记录里，
+            #      需要全阶段并集，才与旧的批量 _merge_render_set_rows 完全等价。
+            rs_merged: dict[tuple, list] = {}
+            tot_rs = 0
+            _t_rs = time.time()
+
+            def _add_rs(row: tuple) -> None:
+                """按 PK(bin_folder, geom_path, shape) 汇总节点调色板（流式，内存有界）。"""
+                self._merge_render_set_into(rs_merged, row)
+
+            def _write_rs() -> None:
+                """汇总字典 → 分块写库（解析结束后调**一次**，字典内容不变）。"""
+                nonlocal tot_rs
+                if not rs_merged:
+                    return
+                buf: list[tuple] = []
+                for k, v in rs_merged.items():
+                    buf.append((k[0], k[1], k[2], v[0], v[1], v[2], int(v[3]),
+                                json.dumps(sorted(v[4]))))
+                    if len(buf) >= RS_CHUNK:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO render_sets "
+                            "(bin_folder, geom_path, shape, material, mfm, damage, "
+                            "skinned, nodes) VALUES (?,?,?,?,?,?,?,?)", buf)
+                        tot_rs += len(buf)
+                        buf.clear()
+                if buf:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO render_sets "
+                        "(bin_folder, geom_path, shape, material, mfm, damage, "
+                        "skinned, nodes) VALUES (?,?,?,?,?,?,?,?)", buf)
+                    tot_rs += len(buf)
+                    buf.clear()
+
             try:
                 from uncode_assets.parser import BLOB_HEADER_SIZE
                 from uncode_assets.types import type_from_magic
@@ -603,13 +687,17 @@ class AssetsCacheService:
                     nrec = vis.record_count
                     wg = self._is_wg()
                     for ri in range(nrec):
+                        if (ri + 1) % RS_LOG == 0 and nrec > RS_LOG:
+                            _p(f"渲染集解析 {ri + 1}/{nrec}"
+                               f"（已汇总 {len(rs_merged):,} 条，"
+                               f"已用 {time.time() - _t_rs:.0f}s）...")
                         off = BLOB_HEADER_SIZE + ri * isize
                         if wg:
                             # WG VisualPrototype 0x70 布局（wows-toolkit visual.rs）：
                             # 渲染集 relptr 在 +0x60，记录头字段与 Korabli 完全不同，
                             # 走专用 WG 解析（每记录一 geometry → 渲染集 0x28 步长）
                             self._render_sets_wg(data, off, db, self_id_idx, sdict,
-                                                 bin_folder, rs_rows)
+                                                 bin_folder, _add_rs)
                             continue
                         if off + 0x40 > len(data):
                             break
@@ -660,30 +748,31 @@ class AssetsCacheService:
                                             nm = sdict.get(nid) or ''
                                             if nm:
                                                 nodes.append(nm)
-                            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage,
-                                            int(skinned), json.dumps(nodes)))
+                            _add_rs((bin_folder, gp, shp, mat, mfm, damage,
+                                     int(skinned), json.dumps(nodes)))
             except Exception:  # noqa: BLE001
                 pass
-            if rs_rows:
-                # ★ 汇总同一 shape 的多节点绑定（左右舷实例化），避免 PK 折叠丢节点
-                rs_rows = self._merge_render_set_rows(rs_rows)
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO render_sets "
-                    "(bin_folder, geom_path, shape, material, mfm, damage, "
-                    "skinned, nodes) VALUES (?,?,?,?,?,?,?,?)", rs_rows)
-            counts["render_sets"] = len(rs_rows)
-            del rs_rows
-
-            # 2.5) shape 名哈希表（*.vertices：mapping_id → 名，LOD/crack 兜底跳过用）
-            #      ★ 显示时只从本库读取，绝不现场读 assets.bin 字符串表
-            sn_rows = [(bin_folder, h, nm) for h, nm in sdict.items()
-                       if nm.endswith(".vertices")]
+            _write_rs()
+            counts["render_sets"] = tot_rs
+            _p(f"渲染集已入库: {tot_rs:,} 条")
+            tot_sn = 0
+            sn_rows: list[tuple] = []
+            for h, nm in sdict.items():
+                if nm.endswith(".vertices"):
+                    sn_rows.append((bin_folder, h, nm))
+                    if len(sn_rows) >= 50000:
+                        self._conn.executemany(
+                            "INSERT OR REPLACE INTO shape_names "
+                            "(bin_folder, hash, name) VALUES (?,?,?)", sn_rows)
+                        tot_sn += len(sn_rows)
+                        sn_rows.clear()
             if sn_rows:
                 self._conn.executemany(
                     "INSERT OR REPLACE INTO shape_names (bin_folder, hash, name) "
                     "VALUES (?,?,?)", sn_rows)
-            counts["shape_names"] = len(sn_rows)
-            del sn_rows
+                tot_sn += len(sn_rows)
+                sn_rows.clear()
+            counts["shape_names"] = tot_sn
 
             _p(f"解析材质（{len(mfm_files)} 个 mfm 文件）...")
 
@@ -696,7 +785,39 @@ class AssetsCacheService:
             mf_rows: list[tuple] = []
             mfm_failed: list[str] = []
             wg_mat = self._is_wg()
-            for f in mfm_files:
+            # 同样分批落库：material_full 每行带 INDEXED vec4 的 JSON（可达数 KB），
+            # 3 万条全攒在内存里同样是几百 MB
+            n_mfm = len(mfm_files)
+            tot_mfm = 0
+            tot_mf = 0
+            _t_mf = time.time()
+
+            def _flush_mf() -> None:
+                nonlocal tot_mfm, tot_mf
+                if mfm_rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO mfm_textures "
+                        "(bin_folder, mfm_path, texture_path) VALUES (?,?,?)",
+                        mfm_rows)
+                    tot_mfm += len(mfm_rows)
+                    mfm_rows.clear()
+                if mf_rows:
+                    self._conn.executemany(
+                        "INSERT OR REPLACE INTO material_full "
+                        "(bin_folder, mfm_path, shader_id, family, material_hash, "
+                        "textures, indexed) VALUES (?,?,?,?,?,?,?)", mf_rows)
+                    tot_mf += len(mf_rows)
+                    mf_rows.clear()
+
+            for _mi, f in enumerate(mfm_files, 1):
+                if len(mf_rows) >= MF_FLUSH:
+                    _flush_mf()
+                if _mi % MF_LOG == 0:
+                    _flush_mf()
+                    if n_mfm > MF_LOG:
+                        _p(f"材质解析 {_mi}/{n_mfm}"
+                           f"（完整材质 {tot_mf:,} 条 / 贴图映射 {tot_mfm:,} 条，"
+                           f"已用 {time.time() - _t_mf:.0f}s）...")
                 try:
                     data = svc.vfs.open_file_len(f.path, 0x78 if wg_mat else 0x90)
                 except Exception as exc:  # noqa: BLE001
@@ -799,19 +920,9 @@ class AssetsCacheService:
                 sample = ", ".join(mfm_failed[:5])
                 more = f" 等 {len(mfm_failed)} 个" if len(mfm_failed) > 5 else ""
                 _p(f"⚠️ {len(mfm_failed)} 个材质文件读取失败: {sample}{more}")
-            if mfm_rows:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO mfm_textures "
-                    "(bin_folder, mfm_path, texture_path) VALUES (?,?,?)", mfm_rows)
-            counts["mfm_textures"] = len(mfm_rows)
-            del mfm_rows
-            if mf_rows:
-                self._conn.executemany(
-                    "INSERT OR REPLACE INTO material_full "
-                    "(bin_folder, mfm_path, shader_id, family, material_hash, textures, indexed) "
-                    "VALUES (?,?,?,?,?,?,?)", mf_rows)
-            counts["material_full"] = len(mf_rows)
-            del mf_rows
+            _flush_mf()
+            counts["mfm_textures"] = tot_mfm
+            counts["material_full"] = tot_mf
 
             _p("写入外观（Exterior）与涂装（camouflages.xml）数据...")
             # 每次加载清空旧选项图，重新提取存储
@@ -849,6 +960,14 @@ class AssetsCacheService:
                 icon_map = self._camo_icon_map(game_dir, bin_folder, ext_factory=_ext_factory)
                 ext_dir = get_split_dir() / "Exterior"
                 ext_rows: list[tuple] = []
+                # 单条 data_json 是整份 Exterior JSON（可达数十 KB），数千条堆在内存里
+                # 同样可观 → 分批落库（与骨架/渲染集同一策略）
+                ext_sql = ("INSERT OR REPLACE INTO exteriors "
+                           "(version_code, ext_index, name, camouflage, species, nation, "
+                           "cost_gold, can_buy, parts_json, custom_json, "
+                           "unpeculiar_camouflage, color_scheme_id, icon_path, display_name, data_json) "
+                           "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                tot_ext = 0
                 if ext_dir.exists():
                     ext_files = sorted(ext_dir.glob("*.json"))
                     ext_total = len(ext_files)
@@ -888,18 +1007,18 @@ class AssetsCacheService:
                             display_name,
                             json.dumps(d, ensure_ascii=False),
                         ))
+                        if len(ext_rows) >= EXT_FLUSH:
+                            self._conn.executemany(ext_sql, ext_rows)
+                            tot_ext += len(ext_rows)
+                            ext_rows.clear()
                         if ext_total > ext_batch and _i % ext_batch == 0:
                             _p(f"外观数据入库进度 {_i}/{ext_total} ...")
                 if ext_rows:
-                    self._conn.executemany(
-                        "INSERT OR REPLACE INTO exteriors "
-                        "(version_code, ext_index, name, camouflage, species, nation, "
-                        "cost_gold, can_buy, parts_json, custom_json, "
-                        "unpeculiar_camouflage, color_scheme_id, icon_path, display_name, data_json) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ext_rows)
-                counts["exteriors"] = len(ext_rows)
+                    self._conn.executemany(ext_sql, ext_rows)
+                    tot_ext += len(ext_rows)
+                    ext_rows.clear()
+                counts["exteriors"] = tot_ext
                 _p(f"外观数据已入库: {counts['exteriors']} 条")
-                del ext_rows
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1507,8 +1626,10 @@ class AssetsCacheService:
     # ── 工具 ────────────────────────────────────────────────
 
     def _render_sets_wg(self, data, off, db, self_id_idx, sdict,
-                        bin_folder, rs_rows) -> None:
+                        bin_folder, add_row) -> None:
         """WG VisualPrototype 渲染集解析（0x70 记录 + 0x28 渲染集，wows-toolkit visual.rs）。
+
+        add_row: 单行回调（= populate 里的 _add_rs，边解析边汇总，内存有界）。
 
         WG 记录布局（与 Korabli 完全不同，不可复用 Korabli 的 +0x30/+0x38/+0x20）：
           +0x30 u64 merged_geometry_path_id
@@ -1561,12 +1682,12 @@ class AssetsCacheService:
                             nm = sdict.get(nid) or ''
                             if nm:
                                 nodes.append(nm)
-            rs_rows.append((bin_folder, gp, shp, mat, mfm, damage,
-                            int(skinned), json.dumps(nodes)))
+            add_row((bin_folder, gp, shp, mat, mfm, damage,
+                     int(skinned), json.dumps(nodes)))
 
     def _populate_wg_skeleton(self, svc, db, sdict, self_id_idx, bin_folder,
                               vis_files, ext_files, skel_rows, bone_rows,
-                              skel_failed) -> None:
+                              skel_failed, flush_cb=None, log_cb=None) -> None:
         """WG 骨架：VisualPrototype nodes（基础骨架，含 HP_ 挂点）+ SkeletonExtender（MP_/SP_/EP_）。
 
         数据来源（wows-toolkit）：
@@ -1577,11 +1698,23 @@ class AssetsCacheService:
             +0x02 u16 node_count / +0x08 name_ids relptr / +0x18 matrices relptr。
             parent 为名字哈希（通常 Scene Root）→ local 即船空间；节点含 MP_/SP_/EP_。
         矩阵均为列主序 4x4 → 转行主序 → _decompose_mat（含反射 det=-1 处理）。
+
+        flush_cb/log_cb：分批落库 + 进度回调（与 Korabli 分支同样的内存有界策略，
+        本服有 ~12 万 visual 文件，全攒在内存里同样会撑爆）。
         """
         import numpy as np
 
+        def _tick(i: int, n: int, every: int = 2000) -> None:
+            if i % every:
+                return
+            if flush_cb is not None:
+                flush_cb()
+            if log_cb is not None and n > every:
+                log_cb(i, n)
+
         # 1) VisualPrototype nodes → HP_ 挂点 + 全部骨骼
-        for f in vis_files:
+        for _i, f in enumerate(vis_files, 1):
+            _tick(_i, len(vis_files))
             stem = self._stem_of_skeleton(f.path)
             if not stem:
                 continue
@@ -1618,7 +1751,8 @@ class AssetsCacheService:
                 skel_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
 
         # 2) SkeletonExtender → MP_/SP_/EP_ 挂点（local 即船空间）
-        for f in ext_files:
+        for _i, f in enumerate(ext_files, 1):
+            _tick(_i, len(ext_files))
             stem = self._stem_of_skeleton(f.path)
             if not stem:
                 continue

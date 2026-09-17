@@ -264,7 +264,14 @@ class LestaAnalysisStore:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
-        self.conn = db._conn
+        #: name_mappings 全体 key_name 缓存（整批入库期间跨船复用，
+        #: 避免每船一次 SELECT key_name FROM name_mappings 全表扫描）
+        self._nm_keys: set[str] | None = None
+
+    @property
+    def conn(self):
+        """始终返回当前线程的数据库连接（DatabaseManager._conn 可能被重建）。"""
+        return self.db._conn
 
     def _gf(self, raw_data: dict, field_spec, default=None):
         if callable(field_spec):
@@ -659,14 +666,15 @@ class LestaAnalysisStore:
                     all_module_ids.add(m)
 
         # 尝试从原始 JSON 中为模块 ID 提取名称
-        # 一次性取全部已有 name_mappings key_name 到内存集合，
-        # 替代逐 module id 单独 SELECT（N+1 → 1 次查询）
-        try:
-            existing_keys = {r[0] for r in self.conn.execute(
-                "SELECT key_name FROM name_mappings").fetchall()}
-        except Exception as exc:  # noqa: BLE001
-            bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
-            existing_keys = set()
+        # name_mappings 全体 key 在整批入库期间只查一次并跨船复用（惰性缓存），
+        # 替代每船一次全表扫描（约 9 ms × 上千船）
+        if self._nm_keys is None:
+            try:
+                self._nm_keys = {r[0] for r in self.conn.execute(
+                    "SELECT key_name FROM name_mappings").fetchall()}
+            except Exception as exc:  # noqa: BLE001
+                bus.log_message.emit(f"⚠️ [分析] 读取已有模块名映射失败: {exc}")
+        existing_keys = self._nm_keys if self._nm_keys is not None else set()
         name_items = []
         for mid in all_module_ids:
             # 跳过系统内部名称
@@ -687,6 +695,9 @@ class LestaAnalysisStore:
                 self.conn.executemany(
                     "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                     name_items)
+                # 同步缓存，避免下一条船重新全表扫描
+                if self._nm_keys is not None:
+                    self._nm_keys.update(k for _c, k, _v in name_items)
             except Exception as exc:  # noqa: BLE001
                 bus.log_message.emit(f"⚠️ [分析] 模块名映射入库失败: {exc}")
 
@@ -1477,9 +1488,11 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
         name_key = f"IDS_{person_name.upper()}" if person_name else crew_id.upper()
         try:
             # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
                 ("crew", name_key, person_name or crew_id))
+            if cur.rowcount and self._nm_keys is not None:
+                self._nm_keys.add(name_key)  # 同步缓存
         except Exception as exc:  # noqa: BLE001
             bus.log_message.emit(f"⚠️ [分析] 船员名映射入库失败({name_key}): {exc}")
         conn.execute("""INSERT OR REPLACE INTO crew_basic_info
@@ -1615,6 +1628,15 @@ class LestaAnalysisService:
         # 舰船溅射防护共用的 GameExtractor（勿每船新建：重载 IDX 文件树极贵）
         self._splash_extractor = None
         self._splash_extractor_failed = False
+        # 整批复用同一个 Store 实例（保留 name_mappings key 等跨实体缓存）
+        self._store: LestaAnalysisStore | None = None
+
+    def _get_store(self, db: DatabaseManager) -> LestaAnalysisStore:
+        """取整批复用的 Store（同一 db 复用，跨实体缓存才生效）。"""
+        st = self._store
+        if st is None or st.db is not db:
+            st = self._store = LestaAnalysisStore(db)
+        return st
 
     def initialize(self) -> None:
         self._ready = True
@@ -1630,7 +1652,7 @@ class LestaAnalysisService:
         # （wg_compat.WG_NORMALIZE_ENTITY 未实现时对 WG 原样返回，走 Lesta 读取路径）
         raw_data = wg_compat.normalize_entity(app_ctx.ctx.wows_type, raw_data)
         from services.database_service import get_db as _get_db
-        store = LestaAnalysisStore(db or _get_db())
+        store = self._get_store(db or _get_db())
         func_map = {
             "Ship": store.store_ship, "Projectile": store.store_projectile,
             "Aircraft": store.store_plane, "Ability": store.store_consumable,
@@ -1656,6 +1678,11 @@ class LestaAnalysisService:
                                       db: DatabaseManager, version_code: str):
         """计算并保存舰船模块溅射防护口径。任何失败均静默返回，不阻塞主流程。"""
         try:
+            from services.splash_protection_service import FEATURE_ENABLED as _SP_ON
+            if not _SP_ON:
+                # ⚠️ 总闸关闭：防溅模型未定稿，且逐三角形射线求交极慢
+                # （实测 ~5s/船 × 1165 ≈ 1.6 小时 → 「数据入库」会长时间停在 [舰船]）
+                return
             # 仅当舰船带 splashBoxes 且游戏目录可用才计算
             has_boxes = any(
                 isinstance(modv, dict) and any(
@@ -1691,7 +1718,7 @@ class LestaAnalysisService:
     def _store_other(self, entity_id, raw_data, version_code="", db=None):
         """处理 Other 类型实体（雷场、技能定义/容器等）"""
         from services.database_service import get_db as _get_db
-        store = LestaAnalysisStore(db or _get_db())
+        store = self._get_store(db or _get_db())
         species = (raw_data.get("typeinfo") or {}).get("species", "")
         if species == "Minefield":
             store.store_minefield(entity_id, raw_data, version_code=version_code)
@@ -1709,7 +1736,7 @@ class LestaAnalysisService:
         """从 split/Other 目录入库 PCOK/PCOL 技能与雷场数据（内存/磁盘两分支共用）。"""
         try:
             if other_dir.exists():
-                store = LestaAnalysisStore(db)
+                store = self._get_store(db)
                 for fp in sorted(other_dir.glob("PCOK*.json")):
                     try:
                         raw = json.loads(fp.read_text("utf-8"))

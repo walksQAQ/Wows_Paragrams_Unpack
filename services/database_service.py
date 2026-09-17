@@ -96,6 +96,8 @@ class DatabaseManager:
         conn.execute("PRAGMA cache_size=-8000")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
+        # 批量入库时降低自动 checkpoint 频率（默认 1000 页≈4 MB 会频繁刷盘）
+        conn.execute("PRAGMA wal_autocheckpoint=4000")
         conn.row_factory = sqlite3.Row
         type(self)._all_connections.add(conn)
         return conn
@@ -159,11 +161,15 @@ class DatabaseManager:
     def initialize(self) -> None:
         """创建所有表（使用 database_new.sql）"""
         current_ver = self.get_current_version()
+        # 上次会话被强杀（如打包脚本的 taskkill）会遗留大 WAL：开库/写入都要照顾它，先收回主库
+        self._shrink_leftover_wal()
         # schema 版本落后 → 整库重建（旧数据被清空），标记以便提示「需要重新加载数据」
         self._schema_rebuilt = False
         if 0 < current_ver < DB_SCHEMA_VERSION:
             self._drop_all_tables()
             self._schema_rebuilt = True
+            # 删表只是把页标成空闲，文件不会缩小（实测可残留数百 MB 空闲页，拖慢后续插入）
+            self._vacuum_after_drop()
 
         # 从 QRC 读取 SQL 初始化脚本，若不可用则回退到文件系统
         # 架构按服务器分离：lesta/database_new.sql 与 wargaming/database_new.sql
@@ -720,13 +726,30 @@ class DatabaseManager:
         return cur.rowcount
 
     def get_latest_version_code(self) -> str | None:
+        """最新可用版本号：取**已跑完入库**的最新版本。
+
+        “跑完”看 `meta_import_state`（由 `mark_version_complete()` 在分析阶段全部写完后才写）。
+        入库被中途强杀（如打包脚本的 taskkill）时不会有行 ⇒ 半成品不会被当成可用数据。
+        老库（没有这张表/表为空）保持旧行为：直接返回最新那条。
+        """
         try:
             cur = self._conn.execute(
-                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC LIMIT 1")
-            row = cur.fetchone()
-            return row["version_code"] if row else None
+                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC")
+            rows = cur.fetchall()
         except sqlite3.OperationalError:
             return None
+        if not rows:
+            return None
+        try:
+            done = {r[0] for r in self._conn.execute("SELECT version_code FROM meta_import_state")}
+        except sqlite3.OperationalError:
+            done = set()                      # 老库：还没这张表
+        if not done:
+            return rows[0]["version_code"]     # 兼容旧库：按“最新版本”处理
+        for r in rows:
+            if r["version_code"] in done:
+                return r["version_code"]
+        return None                            # 一个跑完的都没有 ⇒ 视为无可用数据
 
     def _resolve_vc(self, version_code: str) -> str:
         """空 version_code → 取最新版本；仍无则返回空串（调用方据此早退）。
@@ -768,7 +791,11 @@ class DatabaseManager:
 
     def insert_entities_batch(self, items: list[tuple[str, str, dict]],
                               version_code: str) -> None:
-        """批量注册实体到 entity_registry（含 version_code），并更新版本计数"""
+        """批量注册实体到 entity_registry（含 version_code），并更新版本计数。
+
+        注意：“入库是否跑完”**不看**这里写的 `entity_count`（它只用于展示），
+        而是看 `meta_import_state`（`mark_version_complete()` 在全部写完后才写）。
+        """
         rows = []
         for category, key, data in items:
             etype = self._entity_type(category)
@@ -778,7 +805,7 @@ class DatabaseManager:
         self._conn.executemany(
             "INSERT OR IGNORE INTO entity_registry "
             "(version_code, entity_id, entity_type, nation) VALUES (?,?,?,?)", rows)
-        # 更新版本记录中的实体计数
+        # 更新版本记录中的实体计数（仅展示用）
         cur = self._conn.execute(
             "SELECT COUNT(*) FROM entity_registry WHERE version_code=?", (version_code,))
         count = cur.fetchone()[0]
@@ -786,6 +813,60 @@ class DatabaseManager:
             "UPDATE data_version_registry SET entity_count=? WHERE version_code=?",
             (count, version_code))
         self._conn.commit()
+
+    def mark_version_complete(self, version_code: str) -> int:
+        """把该版本标为“入库完成”；返回该版本的实体数。
+
+        调用时机：所有分析/明细表写完**之后**（`processor_service` 入库流程末尾）。
+        中途被强杀时不会执行 ⇒ `meta_import_state` 没有行、`entity_count` 只到注册阶段，
+        于是半成品不会被 `get_latest_version_code()` 当成可用数据。
+        """
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta_import_state (version_code, completed_at) "
+            "VALUES (?, datetime('now','localtime'))", (version_code,))
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM entity_registry WHERE version_code=?", (version_code,))
+        count = cur.fetchone()[0]
+        self._conn.execute(
+            "UPDATE data_version_registry SET entity_count=? WHERE version_code=?",
+            (count, version_code))
+        self._conn.commit()
+        return int(count)
+
+    def checkpoint(self, mode: str = "TRUNCATE", *, threshold_pages: int = 0) -> None:
+        """把 WAL 收回主库（入库结束后调用：大 WAL 会让后续开库/写入变慢）。
+
+        ``threshold_pages`` > 0 时只在 WAL 粗估页数超过该值时才执行。
+        """
+        try:
+            if threshold_pages > 0:
+                n = self._wal_pages()
+                if n is not None and n < threshold_pages:
+                    return
+            self._conn.execute(f"PRAGMA wal_checkpoint({mode})")
+        except sqlite3.OperationalError:
+            pass
+
+    def _wal_pages(self) -> int | None:
+        """估算当前 WAL 页数（读不到返回 None）。"""
+        wal = Path(str(self._db_path) + "-wal")
+        try:
+            return max(0, (wal.stat().st_size - 32) // 4096)
+        except OSError:
+            return None
+
+    def _shrink_leftover_wal(self) -> None:
+        """开库时把遗留的大 WAL 收回主库（> 8 MB 才做，避免每次启动都白花钱）。"""
+        if (self._wal_pages() or 0) > 2048:      # ≈8 MB
+            self.checkpoint("TRUNCATE")
+
+    def _vacuum_after_drop(self) -> None:
+        """重整库重建：把删表留下的空闲页真正释放（否则文件不缩、插入变慢）。"""
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.execute("VACUUM")
+        except sqlite3.OperationalError:
+            pass
 
     def save_entity_snapshots(self, items: list[tuple[str, str, str, str]],
                               version_code: str) -> int:
