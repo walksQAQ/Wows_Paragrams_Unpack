@@ -348,13 +348,20 @@ class BallisticsCalculator:
         return round(float(area) * float(sigma) * float(sigma), 1)
 
     @staticmethod
-    def calc_longitudinal_radius(perp_radius_m: float, impact_angle_deg: float) -> float:
-        """纵向散布半径 = 垂直散布半径 / sin(落弹角)（MKtool shellDispersionMetrics）。
+    def project_vertical_dispersion_to_water(vertical_m: float, impact_angle_deg: float) -> float:
+        """把垂直面纵向散布严格投影到水面射程方向：ΔR = Δn / sin(落弹角)。
 
-        落弹角被钳制在 2°~45° 之间，分母最小 0.035，避免除零。
+        三维推导（θ = 落弹角，Δn = 垂直面内垂直于弹道的纵向位移）：
+          · Δn 在竖直方向的分量 = Δn·cosθ，沿射程方向分量 = Δn·sinθ
+          · 弹着点要回到水面，需沿弹道再走 Δn·cosθ/tanθ
+          · 合计 ΔR = Δn·sinθ + Δn·cos²θ/sinθ = Δn/sinθ
+
+        ⚠️ 小落弹角（近距离平直弹道）会被必然放大 1/sinθ 倍：同一散布在
+        2 km 约 ×69、20 km 约 ×5、25 km 约 ×3.7。该投影只用于右图对照；
+        游戏使用的散布椭圆纵向半轴（左图）不含这一步折算。
         """
-        ia = min(max(float(impact_angle_deg), 2.0), 45.0)
-        return float(perp_radius_m) / max(math.sin(math.radians(ia)), 0.035)
+        sine = math.sin(math.radians(abs(float(impact_angle_deg))))
+        return float(vertical_m) / max(sine, 1e-9)
 
     @staticmethod
     def gaussian_dispersion_points(sigma: float, count: int, seed: int = 0) -> list:

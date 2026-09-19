@@ -7,23 +7,18 @@ from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings, QSize, Signal
-from PySide6.QtGui import QIcon, QPixmap, QIntValidator
+from PySide6.QtGui import QIcon, QPixmap, QIntValidator, QAction
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
     QHeaderView, QWidget, QMessageBox, QSizePolicy,
     QSpinBox, QDoubleSpinBox, QLineEdit, QGroupBox,
     QTabWidget, QFrame, QListWidget, QSlider, QScrollArea,
-    QGridLayout, QCheckBox, QCompleter,
+    QGridLayout, QCheckBox, QCompleter, QMenu,
 )
 
 from utils.theme import theme
 from utils.image_paths import pic_path
-
-# 纵向"落到水面"的投影下限：水面纵向 = 垂直面纵向量 ÷ sin(落弹角)。
-# 落弹角→0（极近距离/超平直弹道）时 1/sin 会发散，故夹到 sin(2°) ≈ 0.0349（≈28.6× 上限），
-# 避免散点图被极端值撑爆。官方 wiki 口径：距离方向散布恒大于侧向散布。
-_PROJ_MIN_SIN = math.sin(math.radians(2.0))
 
 # ── 舰船俯视剪影（散布椭圆图的中心参照）──────────────────────────────────
 # 资源来源：客户端**原生** SVG `gui/battle_hud/new_doll_svg/destroyer.svg`
@@ -753,9 +748,20 @@ class PenetrationCalculatorDialog(QDialog):
         self.ellipse_hide_scatter_cb.setToolTip("隐藏高斯模拟散点，仅显示散布椭圆轮廓，便于多炮弹对比")
         theme.bind(self.ellipse_hide_scatter_cb, "QCheckBox { color:@text@; font-size:11px; }")
         ellipse_ctl.addWidget(self.ellipse_hide_scatter_cb)
+        self.ellipse_show_ship_cb = QCheckBox("显示舰船", self)
+        self.ellipse_show_ship_cb.setChecked(True)
+        self.ellipse_show_ship_cb.setToolTip("显示或隐藏散布椭圆中心的舰船轮廓")
+        theme.bind(self.ellipse_show_ship_cb, "QCheckBox { color:@text@; font-size:11px; }")
+        ellipse_ctl.addWidget(self.ellipse_show_ship_cb)
+        self.ellipse_series_menu = QMenu(self)
+        self.ellipse_series_btn = QPushButton("显示炮弹", self)
+        self.ellipse_series_btn.setMenu(self.ellipse_series_menu)
+        self.ellipse_series_btn.setToolTip("选择散布椭圆中显示的炮弹")
+        self.ellipse_series_btn.setStyleSheet("font-size:11px; padding:2px 8px;")
+        ellipse_ctl.addWidget(self.ellipse_series_btn)
         # 纵向两图并排（见 _build_dispersion_ellipse）：
         #   左 = 垂直面（游戏模型，纵向 = 横向 × 纵向系数）
-        #   右 = 水面投影（实验，纵向 ÷ sin(落弹角)）
+        #   右 = 水面投影（按炮弹落弹角将垂直面纵向半径投到水面）
         # ❗ 经客户端内核验证（脚本 getEllipse）：游戏 getEllipse() 里没有弹道/落角输入，
         #   故**左图才是游戏模型**，右图仅供对照。
         ellipse_ctl.addStretch()
@@ -849,6 +855,8 @@ class PenetrationCalculatorDialog(QDialog):
         self.scatter_edit.editingFinished.connect(self._scatter_apply)
         self.ellipse_unlocked_cb.toggled.connect(self._update_dispersion_ellipse)
         self.ellipse_hide_scatter_cb.toggled.connect(self._update_dispersion_ellipse)
+        self.ellipse_show_ship_cb.toggled.connect(self._update_dispersion_ellipse)
+        self.ellipse_series_menu.aboutToShow.connect(self._refresh_ellipse_series_menu)
 
         self._ship_catalog = []
         self._ship_keyword = ""
@@ -860,6 +868,7 @@ class PenetrationCalculatorDialog(QDialog):
         self._last_sigma = 1.0
         self._last_norm_angle = 6.0
         self._custom_series = []
+        self._ellipse_hidden_series = set()
         self._mod_items = []
         self._mod_buttons = []
         self._side_buttons = []
@@ -1590,8 +1599,49 @@ class PenetrationCalculatorDialog(QDialog):
             lb.clicked.connect(lambda _idx=0, idx=i: self._on_side_button(idx))
             self.side_container_layout.insertWidget(self.side_container_layout.count() - 1, lb)
             self._side_buttons.append(lb)
+        self._refresh_ellipse_series_menu()
         # 提示信息永久显示，不随是否有已添加炮弹而隐藏
         self.side_hint.setVisible(True)
+
+    def _refresh_ellipse_series_menu(self):
+        menu = getattr(self, "ellipse_series_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        series = getattr(self, "_custom_series", [])
+        if not series:
+            action = menu.addAction("暂无已添加炮弹")
+            action.setEnabled(False)
+            return
+        show_all = menu.addAction("全选")
+        show_all.triggered.connect(self._show_all_ellipse_series)
+        hide_all = menu.addAction("清空")
+        hide_all.triggered.connect(self._hide_all_ellipse_series)
+        menu.addSeparator()
+        hidden = getattr(self, "_ellipse_hidden_series", set())
+        for item in series:
+            action = QAction(str(item.get("label") or "炮弹"), menu)
+            action.setCheckable(True)
+            action.setChecked(id(item) not in hidden)
+            action.toggled.connect(lambda checked, series_item=item: self._on_ellipse_series_toggled(series_item, checked))
+            menu.addAction(action)
+
+    def _on_ellipse_series_toggled(self, item, visible: bool):
+        if visible:
+            self._ellipse_hidden_series.discard(id(item))
+        else:
+            self._ellipse_hidden_series.add(id(item))
+        self._update_dispersion_ellipse()
+
+    def _show_all_ellipse_series(self):
+        self._ellipse_hidden_series.clear()
+        self._refresh_ellipse_series_menu()
+        self._update_dispersion_ellipse()
+
+    def _hide_all_ellipse_series(self):
+        self._ellipse_hidden_series = {id(item) for item in self._custom_series}
+        self._refresh_ellipse_series_menu()
+        self._update_dispersion_ellipse()
 
     def _on_side_button(self, idx):
         """点击炮弹按钮 → 将该炮弹移出显示列。"""
@@ -2172,14 +2222,12 @@ class PenetrationCalculatorDialog(QDialog):
             else:
                 _vc = radius_delim + (radius_max - radius_delim) * ((distance - _delim_km) / (max_range_km - _delim_km)) if (max_range_km - _delim_km) else radius_delim
             formula = f"横={h_expr}；纵=横×{_vc:.3f}"
-            # 实验用：把纵向再 ÷sin(落弹角)。❗ 游戏的真实模型不做这一步。
-            # 客户端 getEllipse() 只返回 (横向半轴, 横向半轴×纵向系数)，无弹道/落角输入。
-            # 落弹角→0 时除法会发散，故夹到 sin(2°) 下限。
-            _sin_ia = math.sin(math.radians(max(impact, 0.0)))
-            vert_water = vert / max(_sin_ia, _PROJ_MIN_SIN)
+            # 右图：把垂直面纵向散布按落弹角严格投到水面（三维推导见 service；游戏自身不做该投影）
+            vert_water = BallisticsCalculator.project_vertical_dispersion_to_water(vert, impact)
+            water_area = BallisticsCalculator.calc_dispersion_area(horiz, vert_water)
             # 存全精度（悬浮提示已自行格式化为 2 位小数）；不再对 fly/impact 四舍五入，
             # 否则曲线被量化为 0.1s/0.1° 的阶梯状（锐角）
-            rows.append((distance, horiz, vert, area, fly, pen, impact, formula, vert_water))
+            rows.append((distance, horiz, vert, area, fly, pen, impact, formula, vert_water, water_area))
         return rows
 
     def _build_curve_chart(self, rows, compare_series=None):
@@ -2492,6 +2540,7 @@ class PenetrationCalculatorDialog(QDialog):
                         max_range_global = mr
                     compare_series.append({
                         "label": item["label"],
+                        "series_ref": item,
                         "rows": srows,
                         "color": self.COLOR_POOL[(i + 1) % len(self.COLOR_POOL)],
                         "sigma": sigma,
@@ -2586,6 +2635,8 @@ class PenetrationCalculatorDialog(QDialog):
         shown_dist = target_dist
         items: list[dict] = []
         for idx, series in enumerate(series_list):
+            if id(series.get("series_ref")) in getattr(self, "_ellipse_hidden_series", set()):
+                continue
             rows = series.get("rows") or []
             if not rows:
                 continue
@@ -2596,13 +2647,15 @@ class PenetrationCalculatorDialog(QDialog):
             lateral = float(best_row[1])        # 横向 = 椭圆宽度（侧向，=港口"最大散布"）
             vert_plane = float(best_row[2])     # 纵向(垂直面) = 横向 × 纵向散布系数
             # 纵向 = 横向 × 纵向散布系数（= 游戏 getEllipse 的真实返回值，不做落角投影）。
-            # row[8] 是「垂直面散布 ÷ sin(落弹角) 投影到水面」的实验版本（右图）。
+            # row[8] 是「垂直面散布按落弹角投影到水面」的纵向半径，row[9] 是水面投影面积。
             vert_water = float(best_row[8]) if len(best_row) > 8 else vert_plane
+            water_area = float(best_row[9]) if len(best_row) > 9 else BallisticsCalculator.calc_dispersion_area(lateral, vert_water)
             if self.ellipse_unlocked_cb.isChecked():
                 # 未锁定目标 → 散布椭圆 ×2（莱斯塔 wiki 明确规则）
                 lateral *= 2.0
                 vert_plane *= 2.0
                 vert_water *= 2.0
+                water_area *= 4.0
             sigma = float(series.get("sigma") or getattr(self, "_last_sigma", 1.0) or 1.0)
             label = series.get("label") or f"炮弹{idx + 1}"
             items.append({
@@ -2611,11 +2664,13 @@ class PenetrationCalculatorDialog(QDialog):
                 "lateral": lateral,
                 "vert_plane": vert_plane,
                 "vert_water": vert_water,
+                "water_area": water_area,
                 "points": BallisticsCalculator.gaussian_dispersion_points(sigma, count, seed=idx + 1),
             })
             info_parts.append(
                 f"{label}: 横向半径 {lateral:.0f} m | "
                 f"纵向 {vert_plane:.0f} m(垂直面·游戏) / {vert_water:.0f} m(水面投影) | "
+                f"水面面积 {water_area:.1f} | "
                 f"sigma {sigma:.2f}"
             )
 
@@ -2626,8 +2681,7 @@ class PenetrationCalculatorDialog(QDialog):
             ("vert_plane", "纵向：垂直面"),
             ("vert_water", "纵向：水面投影"),
         )
-        # 每图**各自**取坐标范围：两图纵向量级相差 1/sin(落弹角) 倍，
-        # 若统一范围，小的一侧（垂直面）会被压成一点看不见。
+        # 两图分别取坐标范围，避免不同投影尺寸叠加后压缩图形可读性。
         # 舰船剪影（125 m）是两图共同的尺度参照，仍可直接目测比例。
         margin_of = {
             _k: max(max(it["lateral"] for it in items), max(it[_k] for it in items)) * 1.15 + 5
@@ -2640,6 +2694,8 @@ class PenetrationCalculatorDialog(QDialog):
         _ship_face = "#8f99a6" if _dark else "#b3bcc9"
         _ship_edge = "#e8eef6" if _dark else "#46525f"
         _sx, _sy = self._ship_outline(_ship_l)
+        _show_ship = bool(getattr(self, "ellipse_show_ship_cb", None)
+                  and self.ellipse_show_ship_cb.isChecked())
         _hide_scatter = bool(getattr(self, "ellipse_hide_scatter_cb", None)
                              and self.ellipse_hide_scatter_cb.isChecked())
         _lock_note = " ×2" if self.ellipse_unlocked_cb.isChecked() else ""
@@ -2653,7 +2709,7 @@ class PenetrationCalculatorDialog(QDialog):
             _ax.plot([0], [0], marker="+", color="#d43a00", markersize=10)
             _ax.axhline(0, color="#cccccc", linewidth=0.8)
             _ax.axvline(0, color="#cccccc", linewidth=0.8)
-            if _sx:
+            if _show_ship and _sx:
                 _ax.add_patch(Polygon(list(zip(_sx, _sy)), closed=True,
                                       facecolor=_ship_face, edgecolor=_ship_edge,
                                       linewidth=1.5, alpha=0.95, zorder=1.6))
