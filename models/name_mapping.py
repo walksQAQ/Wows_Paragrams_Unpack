@@ -337,6 +337,74 @@ class Mapping:
     # coeff: 乘数（0.6=-40%, 1.1=+10%），数值>0 即正收益
     # raw_pct: 原始百分比（0.01=+1%）
     # raw_int: 原始整型（25=+25）
+    # ── 词条作用域（武器专用词条只能作用在本武器的 section）────
+    # 背景：同名字段（"标伤"/"装填时间"/"航速"/"伤害"/"垂直回转速度"…）在多个 section
+    # 中重复出现，只按字段名匹配会让"某武器的词条"改到别的武器上（实测）：
+    #   dcAlphaDamageMultiplier（深水炸弹伤害）→ 把主炮/副炮/鱼雷/支援的标伤一起 ×1.1
+    #   GTShotDelay（鱼雷装填）              → 把主炮/副炮/支援的装填时间一起改
+    #   torpedoDamageCoeff（鱼雷标伤）        → 改副炮标伤
+    #   planeSpeed / diveBomberSpeedMultiplier → 改船体/引擎的最大航速
+    #   AAAuraDamage（防空伤害）              → 改船体"鱼雷防护。减少伤害"
+    # 值 = 允许生效的 section 名关键词（按子串匹配）。未登记的词条不限制（通用词条按字段名匹配）。
+    # ⚠️ 只在 section 有名字时生效：飞机子面板内部调用不带 section 名，
+    #    因此飞机类词条在子面板里照常生效（见 presenters/*/ship.py::_apply_modifiers_to_items）。
+    MODIFIER_SECTION_SCOPE: dict[str, tuple[str, ...]] = {
+        # ── 深水炸弹 ──
+        "dcAlphaDamageMultiplier": ("深水炸弹",),
+        "dcReloadTimeCoeff": ("深水炸弹",),
+        "dcSplashSizeMultiplier": ("深水炸弹",),
+        # ── 空袭 / 支援中队 ──
+        "asReloadTimeCoeff": ("支援",),
+        "asMaxHealthCoeff": ("支援",),
+        "asNumPacksBonus": ("支援",),
+        # ── 鱼雷 ──
+        "GTShotDelay": ("鱼雷",), "GTShotDelayAbsolute": ("鱼雷",),
+        "GTRepairTime": ("鱼雷",), "GTCritProb": ("鱼雷",),
+        "GTRotationSpeed": ("鱼雷",),
+        "torpedoDamageCoeff": ("鱼雷",),
+        "torpedoSpeedMultiplier": ("鱼雷",),
+        "torpedoVisibilityFactor": ("鱼雷",),
+        "torpedoRangeCoefficient": ("鱼雷",),
+        "torpedoFullPingDamageCoeff": ("鱼雷",),
+        "floodChanceFactorTorpedo": ("鱼雷",),
+        # ── 舰载机 / 空投武器（"支援"段为空袭/支援中队）──
+        "planeAlphaDamageCoeff": ("支援", "舰载机"),
+        "planeSpeed": ("支援", "舰载机"),
+        "planeMaxSpeed": ("支援", "舰载机"),
+        "planeCruiseSpeed": ("支援", "舰载机"),
+        "planeMaxSpeedMultiplier": ("支援", "舰载机"),
+        "planeEmptyReturnSpeed": ("支援", "舰载机"),
+        "planeTorpedoSpeedMultiplier": ("支援", "舰载机"),
+        "planeTorpedoArmingTimeCoeff": ("支援", "舰载机"),
+        "bombAlphaDamageMultiplier": ("支援", "舰载机"),
+        "bombApAlphaDamageMultiplier": ("支援", "舰载机"),
+        "rocketApAlphaDamageMultiplier": ("支援", "舰载机"),
+        "diveBomberSpeedMultiplier": ("支援", "舰载机"),
+        "diveBomberMinSpeedMultiplier": ("支援", "舰载机"),
+        "diveBomberMaxSpeedMultiplier": ("支援", "舰载机"),
+        "skipBomberSpeedMultiplier": ("支援", "舰载机"),
+        # ── 防空 ──
+        "AAAuraDamage": ("防空",), "AAAuraDamageAbsolute": ("防空",),
+        "AAAuraDamageBonus": ("防空",),
+        "AAAuraReceiveDamageCoeff": ("防空",),
+        "AABubbleDamage": ("防空",), "AABubbleDamageBonus": ("防空",),
+        "AAExtraBubbles": ("防空",),
+    }
+
+    @staticmethod
+    def modifier_scope_ok(mod_key: str, section_label: str) -> bool:
+        """武器专用词条是否允许作用在 ``section_label`` 这个 section 上。
+
+        - ``section_label`` 为空：飞机子面板等内部调用，不限制
+        - 词条未登记在 ``MODIFIER_SECTION_SCOPE``：不限制
+        """
+        if not section_label:
+            return True
+        allowed = Mapping.MODIFIER_SECTION_SCOPE.get(mod_key)
+        if not allowed:
+            return True
+        return any(a in section_label for a in allowed)
+
     # ── 字段匹配短名（升级品/加成应用用，presenters 复用）──
     # 与 MODIFIER_MAP（显示名）不同：短名用于 _apply_modifiers_to_items 匹配 section items 字段名
     MODIFIER_FIELD_MAP = {

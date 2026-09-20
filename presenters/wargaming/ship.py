@@ -98,6 +98,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
             if not val_str:
                 continue
             for mod_key, mod_val in modifiers.items():
+                # 作用域闸门：武器专用词条只在本武器 section 生效，
+                # 否则同名字段（标伤/装填时间/航速…）会被别的武器词条改掉
+                if not Mapping.modifier_scope_ok(mod_key, label):
+                    continue
                 # 按前缀限定生效范围：GM=主炮 GS=副炮 GMS=次级主炮
                 # 注意 GMShotDelay 也以 GMS 开头，需判断第4个字符是否大写来区分
                 is_sub_main = mod_key.startswith("GMS") and len(mod_key) > 3 and mod_key[3].isupper()
@@ -173,8 +177,14 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         elif mod_key in ("healthPerLevel", "planeHealthPerLevel"):
                             _tier = getattr(self, '_current_tier', 0)
                             new_val = orig + mv * _tier
-                        # 乘算系数 (0.5~1.5) vs 加算值
-                        elif 0.5 <= mv <= 1.5:
+                        # 乘算 vs 加算：按词条类型判定（coeff=乘算系数；raw/raw_int/raw_pct/raw_km=加算绝对值）。
+                        # ⚠️ 不能按数值大小猜：系数可以叠乘后超过 1.5
+                        # （如 副炮射程升级品 1.26 × 副炮射程技能 1.2 = 1.512），
+                        # 旧的大小判定会把 1.512 当成加算绝对值 → 8.3 + 1.512 = 9.81，射程反而变短。
+                        elif Mapping.MODIFIER_FORMAT_MAP.get(mod_key, "coeff") == "coeff":
+                            # 系数必须 >0；0/负值（如空 dict 解析结果）视为无效，保持原值
+                            if mv <= 0:
+                                continue
                             new_val = orig * mv
                         else:
                             new_val = orig + mv
@@ -297,7 +307,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                     vstr = item.get("value", "")
                                     m = __import__('re').match(r'([\d.]+)\s*架', vstr)
                                     if m:
-                                        if 0.5 <= _mv <= 1.5:
+                                        # 还原口径与 _apply_modifiers_to_items 一致：按词条类型判定乘/加
+                                        if Mapping.MODIFIER_FORMAT_MAP.get(
+                                                "planeExtraHangarSize", "coeff") == "coeff" and _mv:
                                             restored = float(m.group(1)) / _mv
                                         else:
                                             restored = float(m.group(1)) - _mv
