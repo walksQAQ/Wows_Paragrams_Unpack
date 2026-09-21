@@ -262,6 +262,12 @@ class WargamingDetailPanel(DetailPanel):
                                     continue
                                 if not isinstance(_mv, (int, float)):
                                     continue  # excludedConsumables 等 list 值不显示
+                                if _mk in ("lastChanceReloadCoefficient",):
+                                    # 复合词条：与技能面板同口径展开为多项装填/防空属性
+                                    for _w, _vv in _NM_WG2.lastchance_reload_items(_mv, _cur_st):
+                                        _tt.append(f"<div style='white-space:nowrap;'>{_w}: "
+                                                   f"<span style='color:#4caf50;'>{_vv}</span></div>")
+                                    continue
                                 _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
                                 if _val:
                                     _tt.append(f"<div style='white-space:nowrap;'>{_zh}: {_val}</div>")
@@ -275,6 +281,11 @@ class WargamingDetailPanel(DetailPanel):
                                 _zh = _NM_WG2.MODIFIER_MAP.get(_mk, _mk)
                                 if not isinstance(_mv, (int, float)):
                                     continue  # dict/list 等非数值修饰符（如分舰种表）不显示
+                                if _mk in ("lastChanceReloadCoefficient",):
+                                    for _w, _vv in _NM_WG2.lastchance_reload_items(_mv, _cur_st):
+                                        _tt.append(f"<div style='white-space:nowrap;padding-left:10px;'>{_w}: "
+                                                   f"<span style='color:#4caf50;'>{_vv}</span></div>")
+                                    continue
                                 _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
                                 if _val:
                                     _tt.append(f"<div style='white-space:nowrap;padding-left:10px;'>{_zh}: {_val}</div>")

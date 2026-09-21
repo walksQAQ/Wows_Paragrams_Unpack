@@ -21,6 +21,37 @@ from utils.theme import theme
 from utils.image_paths import pic_path
 
 
+# 「每失去1%生命值」类词条：单一键对应多项属性，需按技能面板 tooltip 的口径展开显示
+_EXPAND_MOD_KEYS = frozenset({"lastChanceReloadCoefficient"})
+
+
+def _format_expanded_compare(key: str, v_reg, v_epic, ship_type_en: str, hint_color: str) -> str:
+    """按技能面板口径展开复合词条：每项显示「普通值 → 强化值」。
+
+    数值颜色与其它词条一致（按词条方向判定），箭头本身用强调色，避免把数值染成强调色。
+    """
+    from models.name_mapping import Mapping as _NM
+
+    if key not in _EXPAND_MOD_KEYS:
+        return ""
+    _reg_items = dict(_NM.lastchance_reload_items(v_reg, ship_type_en))
+    _epic_items = dict(_NM.lastchance_reload_items(v_epic, ship_type_en))
+    if not _reg_items:
+        return ""
+    _clr_reg = _NM.get_modifier_color(key, v_reg) or "#4caf50"
+    _clr_epic = _NM.get_modifier_color(key, v_epic) or _clr_reg
+    out = f"<span style='color:{hint_color};'>每失去1%生命值：</span><br>"
+    for _name, _reg_txt in _reg_items.items():
+        _epic_txt = _epic_items.get(_name, _reg_txt)
+        out += f"<span style='color:{hint_color};'>{_name}</span> "
+        out += f"<span style='color:{_clr_reg};'>{_reg_txt}</span>"
+        if _epic_txt != _reg_txt:
+            out += f" <span style='color:#ff6600;'>→</span> "
+            out += f"<span style='color:{_clr_epic};'>{_epic_txt}</span>"
+        out += "<br>"
+    return out
+
+
 class CrewCustomizeDialog(QDialog):
     """自定义舰长配置对话框"""
 
@@ -657,6 +688,11 @@ class CrewCustomizeDialog(QDialog):
                 else:
                     v_reg = mv_reg
                 if isinstance(v_epic, (int, float)) and isinstance(v_reg, (int, float)):
+                    # 复合词条（如「每失去1%生命值」）：与技能面板 tooltip 同口径逐项展开
+                    if mk in _EXPAND_MOD_KEYS:
+                        diff_text += _format_expanded_compare(
+                            mk, v_reg, v_epic, self._ship_type_en, theme['text_hint'])
+                        continue
                     from models.name_mapping import Mapping as NMAP_FMT
                     reg_str = NMAP_FMT.format_modifier(mk, v_reg, color=True)
                     ep_str = NMAP_FMT.format_modifier(mk, v_epic, color=True)

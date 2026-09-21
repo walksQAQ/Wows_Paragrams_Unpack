@@ -647,27 +647,10 @@ class LestaDetailPanel(DetailPanel):
                     _add_mod_line(lines, "深水炸弹对战舰、鱼雷和水雷的爆炸半径", mv)
                     continue
                 elif mk == "lastChanceReloadCoefficient":
-                    # 每失去1%生命值的变化（按舰种区分）
-                    _pct = f"{mv:.2f}%"
-                    if st == "Submarine":
-                        _weapons = [
-                            "鱼雷发射管装填时间",
-                            "深水炸弹装填时间",
-                        ]
-                    else:
-                        _weapons = [
-                            "主炮装填时间",
-                            "鱼雷发射管装填时间",
-                            "深水炸弹装填时间",
-                            "空袭和支援中队装填时间",
-                            "副炮装填时间",
-                            "防空持续伤害",
-                        ]
-                    for i, _w in enumerate(_weapons):
-                        _sign = "+" if i == len(_weapons) - 1 else "-"
-                        # 装填时间降低/防空持续伤害提升均视为增益 → 绿色
-                        _clr = "#4caf50"
-                        lines.append(f'{_w}  <span style="color:{_clr};">{_sign}{_pct}</span>')
+                    # 每失去1%生命值的变化：展开口径统一在 name_mapping 中维护
+                    # （装填时间降低、防空持续伤害提升均视为增益 → 绿色）
+                    for _w, _val in _NM.lastchance_reload_items(mv, st):
+                        lines.append(f'{_w}  <span style="color:#4caf50;">{_val}</span>')
                     continue
                 elif mk == "shootShiftBatteryLastChanceCoeff":
                     # 每消耗1%下潜能力的变化

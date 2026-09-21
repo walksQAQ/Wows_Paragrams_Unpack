@@ -693,13 +693,14 @@ class Mapping:
         "uwSourceDmgReduction": "coeff",
         "uwCoeffBonus": "raw_int",  # 整数百分比（7 = +7%）
         "batteryRegenCoeff": "coeff",
-        "batteryRegenBatteryLastChanceCoeff": "coeff",
+        # 每消耗/失去 1% 的量所对应的变化：存储值即百分数（0.2 = 0.20%）
+        "batteryRegenBatteryLastChanceCoeff": "direct_pct",
         "batteryCapacityCoeff": "coeff",
         "maxBuoyancySpeedCoeff": "coeff",
         "speedBatteryLastChanceCoeff": "coeff",
         "shootShift": "coeff",
-        "shootShiftBatteryLastChanceCoeff": "coeff",
-        "lastChanceReloadCoefficient": "coeff",
+        "shootShiftBatteryLastChanceCoeff": "direct_pct",
+        "lastChanceReloadCoefficient": "direct_pct",
         # ── 消耗品 ──
         "allConsumableReloadTime": "coeff",
         "allConsumableReloadTimeAbsolute": "coeff",
@@ -927,7 +928,10 @@ class Mapping:
         invert = key in Mapping.MODIFIER_SIGN_INVERT
         if invert:
             value = -value
-        if fmt == "coeff":
+        if fmt == "direct_pct":
+            # 存储值本身即百分数（0.2 → +0.20%），不再 ×100、也不按系数解读
+            text = f"{value:+.2f}%"
+        elif fmt == "coeff":
             if abs(value - 1.0) < 0.001:
                 return ""
             pct = (value - 1.0) * 100
@@ -953,6 +957,36 @@ class Mapping:
             if clr:
                 text = f'<span style="color:{clr};">{text}</span>'
         return text
+
+    # ── 「每失去1%生命值」类词条的展开口径 ─────────────────────────────
+    # 此类词条一个键对应多项属性，需展开显示（与技能面板 tooltip 同口径）：
+    # 装填时间下降（负号）、防空持续伤害提升（正号）；存储值为「每 1% 的百分数」。
+    LASTCHANCE_RELOAD_ITEMS: tuple[tuple[str, str], ...] = (
+        ("主炮装填时间", "-"),
+        ("鱼雷发射管装填时间", "-"),
+        ("深水炸弹装填时间", "-"),
+        ("空袭和支援中队装填时间", "-"),
+        ("副炮装填时间", "-"),
+        ("防空持续伤害", "+"),
+    )
+    LASTCHANCE_RELOAD_ITEMS_SUB: tuple[tuple[str, str], ...] = (
+        ("鱼雷发射管装填时间", "-"),
+        ("深水炸弹装填时间", "-"),
+    )
+
+    @staticmethod
+    def lastchance_reload_items(value: float | int, ship_type_en: str = "") -> list[tuple[str, str]]:
+        """展开「每失去1%生命值」词条 → [(显示名, 带符号数值文本), ...]。
+
+        潜艇只影响鱼雷发射管与深水炸弹装填时间；其余舰种含主炮/副炮/空袭/防空。
+        """
+        try:
+            num = abs(float(value))
+        except (TypeError, ValueError):
+            return []
+        items = (Mapping.LASTCHANCE_RELOAD_ITEMS_SUB if ship_type_en == "Submarine"
+                 else Mapping.LASTCHANCE_RELOAD_ITEMS)
+        return [(name, f"{sign}{num:.2f}%") for name, sign in items]
 
     @staticmethod
     def rich_tooltip(text: str) -> str:
