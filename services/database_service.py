@@ -1321,6 +1321,48 @@ def _read_schema_version(db_path: Path) -> int:
         return 0
 
 
+def read_latest_version_code(wows_type: str = "") -> str:
+    """**纯只读**读取指定服务器数据库中已入库的最新版本号。
+
+    与 `DatabaseManager.get_latest_version_code()` 口径一致（优先返回带
+    `meta_import_state` 完成标记的最新版本；老库无该表/表为空时按「最新版本」处理），
+    但**不触发 initialize、不建库、不整库重建**，也不改动任何文件 ——
+    用于在不切换服务器、不动用数据库单例的前提下查看**另一个服**的数据版本。
+
+    库文件不存在 / 无相关表 / 没有跑完的版本 → 返回 ""。
+    """
+    db_path = get_data_dir() / DatabaseManager._db_name(wows_type)
+    if not db_path.exists():
+        return ""
+    try:
+        # mode=ro 只读打开（WAL 库也能读到已提交数据），绝不创建/改写文件
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return ""
+    try:
+        try:
+            rows = [r[0] for r in conn.execute(
+                "SELECT version_code FROM data_version_registry ORDER BY version_id DESC")]
+        except sqlite3.Error:
+            return ""                      # 未建库 / 老库无该表
+        if not rows:
+            return ""
+        try:
+            done = {r[0] for r in conn.execute("SELECT version_code FROM meta_import_state")}
+        except sqlite3.Error:
+            done = set()                   # 老库：还没这张表
+        if not done:
+            return rows[0]                 # 兼容旧库：按「最新版本」处理
+        for code in rows:
+            if code in done:
+                return code
+        return ""                          # 一个跑完的都没有 ⇒ 视为无可用数据
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+
+
 def check_schema_mismatches(wows_type: str = "") -> list[dict]:
     """纯只读检查指定服务器对应的两个数据库文件 schema 版本是否与当前程序不一致。
 

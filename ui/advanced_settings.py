@@ -4,7 +4,7 @@ AdvancedSettingsDialog —— 高级设置窗口。
 从 config.json 读取/写入配置，包括：
   - 游戏目录路径
   - 解析后是否保留 split JSON 文件
-  - 当前游戏版本（只读）
+  - 游戏信息（只读）：Lesta / Wargaming 两服**各自**已入库数据的版本与加载状态
 """
 
 from __future__ import annotations
@@ -82,15 +82,23 @@ class AdvancedSettingsDialog(QDialog):
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)
 
-        # ── 游戏信息（只读） ──────────────────────────
+        # ── 游戏信息（只读，两服并列显示） ─────────────
         grp_info = QGroupBox("游戏信息")
         ilay = QFormLayout(grp_info)
-        self._version_label = QLabel("未知")
-        self._version_label.setStyleSheet(theme.qss("color: @text_muted@;"))
-        self._data_state_label = QLabel("否")
-        self._data_state_label.setStyleSheet(theme.qss("color: @text_muted@;"))
-        ilay.addRow("当前游戏版本：", self._version_label)
-        ilay.addRow("数据已加载：", self._data_state_label)
+        # 两服各自显示「已读到的游戏版本」与「数据是否已加载」：
+        # 版本取自各服数据库的 version_code（只读读取，不切换服务器、不动数据库单例），
+        # 只保留游戏版本号本身，不带 bin 构建号后缀。
+        self._version_labels: dict[str, QLabel] = {}
+        self._data_state_labels: dict[str, QLabel] = {}
+        for _server in ("Lesta", "Wargaming"):
+            v_lbl = QLabel("未知")
+            v_lbl.setStyleSheet(theme.qss("color: @text_muted@;"))
+            d_lbl = QLabel("否")
+            d_lbl.setStyleSheet(theme.qss("color: @text_muted@;"))
+            self._version_labels[_server] = v_lbl
+            self._data_state_labels[_server] = d_lbl
+            ilay.addRow(f"{_server} 数据版本：", v_lbl)
+            ilay.addRow(f"{_server} 数据已加载：", d_lbl)
         layout.addWidget(grp_info)
 
         # ── 日志与诊断 ──────────────────────────────
@@ -166,8 +174,33 @@ class AdvancedSettingsDialog(QDialog):
         # 版本检测
         self._auto_check_cb.setChecked(app_ctx.config.auto_check_update)
         self._include_pre_cb.setChecked(app_ctx.config.include_prerelease)
-        self._version_label.setText(ctx.game_version or "未知")
-        self._data_state_label.setText("是" if ctx.game_data_state else "否")
+        # 游戏信息：两服各自的已入库数据版本（只读读取，不改动数据库）
+        self._load_server_info()
+
+    def _load_server_info(self) -> None:
+        """填充「游戏信息」：分别读取两服数据库里最新一次完整入库的游戏版本号。
+
+        用只读读取（`read_latest_version_code`）而不是数据库单例：
+        查看另一个服的版本时不能切换服务器、更不能触发 initialize/整库重建。
+        只显示游戏版本号（version_code 形如 "<游戏版本>_<bin>"，取前段）。
+        """
+        from services.database_service import read_latest_version_code
+        cur = app_ctx.ctx.wows_type
+        for server, v_lbl in self._version_labels.items():
+            code = ""
+            try:
+                code = read_latest_version_code(server)
+            except Exception:  # noqa: BLE001
+                code = ""
+            game_ver = code.split("_", 1)[0] if code else ""
+            v_lbl.setText(game_ver or "未知")
+            # 「已加载」= 该服库里有完整入库的版本；当前服额外兼容运行期状态
+            loaded = bool(code)
+            if server == cur:
+                loaded = loaded or bool(app_ctx.ctx.game_data_state)
+            d_lbl = self._data_state_labels.get(server)
+            if d_lbl is not None:
+                d_lbl.setText("是" if loaded else "否")
 
     def _on_browse(self, server: str) -> None:
         """浏览选择指定服务器的游戏目录"""
