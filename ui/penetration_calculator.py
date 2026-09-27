@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from utils.theme import theme
-from utils.image_paths import pic_path
+from utils.image_paths import pic_dir, pic_path, pic_path_ci
 
 # ── 舰船俯视剪影（散布椭圆图的中心参照）──────────────────────────────────
 # 资源来源：客户端**原生** SVG `gui/battle_hud/new_doll_svg/destroyer.svg`
@@ -189,6 +189,42 @@ def _ship_silhouette_points() -> tuple[tuple[float, float], ...]:
     # SVG 中舰首在 y=0、y 轴向下 → 船长轴取反，使舰首落在 +x
     k = 0.5 / hy
     return tuple(((cy - y) * k, (x - cx) * k) for x, y in pts)
+
+
+# ── 按服务器解析加成按钮图标 ─────────────────────────────────────────────
+# 两服素材命名不同（同一语义、不同文件名），且**目录大小写也不同**：
+#   消耗品      Lesta consumables/consumable_<id>_0.png
+#               WG    consumables/consumable_<id>.png
+#   战斗指令    Lesta ragemode/rageMode_<tag>_preview_0.png
+#               WG    rageMode/<tag>_preview.png（目录首字母大写）
+# ⚠️ Qt 的 `:/` 资源路径**区分大小写**，而 Windows 文件系统不区分，
+#    所以不能靠目录扫描判定"存在"，必须用 QFile 探测。
+def _is_wg() -> bool:
+    """当前服务器是否 WG。
+
+    与 `pic_path` 的目录判定**同源**（都走 `pic_dir`），避免出现
+    "目录取这服的、文件名用那服的命名"这种不一致。
+    """
+    try:
+        return pic_dir() == "wargaming"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _first_existing_icon(candidates: list[str]) -> str:
+    """返回候选里第一个真实存在的图片路径（大小写由 `pic_path_ci` 兜底）。
+
+    候选顺序即优先级：先按当前服务器的命名，再退回另一种命名。
+    """
+    for rel in candidates:
+        p = pic_path_ci(rel)
+        try:
+            from PySide6.QtCore import QFile
+            if QFile(p).exists():
+                return p
+        except Exception:  # noqa: BLE001
+            return p
+    return pic_path(candidates[0]) if candidates else ""
 
 
 class CustomWeaponDialog(QDialog):
@@ -761,7 +797,7 @@ class PenetrationCalculatorDialog(QDialog):
         ellipse_ctl.addWidget(self.ellipse_series_btn)
         # 纵向两图并排（见 _build_dispersion_ellipse）：
         #   左 = 垂直面（游戏模型，纵向 = 横向 × 纵向系数）
-        #   右 = 水面投影（按炮弹落弹角将垂直面纵向半径投到水面）
+        #   右 = 水面投影（把纵向当成落点垂向位移，沿真实弹道传播到水面）
         # ❗ 经客户端内核验证（脚本 getEllipse）：游戏 getEllipse() 里没有弹道/落角输入，
         #   故**左图才是游戏模型**，右图仅供对照。
         ellipse_ctl.addStretch()
@@ -1506,7 +1542,7 @@ class PenetrationCalculatorDialog(QDialog):
             return None, None, []
         if not gun_row or not ammo_row:
             return None, None, []
-        rows = self._compute_rows_for_weapon(gun_row, ammo_row, mods)
+        rows = self._compute_rows_for_weapon(gun_row, ammo_row, mods, ship_id=ship_id, gun_key=gun_key)
         return gun_row, ammo_row, rows
 
     def _resolve_custom_label(self, ship_id, gun_key, ammo_id):
@@ -1827,11 +1863,38 @@ class PenetrationCalculatorDialog(QDialog):
 
     @staticmethod
     def _rage_icon_path(rage_name: str) -> str:
-        """IDS_DOCK_RAGE_MODE_TITLE_ATBA_FIREPOWER → :/.../rageMode_atba_firepower_preview_0.png"""
+        """战斗指令预览图（按服务器命名）。
+
+        IDS_DOCK_RAGE_MODE_TITLE_ATBA_FIREPOWER
+          Lesta → ragemode/rageMode_atba_firepower_preview_0.png
+          WG    → rageMode/atba_firepower_preview.png（无 rageMode_ 前缀、无 _0 后缀）
+        """
         import re as _re
         m = _re.search(r"TITLE_(.+)$", str(rage_name or "").upper())
         tag = m.group(1).lower() if m else ""
-        return pic_path(f"ragemode/rageMode_{tag}_preview_0.png") if tag else ""
+        if not tag:
+            return ""
+        if _is_wg():
+            return _first_existing_icon([f"rageMode/{tag}_preview.png",
+                                         f"ragemode/rageMode_{tag}_preview_0.png"])
+        return _first_existing_icon([f"ragemode/rageMode_{tag}_preview_0.png",
+                                     f"rageMode/{tag}_preview.png"])
+
+    @staticmethod
+    def _consumable_icon_path(cid: str) -> str:
+        """消耗品图标（按服务器命名）。
+
+        Lesta → consumables/consumable_<id>_0.png
+        WG    → consumables/consumable_<id>.png
+        """
+        cid = str(cid or "")
+        if not cid:
+            return ""
+        if _is_wg():
+            return _first_existing_icon([f"consumables/consumable_{cid}.png",
+                                         f"consumables/consumable_{cid}_0.png"])
+        return _first_existing_icon([f"consumables/consumable_{cid}_0.png",
+                                     f"consumables/consumable_{cid}.png"])
 
     def _load_special_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """加载该船提供对应炮种射程/精度加成的消耗品（侦察机，仅主炮）与战斗指令（rage_mode）。"""
@@ -1876,7 +1939,7 @@ class PenetrationCalculatorDialog(QDialog):
                     lines.append(f"主炮炮弹的最大误差: {NMM.format_modifier('GMIdealRadius', gm)}")
                 self._mod_items.append({"mod_id": cid, "gmmd": adc, "gm": gm, "kind": "consumable"})
                 self._add_mod_button(cid, adc, gm, kind="consumable", name="侦察机", bonus_lines=lines,
-                                     icon_path=pic_path(f"consumables/consumable_{cid}_0.png"))
+                                     icon_path=self._consumable_icon_path(cid))
         # ── 战斗指令（rage_mode）：对应炮种射程、精度 ──
         for rm in conn.execute(
             "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=? AND version_code=?",
@@ -2101,14 +2164,37 @@ class PenetrationCalculatorDialog(QDialog):
             points = [round(0.0, 3)]
         return points
 
-    @staticmethod
-    def _effective_max_range(gun_row, mods=None) -> float:
-        """计算火炮有效最大射程（km）= 基础射程 × 各加成倍率（含勾选的升级品/技能等）。"""
+    def _effective_max_range(self, gun_row, mods=None, ship_id=None, gun_key=None,
+                             ammo_id=None) -> float:
+        """计算火炮有效最大射程（km）= min(基础射程 × 各加成倍率, 弹道封顶)。
+
+        弹道封顶：炮塔最大仰角（客户端钳到 45°）下该弹种的弹道落水距离。
+        游戏内射程插/侦察机等加成不能越过它（见 utils/range_limit.py）。
+        """
         g = dict(gun_row) if hasattr(gun_row, "keys") else (gun_row or {})
         mr = float(g.get("max_range") or 0.0)
         for _mod in (mods or []):
             mr *= float(_mod[0])
-        return mr
+        return self._clamp_ballistic_max_range(mr, gun_row, ship_id, gun_key, ammo_id)
+
+    def _clamp_ballistic_max_range(self, nominal_km: float, gun_row, ship_id, gun_key,
+                                   ammo_id=None) -> float:
+        """把名义射程钳到弹道封顶值；无船/无炮模块信息时原样返回。"""
+        if not ship_id or not gun_key or not nominal_km:
+            return nominal_km
+        g = dict(gun_row) if hasattr(gun_row, "keys") else (gun_row or {})
+        module_id = g.get("module_key")
+        if not module_id:
+            return nominal_km
+        try:
+            from services.database_service import get_db
+            from utils import range_limit
+            kind, _ = self._split_gun_key(gun_key)
+            return range_limit.effective_max_range_km(
+                nominal_km, get_db()._conn, getattr(self, "_cur_version_code", "") or "",
+                ship_id, module_id, range_limit.slot_types_for_kind(kind), ammo_id)
+        except Exception:  # noqa: BLE001 —— 封顶失败不影响主流程
+            return nominal_km
 
     def _update_ellipse_slider_range(self, max_range_km):
         """散布射程滑条上限 = 火炮最大射程。"""
@@ -2128,7 +2214,7 @@ class PenetrationCalculatorDialog(QDialog):
         return [(float(b["gmmd"]), float(b["gm"]), b.get("name") or "")
                 for b in getattr(self, "_mod_buttons", []) if b["btn"].isChecked()]
 
-    def _compute_rows_for_weapon(self, gun_row, ammo_row, mods=None):
+    def _compute_rows_for_weapon(self, gun_row, ammo_row, mods=None, ship_id=None, gun_key=None):
         from services.ballistics_service import BallisticsCalculator
         if not gun_row or not ammo_row:
             return []
@@ -2151,6 +2237,9 @@ class PenetrationCalculatorDialog(QDialog):
         for _mod in mods:
             max_range_km *= float(_mod[0])
             disp_coeff *= float(_mod[1])
+        # 射程加成受"炮塔最大仰角对应的弹道距离"封顶（游戏内 HoopRanging 同口径，按当前弹种）
+        max_range_km = self._clamp_ballistic_max_range(
+            max_range_km, gun_row, ship_id, gun_key, ammo_row.get("ammo_id"))
         # 散布系数均由原始散布参数（散布最小/理想半径、理想距离、分界点等）导出：
         # td=散布理想半径×散布分界点/散布最小半径；ha=(散布理想半径-散布最小半径)/散布理想距离(km)；hb=散布最小半径×30。
         min_radius = float(gun_row.get("min_radius") or 1.0)
@@ -2190,6 +2279,8 @@ class PenetrationCalculatorDialog(QDialog):
 
         # 弹道模拟仍用于飞行时间 / 落弹角（与穿深类型无关）
         ballistics = BallisticsCalculator().calculate_full_ballistics(mass, caliber, air_drag, velocity, krupp)
+        # 水面纵向投影：采样一组真实弹道（仰角族），供每一点把垂向位移传播到水面
+        water_family = BallisticsCalculator.build_trajectory_family(mass, caliber, air_drag, velocity)
 
         # 散布射程滑条上限 = 火炮最大射程（含插件加成）
         self._update_ellipse_slider_range(max_range_km)
@@ -2222,8 +2313,9 @@ class PenetrationCalculatorDialog(QDialog):
             else:
                 _vc = radius_delim + (radius_max - radius_delim) * ((distance - _delim_km) / (max_range_km - _delim_km)) if (max_range_km - _delim_km) else radius_delim
             formula = f"横={h_expr}；纵=横×{_vc:.3f}"
-            # 右图：把垂直面纵向散布按落弹角严格投到水面（三维推导见 service；游戏自身不做该投影）
-            vert_water = BallisticsCalculator.project_vertical_dispersion_to_water(vert, impact)
+            # 右图：把纵向散布当成落点垂向位移，沿**真实弹道**传播到水面
+            # （找"恰好穿过 (d, Δn)"的发射仰角，取其落水距离；非直线 Δn/sinθ 近似）
+            vert_water = BallisticsCalculator.project_vertical_dispersion_to_water(water_family, distance, vert)
             water_area = BallisticsCalculator.calc_dispersion_area(horiz, vert_water)
             # 存全精度（悬浮提示已自行格式化为 2 位小数）；不再对 fly/impact 四舍五入，
             # 否则曲线被量化为 0.1s/0.1° 的阶梯状（锐角）
@@ -2514,7 +2606,9 @@ class PenetrationCalculatorDialog(QDialog):
 
     def _compute_rows(self):
         gun_row, ammo_row, _ = self._get_selected_weapon()
-        return self._compute_rows_for_weapon(gun_row, ammo_row)
+        return self._compute_rows_for_weapon(
+            gun_row, ammo_row,
+            ship_id=self.ship_cb.currentData(), gun_key=self.gun_cb.currentData())
 
     def _calculate_current(self):
         self._ensure_valid_current_selection()
@@ -2532,7 +2626,9 @@ class PenetrationCalculatorDialog(QDialog):
                     gun_row, _, srows = self._load_weapon_for(item["ship_id"], item["gun_key"], item["ammo_id"], item.get("mods"))
                     if gun_row:
                         sigma = float(dict(gun_row).get("sigma") or 1.0)
-                        mr = self._effective_max_range(gun_row, item.get("mods"))
+                        mr = self._effective_max_range(gun_row, item.get("mods"),
+                                                       ship_id=item["ship_id"], gun_key=item["gun_key"],
+                                                       ammo_id=item["ammo_id"])
                     else:
                         mr = 0.0
                 if srows:
@@ -2647,7 +2743,7 @@ class PenetrationCalculatorDialog(QDialog):
             lateral = float(best_row[1])        # 横向 = 椭圆宽度（侧向，=港口"最大散布"）
             vert_plane = float(best_row[2])     # 纵向(垂直面) = 横向 × 纵向散布系数
             # 纵向 = 横向 × 纵向散布系数（= 游戏 getEllipse 的真实返回值，不做落角投影）。
-            # row[8] 是「垂直面散布按落弹角投影到水面」的纵向半径，row[9] 是水面投影面积。
+            # row[8] 是「把纵向当成落点垂向位移、沿真实弹道传播到水面」的纵向半径，row[9] 是水面投影面积。
             vert_water = float(best_row[8]) if len(best_row) > 8 else vert_plane
             water_area = float(best_row[9]) if len(best_row) > 9 else BallisticsCalculator.calc_dispersion_area(lateral, vert_water)
             if self.ellipse_unlocked_cb.isChecked():

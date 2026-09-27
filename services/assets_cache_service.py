@@ -431,18 +431,23 @@ class AssetsCacheService:
         from utils.asset_utils import murmur3_32
         return murmur3_32(data, seed)
 
-    def populate(self, assets_path: str, bin_folder: str,
+    def populate(self, assets_path: str | None = None, bin_folder: str = "",
                  game_version: str = "", wows_type: str = "",
                  game_dir: str | Path | None = None,
-                 progress_cb=None) -> dict:
+                 progress_cb=None, assets_bytes: bytes | None = None) -> dict:
         """现场解析 assets.bin 并写入缓存数据库。
 
-        assets_path: assets.bin 文件路径（当前客户端提取产物）
+        assets_bytes: 内存中的 assets.bin 字节（**推荐**：加载流程全程不落盘）；
+                      给了它就不读任何文件、也不写任何文件。
+        assets_path:  兼容旧调用方的已解压文件路径（仅当 assets_bytes 为 None 时使用）。
         progress_cb: 可选阶段进度回调（str 消息），用于把骨架/渲染集/材质各阶段
         显示到日志区。
         返回 {skeleton, render_sets, mfm_textures} 各条数。
         """
         from uncode_assets.service import AssetsBinService
+
+        if assets_bytes is None and not assets_path:
+            raise ValueError("populate 需要 assets_bytes 或 assets_path 之一")
 
         self.initialize()
         # ── 全量重建（覆盖全部内容，无视 bin 版本号）─────────────
@@ -452,8 +457,12 @@ class AssetsCacheService:
         # drop 全部表 → 幂等重建（assets_database.sql 优先 / inline 兜底）→ 记录 schema 版本。
         self._drop_all_tables()
         self.initialize()
+        # 全内存路径：assets_bytes 直接解析（不落盘、不读既有文件）
         # wows_type 传入：WG 服用 10 类型表 + WG 布局（渲染集 0x70/材质 0x78）
-        svc = AssetsBinService(assets_path=assets_path, wows_type=self._wows_type)
+        if assets_bytes is not None:
+            svc = AssetsBinService(assets_bytes=assets_bytes, wows_type=self._wows_type)
+        else:
+            svc = AssetsBinService(assets_path=assets_path, wows_type=self._wows_type)
         db = svc.db
 
         def _p(msg: str) -> None:

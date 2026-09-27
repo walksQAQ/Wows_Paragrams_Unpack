@@ -33,6 +33,28 @@ from .vfs import AssetsBinVfs, VirtualFile
 ASSETS_BIN_PATH = "content/assets.bin"
 
 
+def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None) -> bytes:
+    """从游戏 .pkg 现场读取 content/assets.bin 原始字节（**全内存，不落盘**）。
+
+    这是 assets.bin 的唯一提取入口：不读任何既有解包产物、也不写临时文件，
+    因此绝不会读到别的客户端/旧版本的残留。失败抛 :class:`AssetsBinError`。
+    注意 assets.bin 为 Kraken container，解压 220MB+ 较慢（纯 Python 解码）。
+    """
+    from data_extractor import GameExtractor
+
+    extractor = GameExtractor(game_dir, bin_folder=bin_folder)
+    try:
+        entry = extractor.file_tree.get(ASSETS_BIN_PATH)
+        if entry is None or entry.is_directory or entry.file_info is None:
+            raise AssetsBinError(f"未在文件树中找到 {ASSETS_BIN_PATH}")
+        data = extractor.pkg_reader.read_file(entry.volume.filename, entry.file_info)
+    finally:
+        extractor.close()
+    if not data:
+        raise AssetsBinError("assets.bin 解压结果为空")
+    return data
+
+
 class AssetsBinService:
     """封装 assets.bin 的加载、解析、浏览与解码。"""
 
@@ -77,21 +99,11 @@ class AssetsBinService:
     def load_from_game(self, game_dir: str | Path) -> bytes:
         """步骤 1：从游戏 .pkg 中提取 content/assets.bin 并解析。
 
-        用 data_extractor 从当前客户端 .pkg 提取（Kraken 解压 227MB，较慢）。
-        不假定游戏目录下存在任何解包产物目录。
+        用 data_extractor 从当前客户端 .pkg 现场提取到内存（Kraken 解压 220MB+，较慢），
+        不落盘、不复用任何既有解包产物。
         """
         game_dir = Path(game_dir)
-        from data_extractor import GameExtractor
-
-        extractor = GameExtractor(game_dir, bin_folder=self._bin_folder)
-        try:
-            entry = extractor.file_tree.get(ASSETS_BIN_PATH)
-            if entry is None or entry.is_directory or entry.file_info is None:
-                raise AssetsBinError(f"未在文件树中找到 {ASSETS_BIN_PATH}")
-            data = extractor.pkg_reader.read_file(entry.volume.filename, entry.file_info)
-        finally:
-            extractor.close()
-
+        data = read_assets_bin_bytes(game_dir, bin_folder=self._bin_folder)
         self._game_dir = game_dir
         self.load_bytes(data)
         return data

@@ -1038,9 +1038,33 @@ class WargamingShipPresenter(WargamingBasePresenter):
             "GameLogicTrigger": "进度积累",
         }
 
+        # 进度标识（RageModeProgressAction.progressName）→ 中文描述
+        PROGRESS_NAME_MAP = {
+            "stay_visible": "被发现",
+            "main_gun_hit": "主炮命中",
+            "secondary_gun_hit": "副炮命中",
+            "atba_hit": "副炮命中",
+            "atba_hits": "副炮命中",
+            "torpedo_hit": "鱼雷命中",
+            "citadel": "命中装甲区",
+            "citadel_hits": "命中装甲区",
+            "penetration": "击穿",
+            "overpen": "过穿",
+            "frag": "击毁",
+            "ship_frag": "击毁敌舰",
+            "assist": "协助击毁",
+            "stay_invisible": "未被发现",
+            "potential_damage": "承受潜在伤害",
+            "tanking": "承受伤害",
+            "support_consumable_onally": "队友使用消耗品",
+            "support_consumable_onself": "自身使用消耗品",
+        }
+
         def _strip_idx(key):
-            # 归一化带数字索引后缀的键（GameLogicTrigger_1 → GameLogicTrigger / Activator_1 → Activator）
-            return re.sub(r'_\d+$', '', key)
+            # 归一化带数字索引后缀的键（GameLogicTrigger_1 / Activator1 / Action2 → 去后缀）
+            # ⚠️ WG 的触发器键是 `GameLogicTrigger1`（不带下划线），只剥 `_\d+$` 会使
+            #    未知键名直接露出（GameLogicTrigger1 / Activator 取不到 → 条件描述全空）
+            return re.sub(r'_?\d+$', '', key)
 
         triggers = json.loads(rage['triggers_json'] or '[]')
         if triggers:
@@ -1054,6 +1078,14 @@ class WargamingShipPresenter(WargamingBasePresenter):
 
                     # 提取所有动作数据
                     actions_found = {k: v for k, v in tdata.items() if k.startswith("Action") and isinstance(v, dict)}
+
+                    # 从 RageModeProgressAction 提取进度数值/进度名（条件描述与进度文案都要用）
+                    progress_val = ""
+                    progress_name = ""
+                    for aln in actions_found.values():
+                        if aln.get("type") == "RageModeProgressAction":
+                            progress_val = str(aln.get("progress", ""))
+                            progress_name = aln.get("progressName", "")
 
                     if tkey in ("GameLogicTrigger", "GameLogicTriggerProgress") and atype == "RibbonActivator":
                         # 进度积累专用格式：每获得N个xx/yy勋带时获得M进度
@@ -1087,11 +1119,33 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         pds = act.get("potentialDamageShift", 0)
                         if pds:
                             cond_parts.append(f"承受{pds:.0f}潜在伤害")
-                    req = act.get("requiredCount", 0)
-                    if req:
-                        cond_parts.append(f"次数: {req}")
-                    if act.get("separateTracking"):
-                        cond_parts.append("独立追踪")
+                    elif atype == "ConsumableUseActivator":
+                        # 队友/自身使用（指定）消耗品时积累进度
+                        pnc = PROGRESS_NAME_MAP.get(progress_name, "")
+                        if pnc:
+                            cond_parts.append(pnc)
+                        else:
+                            who = {1: "队友", 4: "自身"}.get(act.get("targetType"), "")
+                            cond_parts.append(f"{who}使用消耗品" if who else "使用消耗品")
+                    elif atype == "TimerActivator":
+                        dur = act.get("duration", 0)
+                        pn_t = PROGRESS_NAME_MAP.get(progress_name, progress_name or "状态")
+                        if dur:
+                            cond_parts.append(f"保持{pn_t}达{dur:g}s")
+                        else:
+                            cond_parts.append(f"保持{pn_t}")
+                    elif atype == "VisibilityChangedActivator":
+                        if act.get("isVisible"):
+                            cond_parts.append("被点亮时")
+                        else:
+                            cond_parts.append("隐蔽时")
+                    # 消耗品触发已是完整句子，不再追加“次数/独立追踪”等技术字段
+                    if atype != "ConsumableUseActivator":
+                        req = act.get("requiredCount", 0)
+                        if req:
+                            cond_parts.append(f"次数: {req}")
+                        if act.get("separateTracking"):
+                            cond_parts.append("独立追踪")
 
                     effect_parts = []
                     if actions_found:
@@ -1108,18 +1162,17 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             elif atype2 == "RageModeProgressAction":
                                 pn = aln.get("progressName", "")
                                 if pn and pn != "default":
-                                    effect_parts.append(f"进度: {pn}")
+                                    effect_parts.append(f"进度: {PROGRESS_NAME_MAP.get(pn, pn)}")
+                            elif atype2 == "ToggleTriggerAction":
+                                # 开关类动作：启用/关闭另一条进度积累（不转储原始字段）
+                                effect_parts.append("开启进度积累" if aln.get("isEnabled") else "关闭进度积累")
                             else:
                                 extra = {k: v for k, v in aln.items() if k != "type"}
                                 for ek, ev in extra.items():
                                     label = NM.DETAIL_MAP.get(ek, ek)
                                     effect_parts.append(f"{label}: {ev}")
 
-                    # 从 RageModeProgressAction 提取进度数值
-                    progress_val = ""
-                    for ak, aln in actions_found.items():
-                        if aln.get("type") == "RageModeProgressAction":
-                            progress_val = str(aln.get("progress", ""))
+                    # 从 RageModeProgressAction 提取进度数值（已在上面提前提取）
 
                     cond_str = ', '.join(cond_parts) if cond_parts else ""
                     effect_str = '; '.join(effect_parts) if effect_parts else ""
@@ -1130,7 +1183,11 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     elif tkey in ("GameLogicTriggerProgress", "GameLogicTrigger"):
                         # 进度积累：显示积累条件（每获得xx/承受xx时获得M进度）
                         if cond_str:
-                            display = f"每{cond_str}时获得{progress_val}进度" if progress_val else f"每{cond_str}"
+                            if progress_val:
+                                display = f"每{cond_str}时获得{progress_val}进度"
+                            else:
+                                # 无进度值（如开关类）→ 把效果接在条件后面，不丢掉信息
+                                display = f"每{cond_str}时{effect_str}" if effect_str else f"每{cond_str}"
                             items.append(self.make_item(trigger_label, display, o)); o += 1
                         elif effect_str:
                             items.append(self.make_item(trigger_label, effect_str, o)); o += 1
@@ -1154,23 +1211,28 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             if factor is None:
                                 factor = mv.get("default")
                             if factor is not None:
-                                items.append(self.make_item(label, f"{(factor - 1) * 100:+.0f}%", o)); o += 1
+                                items.append(self.make_item(label, f"{(factor - 1) * 100:+.0f}%", o,
+                                                            color=Mapping.get_modifier_color(mk, factor))); o += 1
                             else:
                                 # 当前舰种不在分舰种表中 → 回退列出全部舰种
                                 for species_key, f2 in mv.items():
                                     cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
-                                    items.append(self.make_item(f"{label}({cn})", f"{(f2 - 1) * 100:+.0f}%", o)); o += 1
+                                    items.append(self.make_item(f"{label}({cn})", f"{(f2 - 1) * 100:+.0f}%", o,
+                                                                color=Mapping.get_modifier_color(mk, f2))); o += 1
                         elif isinstance(mv, dict):
                             for species_key, factor in mv.items():
                                 cn = NM.SHIP_CLASS_MAP.get(species_key, species_key)
-                                items.append(self.make_item(f"{label}({cn})", f"{(factor - 1) * 100:+.0f}%", o)); o += 1
+                                items.append(self.make_item(f"{label}({cn})", f"{(factor - 1) * 100:+.0f}%", o,
+                                                            color=Mapping.get_modifier_color(mk, factor))); o += 1
                         elif mk == "healthRegen":
                             items.append(self.make_item(label, f"每秒回复 {mv:.0f} HP", o)); o += 1
                         elif isinstance(mv, (float, int)):
                             if mv > 10.0:
-                                items.append(self.make_item(label, f"+{mv:.0f}", o)); o += 1
+                                items.append(self.make_item(label, f"+{mv:.0f}", o,
+                                                            color=Mapping.get_modifier_color(mk, mv))); o += 1
                             else:
-                                items.append(self.make_item(label, f"{(mv - 1) * 100:+.0f}%", o)); o += 1
+                                items.append(self.make_item(label, f"{(mv - 1) * 100:+.0f}%", o,
+                                                            color=Mapping.get_modifier_color(mk, mv))); o += 1
                         else:
                             items.append(self.make_item(label, f"{mv}", o)); o += 1
             except (json.JSONDecodeError, TypeError):
@@ -1757,6 +1819,18 @@ class WargamingShipPresenter(WargamingBasePresenter):
         except Exception:  # noqa: BLE001
             return
 
+    @staticmethod
+    def _ballistic_range_cap_km(conn, vc, ship_id, module_key, ammo_id=None) -> float | None:
+        """主炮模块的弹道封顶值（km）：炮塔最大仰角（钳 45°）下该弹种（未指定则取各弹种最大）的落水距离。
+
+        对应游戏内 HoopRanging：射程插/侦察机等加成不能越过它。无数据返回 None。
+        """
+        try:
+            from utils import range_limit
+            return range_limit.ballistic_cap_km(conn, vc, ship_id, module_key, ("artillery",), ammo_id)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _build_artillery(self, conn, vc, ship_id, letter, result, fire_control_key=""):
         """构建主炮数据（按 _build_hull 风格：直接 DB 查询 → kv 条目）"""
         ammo_map = self.get_name_map("ammo")
@@ -1781,16 +1855,21 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     (vc, ship_id, fire_control_key)).fetchone()
             items.append(self.make_item("炮塔", f"{gname} {g['count']:.0f}×{g['num_barrels']:.0f}", o)); o += 1
             if g['reload_time']: items.append(self.make_item("装填时间", str(g['reload_time']), o, unit="s")); o += 1
-            # 射程 × maxDistCoef
+            # 射程 × maxDistCoef，并受"炮塔最大仰角对应的弹道距离"封顶（游戏内实际可达射程）
             base_range = g['max_range']
             disp_range = base_range
             if base_range:
+                _details: list[dict] = []
                 if fc and fc['max_dist_coef'] is not None and fc['max_dist_coef'] != 1.0:
                     disp_range = base_range * fc['max_dist_coef']
-                    items.append(self.make_item("最大射程", f"{disp_range:.2f}", o, unit="km",
-                        details=[{"name": "基础射程", "value": f"{base_range:.2f}", "unit": "km"}])); o += 1
+                    _details.append({"name": "基础射程", "value": f"{base_range:.2f}", "unit": "km"})
+                _cap = self._ballistic_range_cap_km(conn, vc, ship_id, g['module_key'])
+                if _cap and disp_range and _cap < disp_range - 1e-9:
+                    disp_range = _cap          # 静默夹紧到弹道可达上限，不额外显示限制行
+                if _details:
+                    items.append(self.make_item("最大射程", f"{disp_range:.2f}", o, unit="km", details=_details)); o += 1
                 else:
-                    items.append(self.make_item("最大射程", f"{base_range:.2f}", o, unit="km")); o += 1
+                    items.append(self.make_item("最大射程", f"{disp_range:.2f}", o, unit="km")); o += 1
             # 散步公式
             ir, mr, id_dist = g['ideal_radius'], g['min_radius'], g['ideal_distance']
             if ir and mr and id_dist:
@@ -1840,7 +1919,12 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         di = self._append_ammo_pen(detail_items, be, at, di)
                         if be['bullet_speed']: detail_items.append(self.make_item("弹速", f"{be['bullet_speed']:.0f}", di, unit="m/s")); di += 1
                         if be['burn_prob'] is not None and at == "HE": detail_items.append(self.make_item("起火概率", f"{be['burn_prob']*100:.2f}", di, unit="%")); di += 1
-                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=disp_range or None)
+                        # 穿深摘要同样不超出该弹种的弹道可达射程
+                        _ammo_range = disp_range
+                        _acap = self._ballistic_range_cap_km(conn, vc, ship_id, g['module_key'], aid)
+                        if _acap and _ammo_range and _acap < _ammo_range - 1e-9:
+                            _ammo_range = _acap
+                        di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=_ammo_range or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
             # 特殊机制
             ext = conn.execute(

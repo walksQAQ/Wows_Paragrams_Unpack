@@ -25,7 +25,7 @@ from services.database_service import get_db
 from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
 from ui.ship_card_widget import ShipCardWidget
 from utils.theme import theme
-from utils.image_paths import pic_path
+from utils.image_paths import pic_path, pic_path_ci
 
 
 # U13: 加性修饰符键集（3 处重复 → 模块级常量）
@@ -1680,8 +1680,10 @@ class DetailPanel(QWidget):
         rname = raw.get("rage_mode_name", "")
         dname = raw.get("display_name", "战斗指令")
 
-        # 战斗指令预览图（WG：ragemode/{rname}_preview.png；Lesta：ragemode/rageMode_{rname}_preview_0.png）
-        preview_path = pic_path(self._rage_preview_icon(rname))
+        # 战斗指令预览图（WG：rageMode/{rname}_preview.png；Lesta：ragemode/rageMode_{rname}_preview_0.png）
+        # ⚠️ 文件名由 IDS 标签推导，素材里存在大小写不一致的少数文件（如 *_TE_preview.png），
+        #    用 pic_path_ci 按真实文件名解析，避免 Qt 区分大小写导致显示"缺少图片"。
+        preview_path = pic_path_ci(self._rage_preview_icon(rname))
 
         btn = QPushButton("")
         btn.setFixedSize(32, 32)

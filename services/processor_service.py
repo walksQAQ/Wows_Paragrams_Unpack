@@ -128,9 +128,7 @@ def run_process() -> "_AppTask":
         # 预提取 assets.bin 到**独立缓存库 assets_data.db**（与主库 game_data.db 无锁冲突）。
         # 在这里（分析开始前）后台启动，与下方 _run_analysis 写 game_data.db **同时进行**，
         # 缩短整体加载时长；3D 查看器只读该缓存库。
-        # 预提取 assets.bin 到**独立缓存库 assets_data.db**（与主库 game_data.db 无锁冲突）。
-        # 在这里（分析开始前）后台启动，与下方 _run_analysis 写 game_data.db **同时进行**，
-        # 缩短整体加载时长；3D 查看器只读该缓存库。
+        # assets.bin 全程内存流转（现场从 .pkg 读到字节 → 直接写库），不落盘。
         # WG 服与 Korabli 服统一走后台 _assets_cache_job：WG 用 10 类型表 +
         # WG 布局（渲染集 0x70/材质 0x78），由 AssetsCacheService 按 wows_type 适配。
         assets_started[0] = True
@@ -147,8 +145,8 @@ def run_process() -> "_AppTask":
                     bus.log_message.emit(f"❌ assets_data.db 写入失败: {e}")
                     assets_ok[0] = False
                 finally:
-                    # populate 完成后清理 assets.bin 临时文件与索引缓存
-                    # （data/assets.bin 提取产物 / data/assets_{bin_folder}.bin 版本缓存 / .uncode_cache）
+                    # populate 完成后清理**历史遗留**的 assets.bin 落盘产物
+                    # （现流程全内存，不再产生 data/assets.bin / assets_*.bin / .uncode_cache）
                     _cleanup_assets_temp()
                     assets_done.set()
 
@@ -361,37 +359,24 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
         from services.assets_cache_service import AssetsCacheService
         from services.geometry_service import GeometryService
         gsvc = GeometryService.instance()
-        path = gsvc.locate_assets_bin()
-        if not path:
+        # 全内存：现场从当前客户端 .pkg 读 assets.bin 字节，直接交给缓存写入，不落盘
+        data = gsvc.load_assets_bytes()
+        if not data:
             bus.log_message.emit("⚠️ assets.bin 不可用，跳过 3D 数据缓存（3D 查看器将现场解析）")
             return False
         cache = AssetsCacheService(wows_type=wows_type)
         bus.log_message.emit("⏳ 步骤 3/3: 后台预提取 3D 数据（assets_data.db）...")
         counts = cache.populate(
-            path, bin_folder=bin_folder or "",
+            assets_bytes=data, bin_folder=bin_folder or "",
             game_version=game_version or "",
             wows_type=wows_type or "",
             game_dir=app_ctx.ctx.game_path or None,
             progress_cb=lambda msg: bus.log_message.emit(f"⏳ 3D 缓存: {msg}"))
+        del data    # 解析完即释放（3D 查看器后续只读 assets_data.db）
         bus.log_message.emit(
             f"📦 assets.bin 数据已缓存（骨架挂点 {counts['skeleton']} / "
             f"骨骼 {counts['skeleton_bones']} / 渲染集 {counts['render_sets']} / "
             f"材质 {counts['mfm_textures']} / 完整材质 {counts['material_full']}）")
-        # 数据已全部入库，删除解包出来的临时 assets.bin 版本缓存（data/assets_*.bin），
-        # 不再占用磁盘；3D 查看器后续直接从 assets_data.db 读取，无需该文件
-        try:
-            from utils.path_utils import get_data_dir
-            removed = 0
-            for p in get_data_dir().glob("assets_*.bin"):
-                try:
-                    p.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-            if removed:
-                bus.log_message.emit(f"🧹 已删除临时 assets.bin 解包缓存（{removed} 个）")
-        except Exception:  # noqa: BLE001
-            pass
         return True
     except Exception as e:  # noqa: BLE001
         bus.log_message.emit(f"❌ assets.bin 缓存写入失败: {e}")
@@ -399,8 +384,11 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
 
 
 def _cleanup_assets_temp() -> None:
-    """清理 assets.bin 临时产物：data/assets.bin（提取产物）、data/assets_{bin_folder}.bin
-    （版本缓存）、data/.uncode_cache（VFS 索引缓存）。在后台 assets 缓存入库完成后调用。"""
+    """清理**历史版本遗留**的 assets.bin 落盘产物（data/assets.bin、data/assets_*.bin、
+    data/.uncode_cache VFS 索引缓存）。
+
+    现流程 assets.bin 全程只在内存中流转，既不落盘也不复用任何既有文件做缓存，
+    因此本函数只用于回收旧版本残留；在后台 3D 缓存入库完成后调用。"""
     try:
         from utils.path_utils import get_data_dir
         dd = get_data_dir()

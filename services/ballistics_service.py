@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import math
 from typing import Any
 
@@ -67,25 +68,31 @@ class BallisticsCalculator:
         return max(BallisticsCalculator.KORABLI_DT_MIN, min(BallisticsCalculator.KORABLI_DT_MAX, dt))
 
     @staticmethod
-    def simulate_trajectory(mass: float, caliber_m: float, air_drag: float, velocity: float, angle_deg: float) -> dict:
+    def simulate_trajectory(mass: float, caliber_m: float, air_drag: float, velocity: float, angle_deg: float,
+                            start_height_m: float = 0.0, record_path: bool = False) -> dict:
         """Korabli 原始弹道积分（与客户端实现一致）。
 
         - 标准大气 ISA 密度（T0=288.15, L=0.0065, p0=101325, M=0.0289644, R=8.31447）
         - 纯二次阻力（沿速度反向）：a_drag = rho*A*0.5*c_D*v^2/mass，A = pi/4*d^2
         - 自适应步长 dt(h) = clamp(exp(h*0.00065)*h*0.00065, 0.1001, 0.8125)
         - 重力 g = 9.8
+        - start_height_m：起始高度（客户端 getGunDist 以炮口高度 gunHeight 起算，落在 y=0）；默认 0 与旧行为完全一致
+        - record_path：额外返回 path_x / path_y（逐步水平位置/高度，末点已插值到 y=0），
+          用于把落点垂向位移沿真实弹道传播到水面；默认 False 不产生额外开销
         """
         theta = math.radians(angle_deg)
         v_x = float(velocity) * math.cos(theta)
         v_y = float(velocity) * math.sin(theta)
         x = 0.0
-        y = 0.0
+        y = float(start_height_m)
         t = 0.0
         # k = 0.5*c_D*A/mass，A = pi/4*d^2（与 0.5*c_D*(d/2)^2*pi/mass 等价）
         k = 0.5 * float(air_drag) * (float(caliber_m) / 2.0) ** 2 * math.pi / max(float(mass), 1e-9)
 
         # 记录上一步，用于落地插值（对齐客户端落点处理末尾的线性插值到 y=0）
-        prev_x, prev_y, prev_vx, prev_vy, prev_t = 0.0, 0.0, v_x, v_y, 0.0
+        prev_x, prev_y, prev_vx, prev_vy, prev_t = 0.0, float(start_height_m), v_x, v_y, 0.0
+        path_x: list[float] = [0.0]
+        path_y: list[float] = [float(start_height_m)]
         while y >= 0.0:
             prev_x, prev_y, prev_vx, prev_vy, prev_t = x, y, v_x, v_y, t
             dt = BallisticsCalculator._korabli_dt(y)
@@ -99,6 +106,9 @@ class BallisticsCalculator:
             x += v_x * dt
             y += v_y * dt
             t += dt
+            if record_path:
+                path_x.append(x)
+                path_y.append(y)
             if t > 5000:
                 break
 
@@ -111,15 +121,36 @@ class BallisticsCalculator:
             v_y = prev_vy + (v_y - prev_vy) * frac
             t = prev_t + (t - prev_t) * frac
             y = 0.0
+            if record_path and len(path_x) > 1:
+                path_x[-1] = x
+                path_y[-1] = 0.0
 
         v_imp = math.hypot(v_x, v_y)
         impact_angle_deg = math.degrees(math.atan2(abs(v_y), abs(v_x))) if v_imp > 0 else 0.0
-        return {
+        out = {
             "distance_m": x,
             "velocity": v_imp,
             "fly_time": t,
             "impact_angle_deg": impact_angle_deg,
         }
+        if record_path:
+            out["path_x"] = path_x
+            out["path_y"] = path_y
+        return out
+
+    @staticmethod
+    def max_range_at_pitch(mass: float, caliber_m: float, air_drag: float, velocity: float,
+                           pitch_deg: float, start_height_m: float = 0.0) -> float:
+        """给定仰角（度）时炮弹落到水面（y=0）的水平距离（米）。
+
+        对齐客户端 `getGunDist` / `getTrajectoryDist`：仰角先钳到
+        `[0, MAX_ANGLE_DEG]`（客户端 DEFAULT_MAX_PITCH = radians(45)，即仰角超过 45° 也按 45° 算），
+        起点为炮口高度（默认 0）。
+        """
+        pitch = max(0.0, min(float(pitch_deg), BallisticsCalculator.MAX_ANGLE_DEG))
+        res = BallisticsCalculator.simulate_trajectory(
+            mass, caliber_m, air_drag, velocity, pitch, start_height_m=start_height_m)
+        return float(res.get("distance_m") or 0.0)
 
     @staticmethod
     def calc_ap_penetration(krupp: float, mass_kg: float, velocity: float, caliber_m: float) -> float:
@@ -348,20 +379,106 @@ class BallisticsCalculator:
         return round(float(area) * float(sigma) * float(sigma), 1)
 
     @staticmethod
-    def project_vertical_dispersion_to_water(vertical_m: float, impact_angle_deg: float) -> float:
-        """把垂直面纵向散布严格投影到水面射程方向：ΔR = Δn / sin(落弹角)。
+    def project_vertical_dispersion_geometric(vertical_m: float, impact_angle_deg: float) -> float:
+        """【几何（直线）近似，保留对照】ΔR = Δn / sin(落弹角)。
 
         三维推导（θ = 落弹角，Δn = 垂直面内垂直于弹道的纵向位移）：
           · Δn 在竖直方向的分量 = Δn·cosθ，沿射程方向分量 = Δn·sinθ
           · 弹着点要回到水面，需沿弹道再走 Δn·cosθ/tanθ
           · 合计 ΔR = Δn·sinθ + Δn·cos²θ/sinθ = Δn/sinθ
 
-        ⚠️ 小落弹角（近距离平直弹道）会被必然放大 1/sinθ 倍：同一散布在
-        2 km 约 ×69、20 km 约 ×5、25 km 约 ×3.7。该投影只用于右图对照；
-        游戏使用的散布椭圆纵向半轴（左图）不含这一步折算。
+        ⚠️ 把弹道当成直线，小落弹角下会无限放大（2 km 约 ×3400/Δn）；现行右图口径
+        已改为 `project_vertical_dispersion_to_water`（逐条积分真实弹道），本函数仅作对照参考。
         """
         sine = math.sin(math.radians(abs(float(impact_angle_deg))))
         return float(vertical_m) / max(sine, 1e-9)
+
+    # 水面投影弹道族采样数（仰角按 i/(n-1) 平方分布：低仰角更密）
+    WATER_FAMILY_ANGLES = 33
+
+    @staticmethod
+    def _interp_path(path_x: list, path_y: list, x: float):
+        """弹道路径上水平位置 x 处的高度（x 超出路径范围返回 None）。"""
+        if not path_x or x < path_x[0] or x > path_x[-1]:
+            return None
+        i = bisect.bisect_left(path_x, x)
+        if i <= 0:
+            return float(path_y[0])
+        if i >= len(path_x):
+            return float(path_y[-1])
+        x0, x1 = path_x[i - 1], path_x[i]
+        if x1 <= x0:
+            return float(path_y[i - 1])
+        f = (x - x0) / (x1 - x0)
+        return float(path_y[i - 1] + (path_y[i] - path_y[i - 1]) * f)
+
+    @staticmethod
+    def build_trajectory_family(mass: float, caliber_m: float, air_drag: float, velocity: float,
+                               n_angles: int | None = None) -> dict:
+        """采样一组**真实弹道**路径（发射仰角 → 路径 + 落水距离），供水面纵向投影使用。
+
+        仰角按 i/(n-1) 的平方分布（低仰角更密）——近距离弹道对该处仰角最敏感，
+        需要更高的角度分辨率。返回：
+          {"angles": [...], "paths": [(xs, ys, distance_m), ...], "peak_index": int,
+           "max_range_m": float}
+        ❗不同仰角的路径不能混用；每次换弹种/初速需重建（约几毫秒）。
+        """
+        n = max(int(n_angles or BallisticsCalculator.WATER_FAMILY_ANGLES), 5)
+        angles = [BallisticsCalculator.MAX_ANGLE_DEG * ((i / (n - 1)) ** 2) for i in range(n)]
+        paths = []
+        for a in angles:
+            r = BallisticsCalculator.simulate_trajectory(
+                mass, caliber_m, air_drag, velocity, a, record_path=True)
+            paths.append((r.get("path_x") or [0.0], r.get("path_y") or [0.0],
+                          float(r.get("distance_m") or 0.0)))
+        peak = max(range(n), key=lambda i: paths[i][2])
+        return {"angles": angles, "paths": paths, "peak_index": peak,
+                "max_range_m": paths[peak][2]}
+
+    @staticmethod
+    def project_vertical_dispersion_to_water(family: dict, distance_km: float, vertical_m: float) -> float:
+        """ΔR：把垂直面纵向半轴 Δn 当成"落点在目标竖直线上的垂向位移"，沿**真实弹道**投到水面。
+
+        做法：在弹道族里找"恰好穿过 (d, Δn)"的那条弹道——即弹丸在目标处高出 Δn、仍继续飞行的
+        那条发射仰角——取其落水距离 R'，则 ΔR = R' − d（Δn>0 → 偏高 → 落得更远）。
+
+        与 `project_vertical_dispersion_geometric`（直线假设 Δn/sinθ）相比：这里逐条积分的
+        真实弹道自带弯曲与近最大射程的"弹丸聚挤"效应，近距离不会无上限放大；
+        数值上与大落弹角时的 Δn/tanθ 接近，小落弹角时比 Δn/sinθ 小一截。
+        """
+        d = float(distance_km) * 1000.0
+        dn = float(vertical_m)
+        if d <= 1.0 or dn <= 0.0 or not family:
+            return 0.0
+        paths = family.get("paths") or []
+        peak = int(family.get("peak_index") or (len(paths) - 1))
+        ys: list[float] = []
+        rs: list[float] = []
+        for i in range(min(peak + 1, len(paths))):   # 低伸支：R 随仰角单调递增
+            xs, py, R = paths[i]
+            if R < d:
+                continue
+            y = BallisticsCalculator._interp_path(xs, py, d)
+            if y is None:
+                continue
+            ys.append(y)
+            rs.append(R)
+            if y >= dn:          # 已找到包裹 Δn 的区间 → 提前结束，避免整族扫完
+                break
+        if not ys:
+            return 0.0
+        if dn <= ys[0]:
+            # 在名义弹道（锚点 y=0, R=d）与第一个采样之间插值
+            R = d + (rs[0] - d) * (dn / ys[0]) if ys[0] > 0.0 else d
+        else:
+            R = rs[-1]
+            for i in range(1, len(ys)):
+                if ys[i] >= dn:
+                    span = ys[i] - ys[i - 1]
+                    f = (dn - ys[i - 1]) / span if span > 0.0 else 0.0
+                    R = rs[i - 1] + (rs[i] - rs[i - 1]) * f
+                    break
+        return max(R - d, 0.0)
 
     @staticmethod
     def gaussian_dispersion_points(sigma: float, count: int, seed: int = 0) -> list:

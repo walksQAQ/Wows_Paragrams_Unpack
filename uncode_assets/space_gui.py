@@ -13,7 +13,6 @@ space_gui.py —— 港口/地图场景浏览器（PySide6）。
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -79,43 +78,18 @@ def build_resolver(game_dir: str, wows_type: str,
                    bin_folder: Optional[str] = None) -> SceneResolver:
     """构建 pathId → 路径解析器。
 
-    解析依赖 assets.bin 的路径表/字符串表。为了可靠且不每次重提 227MB：
-      - 按「游戏目录+服务器」落盘缓存提取出的 assets.bin → data/assets_<key>.bin；
-      - 命中缓存直接加载；未命中则从被浏览游戏目录提取 content/assets.bin 后写缓存再加载。
-    这样路径/名字 hash 都能反查回可读文本；任何一步失败回退 SceneResolver(None)（0x 十六进制）。
+    解析依赖 assets.bin 的路径表/字符串表。**不使用任何落盘缓存**：每次都在内存里
+    从当前浏览的游戏目录 .pkg 现场提取 content/assets.bin（Kraken 解压，百秒级），
+    解析完立即释放，因此绝不会读到别的客户端/旧版本的残留产物。
+    任何一步失败回退 SceneResolver(None)（0x 十六进制）。
     """
     try:
-        import hashlib
         from .service import AssetsBinService
-        from utils.path_utils import get_data_dir
-        key = hashlib.sha1(
-            f"{os.path.normpath(str(game_dir))}|{wows_type}".encode()).hexdigest()[:12]
-        cached = get_data_dir() / f"assets_{key}.bin"
-        if not cached.exists():
-            extract_assets_bin(game_dir, bin_folder, cached)
-        svc = AssetsBinService(assets_path=cached, wows_type=wows_type)
+        svc = AssetsBinService(game_dir=game_dir, bin_folder=bin_folder,
+                               wows_type=wows_type)
         return SceneResolver(svc.db)
     except Exception:  # noqa: BLE001
         return SceneResolver(None)
-
-
-def extract_assets_bin(game_dir: str, bin_folder: Optional[str], cached: Path) -> None:
-    """从游戏目录的 .pkg 提取 content/assets.bin 并写到缓存文件。"""
-    from data_extractor import GameExtractor
-    ext = GameExtractor(game_dir, bin_folder=bin_folder)
-    try:
-        entry = ext.file_tree.get("content/assets.bin")
-        if entry is None or getattr(entry, "is_directory", True) or entry.file_info is None:
-            raise RuntimeError("未找到 content/assets.bin")
-        data = ext.pkg_reader.read_file(entry.volume.filename, entry.file_info)
-        cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
-        del data
-    finally:
-        try:
-            ext.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 class _ScanWorker(QThread):

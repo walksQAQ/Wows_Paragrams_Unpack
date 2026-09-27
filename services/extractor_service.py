@@ -18,10 +18,6 @@ from utils.path_utils import get_data_dir, get_app_dir, get_bundled_dir
 
 
 _DATA_FILE_NAMES = ["GameParams_py3.data", "GameParams_py2.data", "GameParams.data"]
-#: assets.bin 提取产物落盘路径（与 GameParams.data 同放 data/ 目录，
-#: 入库完成后一并删除）
-def _assets_bin_path():
-    return get_data_dir() / "assets.bin"
 
 
 def _get_latest_bin(game_path: str) -> str | None:
@@ -77,45 +73,6 @@ def _extract_data_files(game_path: str, latest_bin: str, target_dir) -> list[str
         extractor.close()
 
 
-def _extract_assets_bin(game_path: str, latest_bin: str) -> str | None:
-    """在同一个解包流程中现场提取 assets.bin（照搬 GameParams 提取流程）。
-
-    用 data_extractor 从 .pkg 中提取 content/assets.bin 到工作区根目录
-    （get_app_dir()/assets.bin），供入库阶段读取炮位安装朝向坐标。
-    返回产物文件路径；失败返回 None（不阻塞 GameParams 提取）。
-    """
-    from data_extractor import GameExtractor
-    from uncode_assets.service import ASSETS_BIN_PATH
-
-    out = _assets_bin_path()
-    bus.log_message.emit("🔧 正在提取 assets.bin...")
-    extractor = GameExtractor(game_path, bin_folder=latest_bin)
-    try:
-        candidates = [
-            e for e in extractor.list_files([ASSETS_BIN_PATH])
-            if not e.is_directory
-        ]
-        if not candidates:
-            bus.log_message.emit("⚠️ 文件树中未找到 content/assets.bin，跳过炮位朝向提取")
-            return None
-        # 用 read_file 整块解压返回字节再写盘（assets.bin 为 container 大文件，
-        # 流式解压写盘可能极慢/卡住；read_file 路径已验证可靠）
-        entry = candidates[0]
-        data = extractor.pkg_reader.read_file(entry.volume.filename, entry.file_info)
-        if not data:
-            bus.log_message.emit("⚠️ assets.bin 解压结果为空")
-            return None
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(data)
-        bus.log_message.emit(f"✅ 已提取 assets.bin ({len(data)} 字节)")
-        return str(out)
-    except Exception as exc:
-        bus.log_message.emit(f"⚠️ 提取 assets.bin 失败: {exc}")
-        return None
-    finally:
-        extractor.close()
-
-
 def run_extract() -> "_AppTask":
     ctx = app_ctx.ctx
     game_path = ctx.game_path
@@ -134,10 +91,6 @@ def run_extract() -> "_AppTask":
         bus.task_progress.emit(15, "执行解包 GameParams")
         target_path = get_data_dir()
         _extract_data_files(game_path, latest_bin, target_path)
-
-        # 同一解包流程内现场提取 assets.bin（统一进度条）
-        bus.task_progress.emit(30, "提取 assets.bin")
-        _extract_assets_bin(game_path, latest_bin)
 
         # 清理可能残留的旧数据（原外部工具遗留的 content/ 目录）
         old_content = get_app_dir() / "content"

@@ -1455,29 +1455,15 @@ class GeometryService:
 
     # ── assets.bin 骨架挂点 ─────────────────────────────
 
-    def locate_assets_bin(self) -> str | None:
-        """定位 assets.bin（3D 查看器骨架挂点权威来源）。
+    def load_assets_bytes(self) -> bytes | None:
+        """现场从当前客户端 .pkg 读取 assets.bin 原始字节（3D 查看器骨架挂点权威来源）。
 
         只使用**当前加载客户端**的 assets.bin，绝不用别的客户端/来源不明的缓存：
-        1) 加载数据流程（extractor_service._extract_assets_bin）已提取的 data/assets.bin
-           （3D 查看器现场提取也写入同一路径，供下次复用）
-        2) 现场用解包器从当前客户端 .pkg 提取 content/assets.bin
+        **全内存流转** —— 不读任何既有解包产物（如 data/assets.bin），也不把产物写盘
+        供下次复用。失败返回 None（调用方按「无 assets 数据」降级）。
         """
-        import os
-        game = app_ctx.ctx.game_path
-        if not game:
+        if not app_ctx.ctx.game_path:
             return None
-        try:
-            from utils.path_utils import get_data_dir
-            data_dir = get_data_dir()
-        except Exception:  # noqa: BLE001
-            data_dir = None
-        # 1) 复用加载数据流程（extractor_service._extract_assets_bin）已提取的 data/assets.bin
-        if data_dir is not None:
-            target = data_dir / "assets.bin"
-            if os.path.exists(target):
-                return str(target)
-        # 2) 现场从当前客户端 .pkg 提取（骨架挂点须与模型同版本），产物写入 data/assets.bin 复用
         try:
             ext = self._get_extractor()
             candidates = [
@@ -1486,16 +1472,7 @@ class GeometryService:
             if not candidates:
                 return None
             entry = candidates[0]
-            data = ext.pkg_reader.read_file(entry.volume.filename, entry.file_info)
-            if not data:
-                return None
-            if data_dir is None:
-                from utils.path_utils import get_data_dir
-                data_dir = get_data_dir()
-            out = data_dir / "assets.bin"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(data)
-            return str(out)
+            return ext.pkg_reader.read_file(entry.volume.filename, entry.file_info) or None
         except Exception:  # noqa: BLE001
             return None
 
@@ -1507,9 +1484,10 @@ class GeometryService:
         self._assets_tried = True
         try:
             from uncode_assets.service import AssetsBinService
-            path = self.locate_assets_bin()
-            if path:
-                self._assets_svc = AssetsBinService(assets_path=path)
+            data = self.load_assets_bytes()
+            if data:
+                self._assets_svc = AssetsBinService(
+                    assets_bytes=data, wows_type=app_ctx.ctx.wows_type)
         except Exception:  # noqa: BLE001
             self._assets_svc = None
         return self._assets_svc

@@ -451,8 +451,12 @@ class WargamingDetailPanel(DetailPanel):
         return f"consumable_{cid}.png"
 
     def _rage_preview_icon(self, rname: str) -> str:
-        """WG：战斗指令预览图无 rageMode_ 前缀、无 _0 后缀。"""
-        return f"ragemode/{rname}_preview.png"
+        """WG：战斗指令预览图无 rageMode_ 前缀、无 _0 后缀。
+
+        ⚠️ WG 素材目录是 `rageMode`（大写 M，见 sync_pictures 的规则表），
+        而 Qt 资源路径区分大小写 —— 写成 `ragemode` 会全部解析失败（显示“缺少图片”）。
+        """
+        return f"rageMode/{rname}_preview.png"
 
     def _consumable_detail_items(self, items: list, bp, cfgd: dict, conn, vc: str, kv,
                                   *, num_raw, prep, cd_time, wt, auto, ct) -> None:
