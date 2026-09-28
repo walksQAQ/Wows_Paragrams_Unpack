@@ -6,6 +6,7 @@ _temp/
 data/
 log/
 release/
+native/build/
 config.json
 embed_text_watermark.py
 .vscode/settings.json

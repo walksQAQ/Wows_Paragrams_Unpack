@@ -139,8 +139,17 @@ class GeometryViewerDialog(QDialog):
         root.addLayout(body, stretch=1)
 
         # ── 左侧：3D 视口（容器内叠加转圈加载提示）──
-        from ui.geometry_renderer import GeometryViewport
-        self.viewport = GeometryViewport()
+        import os
+
+        if os.environ.get("WSR_USE_D3D_VIEWER", "") == "1":
+            # 新渲染后端（D3D11）：见 todo_list/New_function_of_d3d11_renderer.md
+            from renderer.qt_viewport import D3DViewportAdapter
+
+            self.viewport = D3DViewportAdapter()
+        else:
+            from ui.geometry_renderer import GeometryViewport
+
+            self.viewport = GeometryViewport()
         theme.bind(self.viewport, "QOpenGLWidget { background:#16181d; border:1px solid @border@; border-radius:6px; }")
         self.view_container = QWidget()
         _vc = QGridLayout(self.view_container)

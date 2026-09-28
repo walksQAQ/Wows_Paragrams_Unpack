@@ -12,7 +12,7 @@ authors = [{ name = "walksQAQ" }]
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]
-include = ["app*", "models*", "services*", "ui*", "utils*", "data_extractor*", "presenters*", "uncode_assets*"]
+include = ["app*", "models*", "services*", "ui*", "renderer*", "utils*", "data_extractor*", "presenters*", "uncode_assets*"]
 
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"

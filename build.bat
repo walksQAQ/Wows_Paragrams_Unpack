@@ -63,6 +63,34 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
+:: Step 1.6: build native D3D11 renderer DLL (release\wows_renderer.dll)
+echo [NATIVE] Building D3D11 renderer DLL ...
+set CMAKE_EXE=
+where cmake >nul 2>nul
+if %ERRORLEVEL%==0 set CMAKE_EXE=cmake
+if defined CMAKE_EXE goto :cmake_ready
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSROOT="
+if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
+if defined VSROOT if exist "%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" set "CMAKE_EXE=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+:cmake_ready
+if not defined CMAKE_EXE goto :native_skip
+"%CMAKE_EXE%" -S native -B native\build >nul
+if %ERRORLEVEL% NEQ 0 goto :native_fail
+"%CMAKE_EXE%" --build native\build --config Release >nul
+if %ERRORLEVEL% NEQ 0 goto :native_fail
+if exist "%OUTDIR%\wows_renderer.dll" goto :native_done
+:native_fail
+echo [WARN] native renderer build failed; 3D viewer will show a fallback message.
+goto :native_done
+:native_skip
+echo [WARN] cmake not found; skipping native renderer build.
+:native_done
+
+:: Embed the DLL into the onefile payload (found next to the exe at runtime).
+set DLL_ARG=
+if exist "%OUTDIR%\wows_renderer.dll" set DLL_ARG=--include-data-files=%OUTDIR%/wows_renderer.dll=wows_renderer.dll
+
 :: Compiler strategy: local and CI both use Nuitka default toolchain (MSVC).
 :: Nuitka 2.x removed --mingw64 (MinGW) on Python 3.13+, so CI no longer
 :: passes --mingw64; keeps --lto=no to reduce build time on CI runners.
@@ -81,6 +109,7 @@ if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--lto=no
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
+    %DLL_ARG% ^
     --output-filename=WowsKorabliDataViewer.exe ^
     main.py
 

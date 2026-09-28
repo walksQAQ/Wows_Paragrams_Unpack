@@ -449,6 +449,51 @@ def resolve_material(defn, resolver, _stack=None) -> ResolvedMaterial:
   数据类贴图（materialIdMap / MG / normal）按**非 sRGB** 上传（否则 sRGB 解码破坏数据）。
 - **金属不反射程序化天空盒**：不使用随视角变化的反射色（历史教训：色相随反射方向乱变）。
 
+#### 5.4.2 通道实现与验证状态（增量推进）
+
+迁移按**通道逐个打通**推进：先把框架（槽位声明、类型校验、debug 直显、A/B 取证）搭稳，
+再一个通道一个通道送入并逐项验证。**凡标 ✅ 的通道，其上传与采样已被量化验证锁定，后续改动不得使其退化。**
+
+| 通道 | 槽位（HLSL） | 上传类型 | 状态 | 验证依据 |
+|---|---|---|---|---|
+| `_a` albedo（PBS `diffuseMap`） | `t0` `g_tex` | `Texture2D`，sRGB 类型化 | ✅ **已验证** | 反照率直显与源 DDS 解码统计一致（均值差 ≤4/255，色调一致） |
+| `_a` albedo（INDEXED `albedoArray`） | `t4` `g_tiles_tex` | `Texture2DArray`，非 sRGB | ✅ **已验证** | 逐切片均值范围 34–172，渲染结果落于该范围内且标准差 37（有真实细节，非占位） |
+| `_n` 法线（PBS） | `t1` `g_normal_map` | `Texture2D`，非 sRGB | ⬜ 待逐项验证 | 采样已接通，输出与旧版对比待做 |
+| `_n`（INDEXED `normalArray`） | `t5` `g_normal_tex` | `Texture2DArray`，非 sRGB | ⬜ 待逐项验证 | 同上 |
+| `_alpha_n`（INDEXED `normalMap` 叠加层） | `t9` `g_alpha_n_map` | `Texture2D`，非 sRGB | ⬜ 待逐项验证 | ⚠️ 与 PBS 的法线槽 **`t1` 不是同一个槽**，两族不得混用 |
+| `_mg`（F0/gloss/emissive） | `t2` `g_mg_map` / `t6` `g_mg_tex` | `Texture2D` / `Array`，非 sRGB | ⬜ 待逐项验证 | — |
+| `materialIdMap` | `t3` `g_matid_tex` | `Texture2D`，非 sRGB，point 采样 | ⬜ 待逐项验证 | 采样与绑定已证明正常（本通道尚有未解差异，详见 §7.4 备注） |
+| `artMap` | `t7` `g_art_tex` | `Texture2D`，sRGB | ⬜ 待逐项验证 | — |
+| `noise` | `t8` `g_noise_tex` | `Texture2DArray` | ⬜ 待逐项验证 | — |
+
+**框架约束（防回归，必须保持）：**
+
+1. **槽位类型校验**：绑定前校验「2D 槽 ↔ 2D 纹理 / 数组槽 ↔ 数组纹理」，不匹配则**跳过并告警**而不是强行绑定。
+   HLSL 声明的资源维度不符会读写越界或读到无关数据，属于最难排查的一类问题。
+   典型违规：INDEXED 的主贴图是 **数组** 纹理，不得落进声明为 `Texture2D` 的 `t0`（其正确定位是 `t4`）。
+2. **INDEXED 与 PBS 两族槽位分开**：`normalMap` 在 INDEXED 族是**叠加层**（`t9`），在 PBS 族才是法线（`t1`）；
+   `diffuseMap` / `g_diffuseMap` / `g_albedoMap` 属于**另一套**资源组，不得覆盖主贴图。
+3. **顶点 UV 的 V 轴方向**：旧渲染栈上传 UV 原值（GL 约定 t=0 在底部），D3D 约定 v=0 在顶部，
+   因此网格 UV 采样点统一施加 V→1−V 校正；公式仍以 GL 空间书写，便于与旧实现逐行对照。
+4. **非 sRGB 数据贴图**：`materialIdMap` / MG / normal 一律按非 sRGB 上传，sRGB 解码会破坏数据语义。
+
+**Debug 通道编号（`debug_view`，Pass 4 旁路 Tone Mapping）：**
+
+| 编号 | 内容 | 说明 |
+|---|---|---|
+| 0 | 无（正常输出） | — |
+| 1 | 模型标记 | marker |
+| 2 | 最终法线 | 世界法线可视化 |
+| 3 | `f0_weight` | `_mg.R` |
+| 4 | `roughness` | `1 - _mg.G` |
+| 5 | art 覆盖强度 | `artMap.a × 强度` |
+| 6 | matId | 材质 ID 可视化 |
+| **7** | **反照率 `_a` 直显** | 输出**贴图存储原值**（sRGB 通道反编码回存储域），可与 Python 解码的源 DDS **逐像素比对**，是通道上传正确性的取证通道 |
+
+> 新增通道时：先在 `material.hlsl` 按「输出贴图存储原值」的约定加 debug 分支，
+> 再用 `_temp/scripts/verify_albedo.py` 一类的探针把**渲染结果与源 DDS 解码统计**对齐，
+> 通过后再更新上表状态。
+
 ### 5.5 材质参数覆盖（MFM → shader）
 
 ```
