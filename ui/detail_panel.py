@@ -1283,7 +1283,6 @@ class DetailPanel(QWidget):
                             background: @selected_bg@; border-color: @selected_bg@;
                         }
                     """)
-                    consumables_dir = pic_path("consumables")
                     con_btn_row = QWidget()
                     cbr_layout = QHBoxLayout(con_btn_row)
                     cbr_layout.setContentsMargins(4, 2, 4, 2)
@@ -1307,9 +1306,9 @@ class DetailPanel(QWidget):
                         btn.setCheckable(True)
                         btn.setStyleSheet(CON_BTN_STYLE)
                         btn.setToolTip(dname)
-                        # 消耗品图片命名（WG：consumable_X.png；Lesta：consumable_X_0.png）
-                        img_path = f"{consumables_dir}/{self._consumable_icon_name(cid)}"
-                        pixmap = QPixmap(img_path)
+                        # 消耗品图片命名（WG：consumable_X.png；Lesta：consumable_X_0.png）；
+                        # 带 iconIDs 的条目（克隆类）显示其指向的消耗品图片
+                        pixmap = self._consumable_icon_pixmap(cid, con_info.get("icon_id", ""))
                         if not pixmap.isNull():
                             scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                             btn.setIcon(QIcon(scaled))
@@ -1538,8 +1537,6 @@ class DetailPanel(QWidget):
         for rs in raw_slots:
             slots_map[rs["slot_index"]].append(rs)
 
-        consumables_dir = pic_path("consumables")
-
         BTN_STYLE = theme.qss("""
             QPushButton {
                 background: @panel_alt@;
@@ -1585,9 +1582,9 @@ class DetailPanel(QWidget):
                 btn.setCheckable(True)
                 btns_in_slot.append(btn)
 
-                # 加载消耗品图片（WG：consumable_X.png；Lesta：consumable_X_0.png）
-                img_path = f"{consumables_dir}/{self._consumable_icon_name(cid)}"
-                pixmap = QPixmap(img_path)
+                # 加载消耗品图片（WG：consumable_X.png；Lesta：consumable_X_0.png）；
+                # 带 iconIDs 的条目（克隆类）显示其指向的消耗品图片
+                pixmap = self._consumable_icon_pixmap(cid, rs.get("icon_id", ""))
                 if not pixmap.isNull():
                     scaled = pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     btn.setIcon(QIcon(scaled))
@@ -1891,6 +1888,28 @@ class DetailPanel(QWidget):
     def _consumable_icon_name(self, cid: str) -> str:
         """消耗品图片文件名（Lesta 默认 consumable_X_0.png；WG 覆盖为 consumable_X.png）。"""
         return f"consumable_{cid}_0.png"
+
+    def _consumable_icon_paths(self, cid: str, icon_id: str = "") -> list[str]:
+        """消耗品图片候选路径（按优先级）。
+
+        ``icon_id`` 来自配置的 iconIDs：克隆/容器类消耗品（如 PCY055_AbilityClones）
+        自身没有独立美术，游戏内显示的是 iconIDs 指向的那个消耗品的图片；
+        该图片缺失时再回退到消耗品自身 ID 的图片。
+        """
+        keys: list[str] = []
+        for key in (icon_id, cid):
+            key = str(key or "").strip()
+            if key and key not in keys:
+                keys.append(key)
+        return [f"{pic_path('consumables')}/{self._consumable_icon_name(k)}" for k in keys]
+
+    def _consumable_icon_pixmap(self, cid: str, icon_id: str = "") -> QPixmap:
+        """按 iconIDs → 自身 ID 的顺序加载消耗品图片，全部缺失时返回空 QPixmap。"""
+        for path in self._consumable_icon_paths(cid, icon_id):
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                return pixmap
+        return QPixmap()
 
     def _rage_preview_icon(self, rname: str) -> str:
         """战斗指令预览图路径（Lesta 默认；WG 覆盖）。"""

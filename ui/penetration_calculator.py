@@ -1881,20 +1881,31 @@ class PenetrationCalculatorDialog(QDialog):
                                      f"rageMode/{tag}_preview.png"])
 
     @staticmethod
-    def _consumable_icon_path(cid: str) -> str:
+    def _consumable_icon_path(cid: str, icon_id: str = "") -> str:
         """消耗品图标（按服务器命名）。
 
         Lesta → consumables/consumable_<id>_0.png
         WG    → consumables/consumable_<id>.png
+
+        ``icon_id`` 来自配置的 iconIDs：克隆/容器类消耗品（如 PCY055_AbilityClones）
+        自身没有独立美术，显示的是 iconIDs 指向那个消耗品的图标；
+        该图缺失时回退消耗品自身 ID 的图标。
         """
-        cid = str(cid or "")
-        if not cid:
+        def _names(key: str) -> list[str]:
+            if not key:
+                return []
+            if _is_wg():
+                return [f"consumables/consumable_{key}.png",
+                        f"consumables/consumable_{key}_0.png"]
+            return [f"consumables/consumable_{key}_0.png",
+                    f"consumables/consumable_{key}.png"]
+
+        icon_id = str(icon_id or "").strip()
+        cid = str(cid or "").strip()
+        candidates = _names(icon_id) + _names(cid)
+        if not candidates:
             return ""
-        if _is_wg():
-            return _first_existing_icon([f"consumables/consumable_{cid}.png",
-                                         f"consumables/consumable_{cid}_0.png"])
-        return _first_existing_icon([f"consumables/consumable_{cid}_0.png",
-                                     f"consumables/consumable_{cid}.png"])
+        return _first_existing_icon(candidates)
 
     def _load_special_bonuses(self, ship_id: str, conn, ship_type: str, kind: str = "main"):
         """加载该船提供对应炮种射程/精度加成的消耗品（侦察机，仅主炮）与战斗指令（rage_mode）。"""
@@ -1939,7 +1950,7 @@ class PenetrationCalculatorDialog(QDialog):
                     lines.append(f"主炮炮弹的最大误差: {NMM.format_modifier('GMIdealRadius', gm)}")
                 self._mod_items.append({"mod_id": cid, "gmmd": adc, "gm": gm, "kind": "consumable"})
                 self._add_mod_button(cid, adc, gm, kind="consumable", name="侦察机", bonus_lines=lines,
-                                     icon_path=self._consumable_icon_path(cid))
+                                     icon_path=self._consumable_icon_path(cid, ej.get("iconIDs")))
         # ── 战斗指令（rage_mode）：对应炮种射程、精度 ──
         for rm in conn.execute(
             "SELECT rage_mode_name, modifiers_json FROM ship_rage_mode WHERE ship_id=? AND version_code=?",

@@ -12,6 +12,7 @@ from pathlib import Path
 from presenters.wargaming.base import WargamingBasePresenter, NM
 from models.name_mapping import Mapping
 from services.ballistics_service import BallisticsCalculator
+from utils.consumable_display import icon_key_from_extra, title_key_from_extra
 from utils.path_utils import get_data_dir
 
 
@@ -730,6 +731,22 @@ class WargamingShipPresenter(WargamingBasePresenter):
             _append_buff_group("对自身", self_id)
         return rows
 
+    def _consumable_display_name(self, consumable_id: str, title_id: str = "",
+                                 display_name_id: int | None = None) -> str:
+        """消耗品显示名：配置 ``titleIDs`` 优先，其次槽位名称映射，最后消耗品 ID。
+
+        克隆/容器类条目（如 PCY055_AbilityClones）自身没有名称词条，
+        游戏内显示的是 titleIDs 指向那个消耗品的名称（与显示图片同源）。
+        """
+        if title_id:
+            name = self.resolve_name('consumable', title_id)
+            # resolve_name 未命中时原样返回 key，需与 key 比较才知道是否真命中
+            if name and str(name).strip().upper() != str(title_id).strip().upper():
+                return str(name)
+        name = self.resolve_name_by_id(display_name_id, 'consumable', consumable_id) \
+            if display_name_id else self.resolve_name('consumable', consumable_id)
+        return name or consumable_id or ""
+
     def _append_consumables(self, conn, vc, ship_id, sections):
         slots = conn.execute(
             "SELECT * FROM ship_consumable_slots WHERE version_code=? AND ship_id=? ORDER BY slot_index, item_index",
@@ -744,9 +761,7 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
                 items.append(self.make_item(f"  第 {s['slot_index']} 槽位:", "", len(items)))
                 last_slot = s['slot_index']
-            cname = self.resolve_name_by_id(s['display_name_id'], 'consumable', s['consumable_id']) or s['consumable_id'] or ""
-            items.append(self.make_item(f"    ({s['item_index']}) {cname}", "", len(items)))
-            # 从 consumable_configs 查找详细数据
+            # 从 consumable_configs 查找详细数据（提前取，供显示名使用 titleIDs）
             cfg = conn.execute(
                 "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
                 (vc, s['consumable_id'], s['config_key'])).fetchone()
@@ -754,16 +769,21 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 cfg = conn.execute(
                     "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
                     (vc, s['consumable_id'])).fetchone()
+            _extra: dict = {}
+            if cfg:
+                try:
+                    _extra = json.loads(cfg['extra_json'] or '{}')
+                except (json.JSONDecodeError, TypeError):
+                    _extra = {}
+            cname = self._consumable_display_name(
+                s['consumable_id'], title_key_from_extra(_extra), s['display_name_id'])
+            items.append(self.make_item(f"    ({s['item_index']}) {cname}", "", len(items)))
             if cfg:
                 cfgd = dict(cfg)
                 # 合并 extra_json（新版 schema 所有字段都在这里）
-                ej = cfgd.pop('extra_json', None)
-                if ej:
-                    try:
-                        extra = json.loads(ej)
-                        cfgd.update(extra)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                cfgd.pop('extra_json', None)
+                if _extra:
+                    cfgd.update(_extra)
                 # WG：效果数据在 logic 子对象，合并到顶层供各类型分支读取
                 _logic = cfgd.get('logic')
                 if isinstance(_logic, dict):
@@ -994,9 +1014,11 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 "item_index": s['item_index'],
                 "consumable_id": s['consumable_id'],
                 "config_key": s['config_key'],
-                "display_name": self.resolve_name_by_id(
-                    s['display_name_id'], 'consumable', s['consumable_id']
-                ) or s['consumable_id'] or "",
+                # 显示图片 / 名称分别跟随配置的 iconIDs、titleIDs（克隆类条目自身无美术与词条）
+                "display_name": self._consumable_display_name(
+                    s['consumable_id'], title_key_from_extra(_ej), s['display_name_id']
+                ),
+                "icon_id": icon_key_from_extra(_ej),
                 "available_activation_modes": _aam,
                 "default_activation_mode": _dam,
                 "time_based": self.is_time_based(_ej),
@@ -3170,7 +3192,6 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         parts = slot_val.split('|', 1)
                         aid = parts[0]
                         variant = parts[1] if len(parts) > 1 else ""
-                        aname = self.resolve_name("consumable", aid)
                         if variant:
                             cfg = conn.execute(
                                 "SELECT consumable_type, extra_json FROM consumable_configs "
@@ -3178,12 +3199,16 @@ class WargamingShipPresenter(WargamingBasePresenter):
                                 (vc, aid, variant)).fetchone()
                         else:
                             cfg = None
+                        cd: dict = {}
+                        if cfg:
+                            try: cd = json.loads(cfg['extra_json'] or '{}')
+                            except Exception: cd = {}
+                        # 显示名称跟随配置 titleIDs（克隆类条目自身无词条）
+                        aname = self._consumable_display_name(aid, title_key_from_extra(cd))
                         con_detail: list[dict] = []
                         cd2 = 0
                         con_detail.append(self.make_item("名称", aname, cd2)); cd2 += 1
                         if cfg:
-                            try: cd = json.loads(cfg['extra_json'] or '{}')
-                            except Exception: cd = {}
                             ct = cfg['consumable_type'] or cd.get('consumableType', '')
                             num = cd.get('numConsumables')
                             prep = cd.get('preparationTime', 0)
@@ -3271,6 +3296,8 @@ class WargamingShipPresenter(WargamingBasePresenter):
                             "consumable_id": aid,
                             "config_key": variant,
                             "display_name": aname,
+                            # 显示图片跟随配置 iconIDs 指向的消耗品
+                            "icon_id": icon_key_from_extra(cd),
                             "detail_items": con_detail,
                             "available_activation_modes": cd.get('availableActivationModes') or [] if cfg else [],
                             "default_activation_mode": cd.get('defaultActivationMode') or "" if cfg else "",

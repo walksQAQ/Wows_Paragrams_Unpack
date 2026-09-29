@@ -12,6 +12,9 @@ from pathlib import Path
 from presenters.lesta.base import LestaBasePresenter, NM
 from models.name_mapping import Mapping
 from services.ballistics_service import BallisticsCalculator
+from utils.consumable_display import (
+    consumable_display_refs, icon_key_from_extra, title_key_from_extra,
+)
 from utils.path_utils import get_data_dir
 
 
@@ -682,6 +685,22 @@ class LestaShipPresenter(LestaBasePresenter):
         except Exception:
             return ""
 
+    def _consumable_display_name(self, consumable_id: str, title_id: str = "",
+                                 display_name_id: int | None = None) -> str:
+        """消耗品显示名：配置 ``titleIDs`` 优先，其次槽位名称映射，最后消耗品 ID。
+
+        克隆/容器类条目（如 PCY055_AbilityClones）自身没有名称词条，
+        游戏内显示的是 titleIDs 指向那个消耗品的名称（与显示图片同源）。
+        """
+        if title_id:
+            name = self.resolve_name('consumable', title_id)
+            # resolve_name 未命中时原样返回 key，需与 key 比较才知道是否真命中
+            if name and str(name).strip().upper() != str(title_id).strip().upper():
+                return str(name)
+        name = self.resolve_name_by_id(display_name_id, 'consumable', consumable_id) \
+            if display_name_id else self.resolve_name('consumable', consumable_id)
+        return name or consumable_id or ""
+
     def _append_consumables(self, conn, vc, ship_id, sections):
         slots = conn.execute(
             "SELECT * FROM ship_consumable_slots WHERE version_code=? AND ship_id=? ORDER BY slot_index, item_index",
@@ -696,9 +715,7 @@ class LestaShipPresenter(LestaBasePresenter):
                     items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
                 items.append(self.make_item(f"  第 {s['slot_index']} 槽位:", "", len(items)))
                 last_slot = s['slot_index']
-            cname = self.resolve_name_by_id(s['display_name_id'], 'consumable', s['consumable_id']) or s['consumable_id'] or ""
-            items.append(self.make_item(f"    ({s['item_index']}) {cname}", "", len(items)))
-            # 从 consumable_configs 查找详细数据
+            # 从 consumable_configs 查找详细数据（提前取，供显示名使用 titleIDs）
             cfg = conn.execute(
                 "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key=?",
                 (vc, s['consumable_id'], s['config_key'])).fetchone()
@@ -706,16 +723,21 @@ class LestaShipPresenter(LestaBasePresenter):
                 cfg = conn.execute(
                     "SELECT * FROM consumable_configs WHERE version_code=? AND consumable_id=? AND config_key='Default'",
                     (vc, s['consumable_id'])).fetchone()
+            _extra: dict = {}
+            if cfg:
+                try:
+                    _extra = json.loads(cfg['extra_json'] or '{}')
+                except (json.JSONDecodeError, TypeError):
+                    _extra = {}
+            cname = self._consumable_display_name(
+                s['consumable_id'], title_key_from_extra(_extra), s['display_name_id'])
+            items.append(self.make_item(f"    ({s['item_index']}) {cname}", "", len(items)))
             if cfg:
                 cfgd = dict(cfg)
                 # 合并 extra_json（新版 schema 所有字段都在这里）
-                ej = cfgd.pop('extra_json', None)
-                if ej:
-                    try:
-                        extra = json.loads(ej)
-                        cfgd.update(extra)
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                cfgd.pop('extra_json', None)
+                if _extra:
+                    cfgd.update(_extra)
                 ct = cfgd.get('consumableType') or cfgd.get('consumable_type') or ""
                 num_raw = cfgd.get('numConsumables') or cfgd.get('num_consumables') or "0"
                 prep = float(cfgd.get('preparationTime', 0) or 0)
@@ -876,14 +898,17 @@ class LestaShipPresenter(LestaBasePresenter):
         # 收集原始消耗品数据供 UI 构建按钮
         raw_slots: list[dict] = []
         for s in slots:
+            # 显示图片 / 名称分别跟随配置的 iconIDs、titleIDs（克隆类条目自身无美术与词条）
+            _refs = consumable_display_refs(conn, vc, s['consumable_id'], s['config_key'])
             raw_slots.append({
                 "slot_index": s['slot_index'],
                 "item_index": s['item_index'],
                 "consumable_id": s['consumable_id'],
                 "config_key": s['config_key'],
-                "display_name": self.resolve_name_by_id(
-                    s['display_name_id'], 'consumable', s['consumable_id']
-                ) or s['consumable_id'] or "",
+                "display_name": self._consumable_display_name(
+                    s['consumable_id'], _refs["title_id"], s['display_name_id']
+                ),
+                "icon_id": _refs["icon_id"],
             })
         sections.append({
             "label": "消耗品数据", "items": items, "icon": "💊",
@@ -2956,7 +2981,6 @@ class LestaShipPresenter(LestaBasePresenter):
                         parts = slot_val.split('|', 1)
                         aid = parts[0]
                         variant = parts[1] if len(parts) > 1 else ""
-                        aname = self.resolve_name("consumable", aid)
                         if variant:
                             cfg = conn.execute(
                                 "SELECT consumable_type, extra_json FROM consumable_configs "
@@ -2964,12 +2988,16 @@ class LestaShipPresenter(LestaBasePresenter):
                                 (vc, aid, variant)).fetchone()
                         else:
                             cfg = None
+                        cd: dict = {}
+                        if cfg:
+                            try: cd = json.loads(cfg['extra_json'] or '{}')
+                            except Exception: cd = {}
+                        # 显示名称跟随配置 titleIDs（克隆类条目自身无词条）
+                        aname = self._consumable_display_name(aid, title_key_from_extra(cd))
                         con_detail: list[dict] = []
                         cd2 = 0
                         con_detail.append(self.make_item("名称", aname, cd2)); cd2 += 1
                         if cfg:
-                            try: cd = json.loads(cfg['extra_json'] or '{}')
-                            except Exception: cd = {}
                             ct = cfg['consumable_type'] or cd.get('consumableType', '')
                             num = cd.get('numConsumables')
                             prep = cd.get('preparationTime', 0)
@@ -3039,6 +3067,8 @@ class LestaShipPresenter(LestaBasePresenter):
                             "consumable_id": aid,
                             "config_key": variant,
                             "display_name": aname,
+                            # 显示图片跟随配置 iconIDs 指向的消耗品
+                            "icon_id": icon_key_from_extra(cd),
                             "detail_items": con_detail,
                         })
                 config_contents[key] = {
