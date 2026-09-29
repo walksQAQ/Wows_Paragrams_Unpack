@@ -124,7 +124,15 @@ def _family_for(tech_family: str, has_color: bool) -> int:
 
 
 class _TexturePool:
-    """场景内纹理去重池（同一字节 + 同一采样约定只上传一次）。"""
+    """场景内纹理去重池（同一字节 + 同一采样约定只上传一次）。
+
+    ⚠️ 去重签名必须用**内容**，不能用 ``id(data)``：
+    ``build_texture_spec`` 只保留重排后的 ``blob``，**不持有**原始 ``dds_bytes``，
+    该对象在 ``add()`` 返回后即可被释放，其 ``id`` 会被后续另一张贴图复用
+    ⇒ 命中假缓存、返回错误贴图（静默串图）。实测阿基坦另有 8 对贴图
+    「内容完全相同但签名不同」被漏去重（其中一对各 20 MB，白占显存）。
+    改用 ``(len, hash)`` 后：假命中不可能发生，同内容必然合并。
+    """
 
     def __init__(self) -> None:
         self.specs: list[TextureSpec] = []
@@ -147,7 +155,7 @@ class _TexturePool:
     ) -> str | None:
         if not data:
             return None
-        sig = (id(data), srgb, repeat, point, nomip)
+        sig = (len(data), hash(data), srgb, repeat, point, nomip)
         hit = self._by_sig.get(sig)
         if hit is not None:
             return hit

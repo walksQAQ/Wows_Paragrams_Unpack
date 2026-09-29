@@ -388,11 +388,16 @@ struct PSOutMRT
 PSOutMRT PSMainMRT(VSOut i)
 {
     int   mode    = (int)round(g_params2.x);
+    int   debug   = (int)round(g_params2.y);   /* 直出路径的 debug 是全局变量，这里必须本地取 */
     float nstrength = g_params.x;
     float3 N = normalize(i.nrm);
     float3 albedo = i.col.rgb;
     float  f0_weight = 0.0;
     float  gloss = 0.0;
+    /*调试通道覆盖值：>= 0 时本次绘制的 albedo 附件携带**可视化值**，
+     * 由 PSFullscreen 原样取出（见 mode 16）。直出路径在同一位置就返回，
+     * 两条管线必须得到**相同的屏幕值**。*/
+    float  dbg_gray = -1.0;
 
     if (mode == 3)
     {
@@ -449,6 +454,16 @@ PSOutMRT PSMainMRT(VSOut i)
         c = lerp(c, art4.rgb, am);
         albedo = c;
 
+        /* debug 6 = matId 伪彩 / debug 5 = art 覆盖强度（与直出路径同值） */
+        if (g_params2.w > 0.5)
+        {
+            dbg_gray = (float)matId / 195.0;
+        }
+        else if (debug == 5)
+        {
+            dbg_gray = am;
+        }
+
         float nslice = max(g_tile_idx[matId].y, 0.0);
         float3 ntex = g_normal_tex.SampleGrad(g_smp, glUV(uv, nslice), dudx, dudy).rgb;
         float3 n_ts = float3(ntex.x * 2.0 - 1.0, ntex.y * 2.0 - 1.0, 0.0);
@@ -479,18 +494,23 @@ PSOutMRT PSMainMRT(VSOut i)
             float3 mg = g_mg_map.Sample(g_smp, glUV(i.uv)).rgb;
             f0_weight = mg.r;
             gloss = mg.g;
+            if (debug == 5)
+            {
+                dbg_gray = mg.b;   /* PBS：art 强度位置用 emissive 掩码代替 */
+            }
         }
     }
 
     PSOutMRT o;
-    o.color  = float4(albedo, f0_weight);
+    o.color  = (dbg_gray >= 0.0) ? float4(dbg_gray, dbg_gray, dbg_gray, 1.0)
+                                 : float4(albedo, f0_weight);
     o.normal = float4(N * 0.5 + 0.5, gloss);
     o.world  = float4(i.wpos, 1.0);
     return o;
 }
 
 /* ============================ 全屏 pass ============================ */
-/* mode 10 = 拷贝法线；11 = 最终光照；12/13/14 = debug 通道直显。
+/* mode 10 = 拷贝法线；11 = 最终光照；12/13/14/15/16 = debug 通道直显。
  * 等价于旧版 gl_VertexID 全屏三角形（TEX_VERT_SRC）+ u_mode 10/11/12/13/14。 */
 
 struct FSOut
@@ -538,6 +558,14 @@ float4 PSFullscreen(FSOut i) : SV_TARGET
          * 反编码回存储值以便与源 DDS 字节对比。 */
         float3 a = g_scene_tex.Sample(g_smp, suv).rgb;
         return float4(pow(max(a, 0.0), 1.0 / 2.2), 1.0);
+    }
+    if (mode == 16)
+    {
+        /* debug 5(art 覆盖强度) / 6(matId)（延迟管线）：Pass 1 已把可视化值
+         * 写进 albedo 附件的 r 通道（PSMainMRT 的 dbg_gray），这里原样取出。
+         * 屏幕编码交给 backbuffer 硬件处理 —— 与直出路径完全一致。 */
+        float v = g_scene_tex.Sample(g_smp, suv).r;
+        return float4(v, v, v, 1.0);
     }
 
     /* mode 11：最终光照（读 Hull Albedo + Final Normal + 世界坐标） */

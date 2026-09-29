@@ -1112,8 +1112,10 @@ int32_t wsr_render(wsr_renderer *r)
         ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         bind_scene_srvs(r, nullptr, r->nb_srv.Get());
         const int dbg = (int)r->frame.debug_mode;
+        /* debug 5(art 覆盖强度) / 6(matId) 的值由 Pass1 写进 albedo 附件，
+         * 全屏 pass 用 mode 16 原样取出（直出路径则是材质 shader 直接返回）。 */
         const int fs_mode = (dbg == 2) ? 12 : (dbg == 3) ? 13 : (dbg == 4) ? 14
-                          : (dbg == 7) ? 15 : 11;
+                          : (dbg == 7) ? 15 : (dbg == 5 || dbg == 6) ? 16 : 11;
         draw_fullscreen(r, fs_mode);
         unbind_scene_srvs(r);
         ctx->OMSetDepthStencilState(r->dss_default.Get(), 0);
