@@ -61,15 +61,21 @@ TABLE_STYLE = """
         background: transparent;
         font-size: 11px;
         gridline-color: transparent;
+        /* 选中底色透明：::item:selected 只写 background 时 Qt 仍按调色板画系统蓝，
+           必须显式关掉 selection-background-color（2026-10-09 修复点击复制后残留蓝框）*/
+        selection-background-color: transparent;
     }
     QTableWidget::item {
         padding: 2px 12px;
         border-bottom: 1px solid rgba(0,0,0,0.06);
         min-height: 18px;
     }
+    /* Windows11 样式会给悬停/按下态画一层底色（深色下偏蓝），一并关掉 */
+    QTableWidget::item:hover {
+        background: transparent;
+    }
     QTableWidget::item:selected {
         background: transparent;
-        color: inherit;
     }
 """
 
@@ -113,6 +119,46 @@ SECTION_ICONS: dict[str, str] = {
 # ══════════════════════════════════════════════════════════
 #  卡片组件
 # ══════════════════════════════════════════════════════════
+# 射界行文本（卡片与详情面板共用，避免两处显示规则各写一遍）
+# ══════════════════════════════════════════════════════════
+
+def firing_arc_label(fa: dict, wep_name: str) -> str:
+    """射界行左列标签：多配置船体时附当前配置字母，便于确认跟随切换。"""
+    letter = fa.get("config_group") or ""
+    return f"{wep_name} 射界（{letter}）" if letter else f"{wep_name} 射界"
+
+
+def firing_arc_value_text(fa: dict) -> str:
+    """射界行数值文本。
+
+    鱼雷等左右分列武器：显示「单侧发射窗口」的最前端／最后端
+    （该舷各发射器可射范围的**并集**，与游戏内鱼雷扇区两条边界一致）；
+    其它武器：显示前向／后向齐射角。
+    """
+    sides = fa.get("sides") or []
+    if sides:
+        s0 = sides[0]
+        return f"最前 {s0['front']:g}°／最后 {s0['rear']:g}°"
+    return f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+
+
+def firing_arc_tooltip(fa: dict) -> str:
+    """射界行按钮提示：列出各舷窗口与各组发射器自身窗口。"""
+    sides = fa.get("sides") or []
+    if not sides:
+        return "点击查看该武器系统的射界图（总览 + 单炮塔详情）"
+    tips = ["点击查看该武器系统的射界图（总览 + 单发射器详情）",
+            "单侧发射窗口（该舷各发射器可射范围的并集）："]
+    for s in sides:
+        tips.append(f"　{s['label']}：最前 {s['front']:g}°／最后 {s['rear']:g}°")
+    groups = [(s, g) for s in sides for g in (s.get("groups") or [])]
+    if groups:
+        tips.append("各组发射器自身窗口：")
+        for s, g in groups:
+            tag = g.get("hp_key") or g.get("gun_name") or ""
+            tips.append(f"　{s['label']} {tag}：{g['front']:g}°~{g['rear']:g}°")
+    return "\n".join(tips)
+
 
 class ShipCardWidget(QGroupBox):
     """单张数据卡片，包含标题和键值表格"""
@@ -253,17 +299,18 @@ class ShipCardWidget(QGroupBox):
         self._table.insertRow(row)
         wep_name = "鱼雷发射器" if fa.get("slot_type") == "torpedoes" else "炮塔"
         # 左列：标签
-        name_item = QTableWidgetItem(f"{wep_name} 射界")
+        name_item = QTableWidgetItem(firing_arc_label(fa, wep_name))
         name_item.setForeground(QColor(label_color()))
         name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         self._table.setItem(row, 0, name_item)
         # 右列：值按钮（可点击弹出射界弹窗）
-        # 齐射角：前向/后向（主炮为全炮塔，鱼雷/副炮分两侧时取对应一侧）
-        value_text = f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+        # 鱼雷：单侧发射窗口「最前/最后」（该舷各发射器并集，同游戏内扇区）；
+        # 其它武器：前向/后向齐射角
+        value_text = firing_arc_value_text(fa)
         btn = QPushButton()
         btn.setText(value_text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip("点击查看该武器系统的射界图（总览 + 单炮塔详情）")
+        btn.setToolTip(firing_arc_tooltip(fa))
         btn.setStyleSheet(theme.qss("""
             QPushButton {
                 background: @panel_alt@; color: @text@;
@@ -361,11 +408,11 @@ class ShipCardWidget(QGroupBox):
                 value_item.setToolTip("\n".join(tip_lines))
 
         # 可点击复制：默认「舰船 ID」等行，或 item 里显式给 copyable=True
+        # 注意：**不要**给数值格子加 ItemIsSelectable。选中态会画出系统蓝框
+        # （紧跟在左列标题后面），而 cellClicked 对不可选中的格子同样会触发。
         _copy_text = display_value.strip()
         if _copy_text and (item.get("copyable") or name in COPYABLE_LABELS):
             self._copy_cells[row] = _copy_text
-            # 允许选中（样式表把选中态设为透明，视觉不变），确保点击信号稳定触发
-            value_item.setFlags(value_item.flags() | Qt.ItemFlag.ItemIsSelectable)
             _tip = value_item.toolTip()
             _copy_tip = f"点击复制：{_copy_text}"
             value_item.setToolTip(f"{_copy_tip}\n{_tip}" if _tip else _copy_tip)

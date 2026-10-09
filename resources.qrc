@@ -605,6 +605,22 @@
     <file>resources/pictures/ui/check_checked.png</file>
     <file>resources/pictures/ui/check_indeterminate.png</file>
     <file>resources/pictures/ui/combo_arrow.png</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_aircarrier_elite.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_aircarrier_premium.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_aircarrier_special.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_battleship_elite.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_battleship_premium.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_battleship_special.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_cruiser_elite.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_cruiser_premium.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_cruiser_special.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_destroyer_elite.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_destroyer_premium.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_destroyer_special.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_submarine_elite.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_submarine_premium.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_default_submarine_special.svg</file>
+    <file>resources/pictures/ui/ship_badges/icon_tier_special.svg</file>
     <file>resources/pictures/ui/ship_silhouette.svg</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap.png</file>
     <file>resources/pictures/wargaming/ammo_types/airsupport_ap_inactive.png</file>

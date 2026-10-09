@@ -307,3 +307,102 @@ def firing_arc_angles(guns):
     front = int(round(_salvo_exact(ra or la, 0.0))) if (ra or la) else 0
     back = int(round(_salvo_exact(la or ra, 180.0))) if (la or ra) else 0
     return {"mode": "front_back", "front": front, "back": back}
+
+
+# ── 单侧发射窗口（左右分列武器：鱼雷等） ─────────────────
+
+def _side_of(arcs):
+    """按可射区间中心角判舷别：0..180 右舷，180..360 左舷。"""
+    c = _arc_center(arcs)
+    return "starboard" if 0 <= c < 180 else "port"
+
+
+def _side_pieces(segs, side):
+    """绝对区间 → 该舷「以船首为 0°、朝该舷为正」的 0..180 角度区间。"""
+    out = []
+    for a, b in segs:
+        if b - a <= 1e-9:
+            continue  # 退化区间（跨 0° 分割的残片）不参与
+        if side == "starboard":
+            x, y = a, min(b, 180.0)
+            if y - x > 1e-9:
+                out.append((x, y))
+        else:
+            x, y = max(a, 180.0), b
+            if y - x > 1e-9:
+                out.append((360.0 - y, 360.0 - x))
+    return out
+
+
+def firing_arc_side_windows(guns):
+    """左右分列武器（鱼雷等）的「单侧发射窗口」。
+
+    同一舷的几组发射器互不重合也没关系：只要有一组能转向目标，该舷就能发射，
+    因此 **单侧窗口 = 该舷所有发射器可射区间的并集**，给出最前端 / 最后端两个边界
+    （角度以船首为 0°、朝该舷为正，0..180）。同时给出每门发射器自己的窗口，
+    便于与游戏里按组显示的角度对照。
+
+    返回 {"sides": [{"key","label","front","rear","groups":[{"hp_key","gun_name",
+    "front","rear","abs"}]}, ...]}，sides 按右舷、左舷顺序，无该舷数据则略过。
+    """
+    facings = compute_facings(guns)
+    buckets = {
+        "starboard": {"key": "starboard", "label": "右舷", "groups": [], "pieces": []},
+        "port": {"key": "port", "label": "左舷", "groups": [], "pieces": []},
+    }
+    for g, f in zip(guns, facings):
+        segs = gun_abs_segments(g, f)
+        if not segs:
+            continue
+        key = _side_of(segs)                      # 组归属：按该炮可射中心判舷
+        b = buckets[key]
+        group = {
+            "hp_key": g.get("hp_key", ""),
+            "gun_name": g.get("gun_name", ""),
+            "abs": [(round(x, 1), round(y, 1)) for x, y in segs],
+        }
+        for side_key in ("starboard", "port"):
+            rel = _side_pieces(segs, side_key)
+            if rel:
+                buckets[side_key]["pieces"].extend(rel)
+                if side_key == key:
+                    group["front"] = round(min(x for x, _ in rel), 1)
+                    group["rear"] = round(max(y for _, y in rel), 1)
+        if "front" not in group:      # 跨 0° 的炮：取本舷侧的片段
+            rel = _side_pieces(segs, key)
+            group["front"] = round(min(x for x, _ in rel), 1) if rel else 0.0
+            group["rear"] = round(max(y for _, y in rel), 1) if rel else 0.0
+        b["groups"].append(group)
+
+    sides = []
+    for key in ("starboard", "port"):
+        b = buckets[key]
+        if not b["groups"]:
+            continue
+        rel = _merge(b["pieces"])
+        sides.append({
+            "key": key,
+            "label": b["label"],
+            "front": round(min(x for x, _ in rel), 1),
+            "rear": round(max(y for _, y in rel), 1),
+            "groups": b["groups"],
+        })
+    return {"sides": sides}
+
+
+def firing_arc_side_summary(sides) -> str:
+    """把 firing_arc_side_windows 的 sides 拼成一行可读文本（供提示/日志）。"""
+    parts = []
+    for s in sides or []:
+        parts.append(f"{s['label']} 最前 {s['front']:g}°／最后 {s['rear']:g}°")
+    return "；".join(parts)
+
+
+def firing_arc_group_summary(sides) -> str:
+    """把每舷各组发射器自己的窗口拼成文本（供工具提示/弹窗明细）。"""
+    parts = []
+    for s in sides or []:
+        for g in s["groups"]:
+            tag = g.get("hp_key") or g.get("gun_name") or "?"
+            parts.append(f"{s['label']} {tag} {g['front']:g}°~{g['rear']:g}°")
+    return "；".join(parts)

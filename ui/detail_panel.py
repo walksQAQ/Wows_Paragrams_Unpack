@@ -954,14 +954,15 @@ class DetailPanel(QWidget):
             bus.log_message.emit(f"❌ 打开加速曲线失败: {exc}")
 
     def _open_firing_arc(self, fa: dict):
-        """打开炮塔射界查看窗口并定位到指定舰船/武器槽位。"""
+        """打开炮塔射界查看窗口并定位到指定舰船/武器槽位（含当前船体配置）。"""
         try:
             from ui.firing_arc_dialog import FiringArcDialog
             from utils.window_utils import center_on_screen
             if not hasattr(self, "_arcs_dialog") or self._arcs_dialog is None:
                 self._arcs_dialog = FiringArcDialog()
                 center_on_screen(self._arcs_dialog, self.window())
-            self._arcs_dialog.open_for(fa.get("ship_id", ""), fa.get("slot_type", ""))
+            self._arcs_dialog.open_for(fa.get("ship_id", ""), fa.get("slot_type", ""),
+                                       fa.get("config_group", ""))
             self._arcs_dialog.show()
             self._arcs_dialog.raise_()
             self._arcs_dialog.activateWindow()
@@ -2150,20 +2151,22 @@ class DetailPanel(QWidget):
                 layout.addWidget(ammo_stack)
 
         # 射界入口：追加到整个武器面板最下方（所有炮卡片与弹药区域之后），
-        # 值按钮显示齐射角，点击打开射界弹窗
+        # 值按钮显示射界（鱼雷=单侧发射窗口的最前/最后；其它=前/后齐射角），
+        # 点击打开射界弹窗
         fa = section.get("_firing_arc")
         if fa and fa.get("mode") == "front_back":
+            from ui.ship_card_widget import firing_arc_label, firing_arc_tooltip, firing_arc_value_text
             wep_name = "鱼雷发射器" if fa.get("slot_type") == "torpedoes" else "炮塔"
-            value_text = f"{fa.get('front', 0)}°（前）/{fa.get('back', 0)}°（后）"
+            value_text = firing_arc_value_text(fa)
             arc_row = QWidget()
             hb = QHBoxLayout(arc_row)
             hb.setContentsMargins(10, 2, 10, 2)
             hb.setSpacing(10)
-            lbl = QLabel(f"{wep_name} 射界")
+            lbl = QLabel(firing_arc_label(fa, wep_name))
             lbl.setStyleSheet(theme.qss("color: @text@; font-size: 12px;"))
             btn = QPushButton(value_text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setToolTip("点击查看该武器系统的射界图（总览 + 单炮塔详情）")
+            btn.setToolTip(firing_arc_tooltip(fa))
             btn.setStyleSheet(theme.qss("""
                 QPushButton {
                     background: @panel_alt@; color: @text@;
@@ -2404,6 +2407,13 @@ class DetailPanel(QWidget):
             _ammo_by_letter = sec.get("_ammo_by_letter", {})
             if _ammo_by_letter:
                 sec["raw_ammo_types"] = _ammo_by_letter.get(_letter, _ammo_by_letter.get(_letters[0], []))
+            # 射界行跟随当前配置字母（无该字母数据时回退到首个字母）
+            _arc_by_letter = sec.get("_firing_arc_by_letter")
+            if _arc_by_letter:
+                _pick = _letter if _letter in _arc_by_letter else _letters[0]
+                _info = _arc_by_letter.get(_pick)
+                if _info is not None:
+                    sec["_firing_arc"] = dict(_info, config_group=_pick)
 
     # ── 完整信息复制（覆盖信息面板所有内容）───────────────────
 

@@ -1141,15 +1141,46 @@ class DatabaseManager:
     # ── 本地化 ─────────────────────────────────────────────
 
     def get_all_name_mappings(self, category: str = "") -> dict[str, str]:
+        """全部名称映射。空白值（上游用一个空格表示「未翻译」）不返回，让调用方走兜底。"""
         try:
             if category:
                 cur = self._conn.execute(
                     "SELECT key_name, lang_zh FROM name_mappings WHERE category=?", (category,))
             else:
                 cur = self._conn.execute("SELECT key_name, lang_zh FROM name_mappings")
-            return {r["key_name"]: r["lang_zh"] for r in cur.fetchall()}
+            return {r["key_name"]: r["lang_zh"] for r in cur.fetchall()
+                    if (r["lang_zh"] or "").strip()}
         except sqlite3.OperationalError:
             return {}
+
+    def ship_name_gaps(self, version_code: str = "", limit: int = 12) -> tuple[int, int, list[str]]:
+        """舰船中文名覆盖统计：返回 (有名字的船数, 舰船总数, 前 limit 个缺名 ship_index)。
+
+        空白/纯空格的名字视为缺失（上游语言文件常用一个空格表示「未翻译」）。
+        保留为只读诊断工具（当前界面不调用）。
+        """
+        version_code = self._resolve_vc(version_code)
+        if not version_code:
+            return 0, 0, []
+        sql = (
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN TRIM(COALESCE(nm.lang_zh,'')) <> '' THEN 1 ELSE 0 END) AS named "
+            "FROM ship_basic_info b "
+            "LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name=b.ship_index "
+            "WHERE b.version_code=?"
+        )
+        try:
+            row = self._conn.execute(sql, (version_code,)).fetchone()
+            total = int(row["total"] or 0)
+            named = int(row["named"] or 0)
+            gaps = [r["ship_index"] for r in self._conn.execute(
+                "SELECT b.ship_index AS ship_index FROM ship_basic_info b "
+                "LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name=b.ship_index "
+                "WHERE b.version_code=? AND TRIM(COALESCE(nm.lang_zh,''))='' "
+                "ORDER BY b.ship_index LIMIT ?", (version_code, limit)).fetchall()]
+            return named, total, gaps
+        except sqlite3.OperationalError:
+            return 0, 0, []
 
     def import_enum_translations(self) -> int:
         """从 models.name_mapping.Mapping 静态字典写入 enum_translations 表"""
@@ -1183,8 +1214,10 @@ class DatabaseManager:
             if not fp.exists():
                 continue
             try:
+                # 上游用单个空格表示「未翻译」：不写库，也不覆盖已有译名
                 items = [(cat, k, _unescape_po_str(v))
-                         for k, v in json.loads(fp.read_text(encoding="utf-8")).items()]
+                         for k, v in json.loads(fp.read_text(encoding="utf-8")).items()
+                         if (v or "").strip()]
                 if items:
                     self._conn.executemany(
                         "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)", items)

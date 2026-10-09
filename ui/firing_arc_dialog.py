@@ -458,6 +458,7 @@ class FiringArcDialog(QDialog):
         self.resize(500, 600)
         self._current_ship_id = ""
         self._current_slot = ""
+        self._current_config_group = ""
         self._arcs_by_slot: dict[str, list[dict]] = {}
 
         self._build_ui()
@@ -552,10 +553,32 @@ class FiringArcDialog(QDialog):
         return r["front"], r["back"]
 
     def _set_arc_text(self, guns: list[dict], slot_type: str) -> None:
-        """显示文字版齐射角：炮塔/鱼雷发射器 射界: X°（前）/Y°（后）"""
-        front, back = self._firing_arc_angles(guns)
+        """显示文字版射界。
+
+        鱼雷发射器：按「单侧发射窗口」显示——该舷各发射器可射范围的**并集**，
+        给出最前端/最后端，并逐组列出各发射器自己的窗口（与游戏内扇区显示一致）。
+        其它武器：显示前向/后向齐射角（全炮塔可齐射时为前后）。
+        """
         wep_name = "鱼雷发射器" if slot_type == "torpedoes" else "炮塔"
-        self.arc_text_lbl.setText(f"{wep_name} 射界: {front}°（前）/{back}°（后）")
+        lines: list[str] = []
+        if slot_type == "torpedoes":
+            try:
+                from utils.firing_arc import firing_arc_side_windows
+                sides = firing_arc_side_windows(guns).get("sides") or []
+            except Exception:  # noqa: BLE001
+                sides = []
+            if sides:
+                lines.append("单侧发射窗口 = 该舷各发射器可射范围的并集（最前端/最后端）")
+            for s in sides:
+                lines.append(f"{wep_name} 射界（{s['label']}）："
+                             f"最前 {s['front']:g}°／最后 {s['rear']:g}°")
+                for g in s.get("groups") or []:
+                    tag = g.get("hp_key") or g.get("gun_name") or ""
+                    lines.append(f"　　{tag}：{g['front']:g}°~{g['rear']:g}°")
+        if not lines:
+            front, back = self._firing_arc_angles(guns)
+            lines.append(f"{wep_name} 射界: {front}°（前）/{back}°（后）")
+        self.arc_text_lbl.setText("\n".join(lines))
 
     def _ship_mount_yaw_map(self, ship_id: str) -> dict:
         """直接从 assets_data.db 读该船炮位安装朝向：{hp_key: (yaw, [x,y,z])}。
@@ -601,22 +624,28 @@ class FiringArcDialog(QDialog):
         cache[ship_id] = out
         return out
 
-    def open_for(self, ship_id: str, slot_type: str = ""):
+    def open_for(self, ship_id: str, slot_type: str = "", config_group: str = ""):
         """加载指定舰船与武器槽位的射界（供详情面板射界按钮调用）。
 
         弹窗直接绑定当前舰船，无需舰船筛选或武器类型切换；
-        slot_type 指定时显示该武器，否则显示第一个有数据的武器。
-        炮位安装朝向/位置从 assets_data.db 直接读取（mount_yaw/mount_pos 不再回填）。
+        slot_type 指定时显示该武器，否则显示第一个有数据的武器；
+        config_group 指定时只显示该船体配置（A/B）的炮位，与详情面板当前配置一致。
+        炮位安装朝向/位置从 assets_data.db 直接读取。
         """
         if not ship_id:
             return
         self._current_ship_id = ship_id
+        self._current_config_group = config_group
         try:
             db = get_db()
             rows = db.get_turret_arcs(ship_id)
         except Exception as exc:
             self.info.setText(f"读取射界失败: {exc}")
             return
+        if config_group:
+            _f = [r for r in rows if (r.get("config_group") or "") == config_group]
+            if _f:
+                rows = _f
         if not rows:
             self.info.setText("该舰船暂无射界数据（请先执行「加载数据」）")
             self.canvas.set_guns([])
@@ -667,8 +696,9 @@ class FiringArcDialog(QDialog):
         self.view_btn.setVisible(has_real_pos)
         self.view_btn.setText("详细信息")
         slot_label = SLOT_LABELS.get(chosen, chosen) if chosen else "无"
-        self.title_lbl.setText(f"{self._resolve_ship_name(ship_id)} · {slot_label}")
-        self.info.setText(f"{slot_label} · {len(guns)} 个炮塔")
+        cfg_suffix = f"（{self._current_config_group} 配置）" if self._current_config_group else ""
+        self.title_lbl.setText(f"{self._resolve_ship_name(ship_id)} · {slot_label}{cfg_suffix}")
+        self.info.setText(f"{slot_label} · {len(guns)} 个炮塔{cfg_suffix}")
         self._set_arc_text(guns, chosen or "")
 
     def _toggle_view(self):

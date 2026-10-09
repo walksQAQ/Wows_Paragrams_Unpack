@@ -18,7 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from utils.theme import theme
+from utils import ship_badge
 from utils.image_paths import pic_dir, pic_path, pic_path_ci
+
+#: 舰船下拉里徽章图标边长（px）
+SHIP_BADGE_SIZE = 18
 
 # ── 舰船俯视剪影（散布椭圆图的中心参照）──────────────────────────────────
 # 资源来源：客户端**原生** SVG `gui/battle_hud/new_doll_svg/destroyer.svg`
@@ -442,12 +446,28 @@ class PenetrationCalculatorDialog(QDialog):
         _bus.wows_type_changed.connect(self._on_wows_type_changed_pen)
 
     def _on_theme_changed_pen(self, _mode: str) -> None:
-        """主题切换后：重建插件加成按钮，确保其跟随新主题"""
+        """主题切换后：重建插件加成按钮 + 舰船徽章图标（两者都需新主题着色）"""
+        try:
+            ship_badge.clear_cache()
+            self._refresh_ship_icons()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if getattr(self, "mods_frame", None) is not None and self.mods_frame.isVisible():
                 self._load_mod_bonuses()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
+
+    def _refresh_ship_icons(self) -> None:
+        """按当前主题重建舰船下拉的徽章图标（不改文本/选中项）。"""
+        if not getattr(self, "_ship_catalog", None) or self.ship_cb.count() != len(self._ship_catalog):
+            return
+        self.ship_cb.blockSignals(True)
+        for i, _ship in enumerate(self._ship_catalog):
+            self.ship_cb.setItemIcon(i, ship_badge.build_badge_icon(
+                _ship.get("shiptype"), _ship.get("tier"), _ship.get("group"),
+                icon_size=SHIP_BADGE_SIZE))
+        self.ship_cb.blockSignals(False)
 
     def _on_wows_type_changed_pen(self, _server: str) -> None:
         """切换服务器（Lesta/Wargaming）后重新加载计算器数据。
@@ -620,6 +640,8 @@ class PenetrationCalculatorDialog(QDialog):
         self.ship_type_cb.setMinimumWidth(95)
         self.tier_cb.setMinimumWidth(70)
         self.ship_cb.setMinimumWidth(130)
+        # 舰船条目带「舰种标 + 等级」徽章图标（见 utils/ship_badge.py）
+        self.ship_cb.setIconSize(ship_badge.icon_box(SHIP_BADGE_SIZE))
         self.gun_cb.setMinimumWidth(220)
         self.ammo_cb.setMinimumWidth(200)
 
@@ -1060,7 +1082,7 @@ class PenetrationCalculatorDialog(QDialog):
                 "SELECT lang_zh FROM name_mappings WHERE category=? AND key_name=? LIMIT 1",
                 (category, str(key).upper()),
             ).fetchone()
-            if row and row["lang_zh"]:
+            if row and (row["lang_zh"] or "").strip():
                 return row["lang_zh"]
         except Exception:
             pass
@@ -1082,7 +1104,8 @@ class PenetrationCalculatorDialog(QDialog):
             self._cur_version_code = vc
             ship_rows = db._conn.execute(
                 """
-                SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier, er.nation
+                SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier,
+                       sb.group_status_key, er.nation
                 FROM ship_basic_info sb
                 LEFT JOIN ship_module_artillery g
                     ON g.version_code = sb.version_code
@@ -1105,7 +1128,8 @@ class PenetrationCalculatorDialog(QDialog):
             if not ship_rows:
                 ship_rows = db._conn.execute(
                     """
-                    SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier, er.nation
+                    SELECT DISTINCT sb.ship_id, sb.ship_index, sb.name_mapping_id, sb.shiptype, sb.tier,
+                           sb.group_status_key, er.nation
                     FROM ship_basic_info sb
                     LEFT JOIN entity_registry er
                         ON er.version_code = sb.version_code
@@ -1126,7 +1150,8 @@ class PenetrationCalculatorDialog(QDialog):
                     f"SELECT id, lang_zh FROM name_mappings WHERE id IN ({placeholders})",
                     mapping_ids,
                 ).fetchall():
-                    name_map[row["id"]] = row["lang_zh"]
+                    if (row["lang_zh"] or "").strip():
+                        name_map[row["id"]] = row["lang_zh"]
             for ship in ship_rows:
                 ship_id = ship["ship_id"]
                 label = ship_id
@@ -1141,6 +1166,7 @@ class PenetrationCalculatorDialog(QDialog):
                     "nation": ship["nation"] or "",
                     "shiptype": ship["shiptype"] or "",
                     "tier": int(ship["tier"] or 0) if ship["tier"] is not None else 0,
+                    "group": ship["group_status_key"] or "",
                 })
 
             self.nation_cb.blockSignals(True)
@@ -1173,7 +1199,11 @@ class PenetrationCalculatorDialog(QDialog):
             self.ship_cb.blockSignals(True)
             self.ship_cb.clear()
             for _ship in self._ship_catalog:
-                self.ship_cb.addItem(_ship["label"], _ship["ship_id"])
+                # 徽章图标：[舰种标][等级] 船名（与游戏内一致，见 utils/ship_badge.py）
+                _icon = ship_badge.build_badge_icon(
+                    _ship.get("shiptype"), _ship.get("tier"), _ship.get("group"),
+                    icon_size=SHIP_BADGE_SIZE)
+                self.ship_cb.addItem(_icon, _ship["label"], _ship["ship_id"])
             self.ship_cb.setCurrentIndex(-1)
             self.ship_cb.blockSignals(False)
             self._reload_ships()

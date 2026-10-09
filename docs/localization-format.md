@@ -37,3 +37,14 @@
 - `skill_names.json` / `skill_descriptions.json`
 
 导入数据库后（`import_name_mappings` / `import_po_translations`），PO 文件会被删除。
+
+## 名称键约定与「空白译名」
+
+- 舰船名键 = **裸 `IDS_<ship_index>`**（如 `IDS_PFSC989`），另有 `_FULL` / `_DESCR` / `_NUMBER` / `_YEAR` 后缀键；
+  与数据库匹配的方式是 `name_mappings.category='ship' AND key_name = ship_basic_info.ship_index`。
+  其余类别各自有键规则（`IDS_P[A-Z]G…` 火炮、`IDS_P[A-Z]P…` 弹药、`IDS_P[A-Z]U…` 升级件等）。
+- **上游未翻译时会把 `msgstr` 写成一个空格**（不是空串）。这类值必须当作「无译名」处理：
+  导入时跳过（不写库、也不覆盖已有译名），读取时按缺失回退（列表回退实体 ID、详情回退 `ship_index`）。
+- 上游语言文件**未必覆盖全部舰船**（新线/联名/事件/未发布船可能连键都没有）。
+  这类船的界面会回退显示内部 ID（列表）或 `ship_index`（详情），属预期行为，不是导入失败。
+  需要盘点时可读只读工具 `DatabaseManager.ship_name_gaps()`（不入 UI 日志）。

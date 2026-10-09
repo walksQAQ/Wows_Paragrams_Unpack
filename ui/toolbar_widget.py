@@ -181,10 +181,12 @@ class TopToolbar(QWidget):
 
     def _on_lang(self):
         from services.localization_service import run_localization
+
         self.btn_lang.setEnabled(False)
         bus.task_progress.emit(0, "开始加载文本")
         bus.log_message.emit("🌐 正在加载语言文件...")
-        self._track_app_task(run_localization())
+        # on_done：成功/失败都恢复按钮（曾因失败后按钮永久禁用，导致后续点击无反应）
+        self._track_app_task(run_localization(on_done=self._enable_all))
 
     def _on_refresh(self):
         """刷新界面：清空缓存 → 刷新显示（不触发重新分析）"""

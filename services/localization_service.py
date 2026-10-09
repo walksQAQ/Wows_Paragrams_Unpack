@@ -176,11 +176,24 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
     return stats
 
 
-def run_localization() -> "_AppTask":
+def run_localization(on_done=None) -> "_AppTask":
+    """下载/读取语言文件 → 解析 → 写库。
+
+    on_done：无论**成功还是失败**都会在主线程回调一次（供工具栏恢复按钮状态）。
+    之前的写法只在成功时通过 ``localization_ready`` 恢复按钮，一旦失败按钮就永久禁用，
+    之后点「加载文本」再无任何反应（2026-10-09 修）。
+    """
     ctx = app_ctx.ctx
     wows_type = ctx.wows_type
     game_path = ctx.game_path
     data_dir = get_data_dir()
+
+    def _finish() -> None:
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _run():
         action = "下载" if wows_type == "Lesta" else "复制"
@@ -242,46 +255,51 @@ def run_localization() -> "_AppTask":
     def _ok(stats):
         # 由 threading_utils.run_async 投递到主线程执行：get_db() 写入与信号发射
         # 都在主线程串行进行，避免与 __REFRESH__ 刷新并发访问同一 sqlite 连接导致崩溃。
-        bus.task_progress.emit(45, "导入文本到数据库")
-        bus.log_message.emit("✅ 语言文件加载完成")
-        for k, v in stats.items():
-            bus.log_message.emit(f"  {k}: {v['count']} 条")
-        # 将文本数据写入数据库
         try:
-            from services.database_service import get_db
-            res = import_text_to_db(get_db())
-            if res["name_mappings"]:
-                bus.log_message.emit(f"📦 名称映射已入库: {sum(res['name_mappings'].values())} 条")
-            if res["po_translations"]:
-                bus.log_message.emit(f"📦 PO 翻译已入库: {res['po_translations']} 条")
-        except Exception as e:
-            bus.log_message.emit(f"⚠️ 文本入库失败: {e}")
+            bus.task_progress.emit(45, "导入文本到数据库")
+            bus.log_message.emit("✅ 语言文件加载完成")
+            for k, v in stats.items():
+                bus.log_message.emit(f"  {k}: {v['count']} 条")
+            # 将文本数据写入数据库
+            try:
+                from services.database_service import get_db
+                res = import_text_to_db(get_db())
+                if res["name_mappings"]:
+                    bus.log_message.emit(f"📦 名称映射已入库: {sum(res['name_mappings'].values())} 条")
+                if res["po_translations"]:
+                    bus.log_message.emit(f"📦 PO 翻译已入库: {res['po_translations']} 条")
+            except Exception as e:
+                bus.log_message.emit(f"⚠️ 文本入库失败: {e}")
+            finally:
+                # 兜底清理：删除所有临时 JSON/PO 文件
+                import glob
+                for f in glob.glob(os.path.join(str(data_dir), "*_names.json")):
+                    try: os.remove(f)
+                    except: pass
+                skill_desc_path = os.path.join(str(data_dir), "skill_descriptions.json")
+                if os.path.exists(skill_desc_path):
+                    try: os.remove(skill_desc_path)
+                    except: pass
+                pof = os.path.join(str(data_dir), "global.po")
+                if os.path.exists(pof):
+                    try: os.remove(pof)
+                    except: pass
+            bus.task_progress.emit(100, "本地化完成")
+            bus.localization_ready.emit()
+            # 刷新名称映射 → 清理 Presenter 缓存 + 刷新界面
+            try:
+                from presenters.registry import PresenterRegistry
+                PresenterRegistry.clear_cache()
+            except Exception:
+                pass
+            bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")
+            bus.folder_selected.emit("__REFRESH__")
         finally:
-            # 兜底清理：删除所有临时 JSON/PO 文件
-            import glob
-            for f in glob.glob(os.path.join(str(data_dir), "*_names.json")):
-                try: os.remove(f)
-                except: pass
-            skill_desc_path = os.path.join(str(data_dir), "skill_descriptions.json")
-            if os.path.exists(skill_desc_path):
-                try: os.remove(skill_desc_path)
-                except: pass
-            pof = os.path.join(str(data_dir), "global.po")
-            if os.path.exists(pof):
-                try: os.remove(pof)
-                except: pass
-        bus.task_progress.emit(100, "本地化完成")
-        bus.localization_ready.emit()
-        # 刷新名称映射 → 清理 Presenter 缓存 + 刷新界面
-        try:
-            from presenters.registry import PresenterRegistry
-            PresenterRegistry.clear_cache()
-        except Exception:
-            pass
-        bus.log_message.emit("✅ 文本数据加载完成，本地化内容已就绪")
-        bus.folder_selected.emit("__REFRESH__")
+            _finish()
 
     def _err(msg: str):
-        bus.log_message.emit(f"❌ 加载失败: {msg}")
+        bus.log_message.emit(f"❌ 加载失败: {msg}（可重新点击「加载文本」重试）")
+        bus.task_progress.emit(0, "加载失败")
+        _finish()
 
     return run_async(_run, on_finished=_ok, on_error=_err)

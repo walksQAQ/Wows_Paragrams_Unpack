@@ -16,7 +16,12 @@ from PySide6.QtGui import QFont, QAction
 from app.signals import bus
 from utils.theme import theme
 from utils.path_utils import get_split_dir
+from utils import ship_badge
 from services.database_service import get_db
+
+
+#: 舰船条目徽章图标边长（px）；列表行高随之约 26px
+SHIP_BADGE_SIZE = 20
 
 
 class MultiSelectCombo(QPushButton):
@@ -174,6 +179,8 @@ class BrowserPanel(QWidget):
         _fnt.setFamilies(["Microsoft YaHei", "Segoe UI", "sans-serif"])
         _fnt.setPointSize(10)
         self.file_list.setFont(_fnt)
+        # 舰船条目左侧是「舰种 + 等级」徽章图标（见 utils/ship_badge.py）
+        self.file_list.setIconSize(ship_badge.icon_box(SHIP_BADGE_SIZE))
         theme.bind(self.file_list, """
             QListWidget {
                 background-color: @panel_bg@;
@@ -211,6 +218,17 @@ class BrowserPanel(QWidget):
         self.btn_reset.clicked.connect(self._reset_filters)
         self.ms_crew_type.selection_changed.connect(self._apply_filter)
         bus.folder_selected.connect(self._on_category_selected)
+        # 主题切换：徽章按主题着色（深浅色不同），清缓存后重建列表
+        bus.theme_changed.connect(self._on_theme_changed_badges)
+
+    def _on_theme_changed_badges(self, _mode: str = "") -> None:
+        """主题切换后重建列表（徽章像素需按新主题重新着色）。"""
+        try:
+            ship_badge.clear_cache()
+            if self._current_folder:
+                self.refresh()
+        except (RuntimeError, AttributeError):
+            pass
 
     # ── 公共方法 ──────────────────────────────────────────
 
@@ -266,8 +284,8 @@ class BrowserPanel(QWidget):
 
         rows = db._conn.execute("""
             SELECT e.entity_id,
-                   COALESCE(nm.lang_zh, e.entity_id) AS display_name,
-                   e.nation, b.shiptype, b.tier
+                   COALESCE(NULLIF(TRIM(nm.lang_zh), ''), e.entity_id) AS display_name,
+                   e.nation, b.shiptype, b.tier, b.group_status_key
             FROM entity_registry e
             LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
             LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name = b.ship_index
@@ -393,8 +411,19 @@ class BrowserPanel(QWidget):
             if keyword and keyword not in dname.lower() and keyword not in eid.lower():
                 continue
 
-            item = QListWidgetItem(f"📄 {dname}")
+            # 条目文本只放船名（纯文本，便于 Ctrl+C / 复制不带图标）；
+            # 舰种/类型/等级以徽章图标呈现（与游戏内一致：[舰种标][等级] 船名）
+            item = QListWidgetItem(dname)
             item.setData(Qt.UserRole, eid)
+            if self._current_folder == "Ship":
+                badge = ship_badge.build_badge_icon(
+                    ent.get("shiptype"), ent.get("tier"),
+                    ent.get("group_status_key"), icon_size=SHIP_BADGE_SIZE,
+                )
+                item.setIcon(badge)
+                tip = ship_badge.type_label(
+                    ent.get("shiptype"), ent.get("tier"), ent.get("group_status_key"))
+                item.setToolTip(f"{tip}｜{eid}" if tip else eid)
             self.file_list.addItem(item)
 
     def _on_filter_changed(self):
@@ -420,7 +449,8 @@ class BrowserPanel(QWidget):
     def _on_file_changed(self, text: str) -> None:
         if not text or not self._current_folder:
             return
-        display = text.replace("📄 ", "").strip()
+        # 条目文本 = 纯船名（历史版本曾带「📄 」前缀，图标已改走 item.setIcon）
+        display = text.strip()
         # 从 QListWidgetItem 的 UserRole 取 ID
         item = self.file_list.currentItem()
         if item:

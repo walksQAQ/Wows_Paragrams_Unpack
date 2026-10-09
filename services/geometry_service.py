@@ -37,7 +37,9 @@ class ShipInfo:
     model_folder: str      # 几何文件夹名，如 "FSB025_Bourgogne_1945"
     model_path: str        # 完整 model VFS 路径
     nation: str = ""
-    ship_type: str = ""
+    ship_type: str = ""    # 舰种（shiptype），如 "Battleship"
+    tier: int = 0          # 等级 1..11
+    group: str = ""        # 船型分组 group_status_key（可研发/加值/特种）
     has_geometry: bool = False
 
 
@@ -529,13 +531,28 @@ class GeometryService:
             from services.database_service import get_db
             db = get_db(app_ctx.ctx.wows_type)
             if db.exists:
+                # 舰种/等级/船型分组：徽章（标识）渲染用，取自舰船基础信息表
+                basics: dict[str, dict] = {}
+                try:
+                    vc = db.get_latest_version_code() or ""
+                    for r in db._conn.execute(
+                        "SELECT ship_id, shiptype, tier, group_status_key FROM ship_basic_info "
+                        "WHERE version_code=?", (vc,)
+                    ).fetchall():
+                        basics[r["ship_id"]] = r
+                except Exception:  # noqa: BLE001
+                    basics = {}
                 for row in db.load_ship_models():
+                    basic = basics.get(row["ship_id"])
                     ships.append(ShipInfo(
                         game_key=row["ship_id"],
                         display_name=self._resolve_ship_name(row["ship_id"]),
                         model_folder=row["model_folder"],
                         model_path=row["model_path"],
                         nation=row["nation"],
+                        ship_type=(basic["shiptype"] or "") if basic else "",
+                        tier=int(basic["tier"] or 0) if basic else 0,
+                        group=(basic["group_status_key"] or "") if basic else "",
                         has_geometry=bool(row["model_folder"]),
                     ))
         except Exception as exc:  # noqa: BLE001

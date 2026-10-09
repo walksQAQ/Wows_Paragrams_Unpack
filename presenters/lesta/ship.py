@@ -1240,12 +1240,23 @@ class LestaShipPresenter(LestaBasePresenter):
                 _slot = {"主炮": "artillery", "副炮": "atba",
                          "次级主炮": "secondary_artillery", "鱼雷": "torpedoes"}.get(label)
                 if _slot:
+                    # 射界按船体配置字母分别计算：详情面板切换 A/B 时射界行跟随变化
                     _arc_rows = conn.execute(
-                        "SELECT hp_key, horiz_sector_json, vert_sector_json, dead_zone_json, pitch_dead_zones_json, position_json "
+                        "SELECT config_group, hp_key, horiz_sector_json, vert_sector_json, "
+                        "dead_zone_json, pitch_dead_zones_json, position_json "
                         "FROM ship_turret_arcs WHERE version_code=? AND ship_id=? AND slot_type=? "
-                        "ORDER BY hp_key", (vc, ship_id, _slot)).fetchall()
+                        "ORDER BY config_group, hp_key, gun_index", (vc, ship_id, _slot)).fetchall()
                     if _arc_rows:
-                        section["_firing_arc"] = self._firing_arc_info(_arc_rows, ship_id, _slot)
+                        _arc_by_letter: dict[str, dict] = {}
+                        for _lt in section_letters:
+                            _rows_lt = [r for r in _arc_rows if r["config_group"] == _lt]
+                            if _rows_lt:
+                                _arc_by_letter[_lt] = self._firing_arc_info(_rows_lt, ship_id, _slot)
+                        if len(_arc_by_letter) > 1:
+                            section["_firing_arc_by_letter"] = _arc_by_letter
+                        if _arc_by_letter:
+                            section["_firing_arc"] = _arc_by_letter.get(
+                                section_letters[0]) or next(iter(_arc_by_letter.values()))
                 sections.append(section)
                 # 引擎卡片紧跟在船体卡片下方
                 if label == "船体" and engine_data:
@@ -1293,7 +1304,8 @@ class LestaShipPresenter(LestaBasePresenter):
         """从 ship_turret_arcs 行生成射界信息（供详情面板按钮显示）。
 
         含齐射角：全炮塔能齐射时为前/后（X°（前）/Y°（后））；
-        炮塔分列左右舷、无法全炮塔齐射时为左舷/右舷（X°（左舷）/Y°（右舷））。
+        左右分列武器（鱼雷）另外给出单侧发射窗口 sides——该舷各发射器可射范围的
+        并集，按「最前端/最后端」表示（与游戏内鱼雷扇区显示一致）。
 
         炮位安装朝向/位置（mount_yaw/mount_pos）**直接从 assets_data.db** 读取
         （HP_ 挂点解码值），不再依赖回填到 game_data.db ship_turret_arcs 的值。
@@ -1308,6 +1320,7 @@ class LestaShipPresenter(LestaBasePresenter):
                 hp = r["hp_key"]
                 myaw, mpos = mount_map.get(hp, (None, None))
                 guns.append({
+                    "hp_key": hp,
                     "horiz_sector": _json.loads(r["horiz_sector_json"]) if r["horiz_sector_json"] else None,
                     "vert_sector": _json.loads(r["vert_sector_json"]) if r["vert_sector_json"] else None,
                     "dead_zones": _json.loads(r["dead_zone_json"]) if r["dead_zone_json"] else [],
@@ -1320,6 +1333,13 @@ class LestaShipPresenter(LestaBasePresenter):
                 continue
         result = firing_arc_angles(guns)
         result.update({"ship_id": ship_id, "slot_type": slot_type, "count": len(rows)})
+        # 鱼雷等左右分列武器：附单侧发射窗口（该舷各发射器并集的最前端/最后端）
+        if slot_type == "torpedoes":
+            try:
+                from utils.firing_arc import firing_arc_side_windows
+                result["sides"] = firing_arc_side_windows(guns)["sides"]
+            except Exception:  # noqa: BLE001
+                pass
         return result
 
     def _ship_mount_yaw_map(self, ship_id: str) -> dict:

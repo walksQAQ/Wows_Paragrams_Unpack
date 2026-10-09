@@ -19,9 +19,14 @@ from PySide6.QtWidgets import (
 
 from app.signals import bus
 from utils.theme import theme
+from utils import ship_badge
 from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
+
+
+#: 舰船下拉里徽章图标边长（px）
+SHIP_BADGE_SIZE = 18
 
 
 class _Spinner(QWidget):
@@ -192,6 +197,7 @@ class GeometryViewerDialog(QDialog):
         self.ship_combo.setPlaceholderText("搜索舰船...")
         self.ship_combo.setInsertPolicy(QComboBox.NoInsert)
         self.ship_combo.setMinimumWidth(180)
+        self.ship_combo.setIconSize(ship_badge.icon_box(SHIP_BADGE_SIZE))
         theme.bind(self.ship_combo, "QComboBox { background:@input_bg@; color:@text@; border:1px solid @border@; border-radius:4px; padding:4px 6px; }")
         ship_row.addWidget(self.ship_combo, 1)
         self._ship_row_widget = QWidget()
@@ -371,6 +377,8 @@ class GeometryViewerDialog(QDialog):
         # 3D 拾取回调
         self.viewport.on_hover = self._on_viewport_hover
         self.viewport.on_select = self._on_viewport_select
+        # 主题切换：徽章按主题着色，需重建下拉条目
+        bus.theme_changed.connect(self._on_theme_changed_badges)
 
     def _add_section_title(self, layout, text, style):
         t = QLabel(text)
@@ -622,7 +630,11 @@ class GeometryViewerDialog(QDialog):
         self.ship_combo.clear()
         for s in self._ships:
             label = f"{s.display_name}  ({s.game_key})" if s.display_name != s.game_key else s.game_key
-            self.ship_combo.addItem(label, s)
+            # 徽章图标：与游戏内一致（[舰种标][等级] 船名）
+            icon = ship_badge.build_badge_icon(
+                getattr(s, "ship_type", ""), getattr(s, "tier", 0),
+                getattr(s, "group", ""), icon_size=SHIP_BADGE_SIZE)
+            self.ship_combo.addItem(icon, label, s)
         if self._ships:
             completer = QCompleter([self.ship_combo.itemText(i) for i in range(self.ship_combo.count())], self)
             completer.setCaseSensitivity(Qt.CaseInsensitive)
@@ -636,6 +648,23 @@ class GeometryViewerDialog(QDialog):
             self.ship_status.setText(f"舰船列表为空：{err or '请先加载数据'}")
         # 列表就绪后兑现详情面板挂起的自动载入请求
         self._try_load_pending()
+
+    def _on_theme_changed_badges(self, _mode: str = "") -> None:
+        """主题切换：徽章需按新主题重新着色，重建下拉条目（保持当前选中项）。"""
+        try:
+            ship_badge.clear_cache()
+            if not self._ships or self._closed:
+                return
+            cur = self.ship_combo.currentData()
+            self._on_ships_loaded(self._ships)
+            if cur is not None:
+                idx = self.ship_combo.findData(cur)
+                if idx >= 0:
+                    self.ship_combo.blockSignals(True)
+                    self.ship_combo.setCurrentIndex(idx)
+                    self.ship_combo.blockSignals(False)
+        except (RuntimeError, AttributeError):
+            pass
 
     def open_ship(self, ship_id: str) -> None:
         """外部入口（详情面板「基础属性」卡片按钮）：载入指定舰船。

@@ -46,13 +46,13 @@ class LestaBasePresenter:
             return ""
 
     def resolve_name(self, category: str, key: str) -> str:
-        """从 name_mappings 表解析中文名"""
+        """从 name_mappings 表解析中文名（空白译名视为缺失，返回原 key）"""
         try:
             cur = self.conn.execute(
                 "SELECT lang_zh FROM name_mappings WHERE category=? AND key_name=?",
                 (category, key.upper()))
             row = cur.fetchone()
-            if row:
+            if row and (row[0] or "").strip():
                 return row[0]
         except sqlite3.OperationalError:
             pass
@@ -60,13 +60,13 @@ class LestaBasePresenter:
 
     def resolve_name_by_id(self, mapping_id: int | None,
                             category: str = "", key: str = "") -> str | None:
-        """按 id 解析名称，失败时按 (category, key) 兜底"""
+        """按 id 解析名称，失败时按 (category, key) 兜底（空白译名跳过）"""
         if mapping_id:
             try:
                 cur = self.conn.execute(
                     "SELECT lang_zh FROM name_mappings WHERE id=?", (mapping_id,))
                 row = cur.fetchone()
-                if row:
+                if row and (row[0] or "").strip():
                     return row[0]
             except Exception:
                 pass
@@ -95,7 +95,7 @@ class LestaBasePresenter:
             cur = self.conn.execute(
                 "SELECT key_name, lang_zh FROM name_mappings WHERE category=?",
                 (category,))
-            return {r[0]: r[1] for r in cur.fetchall()}
+            return {r[0]: r[1] for r in cur.fetchall() if (r[1] or "").strip()}
         except sqlite3.OperationalError:
             return {}
 
