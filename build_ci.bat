@@ -39,6 +39,37 @@ echo [VERSION] Generating __about__.py from Git tag ...
 %PYTHON% scripts/gen_version.py
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
+:: Step 1.6: build native D3D11 renderer DLL (release\wows_renderer.dll)
+::   Not fatal on purpose: if the toolchain is missing the DLL is simply not
+::   embedded and the viewer falls back to OpenGL at runtime
+::   (see resolve_viewport_backend in ui/geometry_viewer.py).
+echo [NATIVE] Building D3D11 renderer DLL ...
+set CMAKE_EXE=
+where cmake >nul 2>nul
+if %ERRORLEVEL%==0 set CMAKE_EXE=cmake
+if defined CMAKE_EXE goto :cmake_ready
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSROOT="
+if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
+if defined VSROOT if exist "%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" set "CMAKE_EXE=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+:cmake_ready
+if not defined CMAKE_EXE goto :native_skip
+"%CMAKE_EXE%" -S native -B native\build
+if %ERRORLEVEL% NEQ 0 goto :native_fail
+"%CMAKE_EXE%" --build native\build --config Release
+if %ERRORLEVEL% NEQ 0 goto :native_fail
+if exist "%OUTDIR%\wows_renderer.dll" goto :native_done
+:native_fail
+echo [WARN] native renderer build failed; the viewer will use the OpenGL backend.
+goto :native_done
+:native_skip
+echo [WARN] cmake not found; skipping native renderer build.
+:native_done
+
+:: Embed the DLL into the onefile payload (extracted next to the exe at runtime).
+set DLL_ARG=
+if exist "%OUTDIR%\wows_renderer.dll" set DLL_ARG=--include-data-files=%OUTDIR%/wows_renderer.dll=wows_renderer.dll
+
 :: Step 2: compile onefile executable
 :: Nuitka 2.x removed --mingw64 (MinGW) support on Python 3.13+, so CI now
 :: uses the default MSVC toolchain (windows-latest ships VS Build Tools).
@@ -55,6 +86,7 @@ if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
+    %DLL_ARG% ^
     --output-filename=WowsKorabliDataViewer.exe ^
     main.py
 

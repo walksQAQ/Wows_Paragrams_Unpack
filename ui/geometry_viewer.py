@@ -25,7 +25,7 @@ from app.signals import bus
 from utils.theme import theme
 from utils import ship_badge
 from utils.threading_utils import run_async
-from utils.path_utils import get_data_dir, is_debug_build
+from utils.path_utils import get_data_dir
 from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
@@ -40,31 +40,28 @@ VIEWPORT_BACKEND_ENV = "WSR_USE_D3D_VIEWER"
 def resolve_viewport_backend() -> tuple[str, str]:
     """决定 3D 视口渲染后端，返回 ``(kind, note)``。
 
-    ``kind``：``"d3d"``（D3D11 新后端）或 ``"gl"``（既有 OpenGL 后端）。
+    ``kind``：``"d3d"``（D3D11）或 ``"gl"``（既有 OpenGL 后端）。
     ``note``：需要提示给用户的回退说明，无需提示时为空串。
 
     判定顺序：
 
     1. :data:`VIEWPORT_BACKEND_ENV` **显式**指定时完全听从，不做自动回退
        （排障时可直接看到「DLL 缺失」的确切报错）；
-    2. 未指定时，**源码模式**（``python main.py``）默认启用 D3D11 —— 新后端
-       开发期默认跑真实后端；DLL 未构建则回退 OpenGL 并给出构建提示；
-    3. 发布版 exe 仍走 OpenGL（D3D11 后端尚未完成，不进发布版；需要时可用
-       ``WSR_USE_D3D_VIEWER=1`` 强制开启）。
+    2. 未指定时**默认使用 D3D11**（源码模式与发布版一致）；
+    3. 找不到 ``wows_renderer.dll`` 时自动回退 OpenGL 并给出提示
+       （发布包未随包 DLL 时也能正常跑，不会因一个 DLL 缺失而打不开查看器）。
     """
     env = os.environ.get(VIEWPORT_BACKEND_ENV, "").strip().lower()
     if env in ("0", "false", "no", "off", "gl", "opengl"):
         return "gl", ""
     if env in ("1", "true", "yes", "on", "d3d", "d3d11"):
         return "d3d", ""
-    if not is_debug_build():
-        return "gl", ""
 
     from renderer.api import find_library
 
     if find_library() is None:
         return "gl", (
-            "未找到 wows_renderer.dll，3D 视口已回退 OpenGL（源码模式默认启用 D3D11）。"
+            "未找到 wows_renderer.dll，3D 视口已回退 OpenGL。"
             "构建：cmake -S native -B native/build && cmake --build native/build --config Release"
         )
     return "d3d", ""
@@ -361,6 +358,13 @@ class GeometryViewerDialog(QDialog):
             pl.addWidget(cb)
 
         # ── 渲染风格（游戏原版 / Studio PBR）与环境光参数 ──
+        # 仅 D3D11 后端有效（GL 视口没有 set_render_style）⇒ 整体装进容器，
+        # GL 模式下隐藏，避免出现"点了没反应"的控件。
+        self.style_box = QWidget()
+        sb = QVBoxLayout(self.style_box)
+        sb.setContentsMargins(0, 0, 0, 0)
+        sb.setSpacing(6)
+
         style_row = QHBoxLayout()
         style_label = QLabel("渲染风格")
         theme.bind(style_label, "color:@text@; font-size:12px; background:transparent; border:none;")
@@ -375,7 +379,7 @@ class GeometryViewerDialog(QDialog):
                    " border-radius:4px; padding:3px 6px; font-size:11px; }")
         style_row.addWidget(style_label)
         style_row.addWidget(self.style_combo, 1)
-        pl.addLayout(style_row)
+        sb.addLayout(style_row)
 
         env_row = QHBoxLayout()
         env_label = QLabel("环境亮度")
@@ -390,7 +394,7 @@ class GeometryViewerDialog(QDialog):
         env_row.addWidget(env_label)
         env_row.addWidget(self.env_slider, 1)
         env_row.addWidget(self.env_value)
-        pl.addLayout(env_row)
+        sb.addLayout(env_row)
 
         exp_row = QHBoxLayout()
         exp_label = QLabel("曝光")
@@ -405,7 +409,10 @@ class GeometryViewerDialog(QDialog):
         exp_row.addWidget(exp_label)
         exp_row.addWidget(self.exposure_slider, 1)
         exp_row.addWidget(self.exposure_value)
-        pl.addLayout(exp_row)
+        sb.addLayout(exp_row)
+
+        self.style_box.setVisible(callable(getattr(self.viewport, "set_render_style", None)))
+        pl.addWidget(self.style_box)
 
         op_row = QHBoxLayout()
         op_label = QLabel("装甲不透明度")

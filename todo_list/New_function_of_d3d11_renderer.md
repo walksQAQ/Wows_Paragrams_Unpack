@@ -687,12 +687,13 @@ class RenderView(QWidget):
 
 **后端启用方式**（`ui/geometry_viewer.py::resolve_viewport_backend`）：
 
-- **源码模式**（`python main.py`）默认走 D3D11 —— 开发期默认跑真实后端；
+- 未显式指定时**默认走 D3D11**（源码模式与发布版一致）；
 - 环境变量 `WSR_USE_D3D_VIEWER`：`1`/`d3d` 强制 D3D11，`0`/`gl` 强制 OpenGL
   （显式指定时**不做**自动回退，便于排障时直接看到 DLL 缺失的确切报错）；
-- 发布版 exe 仍走 OpenGL（D3D11 后端尚未完成，不进发布版）；
-- DLL 定位走 `renderer.api.find_library()`（`release/wows_renderer.dll`；`WSR_DLL_PATH` 可覆盖）
-  —— 未构建时源码模式自动回退 OpenGL，并在日志面板给出构建命令提示；
+- **DLL 不存在时自动回退 OpenGL** 并在日志面板提示（发布包未带 DLL 也能正常跑）；
+- DLL 定位走 `renderer.api.find_library()`（`release/wows_renderer.dll`；`WSR_DLL_PATH` 可覆盖）；
+- 打包：`build.bat` 与 `build_ci.bat` 都会先跑 CMake 构建 DLL，成功则
+  `--include-data-files` 内嵌进 onefile（失败仅 `[WARN]`，不阻断发版）；
 - 查看器面板上显示当前后端标识；D3D11 下把「尚未支持」的功能清单汇总提示**一次**
   （`unsupported_summary()`，不静默降级）。
 
