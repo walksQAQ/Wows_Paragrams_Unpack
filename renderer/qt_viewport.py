@@ -17,17 +17,20 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QImage, QPainter, QColor
 
 from ui.render_view import RenderView
 
-from .types import MESH_ARMOR
+from .types import HIGHLIGHT_HOVER, HIGHLIGHT_SELECT, MESH_ARMOR
+from .viewport import to_d3d_projection
 
-#: 与旧渲染器一致的常量
-HIGHLIGHT_HOVER = (0.0, 0.9, 1.0, 0.5)
-HIGHLIGHT_SELECT = (1.0, 0.6, 0.1, 0.6)
+# 高亮颜色常量（与旧渲染器一致）在本模块重新导出，保持既有引用可用
+HIGHLIGHT_HOVER = HIGHLIGHT_HOVER
+HIGHLIGHT_SELECT = HIGHLIGHT_SELECT
 
 
 class D3DViewportAdapter(RenderView):
@@ -45,24 +48,44 @@ class D3DViewportAdapter(RenderView):
         self.unsupported: list[str] = []
         self._armor_indices = None      # (T,3) 装甲三角形原始索引
         self._armor_mesh_key = "armor:scene"
-        # 分片上传：途中设的装甲可见掩码会被 DLL 忽略（网格还没建）⇒ 传完再套一次
+        self._armor_scene = None        # 拾取/高亮用（ArmorScene）
+        self._press_pos = None          # 左键按下位置（区分点击与拖拽相机）
+        self._last_pick_time = 0.0      # 悬停拾取节流
+        # 分片上传：途中设的装甲可见掩码/高亮会被 DLL 忽略（网格还没建）⇒ 传完再套一次
         self.scene_progress.connect(self._reapply_visible_tris)
 
     def _reapply_visible_tris(self, text: str) -> None:
-        if text or self._visible_tris is None:
+        """场景提交完成后：重套装甲可见掩码 + 高亮层可见性。"""
+        if text:
             return
-        self.set_visible_tris(self._visible_tris)
+        if self._visible_tris is not None:
+            self.set_visible_tris(self._visible_tris)
+        # 高亮层在 DLL 里默认可见（初始 1 个占位三角形）⇒ 按当前状态重设
+        self._set_hl("hover", None if self._hover_tri is None else [self._hover_tri])
+        tris: list[int] = []
+        if self._selected_plate is not None and self._armor_scene is not None:
+            try:
+                tris = list(self._armor_scene.tris_for_plate(self._selected_plate))
+            except Exception:  # noqa: BLE001
+                tris = []
+        self._set_hl("select", tris)
 
     # ------------------------------------------------------------ 场景
 
     def set_scene(self, ship_geometry, show_hull: bool = True, show_armor: bool = True,
                   armor_scene=None) -> None:
         self._armor_indices = self._collect_armor_indices(armor_scene)
+        self._armor_scene = armor_scene
+        self._hover_tri = None
+        self._selected_plate = None
         self.set_ship(ship_geometry, armor_scene)
         self.set_view_options(show_hull=show_hull, show_armor=show_armor)
 
     def clear_scene(self) -> None:
         self._armor_indices = None
+        self._armor_scene = None
+        self._hover_tri = None
+        self._selected_plate = None
         super().clear_scene()
 
     @staticmethod
@@ -135,17 +158,133 @@ class D3DViewportAdapter(RenderView):
         except Exception:  # noqa: BLE001
             pass
 
-    def select_plate(self, plate_key) -> None:
-        """板块高亮：D3D11 侧的独立高亮 pass 尚未接入（记录为不支持）。"""
-        self._selected_plate = plate_key
-        self._note_unsupported("选中板块高亮（select_plate）")
+    # ------------------------------------------------------------ 高亮 / 拾取
 
-    # ------------------------------------------------------------ 拾取
+    #: 高亮叠加层网格 key（悬停 / 选中）
+    _HL_MESH = {"hover": "armor:hl:hover", "select": "armor:hl:select"}
+
+    def _set_hl(self, which: str, tris) -> None:
+        """把某个高亮层的索引换成给定三角形列表（None/空 = 隐藏该层）。"""
+        renderer = self.renderer
+        key = self._HL_MESH.get(which)
+        if renderer is None or key is None:
+            return
+        try:
+            if tris is None or len(tris) == 0:
+                renderer.set_mesh_visible(key, False)
+                return
+            t = np.asarray(tris, dtype=np.uint32).reshape(-1)
+            idx = (t[:, None] * 3 + np.arange(3, dtype=np.uint32)).reshape(-1)
+            renderer.set_mesh_indices(key, idx)
+            renderer.set_mesh_visible(key, True)
+        except Exception:  # noqa: BLE001 - 场景未就绪/无装甲时忽略
+            pass
+
+    def select_plate(self, plate_key) -> None:
+        """选中板块 → 橙色高亮（None = 取消）。"""
+        self._selected_plate = plate_key
+        tris: list[int] = []
+        if plate_key is not None and self._armor_scene is not None:
+            try:
+                tris = list(self._armor_scene.tris_for_plate(plate_key))
+            except Exception:  # noqa: BLE001
+                tris = []
+        self._set_hl("select", tris)
 
     def pick_at(self, x: int, y: int):
-        """3D 拾取：CPU 射线拾取尚未接入 D3D 路径（记录为不支持）。"""
-        self._note_unsupported("3D 射线拾取（pick_at）")
-        return None
+        """屏幕坐标 → CPU 射线拾取。返回 ``(tri_idx, ArmorTriangleInfo)`` 或 None。
+
+        几何语义与旧 GL 渲染器一致：ArmorScene 在**未镜像**船体空间，
+        而相机/射线在渲染空间（Z 镜像）⇒ 射线 Z 取反。
+        """
+        sc = self._armor_scene
+        if sc is None or not getattr(sc, "tri_count", 0) or self.width() < 2:
+            return None
+        cam = self._camera
+        aspect = max(1, self.width()) / max(1, self.height())
+        view = np.asarray(cam.view_matrix(), dtype=np.float64)
+        proj = np.asarray(to_d3d_projection(cam.projection_matrix(aspect)), dtype=np.float64)
+        try:
+            inv_vp = np.linalg.inv(proj @ view)
+        except np.linalg.LinAlgError:
+            return None
+        ndcx = 2.0 * x / max(1, self.width()) - 1.0
+        ndcy = 1.0 - 2.0 * y / max(1, self.height())
+
+        def _unproj(z: float) -> np.ndarray:
+            v = inv_vp @ np.array([ndcx, ndcy, z, 1.0], dtype=np.float64)
+            return v[:3] / v[3]
+
+        p0, p1 = _unproj(0.0), _unproj(1.0)      # D3D：z=0 近平面，z=1 远平面
+        d = p1 - p0
+        d /= (np.linalg.norm(d) + 1e-12)
+        mirror = np.array([1.0, 1.0, -1.0])
+        ro = p0 * mirror
+        rd = d * mirror
+        ti = sc.ray_pick(ro, rd, self._visible_tris)
+        if ti is None:
+            return None
+        return int(ti), sc.tri_info[int(ti)]
+
+    def _hover_pick(self, pos) -> None:
+        """鼠标悬停拾取：更新 hover 三角形高亮 + 回调 ``on_hover``。"""
+        if self._armor_scene is None or self.on_hover is None:
+            return
+        if not self._view_opts.get("show_armor"):
+            if self._hover_tri is not None:
+                self._hover_tri = None
+                self._set_hl("hover", None)
+                self.on_hover(None, QPoint())
+            return
+        now = time.perf_counter()
+        if now - self._last_pick_time < 0.033:
+            return
+        self._last_pick_time = now
+        hit = self.pick_at(pos.x(), pos.y())
+        tri = hit[0] if hit else None
+        if tri != self._hover_tri:
+            self._hover_tri = tri
+            self._set_hl("hover", None if tri is None else [tri])
+        self.on_hover(tri, self.mapToGlobal(pos))
+
+    # ------------------------------------------------------------ 交互（悬停 / 点击）
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        """无按键移动 = 悬停拾取；带按键拖拽相机交给基类。"""
+        if event.buttons() == Qt.NoButton:
+            self._hover_pick(event.position().toPoint())
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        """左键轻点（非拖拽）→ 板块拾取 + ``on_select`` 回调。"""
+        if event.button() == Qt.LeftButton and self._press_pos is not None:
+            pos = event.position().toPoint()
+            moved = (pos - self._press_pos).manhattanLength()
+            self._press_pos = None
+            if moved < 5 and self._armor_scene is not None \
+                    and self._view_opts.get("show_armor"):
+                hit = self.pick_at(pos.x(), pos.y())
+                key = hit[1].plate_key if hit else None
+                if key == self._selected_plate:
+                    key = None          # 再点一次同一板块 = 取消选中（与旧渲染器一致）
+                self.select_plate(key)
+                if self.on_select is not None:
+                    self.on_select(key)
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hover_tri is not None:
+            self._hover_tri = None
+            self._set_hl("hover", None)
+            if self.on_hover is not None:
+                self.on_hover(None, QPoint())
+        super().leaveEvent(event)
 
     # ------------------------------------------------------------ 截图
 

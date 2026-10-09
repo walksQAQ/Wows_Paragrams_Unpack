@@ -23,6 +23,8 @@ from .types import (
     FAM_INDEXED,
     FAM_SOLID,
     FAM_UNLIT,
+    HIGHLIGHT_HOVER,
+    HIGHLIGHT_SELECT,
     MESH_ARMOR,
     MESH_HULL,
     MESH_MOUNT,
@@ -363,6 +365,27 @@ def _build_armor(armor_scene) -> list[MeshSpec]:
             indices=np.arange(pos.shape[0], dtype=np.uint32),
         )
     )
+
+    # 高亮叠加层（悬停=青 / 选中=橙）：与装甲同几何，沿法线微偏移防 z-fighting。
+    # 初始只给 1 个三角形（DLL 拒收空几何），可见性由适配层控制：
+    # 悬停/选中时通过 set_mesh_indices 换成对应三角形，无高亮时 set_mesh_visible(False)。
+    hl_pos = np.ascontiguousarray(pos + nrm * 0.02)
+    for hl_key, hl_rgba in (("armor:hl:hover", HIGHLIGHT_HOVER),
+                            ("armor:hl:select", HIGHLIGHT_SELECT)):
+        hv = np.zeros((hl_pos.shape[0], 12), dtype=np.float32)
+        hv[:, 0:3] = hl_pos
+        hv[:, 3:6] = nrm
+        hv[:, 8:12] = np.asarray(hl_rgba, dtype=np.float32)
+        out.append(
+            MeshSpec(
+                key=hl_key,
+                kind=MESH_ARMOR,
+                family=FAM_UNLIT,
+                opacity=float(hl_rgba[3]),
+                vertices=hv,
+                indices=np.arange(3, dtype=np.uint32),
+            )
+        )
 
     epos = getattr(armor_scene, "edge_positions", None)
     if epos is not None and len(epos):
