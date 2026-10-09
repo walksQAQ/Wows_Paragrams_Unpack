@@ -584,20 +584,43 @@ class GeometryService:
     def load_ship(self, ship: ShipInfo, progress_cb=None,
                   cancel_event: threading.Event | None = None,
                   model_replace: dict | None = None,
-                  skin: dict | None = None) -> ShipGeometry:
+                  skin: dict | None = None,
+                  partial_cb=None) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型。
 
         model_replace：皮肤变体（origin="model"）的「原始 .model 路径 → 替换路径」映射
         （Exterior.peculiarityModels），用于把船体/挂载模型替换成皮肤变体。
         skin：Exterior 皮肤的完整数据（hull_config/nodes_config/peculiarity_models），
         用于整体替换船体模型 + 各挂载模型 + miscFilter 过滤。
+        partial_cb：**分阶段交付**回调（在后台线程调用）。船体（+装甲）解析完、挂载还没开始时
+        先回传一份几何**快照**，调用方可据此提前出图，不必等挂载全部解析完。
         """
         try:
             return self._load_ship_impl(ship, progress_cb=progress_cb,
                                         cancel_event=cancel_event,
-                                        model_replace=model_replace, skin=skin)
+                                        model_replace=model_replace, skin=skin,
+                                        partial_cb=partial_cb)
         finally:
             self._clear_per_load_caches()
+
+    @staticmethod
+    def _snapshot_without_mounts(geom: ShipGeometry) -> ShipGeometry:
+        """船体/装甲就绪时的浅拷贝快照（列表/字典复制、元素共享）。
+
+        后台线程后续的挂载解析只改**原对象**，快照不会再变 ⇒ 调用方可安全使用。
+        """
+        import copy
+
+        snap = copy.copy(geom)
+        snap.hull_meshes = list(geom.hull_meshes)
+        snap.armor_meshes = list(geom.armor_meshes)
+        snap.mounts = []
+        snap.texture_dds = dict(geom.texture_dds)
+        snap.stats = dict(geom.stats)
+        warns = snap.stats.get("warnings")
+        if isinstance(warns, list):
+            snap.stats["warnings"] = list(warns)
+        return snap
 
     def apply_camo(self, geom: ShipGeometry, camo, extractor=None) -> int:
         # ⚠️【临时标记】涂装渲染逻辑尚未正确：camouflage/MSkin/Permoflage/通用永久等几类
@@ -807,7 +830,8 @@ class GeometryService:
     def _load_ship_impl(self, ship: ShipInfo, progress_cb=None,
                         cancel_event: threading.Event | None = None,
                         model_replace: dict | None = None,
-                        skin: dict | None = None) -> ShipGeometry:
+                        skin: dict | None = None,
+                        partial_cb=None) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型（实现）。
 
         - 舰体：模型目录内全部 .geometry 分段（已处于舰船坐标系，直接合并）
@@ -817,6 +841,7 @@ class GeometryService:
 
         progress_cb(pct: float, message: str) —— 0..100
         cancel_event: 协作式取消事件；在长循环边界检查，取消时抛 TaskCancelled。
+        partial_cb: 见 :meth:`load_ship`（船体/装甲就绪时回传快照）
         """
         if progress_cb:
             progress_cb(2, "定位几何文件...")
@@ -1048,6 +1073,14 @@ class GeometryService:
                         pmax = mesh.positions.max(axis=0)
                         bmin = np.minimum(bmin, pmin)
                         bmax = np.maximum(bmax, pmax)
+
+        # ── 分阶段交付：船体 + 装甲已就绪，挂载还没开始 ──
+        # 大船（中途岛那类）挂载阶段还要十几秒；先把「船体/装甲」交给调用方提前显示。
+        if partial_cb is not None:
+            try:
+                partial_cb(self._snapshot_without_mounts(geom))
+            except Exception:  # noqa: BLE001 - 提前交付失败不影响完整加载
+                pass
 
         # ── 挂载模型（骨架定位 + 每个部件独立贴图） ──
         self._raise_if_cancelled(cancel_event)

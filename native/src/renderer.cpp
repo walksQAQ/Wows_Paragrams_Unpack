@@ -114,6 +114,9 @@ struct FrameCBData {
     float view_dir[4];
     float params[4];        /* x=normal_strength y=opacity z=emissive_k w=emissive_on */
     float params2[4];       /* x=mode y=debug_mode z=instanced w=matid_vis */
+    float env[4];           /* x=lighting_mode y=env_strength z=exposure w=normal_space */
+    float cam_pos[4];       /* xyz = 相机世界坐标（Studio 镜面 V 向量） */
+    float uv_flip[4];       /* x = 1：纹理 V 翻成 1-v（旧行为，供 A/B） */
 };
 
 struct MatCBData {
@@ -746,6 +749,13 @@ void draw_one(wsr_renderer *r, MeshRes &m, int mode, const float *model, bool in
     fc.params2[1] = (float)r->frame.debug_mode;
     fc.params2[2] = 1.0f;   /* 恒为实例化路径 */
     fc.params2[3] = matid_vis ? 1.0f : 0.0f;
+    /* 渲染风格（Studio PBR / 法线空间）：Pass1 的 resolve_normal 也要看到 */
+    fc.env[0] = (float)r->frame.lighting_mode;
+    fc.env[1] = r->frame.env_strength;
+    fc.env[2] = r->frame.exposure;
+    fc.env[3] = (float)r->frame.normal_space;
+    memcpy(fc.cam_pos, r->frame.camera_pos, 3 * sizeof(float));
+    fc.uv_flip[0] = (float)r->frame.uv_flip;
     map_write(r, r->cb_frame.Get(), &fc, sizeof(fc));
 
     /* 材质常量 */
@@ -1044,7 +1054,14 @@ int32_t wsr_render(wsr_renderer *r)
     if (use_deferred) {
         ctx->OMSetRenderTargets(3, mrt, r->dsv.Get());
         for (int i = 0; i < 3; ++i) {
-            ctx->ClearRenderTargetView(mrt[i], r->clear_color);
+            if (i == 2 && r->frame.lighting_mode != 0) {
+                /* Studio 模式：世界坐标附件 alpha 清成 0 用作「无几何（背景）」标记，
+                 * 最终光照 pass 据此把背景画成程序化环境（Pass1 会给几何写 alpha=1）。 */
+                const float bg_clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                ctx->ClearRenderTargetView(mrt[i], bg_clear);
+            } else {
+                ctx->ClearRenderTargetView(mrt[i], r->clear_color);
+            }
         }
     } else {
         ID3D11RenderTargetView *bb1[1] = { r->rtv.Get() };
@@ -1193,6 +1210,42 @@ int32_t wsr_render(wsr_renderer *r)
 
 /* ============================ 纹理 / 场景 / 帧 ============================ */
 
+/* 纹理行距信息：把「一行」折算成块行（BC 格式 4×4 像素/块，行宽按块计） */
+struct FmtPitch {
+    uint32_t block_w = 1;
+    uint32_t block_h = 1;
+    uint32_t block_bytes = 4;
+};
+
+static FmtPitch format_pitch(DXGI_FORMAT fmt)
+{
+    FmtPitch fp;
+    switch (fmt) {
+    case DXGI_FORMAT_BC1_UNORM:
+    case DXGI_FORMAT_BC1_UNORM_SRGB:
+    case DXGI_FORMAT_BC4_UNORM:
+        fp.block_bytes = 8;
+        break;
+    case DXGI_FORMAT_BC2_UNORM:
+    case DXGI_FORMAT_BC2_UNORM_SRGB:
+    case DXGI_FORMAT_BC3_UNORM:
+    case DXGI_FORMAT_BC3_UNORM_SRGB:
+    case DXGI_FORMAT_BC5_UNORM:
+    case DXGI_FORMAT_BC7_UNORM:
+    case DXGI_FORMAT_BC7_UNORM_SRGB:
+        fp.block_bytes = 16;
+        break;
+    default:
+        /* 未压缩：按 BGRA8 处理（Python 侧非 BC 贴图统一转 BGRA8/BGRX8） */
+        fp.block_bytes = 4;
+        break;
+    }
+    if (fmt >= DXGI_FORMAT_BC1_UNORM && fmt <= DXGI_FORMAT_BC7_UNORM_SRGB) {
+        fp.block_w = fp.block_h = 4;
+    }
+    return fp;
+}
+
 int32_t wsr_texture_upload(wsr_renderer *r, const char *key, const wsr_texture_desc *desc)
 {
     if (r == nullptr || key == nullptr || desc == nullptr || desc->data == nullptr) {
@@ -1228,16 +1281,58 @@ int32_t wsr_texture_upload(wsr_renderer *r, const char *key, const wsr_texture_d
                     static_cast<unsigned long long>(desc->data_size));
     }
 
-    /* 逐 subresource 上传（顺序 = mip + slice * mipCount，与 D3D 约定一致） */
-    for (uint32_t mip = 0; mip < desc->mip_count; ++mip) {
-        const uint32_t off = desc->mip_offsets ? desc->mip_offsets[mip] : 0u;
-        const uint32_t sz  = desc->mip_sizes ? desc->mip_sizes[mip] : 0u;
-        const uint8_t *pmip = base + off;
-        const uint32_t per_slice = (array_size > 0) ? (sz / array_size) : sz;
-        for (uint32_t slice = 0; slice < array_size; ++slice) {
-            const UINT sub = D3D11CalcSubresource(mip, slice, desc->mip_count);
-            r->ctx->UpdateSubresource(tex.Get(), sub, nullptr,
-                                      pmip + static_cast<size_t>(per_slice) * slice, 0, 0);
+    /* 上传：走 staging texture + CopyResource —— **整张贴图一次拷完**。
+     * 旧实现逐 subresource ``UpdateSubresource``：4096²×30 层这种大数组（约 400 MB）
+     * 单张就要几十秒（每次调用都可能内部新建 staging 并同步），是「加载完成后卡住」的根因。
+     * staging 创建失败时回退到旧路径（保底，不因优化而失去可用性）。 */
+    D3D11_TEXTURE2D_DESC std_desc = td;
+    std_desc.Usage          = D3D11_USAGE_STAGING;
+    std_desc.BindFlags      = 0;
+    std_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    std_desc.MiscFlags      = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    hr = r->device->CreateTexture2D(&std_desc, nullptr, staging.ReleaseAndGetAddressOf());
+    if (SUCCEEDED(hr) && staging) {
+        const FmtPitch fp = format_pitch(td.Format);
+        for (uint32_t mip = 0; mip < desc->mip_count; ++mip) {
+            const uint32_t off = desc->mip_offsets ? desc->mip_offsets[mip] : 0u;
+            const uint32_t sz  = desc->mip_sizes ? desc->mip_sizes[mip] : 0u;
+            const uint8_t *pmip = base + off;
+            const uint32_t per_slice = (array_size > 0) ? (sz / array_size) : sz;
+            const uint32_t w = (td.Width  >> mip) ? (td.Width  >> mip) : 1u;
+            const uint32_t h = (td.Height >> mip) ? (td.Height >> mip) : 1u;
+            const uint32_t rows = (h + fp.block_h - 1u) / fp.block_h;
+            const uint32_t src_row = ((w + fp.block_w - 1u) / fp.block_w) * fp.block_bytes;
+            for (uint32_t slice = 0; slice < array_size; ++slice) {
+                const UINT sub = D3D11CalcSubresource(mip, slice, td.MipLevels);
+                D3D11_MAPPED_SUBRESOURCE ms = {};
+                hr = r->ctx->Map(staging.Get(), sub, D3D11_MAP_WRITE, 0, &ms);
+                if (FAILED(hr)) {
+                    return fail(WSR_ERR_INTERNAL,
+                                "wsr_texture_upload('%s'): Map staging failed (hr=0x%08X)",
+                                key, static_cast<unsigned>(hr));
+                }
+                const uint8_t *src = pmip + static_cast<size_t>(per_slice) * slice;
+                for (uint32_t y = 0; y < rows; ++y) {
+                    memcpy(static_cast<uint8_t *>(ms.pData) + static_cast<size_t>(y) * ms.RowPitch,
+                           src + static_cast<size_t>(y) * src_row, src_row);
+                }
+                r->ctx->Unmap(staging.Get(), sub);
+            }
+        }
+        r->ctx->CopyResource(tex.Get(), staging.Get());
+    } else {
+        /* 回退：逐 subresource 上传（慢但不依赖 staging） */
+        for (uint32_t mip = 0; mip < desc->mip_count; ++mip) {
+            const uint32_t off = desc->mip_offsets ? desc->mip_offsets[mip] : 0u;
+            const uint32_t sz  = desc->mip_sizes ? desc->mip_sizes[mip] : 0u;
+            const uint8_t *pmip = base + off;
+            const uint32_t per_slice = (array_size > 0) ? (sz / array_size) : sz;
+            for (uint32_t slice = 0; slice < array_size; ++slice) {
+                const UINT sub = D3D11CalcSubresource(mip, slice, desc->mip_count);
+                r->ctx->UpdateSubresource(tex.Get(), sub, nullptr,
+                                          pmip + static_cast<size_t>(per_slice) * slice, 0, 0);
+            }
         }
     }
 
@@ -1413,6 +1508,14 @@ int32_t wsr_frame_set(wsr_renderer *r, const wsr_frame_params *p)
     if (r == nullptr || p == nullptr) {
         return fail(WSR_ERR_INVALID_ARG, "wsr_frame_set: null argument");
     }
+    /* 结构体尺寸校验：Python 侧与 DLL 必须同步。改过 wsr_frame_params 却没重建 DLL 时，
+     * 这里会给出明确报错，而不是“新参数不生效/越界读”的莫名现象。 */
+    if (p->struct_size != (uint32_t)sizeof(wsr_frame_params)) {
+        return fail(WSR_ERR_INVALID_ARG,
+                    "wsr_frame_set: struct_size mismatch (host=%u dll=%u) - rebuild wows_renderer.dll",
+                    static_cast<unsigned>(p->struct_size),
+                    static_cast<unsigned>(sizeof(wsr_frame_params)));
+    }
     memcpy(&r->frame, p, sizeof(wsr_frame_params));
     r->frame_valid = true;
 
@@ -1421,11 +1524,17 @@ int32_t wsr_frame_set(wsr_renderer *r, const wsr_frame_params *p)
     memcpy(fc.light_dir, p->light_dir, 3 * sizeof(float));
     memcpy(fc.ambient, p->ambient, 3 * sizeof(float));
     memcpy(fc.light_pos, p->light_pos, 3 * sizeof(float));
+    memcpy(fc.cam_pos, p->camera_pos, 3 * sizeof(float));
     fc.view_dir[0] = p->view[8];
     fc.view_dir[1] = p->view[9];
     fc.view_dir[2] = p->view[10];
     fc.params[0] = p->normal_strength;
     fc.params[1] = p->opacity;
+    fc.env[0] = (float)p->lighting_mode;
+    fc.env[1] = p->env_strength;
+    fc.env[2] = p->exposure;
+    fc.env[3] = (float)p->normal_space;
+    fc.uv_flip[0] = (float)p->uv_flip;
     r->fs_template = fc;
     return WSR_OK;
 }

@@ -27,6 +27,9 @@ cbuffer FrameCB : register(b0)
     float4   g_view_dir;     // xyz = 观察方向（eye - target 归一化）
     float4   g_params;       // x=normal_strength y=opacity z=emissive_k w=emissive_on
     float4   g_params2;      // x=mode y=debug_mode z=instanced w=matid_vis
+    float4   g_env;          // x=lighting_mode y=env_strength z=exposure w=normal_space
+    float4   g_cam_pos;      // xyz = 相机世界坐标（Studio 镜面 V 向量）
+    float4   g_uv_flip;      // x = 1 时把纹理 V 翻成 1-v（见下面 glUV 说明）
 };
 
 cbuffer MatCB : register(b1)
@@ -75,13 +78,26 @@ SamplerState g_smp_nomip : register(s2);   // wrap + 线性（base level）
  * 取纹理，不经过本函数。
  * ⚠️ SampleGrad 的 ddx/ddy 仍用 GL 空间的导数（|d(1-v)| = |dv| ⇒ mip 选择不变）。
  */
-float2 glUV(float2 uv)          { return float2(uv.x, 1.0 - uv.y); }
-float3 glUV(float2 uv, float s) { return float3(uv.x, 1.0 - uv.y, s); }
+/* ── 纹理 V 轴（2026-10-09 更正）──────────────────────────────────────
+ * 旧移植版假设「GL 的 t=0 在底边、D3D 的 v=0 在顶边 ⇒ 同一份 DDS 字节两边上下相反」，
+ * 于是在采样时把 V 翻成 1-v。但两者的**数据行序 ↔ 坐标对应关系是一致的**：
+ * glTexImage2D 把数据第 0 行放在 t=0 一侧，D3D 把第 0 行放在 v=0 一侧
+ * ⇒ 同一个 (u,v) 取到的是同一行数据，**不需要翻转**。
+ * 旧 GL 渲染器（已验证过的参考）采样时也不翻转 ⇒ D3D 侧多翻一次会让贴图相对模型上下镜像。
+ * 现由 g_uv_flip.x 控制：0 = 不翻转（默认，与 GL 参考一致），1 = 保留旧行为（供 A/B）。
+ */
+float2 glUV(float2 uv)          { return float2(uv.x, (g_uv_flip.x > 0.5) ? (1.0 - uv.y) : uv.y); }
+float3 glUV(float2 uv, float s) { return float3(uv.x, (g_uv_flip.x > 0.5) ? (1.0 - uv.y) : uv.y, s); }
 
 /* ============================ 公共函数 ============================ */
 
+/* 前置声明：程序化环境函数定义在下方 Studio 区块，pbr_light（原版光照）也要用 */
+float3 env_gradient(float3 d);
+float2 env_brdf(float rough, float NdotV);
+
 /* 统一 PBR：Cook-Torrance GGX + Schlick Fresnel 直接光镜面反射（天上的点光源）。
- * ★ 与 GLSL 完全一致：无程序化天空盒环境反射；MG 不影响基础颜色。 */
+ * ★ 与 GLSL 一致：无程序化天空盒环境反射；MG 不影响基础颜色。
+ * 2026-10-09 追加：+ 程序化环境反射（让 _mg 的 metallic/gloss 真正可见，见下方 return 前）。 */
 float3 pbr_light(float3 albedo, float3 N, float f0_weight, float gloss, float3 lit, float3 worldPos)
 {
     float3 path = g_light_pos.xyz - worldPos;
@@ -113,7 +129,140 @@ float3 pbr_light(float3 albedo, float3 N, float f0_weight, float gloss, float3 l
     float3 ambient_part = albedo * g_ambient.xyz;
     float3 direct = ambient_part + (diffuse - ambient_part) * atten
                   + specular * NdotL * atten * 2.0;
+
+    /* ── 环境反射（2026-10-09）────────────────────────────────────
+     * 旧移植只有「天上的点光源」高光：金属/光泽面在背光侧几乎全黑，看起来像 _mg 没参与。
+     * 这里补上程序化渐变环境的镜面反射（与 Studio 同一套环境，但**不含灯箱**以保持
+     * 原版克制的观感）：F0 = lerp(0.04, albedo, metallic) 是标准 metallic 映射，
+     * roughness = 1 - gloss；解析环境 BRDF 免 LUT。
+     * g_env.y（环境亮度）为 0 时该项自动关闭。 */
+    float env_k = max(g_env.y, 0.0);
+    if (env_k > 0.0)
+    {
+        float3 Vv = normalize(g_cam_pos.xyz - worldPos);
+        float  rough2 = clamp(1.0 - gloss, 0.04, 1.0);
+        float3 F0e = lerp(float3(0.04, 0.04, 0.04), albedo, f0_weight);
+        float3 R = reflect(-Vv, N);
+        float2 ab = env_brdf(rough2, max(dot(N, Vv), 1e-4));
+        direct += env_gradient(R) * env_k * (F0e * ab.x + ab.y);
+    }
     return direct;
+}
+
+/* ==================== Studio PBR：程序化环境光照（可选模式） ====================
+ * 目的：贴图驱动的 PBR 材质（_mg → metallic/gloss、_n → 法线）在「只有一盏天上点光源
+ * + 常数环境色」下根本看不出效果 —— 金属/光泽需要**环境**可反射。这里用零资源的程序化
+ * studio 环境（半球渐变 + 3 个灯箱）提供 IBL：漫反射 irradiance + 镜面环境反射。
+ *
+ * 启用条件：g_env.x > 0.5（lighting_mode = Studio）。等于 0 时下面的函数不会被调用，
+ * 游戏原版路径（pbr_light + 半兰伯特标量光）逐行保持不变。
+ * ⚠️ 全部是观感取向的近似，**不对齐游戏内**；数值可随截图迭代。 */
+static const float3 ENV_SKY     = float3(0.62, 0.67, 0.74);
+static const float3 ENV_HORIZON = float3(0.44, 0.46, 0.50);
+static const float3 ENV_GROUND  = float3(0.19, 0.18, 0.17);
+
+static const float3 ENV_KEY_DIR  = float3( 0.45, 0.72, -0.52);   // 左上前（主光）
+static const float3 ENV_KEY_COL  = float3( 3.10, 3.00,  2.80);
+static const float3 ENV_FILL_DIR = float3(-0.72, 0.18,  0.42);   // 右侧（偏冷补光）
+static const float3 ENV_FILL_COL = float3( 0.55, 0.62,  0.78);
+static const float3 ENV_RIM_DIR  = float3(-0.15, 0.35,  0.92);   // 后上（勾边）
+static const float3 ENV_RIM_COL  = float3( 0.45, 0.47,  0.52);
+
+float3 env_gradient(float3 d)
+{
+    float up = d.y;
+    return (up >= 0.0)
+        ? lerp(ENV_HORIZON, ENV_SKY,    pow(saturate(up),  0.45))
+        : lerp(ENV_HORIZON, ENV_GROUND, pow(saturate(-up), 0.60));
+}
+
+/* 单个灯箱：roughness 越大→光斑越糊（指数减小 + 峰值压低，粗看相当于预滤波） */
+float3 env_box(float3 d, float3 dir, float3 col, float sharp, float rough)
+{
+    float e = lerp(sharp, 1.5, saturate(rough));
+    float k = lerp(1.0, 1.0 / max(sharp * 0.25, 1.0), saturate(rough));
+    return col * pow(saturate(dot(d, normalize(dir))), e) * k;
+}
+
+float3 env_sample(float3 d, float rough)
+{
+    return env_gradient(d)
+         + env_box(d, ENV_KEY_DIR,  ENV_KEY_COL,  120.0, rough)
+         + env_box(d, ENV_FILL_DIR, ENV_FILL_COL,  24.0, rough)
+         + env_box(d, ENV_RIM_DIR,  ENV_RIM_COL,   16.0, rough);
+}
+
+/* 漫反射 irradiance：渐变取半球解析插值；灯箱按软化方向光近似（不参与镜面锐化） */
+float3 env_irradiance(float3 N)
+{
+    float3 c = env_gradient(N);
+    c += ENV_KEY_COL  * 0.28 * saturate(dot(N, normalize(ENV_KEY_DIR)));
+    c += ENV_FILL_COL * 0.22 * saturate(dot(N, normalize(ENV_FILL_DIR)));
+    c += ENV_RIM_COL  * 0.14 * saturate(dot(N, normalize(ENV_RIM_DIR)));
+    return c;
+}
+
+/* Karis 解析环境 BRDF（返回镜面 scale/bias，免 BRDF LUT） */
+float2 env_brdf(float rough, float NdotV)
+{
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4( 1.0,  0.0425,  1.04, -0.04);
+    float4 r = rough * c0 + c1;
+    float  a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    return float2(-1.04, 1.04) * a004 + r.zw;
+}
+
+/* ACES 近似色调映射（Narkowicz）：配合 exposure 让高光滞降自然 */
+float3 aces_tonemap(float3 x)
+{
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
+/* Studio 光照：纯 IBL（环境漫反射 + 环境镜面），光源即环境本身。
+ * 返回已做 ACES 的值（调用方再做 gamma 1/2.2 写后备缓冲）。 */
+float3 studio_light(float3 albedo, float3 N, float f0_weight, float gloss, float3 worldPos)
+{
+    float3 V     = normalize(g_cam_pos.xyz - worldPos);
+    float  NdotV = max(dot(N, V), 1e-4);
+    float  rough = clamp(1.0 - gloss, 0.04, 1.0);
+    float3 F0    = lerp(float3(0.04, 0.04, 0.04), albedo, f0_weight);
+    float3 R     = reflect(-V, N);
+
+    float3 pre = env_sample(R, rough) * g_env.y;
+    float3 irr = env_irradiance(N) * g_env.y;
+    float2 ab  = env_brdf(rough, NdotV);
+
+    float3 spec = pre * (F0 * ab.x + ab.y);
+    float3 kd   = (1.0 - f0_weight) * albedo;
+    return aces_tonemap((kd * irr + spec) * max(g_env.z, 0.0));
+}
+
+/* 屏幕空间导数构造 cotangent frame（Mikkelsen）—— 把切线空间法线转世界空间。
+ * ⚠️ uv 必须是**采样贴图时用的同一套**（glUV），否则切线/副切线朝向与贴图 V 轴不一致。 */
+float3x3 cotangent_frame(float3 N, float3 p, float2 uv)
+{
+    float3 dp1 = ddx(p), dp2 = ddy(p);
+    float2 duv1 = ddx(uv), duv2 = ddy(uv);
+    float3 dp2perp = cross(dp2, N);
+    float3 dp1perp = cross(N, dp1);
+    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float  invmax = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-12));
+    return float3x3(T * invmax, B * invmax, N);
+}
+
+/* 切线空间法线 → 世界空间法线。
+ * g_env.w = 0：原版行为（切线空间值直接当世界法线，无 TBN；与旧 GLSL 一致）
+ * g_env.w = 1：正确 TBN（Studio 模式默认） */
+float3 resolve_normal(float3 N_world, float3 wpos, float2 uv, float3 n_ts)
+{
+    if (g_env.w < 0.5)
+    {
+        return normalize(n_ts);
+    }
+    float3x3 tbn = cotangent_frame(N_world, wpos, glUV(uv));
+    return normalize(mul(n_ts, tbn));
 }
 
 /* ============================ 顶点着色器 ============================ */
@@ -266,7 +415,7 @@ float4 PSMain(VSOut i) : SV_TARGET
 
         n_ts = normalize(n_ts + n_a - float3(0.0, 0.0, 1.0));
         n_ts.xy *= nstrength;
-        float3 n_world = normalize(n_ts);
+        float3 n_world = resolve_normal(normalize(i.nrm), i.wpos, i.uv, n_ts);
 
         if (g_params2.w > 0.5)   /* matid 伪彩诊断 */
         {
@@ -286,7 +435,9 @@ float4 PSMain(VSOut i) : SV_TARGET
         float  diff2 = max(dot(n_world, litL), 0.0);
         float  hl2 = diff2 * 0.5 + 0.5;
         float3 lit2 = g_ambient.xyz + (1.0 - g_ambient.xyz) * hl2;
-        float3 col = pbr_light(c, n_world, f0_weight, gloss, lit2, i.wpos);
+        float3 col = (g_env.x > 0.5)
+                   ? studio_light(c, n_world, f0_weight, gloss, i.wpos)
+                   : pbr_light(c, n_world, f0_weight, gloss, lit2, i.wpos);
         col = pow(col, 1.0 / 2.2);
         return float4(col, 1.0);
     }
@@ -321,7 +472,7 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 n_ts = float3(nm.x * 2.0 - 1.0, nm.y * 2.0 - 1.0, 0.0);
         n_ts.xy *= nstrength;
         n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-        N = normalize(n_ts);
+        N = resolve_normal(N, i.wpos, i.uv, n_ts);
     }
 
     /* _mg（metallicGlossMap）：R=F0 混合权重，G=gloss，B=发光/涂装强度 */
@@ -354,7 +505,9 @@ float4 PSMain(VSOut i) : SV_TARGET
     }
     else
     {
-        rgb2 = pbr_light(base.rgb, n, f0_weight, gloss, lit, i.wpos);
+        rgb2 = (g_env.x > 0.5)
+             ? studio_light(base.rgb, n, f0_weight, gloss, i.wpos)
+             : pbr_light(base.rgb, n, f0_weight, gloss, lit, i.wpos);
         if (emissive_on > 0.5)
         {
             float em = (g_mat.z > 0.5) ? emit : base.b;
@@ -473,7 +626,7 @@ PSOutMRT PSMainMRT(VSOut i)
         n_a.z = sqrt(max(1.0 - (n_a.x * n_a.x + n_a.y * n_a.y), 0.0));
         n_ts = normalize(n_ts + n_a - float3(0.0, 0.0, 1.0));
         n_ts.xy *= nstrength;
-        N = normalize(n_ts);
+        N = resolve_normal(N, i.wpos, i.uv, n_ts);
     }
     else
     {
@@ -487,7 +640,7 @@ PSOutMRT PSMainMRT(VSOut i)
             float3 n_ts = float3(nm.x * 2.0 - 1.0, nm.y * 2.0 - 1.0, 0.0);
             n_ts.xy *= nstrength;
             n_ts.z = sqrt(max(1.0 - (n_ts.x * n_ts.x + n_ts.y * n_ts.y), 0.0));
-            N = normalize(n_ts);
+            N = resolve_normal(N, i.wpos, i.uv, n_ts);
         }
         if (g_mat.z > 0.5)
         {
@@ -569,13 +722,35 @@ float4 PSFullscreen(FSOut i) : SV_TARGET
     }
 
     /* mode 11：最终光照（读 Hull Albedo + Final Normal + 世界坐标） */
+    float4 world = g_scene_world_tex.Sample(g_smp, suv);
+    float3 worldPos = world.xyz;
+
+    /* Studio 模式：世界坐标附件 alpha=0 的像素是没有几何的背景（C++ 侧只在 Studio
+     * 模式把该附件 alpha 清 0，Pass1 给几何写 1）→ 用同一套程序化环境画背景，
+     * 视角方向由屏幕坐标 + 相机朝向近似重建（环境本身是平滑的，误差不可见）。 */
+    if (g_env.x > 0.5 && world.w < 0.5)
+    {
+        float2 ndc = float2(suv.x, 1.0 - suv.y) * 2.0 - 1.0;
+        float3 fwd = -normalize(g_view_dir.xyz);
+        float3 right = normalize(cross(float3(0.0, 1.0, 0.0), fwd) + float3(1e-4, 0.0, 0.0));
+        float3 up2 = cross(fwd, right);
+        float3 dir = normalize(fwd + right * ndc.x * 0.62 + up2 * ndc.y * 0.42);
+        float3 bg = env_sample(dir, 1.0) * g_env.y * max(g_env.z, 0.0);
+        return float4(pow(aces_tonemap(bg), 1.0 / 2.2), 1.0);
+    }
+
     float4 sc = g_scene_tex.Sample(g_smp, suv);
     float3 albedo = sc.rgb;
     float  f0_weight = sc.a;
     float4 sn = g_scene_final_tex.Sample(g_smp, suv);
     float3 N = normalize(sn.rgb * 2.0 - 1.0);
     float  gloss = sn.a;
-    float3 worldPos = g_scene_world_tex.Sample(g_smp, suv).xyz;
+
+    if (g_env.x > 0.5)
+    {
+        /* Studio PBR：程序化环境 IBL（漫反射 irradiance + 环境镜面） */
+        return float4(pow(studio_light(albedo, N, f0_weight, gloss, worldPos), 1.0 / 2.2), 1.0);
+    }
 
     float3 litL = normalize(g_light_pos.xyz - worldPos);
     float  diff = max(dot(N, litL), 0.0);

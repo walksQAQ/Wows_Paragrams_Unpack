@@ -3,10 +3,14 @@ geometry_viewer.py —— 3D 模型查看器（独立顶层窗口）。
 
 复刻穿深计算器的集成模式：独立 QDialog + 懒创建单实例 + 后台线程加载 +
 bus.log_message + theme.bind。含装甲厚度图例与显示开关。
+
+渲染后端由 :func:`resolve_viewport_backend` 决定：**源码模式默认 D3D11**
+（``renderer`` + ``wows_renderer.dll``），发布版仍走 OpenGL。
 """
 
 from __future__ import annotations
 
+import os
 import threading
 
 from PySide6.QtCore import Qt, QSettings, Signal, QTimer, QSize
@@ -21,12 +25,49 @@ from app.signals import bus
 from utils.theme import theme
 from utils import ship_badge
 from utils.threading_utils import run_async
-from utils.path_utils import get_data_dir
+from utils.path_utils import get_data_dir, is_debug_build
+from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
 
 #: 舰船下拉里徽章图标边长（px）
 SHIP_BADGE_SIZE = 18
+
+#: 3D 视口后端开关（环境变量）：``1``/``d3d`` 强制 D3D11，``0``/``gl`` 强制 OpenGL。
+VIEWPORT_BACKEND_ENV = "WSR_USE_D3D_VIEWER"
+
+
+def resolve_viewport_backend() -> tuple[str, str]:
+    """决定 3D 视口渲染后端，返回 ``(kind, note)``。
+
+    ``kind``：``"d3d"``（D3D11 新后端）或 ``"gl"``（既有 OpenGL 后端）。
+    ``note``：需要提示给用户的回退说明，无需提示时为空串。
+
+    判定顺序：
+
+    1. :data:`VIEWPORT_BACKEND_ENV` **显式**指定时完全听从，不做自动回退
+       （排障时可直接看到「DLL 缺失」的确切报错）；
+    2. 未指定时，**源码模式**（``python main.py``）默认启用 D3D11 —— 新后端
+       开发期默认跑真实后端；DLL 未构建则回退 OpenGL 并给出构建提示；
+    3. 发布版 exe 仍走 OpenGL（D3D11 后端尚未完成，不进发布版；需要时可用
+       ``WSR_USE_D3D_VIEWER=1`` 强制开启）。
+    """
+    env = os.environ.get(VIEWPORT_BACKEND_ENV, "").strip().lower()
+    if env in ("0", "false", "no", "off", "gl", "opengl"):
+        return "gl", ""
+    if env in ("1", "true", "yes", "on", "d3d", "d3d11"):
+        return "d3d", ""
+    if not is_debug_build():
+        return "gl", ""
+
+    from renderer.api import find_library
+
+    if find_library() is None:
+        return "gl", (
+            "未找到 wows_renderer.dll，3D 视口已回退 OpenGL（源码模式默认启用 D3D11）。"
+            "构建：cmake -S native -B native/build && cmake --build native/build --config Release"
+        )
+    return "d3d", ""
 
 
 class _Spinner(QWidget):
@@ -95,6 +136,8 @@ class GeometryViewerDialog(QDialog):
     ship_loaded = Signal(str)
     #: 后台加载进度（0..100, 消息, 代数）→ 主线程更新右侧进度条
     progress_changed = Signal(float, str, int)
+    #: 分阶段交付：(几何快照, 代数) —— 船体/装甲就绪时先发一次，供提前显示
+    partial_ready = Signal(object)
     #: 后台导出进度（0..100, 消息）→ 主线程更新导出进度条
     export_progress_changed = Signal(float, str)
 
@@ -128,9 +171,48 @@ class GeometryViewerDialog(QDialog):
         self._build_ui()
         theme.bind(self, "QDialog { background: @panel_bg@; }")
         bus.log_message.connect(self._on_log)
+        self._report_backend()
+        # 分阶段交付：船体/装甲先到就先显示（挂载/装甲继续后台解析）
+        self.partial_ready.connect(self._on_partial_geometry)
+        # D3D 后端：场景分片上传的进度显示到加载遮罩（避免「看着像卡死」）
+        if hasattr(self.viewport, "scene_progress"):
+            self.viewport.scene_progress.connect(self._on_scene_upload_progress)
 
         # 舰船列表后台加载（保存句柄，关闭时可取消）
         self._start_ships_load()
+
+    # ── 渲染后端（D3D11 / OpenGL）────────────────────────
+
+    def _report_backend(self) -> None:
+        """把当前 3D 渲染后端写进日志面板（回退时给出原因）。"""
+        if self._backend_note:
+            bus.log_message.emit(f"⚠️ {self._backend_note}")
+        elif self._backend == "d3d":
+            bus.log_message.emit("ℹ️ 3D 视口渲染后端：D3D11（wows_renderer.dll）")
+
+    def _report_backend_unsupported(self) -> None:
+        """D3D11 后端「尚未支持」的功能汇总提示**一次**（不静默降级）。"""
+        if self._backend != "d3d" or self._backend_gaps_logged:
+            return
+        summary = getattr(self.viewport, "unsupported_summary", None)
+        text = summary() if callable(summary) else ""
+        if not text:
+            return
+        self._backend_gaps_logged = True
+        bus.log_message.emit(
+            f"⚠️ {text}（D3D11 后端仍在开发中；设 {VIEWPORT_BACKEND_ENV}=0 可回退 OpenGL）")
+
+    def _on_scene_upload_progress(self, text: str) -> None:
+        """D3D：场景「上传到 GPU」进度（空串 = 已结束）。
+
+        大船首次上传纹理/网格耗时较长，这里用遮罩给出进度，避免看起来像卡死。
+        """
+        if self._closed:
+            return
+        if text:
+            self._set_loading_overlay(True, text)
+        else:
+            self._set_loading_overlay(False)
 
     # ── UI 构建 ──────────────────────────────────────────
 
@@ -144,9 +226,10 @@ class GeometryViewerDialog(QDialog):
         root.addLayout(body, stretch=1)
 
         # ── 左侧：3D 视口（容器内叠加转圈加载提示）──
-        import os
-
-        if os.environ.get("WSR_USE_D3D_VIEWER", "") == "1":
+        # 后端选择：源码模式默认 D3D11（见 resolve_viewport_backend）
+        self._backend, self._backend_note = resolve_viewport_backend()
+        self._backend_gaps_logged = False
+        if self._backend == "d3d":
             # 新渲染后端（D3D11）：见 todo_list/New_function_of_d3d11_renderer.md
             from renderer.qt_viewport import D3DViewportAdapter
 
@@ -162,19 +245,25 @@ class GeometryViewerDialog(QDialog):
         _vc.setSpacing(0)
         _vc.addWidget(self.viewport, 0, 0)
         # 加载覆盖层：半透明遮罩 + 居中转圈 + 文本（覆盖在渲染区之上）
+        # ⚠️ 遮罩底色恒为深色（渲染区背景固定 #16181d，与应用主题无关）⇒ 文字必须用
+        #    **固定浅色**。之前用 @text@ 绑主题，浅色主题下它是近黑色，压在深色遮罩上
+        #    基本看不清（用户实测反馈）。再给文字加一层半透明底板保证对比度。
         self.loading_overlay = QWidget(self.view_container)
         self.loading_overlay.setObjectName("loadingOverlay")
         self.loading_overlay.setVisible(False)
         self.loading_overlay.setStyleSheet(
-            "QWidget#loadingOverlay { background: rgba(18,20,26,168); border-radius:6px; }")
+            "QWidget#loadingOverlay { background: rgba(10,12,16,196); border-radius:6px; }")
         _lo = QVBoxLayout(self.loading_overlay)
         _lo.setAlignment(Qt.AlignCenter)
-        _lo.setSpacing(10)
+        _lo.setSpacing(16)
         self.spinner = _Spinner(size=56)
         _lo.addWidget(self.spinner, 0, Qt.AlignCenter)
         self.loading_label = QLabel("加载舰船模型...")
         self.loading_label.setAlignment(Qt.AlignCenter)
-        theme.bind(self.loading_label, "color:@text@; font-size:13px; background:transparent; border:none;")
+        self.loading_label.setWordWrap(True)
+        self.loading_label.setStyleSheet(
+            "color:#f2f5f9; font-size:13px; font-weight:600; background:rgba(0,0,0,120);"
+            "border-radius:6px; padding:5px 12px;")
         _lo.addWidget(self.loading_label, 0, Qt.AlignCenter)
         _vc.addWidget(self.loading_overlay, 0, 0)
         body.addWidget(self.view_container, stretch=1)
@@ -189,6 +278,15 @@ class GeometryViewerDialog(QDialog):
         title = QLabel("3D 模型查看器")
         theme.bind(title, "font-size:15px; font-weight:bold; color:@text@; background:transparent; border:none;")
         pl.addWidget(title)
+
+        # 渲染后端标识：仅在启用 D3D11 或发生回退时出现（发布版不显示）
+        if self._backend == "d3d" or self._backend_note:
+            self.backend_label = QLabel(
+                "渲染后端：D3D11" if self._backend == "d3d" else "渲染后端：OpenGL（已回退）")
+            theme.bind(self.backend_label,
+                       "color:@text_muted@; font-size:11px; background:transparent; border:none;")
+            self.backend_label.setToolTip(self._backend_note or "源码模式默认启用 D3D11 渲染后端")
+            pl.addWidget(self.backend_label)
 
         # 舰船选择（筛选入口已移到详情面板「基础属性」卡片，此处隐藏保留实例供内部复用）
         ship_row = QHBoxLayout()
@@ -258,10 +356,56 @@ class GeometryViewerDialog(QDialog):
         self.cb_wire.setChecked(False)
         self.cb_edges = QCheckBox("板块边界描边")
         self.cb_edges.setChecked(True)
-        for cb in (self.cb_hull, self.cb_armor, self.cb_wire,
-                   self.cb_edges):
+        for cb in (self.cb_hull, self.cb_armor, self.cb_wire, self.cb_edges):
             theme.bind(cb, cb_style)
             pl.addWidget(cb)
+
+        # ── 渲染风格（游戏原版 / Studio PBR）与环境光参数 ──
+        style_row = QHBoxLayout()
+        style_label = QLabel("渲染风格")
+        theme.bind(style_label, "color:@text@; font-size:12px; background:transparent; border:none;")
+        self.style_combo = QComboBox()
+        self.style_combo.addItems(["游戏原版（还原）", "Studio PBR（Blender 式环境光）"])
+        self.style_combo.setCurrentIndex(1)
+        self.style_combo.setToolTip(
+            "游戏原版：只加环境反射（保留原版半兰伯特光）\n"
+            "Studio PBR：程序化 studio 环境（渐变 + 3 灯箱）+ IBL + 曝光 + ACES")
+        theme.bind(self.style_combo,
+                   "QComboBox { background:@input_bg@; color:@text@; border:1px solid @border@;"
+                   " border-radius:4px; padding:3px 6px; font-size:11px; }")
+        style_row.addWidget(style_label)
+        style_row.addWidget(self.style_combo, 1)
+        pl.addLayout(style_row)
+
+        env_row = QHBoxLayout()
+        env_label = QLabel("环境亮度")
+        theme.bind(env_label, "color:@text@; font-size:12px; background:transparent; border:none;")
+        self.env_slider = QSlider(Qt.Horizontal)
+        self.env_slider.setRange(0, 200)
+        self.env_slider.setValue(100)
+        self.env_slider.setToolTip("0 = 完全关闭环境光/环境反射")
+        self.env_value = QLabel("1.00")
+        self.env_value.setFixedWidth(36)
+        theme.bind(self.env_value, "color:@text_muted@; font-size:11px; background:transparent; border:none;")
+        env_row.addWidget(env_label)
+        env_row.addWidget(self.env_slider, 1)
+        env_row.addWidget(self.env_value)
+        pl.addLayout(env_row)
+
+        exp_row = QHBoxLayout()
+        exp_label = QLabel("曝光")
+        theme.bind(exp_label, "color:@text@; font-size:12px; background:transparent; border:none;")
+        self.exposure_slider = QSlider(Qt.Horizontal)
+        self.exposure_slider.setRange(10, 400)
+        self.exposure_slider.setValue(100)
+        self.exposure_slider.setToolTip("仅 Studio PBR 生效（配合 ACES 滞降高光）")
+        self.exposure_value = QLabel("1.00")
+        self.exposure_value.setFixedWidth(36)
+        theme.bind(self.exposure_value, "color:@text_muted@; font-size:11px; background:transparent; border:none;")
+        exp_row.addWidget(exp_label)
+        exp_row.addWidget(self.exposure_slider, 1)
+        exp_row.addWidget(self.exposure_value)
+        pl.addLayout(exp_row)
 
         op_row = QHBoxLayout()
         op_label = QLabel("装甲不透明度")
@@ -362,6 +506,9 @@ class GeometryViewerDialog(QDialog):
         self.ship_combo.activated.connect(self._on_ship_changed)
         self.camo_combo.currentIndexChanged.connect(self._on_camo_changed)
         self.cb_hull.toggled.connect(self._on_hull_toggled)
+        self.style_combo.currentIndexChanged.connect(self._on_style_changed)
+        self.env_slider.valueChanged.connect(self._on_env_strength_changed)
+        self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
         self.cb_armor.toggled.connect(self._on_armor_toggled)
         self.cb_wire.toggled.connect(lambda v: self.viewport.set_view_options(wireframe=v))
         self.cb_edges.toggled.connect(lambda v: self.viewport.set_armor_display(show_edges=v))
@@ -401,6 +548,26 @@ class GeometryViewerDialog(QDialog):
         if v:
             self.cb_armor.setChecked(False)
         self.viewport.set_view_options(show_hull=v)
+
+    def _on_env_strength_changed(self, v: int):
+        """环境亮度：原版路径下=环境反射强度；Studio 模式=IBL 强度；0 = 关闭。"""
+        self.env_value.setText(f"{v / 100:.2f}")
+        setter = getattr(self.viewport, "set_render_style", None)
+        if callable(setter):
+            setter(env_strength=v / 100.0)
+
+    def _on_exposure_changed(self, v: int):
+        """曝光（仅 Studio PBR 生效）。"""
+        self.exposure_value.setText(f"{v / 100:.2f}")
+        setter = getattr(self.viewport, "set_render_style", None)
+        if callable(setter):
+            setter(exposure=v / 100.0)
+
+    def _on_style_changed(self, idx: int):
+        """渲染风格：0 = 游戏原版，1 = Studio PBR。"""
+        setter = getattr(self.viewport, "set_render_style", None)
+        if callable(setter):
+            setter(lighting_mode=1 if idx == 1 else 0)
 
     def _on_armor_toggled(self, v: bool):
         """装甲显示开关：启用时取消船体。"""
@@ -534,6 +701,7 @@ class GeometryViewerDialog(QDialog):
         self.viewport._hl_color = HIGHLIGHT_SELECT
         self.viewport.select_plate(key)
         self._update_sel_label(key)
+        self._report_backend_unsupported()
 
     # ── 3D 拾取联动 ──────────────────────────────────────
 
@@ -542,6 +710,7 @@ class GeometryViewerDialog(QDialog):
         sc = self._armor_scene
         if tri is None or sc is None:
             QToolTip.hideText()
+            self._report_backend_unsupported()
             return
         info = sc.tri_info[tri]
         mm = info.thickness_mm
@@ -561,6 +730,7 @@ class GeometryViewerDialog(QDialog):
         self.viewport._hl_color = HIGHLIGHT_SELECT
         self._update_sel_label(key)
         self._sync_tree_to_plate(key)
+        self._report_backend_unsupported()
 
     def _update_sel_label(self, key):
         sc = self._armor_scene
@@ -806,6 +976,8 @@ class GeometryViewerDialog(QDialog):
                 cancel_event=cancel_event,
                 model_replace=model_replace,
                 skin=skin,
+                # 船体/装甲解析完就先丢给主线程显示（挂载继续解析）
+                partial_cb=lambda g: self.partial_ready.emit((g, gen)),
             )
             # 材质涂装：模型加载完成后直接套上，再交给 set_scene 展示
             if scheme is not None and scheme.origin == "mat" and scheme.entry:
@@ -841,6 +1013,28 @@ class GeometryViewerDialog(QDialog):
         self.progress.setValue(int(pct))
         self.progress.setFormat(f"{msg}  {pct:.0f}%")
 
+    def _on_partial_geometry(self, payload) -> None:
+        """分阶段交付：船体（+装甲）先到 —— 先出图，不遮罩，挂载继续解析。
+
+        快照是后台线程做的浅拷贝，不会再被修改；后续完整几何到了会走
+        :meth:`_on_ship_loaded` 重建场景（上传只要零点几秒）。
+        """
+        try:
+            geom, gen = payload
+        except Exception:  # noqa: BLE001
+            return
+        if self._closed or gen != self._load_generation:
+            return
+        try:
+            self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
+                                    show_armor=False, armor_scene=None)
+            self._set_loading_overlay(False)
+            self.stats_label.setText(
+                f"{geom.display_name}（{geom.game_key}）\n船体已就绪，挂载/装甲解析中...")
+            bus.log_message.emit("ℹ️ 3D: 船体已就绪，先显示；挂载/装甲继续解析")
+        except Exception as exc:  # noqa: BLE001 - 预览失败不影响后续完整加载
+            bus.log_message.emit(f"⚠️ 3D: 船体预览失败（不影响完整加载）: {exc}")
+
     def _on_ship_loaded(self, result, gen):
         if self._closed or gen != self._load_generation:
             return  # 窗口已关闭或已被新任务取代：丢弃过期结果
@@ -852,6 +1046,14 @@ class GeometryViewerDialog(QDialog):
         self._set_loading_overlay(False)
         self._current_geom = geom
         self._armor_scene = scene if scene.tri_count else None
+        # 内存打点：geom.texture_dds（原始 DDS 字节，导出用）与场景描述是两块大头
+        try:
+            dds_bytes = sum(len(v) for v in (geom.texture_dds or {}).values())
+            bus.log_message.emit(
+                f"ℹ️ 3D: 内存打点（几何就绪）—— 原始贴图 {dds_bytes / 1e6:.0f}MB"
+                f"（{len(geom.texture_dds or {})} 张）" + memory_suffix())
+        except Exception:  # noqa: BLE001 - 诊断失败不影响加载
+            pass
         # 船体/装甲互斥：装甲开启时取消船体勾选（保持 UI 与渲染一致）
         if self.cb_armor.isChecked() and self.cb_hull.isChecked():
             self.cb_hull.setChecked(False)

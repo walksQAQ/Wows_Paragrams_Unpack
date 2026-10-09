@@ -127,7 +127,8 @@ class GameExtractor:
         参数:
             game_dir: 游戏根目录（含 bin/ 和 res_packages/）
             bin_folder: 指定版本文件夹名（如 "<bin目录名>"），
-                        不指定则自动使用最新版本
+                        不指定则自动使用最新版本；指定的目录已不存在时
+                        自动回退到最新的可用版本（见 :attr:`bin_folder_note`）
             pkgs_dir: .pkg 文件目录，不指定时自动推断为
                       ``game_dir/res_packages``
         """
@@ -135,11 +136,20 @@ class GameExtractor:
         if not self._game_dir.exists():
             raise ExtractorError(f"游戏目录不存在: {self._game_dir}")
 
-        # 确定版本目录
-        if bin_folder:
-            self._bin_folder = bin_folder
+        # 确定版本目录：显式指定且目录确实存在时优先；否则（未指定，或指定目录已不存在
+        # —— 例如客户端更新后 bin 下的数字目录被替换）自动改用 bin 下最新的可用目录，
+        # 避免一条过期配置让整条读取链路（几何/涂装/材质）彻底失败。
+        self.bin_folder_note = ""
+        requested = str(bin_folder or "")
+        if requested and (self._game_dir / "bin" / requested / "idx").is_dir():
+            self._bin_folder = requested
         else:
             self._bin_folder = self._find_latest_bin()
+            if requested and requested != self._bin_folder:
+                self.bin_folder_note = (
+                    f"配置的版本目录 {requested} 已不存在，已自动改用最新可用版本 "
+                    f"{self._bin_folder}")
+                _log_error(f"⚠️ {self.bin_folder_note}")
 
         # 确定 IDX 目录
         self._idx_dir = self._game_dir / "bin" / self._bin_folder / "idx"
@@ -188,11 +198,15 @@ class GameExtractor:
     # ── 内部帮助方法 ─────────────────────────────────────
 
     def _find_latest_bin(self) -> str:
-        """在 bin/ 下查找最大的版本号目录"""
+        """在 bin/ 下查找最新的**可用**版本目录（需含 ``idx/``）。
+
+        客户端更新中断时最新数字目录可能不完整（缺 idx/），此时回退到较早的可用目录。
+        """
         from utils.path_utils import find_latest_bin_folder
-        result = find_latest_bin_folder(self._game_dir)
+        result = find_latest_bin_folder(self._game_dir, require_idx=True)
         if result is None:
-            raise ExtractorError(f"bin 目录不存在或没有版本文件夹: {self._game_dir / 'bin'}")
+            raise ExtractorError(
+                f"bin 下没有可用的版本文件夹（需含 idx/）: {self._game_dir / 'bin'}")
         return result
 
     # ── 高级接口 ──────────────────────────────────────────

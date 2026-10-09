@@ -86,9 +86,11 @@ def get_config_path() -> Path:
 
 # ── 游戏目录辅助 ────────────────────────────────────────
 
-def find_latest_bin_folder(game_path) -> str | None:
+def find_latest_bin_folder(game_path, require_idx: bool = False) -> str | None:
     """在游戏目录 bin/ 下查找最大的数字版本号子目录，返回该目录名。
 
+    ``require_idx=True`` 时只考虑含 ``idx/`` 的目录（客户端更新中断时最新数字
+    目录可能不完整），用于需要读写 .idx/.pkg 的调用方。
     供 extractor_service / data_extractor / localization_service 共用，
     消除三处"找最新 bin 目录"的重复实现。无 bin 目录或无版本文件夹返回 None。
     """
@@ -98,6 +100,9 @@ def find_latest_bin_folder(game_path) -> str | None:
         return None
     folders = [f for f in os.listdir(bin_path)
                if f.isdigit() and os.path.isdir(os.path.join(bin_path, f))]
+    if require_idx:
+        folders = [f for f in folders
+                   if os.path.isdir(os.path.join(bin_path, f, "idx"))]
     if not folders:
         return None
     folders.sort(key=int)

@@ -194,6 +194,16 @@ typedef struct wsr_frame_params {
     float normal_strength;
     float opacity;
     uint32_t debug_mode;     /* 0=正常 1=模型名 2=法线 3=F0权重 4=粗糙度 5=涂装强度 */
+
+    /* ---- 渲染风格（2026-10-09 新增）----
+     * 旧宿主（不填这组字段）会在 wsr_frame_set 里被判 struct_size 不匹配而拒绝，
+     * 避免新字段被静默丢弃后出现「参数不生效」的莫名现象。 */
+    uint32_t lighting_mode;  /* 0=游戏原版（逐行搬运）1=Studio PBR（程序化环境 + IBL + 曝光） */
+    uint32_t normal_space;   /* 0=切线空间法线直接当世界法线（原版行为）1=正确 TBN */
+    float    env_strength;   /* Studio：环境亮度（默认 1.0） */
+    float    exposure;       /* Studio：曝光（默认 1.0） */
+    float    camera_pos[3];  /* Studio：相机世界坐标（镜面 V 向量）；非 Studio 模式不用 */
+    uint32_t uv_flip;        /* 纹理 V 轴：0=不翻转（默认，与 GL 参考一致）1=旧行为（翻转，供 A/B） */
 } wsr_frame_params;
 
 /* ---------- 视图选项 ---------- */

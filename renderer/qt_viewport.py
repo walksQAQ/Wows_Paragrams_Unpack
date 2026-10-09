@@ -5,9 +5,14 @@
 内部翻译成 :class:`renderer.api.Renderer` 的调用。
 
 尚未实现的功能不静默失败：记录到 :attr:`D3DViewportAdapter.unsupported`
-并在 :meth:`D3DViewportAdapter.unsupported_summary` 中汇总，调用方可提示用户。
+并在 :meth:`D3DViewportAdapter.unsupported_summary` 中汇总，调用方可提示用户
+（``ui/geometry_viewer.py`` 会把汇总写入日志面板一次）。
 
-启用方式：环境变量 ``WSR_USE_D3D_VIEWER=1``（默认仍走旧 OpenGL 路径）。
+启用方式（由 ``ui.geometry_viewer.resolve_viewport_backend`` 判定）：
+
+- **源码模式默认启用**（``python main.py``；DLL 缺失时自动回退 OpenGL 并提示）；
+- 环境变量 ``WSR_USE_D3D_VIEWER=1`` / ``=0`` 可强制开启 / 关闭；
+- 发布版 exe 默认仍走旧 OpenGL 路径。
 """
 
 from __future__ import annotations
@@ -40,6 +45,13 @@ class D3DViewportAdapter(RenderView):
         self.unsupported: list[str] = []
         self._armor_indices = None      # (T,3) 装甲三角形原始索引
         self._armor_mesh_key = "armor:scene"
+        # 分片上传：途中设的装甲可见掩码会被 DLL 忽略（网格还没建）⇒ 传完再套一次
+        self.scene_progress.connect(self._reapply_visible_tris)
+
+    def _reapply_visible_tris(self, text: str) -> None:
+        if text or self._visible_tris is None:
+            return
+        self.set_visible_tris(self._visible_tris)
 
     # ------------------------------------------------------------ 场景
 
@@ -69,6 +81,27 @@ class D3DViewportAdapter(RenderView):
             show_hull=show_hull, show_armor=show_armor,
             wireframe=wireframe, show_mounts=show_mounts,
         )
+
+    def set_render_style(self, lighting_mode=None, *, normal_space=None, uv_flip=None,
+                         env_strength=None, exposure=None) -> None:
+        """切换渲染风格/开关（只改每帧参数，下一次 tick 生效，不重建场景）。
+
+        - ``lighting_mode``：0 = 游戏原版着色，1 = Studio PBR（程序化环境 IBL + 曝光 + ACES）
+        - ``normal_space``：0 = 切线空间法线直接当世界法线（原版行为），1 = 正确 TBN
+        - ``uv_flip``：0 = 纹理 V 不翻转（默认，与 GL 参考一致），1 = 旧行为（翻转）
+        - ``env_strength`` / ``exposure``：仅 Studio PBR 生效
+        """
+        frame = self._frame
+        if lighting_mode is not None:
+            frame.lighting_mode = int(lighting_mode)
+        if normal_space is not None:
+            frame.normal_space = int(normal_space)
+        if uv_flip is not None:
+            frame.uv_flip = int(uv_flip)
+        if env_strength is not None:
+            frame.env_strength = float(env_strength)
+        if exposure is not None:
+            frame.exposure = float(exposure)
 
     def set_armor_display(self, opacity=None, show_edges=None) -> None:
         super().set_view_options(

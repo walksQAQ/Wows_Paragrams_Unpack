@@ -18,6 +18,8 @@ from PySide6.QtGui import QPaintEngine
 from PySide6.QtWidgets import QLabel, QWidget
 
 from models.camera import OrbitCamera
+from app.signals import bus
+from utils.mem_info import memory_suffix
 from renderer import Renderer, RendererError, RendererUnavailable
 from renderer.viewport import FrameState, RenderScene, to_d3d_projection
 
@@ -41,6 +43,9 @@ class RenderView(QWidget):
 
     #: 后端不可用或运行期失败时发出（参数为可展示的错误文本）。
     failed = Signal(str)
+
+    #: 场景「上传到 GPU」进度文本（空串 = 已结束，上层据此隐藏进度遮罩）。
+    scene_progress = Signal(str)
 
     def __init__(
         self,
@@ -83,6 +88,9 @@ class RenderView(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(max(1, int(1000 / max(1, int(fps)))))
         self._timer.timeout.connect(self._on_tick)
+        # 上传进度日志节流状态
+        self._upload_log_pct = -10
+        self._upload_log_t = 0.0
 
         # 相机 / 场景 / 帧参数（相机状态留在 Python，见架构文档 §8.2）
         self._camera = OrbitCamera()
@@ -273,16 +281,45 @@ class RenderView(QWidget):
             return
         self._error = ""
         self._scene = RenderScene(self._renderer)
+        self._scene.on_progress = self._on_scene_progress
+        self._scene.on_slow = self._on_scene_slow
         if self._geometry is not None:
             self._submit_scene()
 
     def _submit_scene(self) -> None:
-        """向渲染器提交场景（首次 / 换船 / 设备丢失后重提交）。"""
+        """登记待提交场景（真正上传由 tick 分片完成，避免主线程被长时间占住）。"""
         if self._renderer is None or self._scene is None:
             return
         self._scene.set_scene(self._geometry, self._armor_scene)
-        self._scene.submit_if_needed(force=True)
         self._apply_view_options()
+
+    def _on_scene_slow(self, what: str, seconds: float) -> None:
+        """单项上传超 0.3s 时当场记一条（不等提交结束，便于定位卡点）。"""
+        bus.log_message.emit(f"⏱️ 3D 慢项: {what} {seconds:.2f}s")
+
+    def _on_scene_progress(self, stage: str, done: int, total: int, elapsed: float) -> None:
+        """增量上传统计 → 信号给上层（GUI 显示进度）+ 日志（便于只读日志定位慢点）。"""
+        if stage == "done":
+            self.scene_progress.emit("")
+            self._upload_log_pct = -10
+            self._upload_log_t = 0.0
+            if self._scene is not None and (self._scene.texture_count or self._scene.mesh_count):
+                bus.log_message.emit(
+                    f"⏱️ 3D: 场景已上传到 GPU —— 纹理 {self._scene.texture_count} 张"
+                    f"（{self._scene.last_tex_seconds:.2f}s）/ 网格 {self._scene.mesh_count} 个"
+                    f"（{self._scene.last_mesh_seconds:.2f}s），场景描述"
+                    f" {self._scene.texture_bytes / 1e6:.0f}MB + "
+                    f"{self._scene.mesh_bytes / 1e6:.0f}MB" + memory_suffix())
+            return
+        if total <= 0:
+            return
+        pct = int(done * 100 / total)
+        # 进度日志节流：每 +10% 或每 3 秒一条（避免刷屏）
+        if pct - self._upload_log_pct >= 10 or elapsed - self._upload_log_t >= 3.0:
+            self._upload_log_pct = pct
+            self._upload_log_t = elapsed
+            bus.log_message.emit(f"⏱️ 3D: 上传到 GPU {done}/{total}（{pct}%，{elapsed:.1f}s）")
+        self.scene_progress.emit(f"正在上传到 GPU... {done}/{total}（{pct}%）")
 
     def _apply_view_options(self) -> None:
         if self._renderer is None:
@@ -317,6 +354,12 @@ class RenderView(QWidget):
             normal_strength=self._frame.normal_strength,
             opacity=self._frame.opacity,
             debug_mode=self._frame.debug_mode,
+            lighting_mode=self._frame.lighting_mode,
+            normal_space=self._frame.normal_space,
+            env_strength=self._frame.env_strength,
+            exposure=self._frame.exposure,
+            uv_flip=self._frame.uv_flip,
+            camera_pos=(float(cam.eye()[0]), float(cam.eye()[1]), float(cam.eye()[2])),
         )
 
     def _scene_radius(self) -> float:
@@ -331,7 +374,8 @@ class RenderView(QWidget):
             return
         try:
             if self._scene is not None:
-                self._scene.submit_if_needed()
+                # 分片上传（每片最多 ~8ms），保证 tick 间隔内 GUI 仍能刷新
+                self._scene.submit_if_needed(budget_ms=8.0)
             self._push_frame()
             self._renderer.render()
         except RendererError as exc:

@@ -151,6 +151,8 @@ class _WsrMeshDesc(ctypes.Structure):
 
 
 class _WsrFrameParams(ctypes.Structure):
+    #: ⚠️ 字段顺序/大小必须与 ``native/include/wows_renderer.h`` 的
+    #: ``wsr_frame_params`` 严格一致；改一侧必须同步改另一侧并重建 DLL。
     _fields_ = [
         ("struct_size", c_uint32),
         ("view", c_float * 16),
@@ -161,6 +163,13 @@ class _WsrFrameParams(ctypes.Structure):
         ("normal_strength", c_float),
         ("opacity", c_float),
         ("debug_mode", c_uint32),
+        # ---- 渲染风格（2026-10-09 新增）----
+        ("lighting_mode", c_uint32),   # 0=游戏原版 1=Studio PBR
+        ("normal_space", c_uint32),    # 0=切线空间法线当世界法线 1=正确 TBN
+        ("env_strength", c_float),
+        ("exposure", c_float),
+        ("camera_pos", c_float * 3),
+        ("uv_flip", c_uint32),         # 0=不翻转（默认）1=旧行为（翻转，供 A/B）
     ]
 
 
@@ -493,12 +502,19 @@ class Renderer:
     # -------------------------------------------------------------- 纹理
 
     def upload_texture(self, spec) -> None:
-        """上传一个 :class:`renderer.types.TextureSpec`（同 key 覆盖）。"""
+        """上传一个 :class:`renderer.types.TextureSpec`（同 key 覆盖）。
+
+        ⚠️ 零拷贝：DLL 只**读**这段字节，所以直接取 ``bytes`` 缓冲区地址即可。
+        旧实现用 ``(c_char * n).from_buffer_copy(data)`` 每张纹理都整份复制一遍
+        （4096²×30 层的数组贴图 ≈ 400 MB ⇒ +400 MB 瞬时占用），是「内存 2~8 GB
+        来回跳」的主要来源之一。
+        """
         data = spec.data
         n = max(1, len(spec.mip_offsets))
         offs = (c_uint32 * n)(*spec.mip_offsets)
         sizes = (c_uint32 * n)(*spec.mip_sizes)
-        buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
+        # c_char_p 指向 data 内部缓冲区（data 在本函数作用域内始终存活 ⇒ 指针有效）
+        holder = ctypes.c_char_p(data)
 
         desc = _WsrTextureDesc()
         desc.struct_size = ctypes.sizeof(_WsrTextureDesc)
@@ -509,7 +525,7 @@ class Renderer:
         desc.array_size = spec.array_size
         desc.mip_count = spec.mip_count
         desc.flags = spec.flags
-        desc.data = ctypes.cast(buf, c_void_p)
+        desc.data = ctypes.cast(holder, c_void_p)
         desc.data_size = len(data)
         desc.mip_offsets = offs
         desc.mip_sizes = sizes
@@ -658,8 +674,20 @@ class Renderer:
         normal_strength: float = 1.5,
         opacity: float = 1.0,
         debug_mode: int = 0,
+        lighting_mode: int = 0,
+        normal_space: int = 0,
+        env_strength: float = 1.0,
+        exposure: float = 1.0,
+        camera_pos=(0.0, 0.0, 0.0),
+        uv_flip: int = 0,
     ) -> None:
-        """上传相机与光照参数（矩阵为行主序数学矩阵）。"""
+        """上传相机与光照参数（矩阵为行主序数学矩阵）。
+
+        ``lighting_mode``：0 = 游戏原版着色；1 = Studio PBR（程序化环境 IBL + 曝光 + ACES）。
+        ``normal_space``：0 = 切线空间法线直接当世界法线（原版行为）；1 = 正确 TBN。
+        ``camera_pos``：相机世界坐标（Studio 镜面 V 向量；非 Studio 模式不用）。
+        ``uv_flip``：0 = 纹理 V 不翻转（默认，与 GL 参考渲染器一致）；1 = 旧行为（翻转）。
+        """
         p = _WsrFrameParams()
         p.struct_size = ctypes.sizeof(_WsrFrameParams)
         v = np.ascontiguousarray(view, dtype=np.float32).reshape(-1)
@@ -671,9 +699,15 @@ class Renderer:
             p.light_pos[i] = float(light_pos[i])
             p.light_dir[i] = float(light_dir[i])
             p.ambient[i] = float(ambient[i])
+            p.camera_pos[i] = float(camera_pos[i])
         p.normal_strength = float(normal_strength)
         p.opacity = float(opacity)
         p.debug_mode = int(debug_mode)
+        p.lighting_mode = int(lighting_mode)
+        p.normal_space = int(normal_space)
+        p.env_strength = float(env_strength)
+        p.exposure = float(exposure)
+        p.uv_flip = int(uv_flip)
         code = self._lib().wsr_frame_set(self._require(), byref(p))
         if code != WSR_OK:
             raise RendererError(self._describe("wsr_frame_set", code))
@@ -707,3 +741,8 @@ class Renderer:
 def sizeof_stats() -> int:
     """供测试比对 Python 与 C 侧结构体大小。"""
     return ctypes.sizeof(_WsrStats)
+
+
+def sizeof_frame_params() -> int:
+    """帧参数结构体大小（DLL 侧会校验必须相等：不等即为「DLL 未重建」）。"""
+    return ctypes.sizeof(_WsrFrameParams)
