@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QCheckBox, QCompleter, QMenu,
 )
 
+from models.name_mapping import Mapping
 from utils.theme import theme
 from utils import ship_badge
 from utils.image_paths import pic_dir, pic_path, pic_path_ci
@@ -260,12 +261,15 @@ class CustomWeaponDialog(QDialog):
         self.f_drag = QDoubleSpinBox(); self.f_drag.setRange(0, 10); self.f_drag.setDecimals(3); self.f_drag.setValue(0.35)
         self.f_speed = QDoubleSpinBox(); self.f_speed.setRange(0, 5000); self.f_speed.setDecimals(0); self.f_speed.setValue(800.0); self.f_speed.setSuffix(" m/s")
         self.f_krupp = QDoubleSpinBox(); self.f_krupp.setRange(0, 100000); self.f_krupp.setDecimals(0); self.f_krupp.setValue(2400.0)
-        self.f_ammo_type = QComboBox(); self.f_ammo_type.addItems(["AP", "HE", "CS"])
+        self.f_ammo_type = QComboBox()
+        # 显示名走 Mapping（CS 半穿甲弹 → SAP），内部值仍存原始弹种键
+        for _raw_type in ("AP", "HE", "CS"):
+            self.f_ammo_type.addItem(Mapping.ammo_type_label(_raw_type), _raw_type)
         self.f_fixed_pen = QDoubleSpinBox(); self.f_fixed_pen.setRange(0, 10000); self.f_fixed_pen.setDecimals(1); self.f_fixed_pen.setValue(0.0); self.f_fixed_pen.setSuffix(" mm")
         _ammo_rows = [
             ("弹重", self.f_mass), ("口径", self.f_caliber), ("风阻", self.f_drag),
             ("初速", self.f_speed), ("Krupp", self.f_krupp),
-            ("弹种", self.f_ammo_type), ("HE/CS 固定穿深(0=自动)", self.f_fixed_pen),
+            ("弹种", self.f_ammo_type), ("HE/SAP 固定穿深(0=自动)", self.f_fixed_pen),
         ]
         for _i, (_lb, _w) in enumerate(_ammo_rows):
             ag.addWidget(QLabel(_lb), _i, 0)
@@ -329,7 +333,8 @@ class CustomWeaponDialog(QDialog):
         root.addLayout(btns)
 
     def get_data(self) -> dict:
-        ammo_type = self.f_ammo_type.currentText()
+        # 下拉显示 SAP，实际存原始弹种键（CS）
+        ammo_type = self.f_ammo_type.currentData() or self.f_ammo_type.currentText()
         fixed = self.f_fixed_pen.value()
         return {
             "label": self.name_edit.text().strip() or "自定义炮弹名",
@@ -1413,7 +1418,7 @@ class PenetrationCalculatorDialog(QDialog):
                     ammo_type = row["ammo_type"] or ""
                     label = self._resolve_name("ammo", ammo_id)
                     if ammo_type:
-                        label = f"{ammo_type} · {label}"
+                        label = f"{Mapping.ammo_type_label(ammo_type)} · {label}"
                     self.ammo_cb.addItem(label, ammo_id)
         except Exception:
             self.ammo_cb.addItem("无可用弹药")

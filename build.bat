@@ -64,7 +64,13 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 :: Step 1.6: build native D3D11 renderer DLL (release\wows_renderer.dll)
+::   Required by the D3D11 viewport backend; a silent skip would produce a build
+::   that always falls back to OpenGL, so failures abort the build. Set
+::   SKIP_NATIVE_RENDERER=1 to build without it (e.g. no MSVC/CMake here).
 echo [NATIVE] Building D3D11 renderer DLL ...
+:: Drop a stale DLL first: a failed configure/build must never silently embed
+:: an outdated renderer.
+if exist "%OUTDIR%\wows_renderer.dll" del /f /q "%OUTDIR%\wows_renderer.dll" 2>nul
 set CMAKE_EXE=
 where cmake >nul 2>nul
 if %ERRORLEVEL%==0 set CMAKE_EXE=cmake
@@ -74,22 +80,35 @@ set "VSROOT="
 if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
 if defined VSROOT if exist "%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" set "CMAKE_EXE=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 :cmake_ready
-if not defined CMAKE_EXE goto :native_skip
+if not defined CMAKE_EXE goto :native_missing
 "%CMAKE_EXE%" -S native -B native\build >nul
 if %ERRORLEVEL% NEQ 0 goto :native_fail
 "%CMAKE_EXE%" --build native\build --config Release >nul
 if %ERRORLEVEL% NEQ 0 goto :native_fail
-if exist "%OUTDIR%\wows_renderer.dll" goto :native_done
-:native_fail
-echo [WARN] native renderer build failed; 3D viewer will show a fallback message.
+if not exist "%OUTDIR%\wows_renderer.dll" goto :native_fail
 goto :native_done
-:native_skip
-echo [WARN] cmake not found; skipping native renderer build.
+:native_missing
+echo [! ERROR] cmake not found - cannot build wows_renderer.dll.
+goto :native_done
+:native_fail
+echo [! ERROR] native renderer build failed (native\build has the cmake log).
 :native_done
 
-:: Embed the DLL into the onefile payload (found next to the exe at runtime).
+:: Embed the DLL into the onefile payload (Nuitka extracts it next to the
+:: compiled "renderer" package inside the onefile temp dir, which is where
+:: renderer/api.py::_search_paths() looks for it at runtime).
 set DLL_ARG=
 if exist "%OUTDIR%\wows_renderer.dll" set DLL_ARG=--include-data-files=%OUTDIR%/wows_renderer.dll=wows_renderer.dll
+if not defined DLL_ARG (
+    if "%SKIP_NATIVE_RENDERER%"=="1" (
+        echo [WARN] building WITHOUT wows_renderer.dll - 3D viewport will use OpenGL.
+    ) else (
+        echo [! ERROR] wows_renderer.dll missing - refusing to build without the D3D11 renderer.
+        echo [! ERROR] Fix the native build, or set SKIP_NATIVE_RENDERER=1 to build anyway.
+        if "%CI_MODE%"=="0" pause
+        exit /b 1
+    )
+)
 
 :: Compiler strategy: local and CI both use Nuitka default toolchain (MSVC).
 :: Nuitka 2.x removed --mingw64 (MinGW) on Python 3.13+, so CI no longer

@@ -171,6 +171,10 @@ class LestaBasePresenter:
             details: 二级详细数据列表，格式 [{name, value, unit}...]
             color: 值文本颜色（如 "#1b8a1b" 绿色），为空则自动判断
         """
+        if name == "弹种":
+            # 弹种统一按显示名呈现（CS 半穿甲弹 → SAP）；
+            # 穿深公式、标伤词条弹种门控、图标选择等逻辑仍用原始键 CS
+            value = NM.ammo_type_label(value)
         return {
             "name": name, "value": value, "order": order,
             "row_type": row_type, "unit": unit,

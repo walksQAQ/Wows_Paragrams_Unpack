@@ -40,10 +40,13 @@ echo [VERSION] Generating __about__.py from Git tag ...
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
 :: Step 1.6: build native D3D11 renderer DLL (release\wows_renderer.dll)
-::   Not fatal on purpose: if the toolchain is missing the DLL is simply not
-::   embedded and the viewer falls back to OpenGL at runtime
-::   (see resolve_viewport_backend in ui/geometry_viewer.py).
+::   MANDATORY for releases: the D3D11 viewport backend loads this DLL at
+::   runtime (see renderer/api.py), so a silent skip would ship an exe that
+::   always falls back to OpenGL. Every failure below aborts the release.
 echo [NATIVE] Building D3D11 renderer DLL ...
+:: Drop a stale DLL first: a failed configure/build must never silently embed
+:: an outdated renderer (fresh CI checkouts have none, reused ones may).
+if exist "%OUTDIR%\wows_renderer.dll" del /f /q "%OUTDIR%\wows_renderer.dll" 2>nul
 set CMAKE_EXE=
 where cmake >nul 2>nul
 if %ERRORLEVEL%==0 set CMAKE_EXE=cmake
@@ -53,22 +56,31 @@ set "VSROOT="
 if exist "%VSWHERE%" for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%I"
 if defined VSROOT if exist "%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" set "CMAKE_EXE=%VSROOT%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 :cmake_ready
-if not defined CMAKE_EXE goto :native_skip
+if not defined CMAKE_EXE goto :native_missing
 "%CMAKE_EXE%" -S native -B native\build
 if %ERRORLEVEL% NEQ 0 goto :native_fail
 "%CMAKE_EXE%" --build native\build --config Release
 if %ERRORLEVEL% NEQ 0 goto :native_fail
-if exist "%OUTDIR%\wows_renderer.dll" goto :native_done
-:native_fail
-echo [WARN] native renderer build failed; the viewer will use the OpenGL backend.
+if not exist "%OUTDIR%\wows_renderer.dll" goto :native_fail
 goto :native_done
-:native_skip
-echo [WARN] cmake not found; skipping native renderer build.
+:native_missing
+echo [! ERROR] cmake not found - cannot build wows_renderer.dll; release aborted.
+exit /b 1
+:native_fail
+echo [! ERROR] native renderer build failed (see cmake output above); release aborted.
+exit /b 1
 :native_done
 
-:: Embed the DLL into the onefile payload (extracted next to the exe at runtime).
+:: Embed the DLL into the onefile payload. Nuitka extracts it into the onefile
+:: temp dir next to the compiled "renderer" package, which is exactly where
+:: renderer/api.py::_search_paths() looks for it at runtime - this is what makes
+:: the released exe use the D3D11 backend instead of the OpenGL fallback.
 set DLL_ARG=
 if exist "%OUTDIR%\wows_renderer.dll" set DLL_ARG=--include-data-files=%OUTDIR%/wows_renderer.dll=wows_renderer.dll
+if not defined DLL_ARG (
+    echo [! ERROR] refusing to build a release without the D3D11 renderer DLL.
+    exit /b 1
+)
 
 :: Step 2: compile onefile executable
 :: Nuitka 2.x removed --mingw64 (MinGW) support on Python 3.13+, so CI now

@@ -48,6 +48,20 @@ jobs:
         run: |
           cmd /c "build_ci.bat"
 
+      - name: Verify D3D11 renderer DLL is present
+        shell: pwsh
+        run: |
+          # release/WowsKorabliDataViewer.exe must embed this DLL (build_ci.bat is
+          # already strict about it) — the check keeps a silent regression from
+          # publishing an exe whose 3D viewport always falls back to OpenGL.
+          $dll = "release/wows_renderer.dll"
+          if (-not (Test-Path -LiteralPath $dll)) {
+            Write-Output "::error::$dll missing - refusing to publish without the D3D11 renderer."
+            exit 1
+          }
+          $fi = Get-Item -LiteralPath $dll
+          Write-Output ("OK: {0} built ({1:N1} KB)" -f $fi.Name, ($fi.Length / 1KB))
+
       - name: Verify built version matches tag
         shell: pwsh
         run: |

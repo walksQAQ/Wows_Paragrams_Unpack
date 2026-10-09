@@ -12,6 +12,7 @@ from pathlib import Path
 from presenters.wargaming.base import WargamingBasePresenter, NM
 from models.name_mapping import Mapping
 from services.ballistics_service import BallisticsCalculator
+from utils.artillery_dpm import dpm_items, refresh_dpm_items
 from utils.consumable_display import icon_key_from_extra, title_key_from_extra
 from utils.path_utils import get_data_dir
 
@@ -121,6 +122,17 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 # visibilityDistCoeff 同时影响水面隐蔽和空中隐蔽
                 elif mod_key == "visibilityDistCoeff" and name in ("水面隐蔽", "空中隐蔽"):
                     field = name
+                # GMAPDamageCoeff / GMHECSDamageCoeff（及次级主炮对应词条）：弹种专用伤害加成，
+                # 只作用于对应弹种的「标伤」（同组内的「弹种」项判定，如穿甲弹伤害不加到高爆弹上）
+                elif mod_key in ("GMAPDamageCoeff", "GMSAPDamageCoeff",
+                                 "GMHECSDamageCoeff", "GMSHECSDamageCoeff"):
+                    # 弹种取显示名（如 SAP）→ 反查原始键，再与词条弹种比较
+                    _at = Mapping.ammo_type_key(
+                        next((i.get("value", "") for i in items if i.get("name") == "弹种"), ""))
+                    _want = ("AP",) if mod_key.endswith("APDamageCoeff") else ("HE", "CS")
+                    if _at and _at not in _want:
+                        continue
+                    field = "标伤"
                 # GMBigGunVisibilityCoeff：仅主炮口径≥149mm 的舰船生效（被侦查范围增大）
                 elif mod_key == "GMBigGunVisibilityCoeff" and name in ("水面隐蔽", "空中隐蔽"):
                     if not getattr(self, '_big_gun_flag', False):
@@ -131,8 +143,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
                 elif mod_key == "GMHeavyCruiserCaliberDamageCoeff":
                     if not getattr(self, '_heavy_cruiser_flag', False):
                         continue
-                    _at = next((i.get("value", "") for i in items if i.get("name") == "弹种"), "")
-                    if str(_at).upper() != "AP":
+                    _at = Mapping.ammo_type_key(
+                        next((i.get("value", "") for i in items if i.get("name") == "弹种"), ""))
+                    if _at != "AP":
                         continue
                     field = "标伤"
                 # planeExtraHangarSize 同时影响最大可用数量和开局可用数量
@@ -319,9 +332,28 @@ class WargamingShipPresenter(WargamingBasePresenter):
             # GMHeavyCruiserCaliberDamageCoeff 的过滤在 _apply_modifiers_to_items 内完成（参考 GMBigGunVisibilityCoeff）
             for sec in sections:
                 sec_label = sec.get("label", "")
-                raw_ammo = sec.get("raw_ammo_types", [])
-                for a in raw_ammo:
-                    self._apply_modifiers([{"items": a.get("detail_items", [])}], modifiers, section_label=sec_label)
+                # 多配置（A/B）section 的弹药明细按配置字母分存（_ammo_by_letter），
+                # 逐份应用，否则切换配置时弹药标伤不跟随升级品/技能
+                _ammo_lists = [sec.get("raw_ammo_types") or []]
+                for _lst in (sec.get("_ammo_by_letter") or {}).values():
+                    if not any(_lst is _x for _x in _ammo_lists):
+                        _ammo_lists.append(_lst)
+                for raw_ammo in _ammo_lists:
+                    for a in raw_ammo:
+                        self._apply_modifiers([{"items": a.get("detail_items", [])}], modifiers, section_label=sec_label)
+            # DPM 行跟随升级品/技能：装填时间/标伤已按同一规则改过，按比例同步
+            _dpm_seen: set[int] = set()
+            for sec in sections:
+                _ammo_by_letter = sec.get("_ammo_by_letter") or {}
+                for _lt, _items in (sec.get("_items_by_letter") or {}).items():
+                    if id(_items) in _dpm_seen:
+                        continue
+                    _dpm_seen.add(id(_items))
+                    refresh_dpm_items(_items, _ammo_by_letter.get(_lt))
+                _items = sec.get("items") or []
+                if id(_items) not in _dpm_seen:
+                    _dpm_seen.add(id(_items))
+                    refresh_dpm_items(_items, sec.get("raw_ammo_types"))
             # 应用到飞机子面板（sub_contents → 类型 → config_contents → items + raw_ammo_types）
             # modifier key 前缀 → 飞机类型映射（保证加成只影响对应机种）
             AIRCRAFT_MOD_PREFIX = {
@@ -1982,6 +2014,11 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     if ext.get(col) is not None:
                         items.append(self.make_item(label, f"{ext[col]:.1f}", o, unit=unit)); o += 1
         if items:
+            # 火炮 DPM：单发标伤 × 齐射炮管数 × 60 / 装填时间；
+            # 单侧齐射按每座炮塔的射界判定（分列两舷的炮塔不会同时开火）
+            _dpm, o = dpm_items(conn, vc, ship_id, letter, "artillery",
+                                self._ship_mount_yaw_map(ship_id), o)
+            items.extend(_dpm)
             result[letter] = (items, raw_ammo_types)
 
     def _group_weapon_rows(self, conn, vc, ship_id, rows, slot_type, ammo_map):
@@ -2369,6 +2406,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
+            # 副炮 DPM（casemate 等分列两舷的炮位按射界区分单侧齐射）
+            _dpm, o = dpm_items(conn, vc, ship_id, letter, "atba",
+                                self._ship_mount_yaw_map(ship_id), o)
+            items.extend(_dpm)
             result[letter] = (items, raw_ammo_types)
 
     def _build_secondary_artillery(self, conn, vc, ship_id, letter, result):
@@ -2424,6 +2465,10 @@ class WargamingShipPresenter(WargamingBasePresenter):
                         di = self._append_ammo_extra(detail_items, be, at, di, max_range_km=g['max_range'] or None)
                     raw_ammo_types.append({"ammo_id": aid, "name": aname, "species": sp, "ammo_type": at, "detail_items": detail_items})
         if items:
+            # 次级主炮 DPM
+            _dpm, o = dpm_items(conn, vc, ship_id, letter, "secondary_artillery",
+                                self._ship_mount_yaw_map(ship_id), o)
+            items.extend(_dpm)
             result[letter] = (items, raw_ammo_types)
 
     def _build_torpedoes(self, conn, vc, ship_id, letter, result, torpedo_key: str = ""):

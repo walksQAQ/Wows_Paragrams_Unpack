@@ -306,7 +306,9 @@ class Mapping:
         "Auxiliary": "其他飞机",
     }
 
-    AMMO_TYPE_MAP = {"HE": "HE", "AP": "AP", "CS": "SAP"}
+    #: 弹种显示名（HE / AP / CS=半穿甲弹 → SAP / SS=发烟弹）；
+    #: 同时作为 enum_translations 的 ammo_type 枚举来源。
+    AMMO_TYPE_MAP = {"HE": "HE", "AP": "AP", "CS": "SAP", "SS": "发烟弹"}
 
     PROJECTILE_TYPE_MAP = {
         "Artillery": "火炮炮弹", "Bomb": "炸弹", "DepthCharge": "深水炸弹",
@@ -882,6 +884,26 @@ class Mapping:
         "allConsumableReloadTimeAbsolute",
         "GMShotDelayAbsolute", "GTShotDelayAbsolute", "GSShotDelayAbsolute",
     }
+
+    # ── 弹种显示名工具 ────────────────────────────────────
+    # 游戏数据里炮弹的 ammo_type 取值为原始键 HE / AP / CS / SS。
+    # ⚠️ 只影响显示（AMMO_TYPE_MAP 即显示名）：穿深公式、标伤词条弹种门控、
+    #    图标选择等逻辑仍用原始键（可用 ammo_type_key() 把显示名反查回去）。
+
+    @staticmethod
+    def ammo_type_label(raw) -> str:
+        """弹种显示名：CS → SAP、SS → 发烟弹；其它弹种原样返回（统一大写）。"""
+        key = str(raw or "").strip().upper()
+        return Mapping.AMMO_TYPE_MAP.get(key, key)
+
+    @staticmethod
+    def ammo_type_key(label) -> str:
+        """弹种显示名 → 原始键（SAP → CS），用于拿已显示的文本反查逻辑判断。"""
+        key = str(label or "").strip().upper()
+        for raw, disp in Mapping.AMMO_TYPE_MAP.items():
+            if disp.upper() == key:
+                return raw
+        return key
 
     @staticmethod
     def get_modifier_color(key: str, value: float | int) -> str:
