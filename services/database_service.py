@@ -1208,7 +1208,22 @@ class DatabaseManager:
         return total
 
     def import_name_mappings(self, data_dir: str | Path) -> dict[str, int]:
-        stats = {}
+        """把 ``*_names.json`` 映射文件写入 name_mappings（返回 {文件名: 条数}）。
+
+        ⚠️ 必须用 **UPSERT**（``ON CONFLICT(category,key_name) DO UPDATE``）而不是
+        ``INSERT OR REPLACE``：``name_mappings.id`` 被以下子表以 NO ACTION 外键引用
+          - ship_basic_info.name_mapping_id
+          - ship_consumable_slots.display_name_id
+          - ship_rage_mode.display_name_id / description_id
+          - crew_basic_info.display_name_id
+        ``INSERT OR REPLACE`` 会「先 DELETE 旧行再 INSERT」→ 只要该键**已被引用**就报
+        ``FOREIGN KEY constraint failed``。结果是：**第二次以后**导入时
+        ship / consumable / rage_mode 三类整批失败（且旧代码把异常 `except: continue`
+        吞掉、还把 JSON 删了），表现为"点了加载文本，船名/消耗品名/战斗指令名永远不更新"。
+        UPSERT 只改 ``lang_zh``、``id`` 不变，既避免外键冲突，也不会让已有引用悬空。
+        """
+        stats: dict[str, int] = {}
+        errors: dict[str, str] = {}
         for fn, cat in NAME_MAPPING_FILES.items():
             fp = Path(data_dir) / fn
             if not fp.exists():
@@ -1220,13 +1235,53 @@ class DatabaseManager:
                          if (v or "").strip()]
                 if items:
                     self._conn.executemany(
-                        "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)", items)
+                        "INSERT INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?) "
+                        "ON CONFLICT(category, key_name) DO UPDATE SET lang_zh=excluded.lang_zh",
+                        items)
                     self._conn.commit()
                     stats[fn] = len(items)
-                fp.unlink(missing_ok=True)
-            except Exception:
+                fp.unlink(missing_ok=True)  # 仅导入成功才删源文件，失败保留以便排查/重试
+            except Exception as exc:  # noqa: BLE001
+                errors[fn] = f"{type(exc).__name__}: {exc}"
+                try:
+                    self._conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
                 continue
+        #: 最近一次导入失败的 {文件名: 错误}（供调用方打日志，不再静默吞异常）
+        self._last_mapping_errors = errors
+        if errors:
+            try:
+                from app.signals import bus
+                for _fn, _err in errors.items():
+                    bus.log_message.emit(f"⚠️ 名称映射导入失败 {_fn}: {_err}")
+            except Exception:  # noqa: BLE001
+                pass
         return stats
+
+    def backfill_ship_name_mapping_ids(self) -> int:
+        """把 ``ship_basic_info.name_mapping_id`` 仍为空、但名字已能按
+        ``(category='ship', key_name=ship_index)`` 命中的行补上 id。
+
+        解析入库时该列是"入库那一刻"用子查询写死的；若当时文本还没加载，值就永久是 NULL。
+        加载文本后调用本方法即可让按 id 的读取路径也生效（返回更新行数）。
+        """
+        try:
+            cur = self._conn.execute(
+                """
+                UPDATE ship_basic_info
+                   SET name_mapping_id = (
+                       SELECT nm.id FROM name_mappings nm
+                        WHERE nm.category = 'ship' AND nm.key_name = ship_basic_info.ship_index)
+                 WHERE name_mapping_id IS NULL
+                   AND EXISTS (SELECT 1 FROM name_mappings nm
+                                WHERE nm.category = 'ship' AND nm.key_name = ship_basic_info.ship_index)
+                """)
+            n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            self._conn.commit()
+            return int(n)
+        except Exception:  # noqa: BLE001
+            return 0
 
     def import_po_translations(self, po_path: str | Path) -> int:
         fp = Path(po_path)

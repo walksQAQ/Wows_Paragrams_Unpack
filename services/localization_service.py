@@ -76,6 +76,15 @@ def import_text_to_db(db=None) -> dict:
                 bus.log_message.emit(traceback.format_exc())
 
         po_cnt += target.import_po_translations(str(po_path)) if po_path.exists() else 0
+        # 文本补齐后回填 ship_basic_info.name_mapping_id：
+        # 该列是解析入库时用子查询写死的，若当时文本未就绪会永久为 NULL（加载文本不回填它），
+        # 回填后按 id 的读取路径（详情页/列表）也能命中。
+        try:
+            fixed = target.backfill_ship_name_mapping_ids()
+            if fixed:
+                bus.log_message.emit(f"🔗 已回填 {fixed} 艘舰船的名称映射 id")
+        except Exception:  # noqa: BLE001
+            pass
         return {"name_mappings": nm, "po_translations": po_cnt}
     return {"name_mappings": {}, "po_translations": 0}
 

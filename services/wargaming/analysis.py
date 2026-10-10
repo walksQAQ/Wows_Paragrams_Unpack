@@ -114,7 +114,9 @@ MODULE_PATTERNS = {
 
 HP_PATTERNS = {
     "Artillery": re.compile(r'HP_[A-Z]GM_\d+'),
-    "SecondaryArtillery": re.compile(r'HP_[A-Z]GM_\d+'),
+    # 次级主炮：绝大多数用 GM 键；个别活动舰在 SecondaryArtillery 组件里用 GS 键（species=Main），
+    # 只收 GM 会整组丢数据 → 两种都收（A1_Artillery 仍只收 GM）。
+    "SecondaryArtillery": re.compile(r'HP_[A-Z]G[MS]_\d+'),
     "ATBA": re.compile(r'HP_([A-Z]GS)_\d+'),
     "AirDefense": re.compile(r'(HP_[A-Z]GA_\d+|HP_[A-Z]GM_\d+_HP_[A-Z]GA_\d+|Aura_\d+|(Far|Medium|Near)\d*(_Bubbles)?)'),
     "Torpedoes": re.compile(r'HP_[A-Z]GT_\d+'),
@@ -707,8 +709,11 @@ class WargamingAnalysisStore:
         if name_items:
             try:
                 # 无独立 commit：由外层 _process_batch 事务统一提交（批量提速）
+                # 用 UPSERT（非 INSERT OR REPLACE）：name_mappings.id 被 ship_basic_info 等表
+                # 以 NO ACTION 外键引用，REPLACE 的隐式 DELETE 会触发 FOREIGN KEY constraint failed
                 self.conn.executemany(
-                    "INSERT OR REPLACE INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?)",
+                    "INSERT INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?) "
+                    "ON CONFLICT(category, key_name) DO UPDATE SET lang_zh=excluded.lang_zh",
                     name_items)
                 # 同步缓存，避免下一条船重新全表扫描
                 if self._nm_keys is not None:
