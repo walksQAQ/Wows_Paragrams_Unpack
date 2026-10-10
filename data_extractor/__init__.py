@@ -37,6 +37,7 @@ from data_extractor.extractor import (
     ExtractorError,
     list_files,
     extract_files,
+    common_dir_prefix,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "PkgReader", "PkgError",
     # extractor
     "GameExtractor", "ExtractorError", "list_files", "extract_files",
+    "common_dir_prefix",
 ]

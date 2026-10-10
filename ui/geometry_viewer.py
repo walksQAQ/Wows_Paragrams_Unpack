@@ -6,6 +6,9 @@ bus.log_message + theme.bind。含装甲厚度图例与显示开关。
 
 渲染后端由 :func:`resolve_viewport_backend` 决定：**源码模式默认 D3D11**
 （``renderer`` + ``wows_renderer.dll``），发布版仍走 OpenGL。
+
+涂装切换器（查看舰船不同皮肤）仅在**源码/调试模式**启用（见 :data:`CAMO_SWITCHER_ENABLED`）；
+发布版不启用，改为选中舰船后自动加载默认（无涂装）模型。
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from app.signals import bus
 from utils.theme import theme
 from utils import ship_badge
 from utils.threading_utils import run_async
-from utils.path_utils import get_data_dir
+from utils.path_utils import get_data_dir, is_debug_build
 from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
@@ -35,6 +38,10 @@ SHIP_BADGE_SIZE = 18
 
 #: 3D 视口后端开关（环境变量）：``1``/``d3d`` 强制 D3D11，``0``/``gl`` 强制 OpenGL。
 VIEWPORT_BACKEND_ENV = "WSR_USE_D3D_VIEWER"
+
+#: 涂装切换器（查看舰船不同皮肤）开关：源码/调试模式默认启用，发布版关闭。
+#: 发布版屏蔽涂装入口（标题/下拉/加载按钮），改为自动加载默认（无涂装）模型。
+CAMO_SWITCHER_ENABLED: bool = is_debug_build()
 
 
 def resolve_viewport_backend() -> tuple[str, str]:
@@ -153,6 +160,8 @@ class GeometryViewerDialog(QDialog):
         self._plate_items = {}
         #: 详情面板入口：尚未拿到舰船列表前先挂起，列表就绪后自动载入
         self._pending_ship_id = None
+        #: 独立皮肤模式：由「独立涂装」工具直接载入无归属皮肤（合成 ShipInfo）
+        self._skin_mode = False
         self._restored_geometry = self._restore_geometry()
 
         # ── 生命周期 / 取消状态 ──
@@ -318,15 +327,14 @@ class GeometryViewerDialog(QDialog):
         sec_style = "color:@text_muted@; font-size:11px; font-weight:bold; background:transparent; border:none; padding-top:4px;"
         cb_style = "QCheckBox { color:@text@; font-size:12px; spacing:6px; }"
 
-        # ── 涂装切换 ──
-        # ⚠️【临时标记】涂装渲染逻辑尚未完成：camouflage/MSkin/Permoflage/Skin 等几类
-        # 生效方式不同的涂装需分开处理（当前统一走 artMap/composite 是错的，配色1 全灰）。
-        # 临时屏蔽整个涂装入口（标题、camo_combo、加载按钮）；改为**自动加载默认模型**（无涂装）。
-        # 恢复涂装时：取消下面 camo_title/camo_combo/btn_load 的 setVisible(False)，
-        # 并移除 _open_ship_prepare 末尾的 self._on_load() 自动加载调用即可。
+        # ── 涂装切换（查看不同皮肤）──
+        # 涂装渲染逻辑尚未完成：camouflage/MSkin/Permoflage/Skin 等几类生效方式不同，
+        # 需分开处理（当前统一走 artMap/composite 是错的，配色1 全灰）。
+        # ⇒ 仅在源码/调试模式（CAMO_SWITCHER_ENABLED）暴露该入口；发布版隐藏，
+        #   改由 _open_ship_prepare 自动加载默认（无涂装）模型。
         camo_title = QLabel("涂装")
         theme.bind(camo_title, sec_style)
-        camo_title.setVisible(False)
+        camo_title.setVisible(CAMO_SWITCHER_ENABLED)
         pl.addWidget(camo_title)
         camo_row = QHBoxLayout()
         self.camo_combo = QComboBox()
@@ -335,11 +343,11 @@ class GeometryViewerDialog(QDialog):
         self.camo_combo.setIconSize(QSize(40, 40))
         theme.bind(self.camo_combo, "QComboBox { background:@input_bg@; color:@text@; border:1px solid @border@; border-radius:4px; padding:4px 6px; }")
         camo_row.addWidget(self.camo_combo, 1)
-        self.camo_combo.setVisible(False)  # ⚠️ 临时屏蔽涂装入口
+        self.camo_combo.setVisible(CAMO_SWITCHER_ENABLED)
         self.btn_load = QPushButton("加载")
         theme.bind(self.btn_load, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:6px 12px; }")
         camo_row.addWidget(self.btn_load)
-        self.btn_load.setVisible(False)  # ⚠️ 临时屏蔽「加载」按钮：已改为自动加载默认模型
+        self.btn_load.setVisible(CAMO_SWITCHER_ENABLED)
         pl.addLayout(camo_row)
 
         # ── 显示选项 ──
@@ -803,6 +811,8 @@ class GeometryViewerDialog(QDialog):
         self._loading_ships = False
         if self._closed:
             return  # 窗口已关闭：丢弃过期列表结果
+        if self._skin_mode:
+            return  # 独立皮肤模式：保持合成舰船，不被真实列表冲掉
         self._ships = ships or []
         self.ship_combo.clear()
         for s in self._ships:
@@ -850,11 +860,65 @@ class GeometryViewerDialog(QDialog):
         """
         if not ship_id:
             return
+        if self._skin_mode:
+            # 退出「独立皮肤」模式：丢弃合成舰船，重新拉取真实舰船列表
+            self._skin_mode = False
+            self._ships = []
+            self._loading_ships = False
+            self._reset_viewer_data()
+            self.ship_combo.clear()
+            self._start_ships_load()
         self._pending_ship_id = ship_id
         self._try_load_pending()
 
+    def open_skin(self, key: str, display_name: str, model_folder: str,
+                  skin: dict, nation: str = "",
+                  model_replace: dict | None = None) -> None:
+        """外部入口（独立涂装工具）：以「无归属皮肤的合成舰船」直接加载。
+
+        这类皮肤在客户端里没有被任何舰船的 permoflages 引用（故正常切换器不显示），
+        这里用皮肤自带 hullConfig 合成一个临时 ShipInfo，把皮肤塞进涂装下拉后加载。
+        因无真实舰船快照，只能按 skin.nodesConfig 过滤携带的挂载；通常只出船体。
+        """
+        if not model_folder:
+            bus.log_message.emit("⚠️ 该独立涂装未自带 hullConfig 模型，无法 3D 预览")
+            return
+        from services.geometry_service import ShipInfo
+        from services.camo_service import CamoSchemeInfo
+        if model_replace is None:
+            model_replace = (skin or {}).get("peculiarity_models") or {}
+        ship = ShipInfo(game_key=key, display_name=display_name or key,
+                        model_folder=model_folder, model_path="",
+                        nation=nation, ship_type="Skin", tier=0)
+        scheme = CamoSchemeInfo(
+            id=1, display_name=display_name or key, raw_name=key, origin="model",
+            model_folder=model_folder, model_replace=dict(model_replace or {}),
+            skin=dict(skin or {}))
+        self._skin_mode = True
+        self._pending_ship_id = None
+        # 用合成舰船占位 _ships（_selected_ship 依赖它；也避免真实列表回来后覆盖）
+        self._ships = [ship]
+        self.ship_combo.blockSignals(True)
+        self.ship_combo.clear()
+        self.ship_combo.addItem(display_name or key, ship)
+        self.ship_combo.setCurrentIndex(0)
+        self.ship_combo.blockSignals(False)
+        self.ship_status.setText(f"独立涂装（无舰船归属）：{key}")
+        self._reset_viewer_data()
+        self.camo_combo.blockSignals(True)
+        self.camo_combo.clear()
+        self.camo_combo.addItem(scheme.display_name, scheme)
+        self.camo_combo.setCurrentIndex(0)
+        self.camo_combo.blockSignals(False)
+        self._camo_infos = [scheme]
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        self._on_load()
+
     def _try_load_pending(self):
-        """舰船列表就绪后，定位到挂起的舰船并准备涂装（不自动加载，由用户点「加载」）。"""
+        """舰船列表就绪后，定位到挂起的舰船并准备（源码模式等用户选涂装；发布版自动加载）。"""
         if self._closed:
             return
         if not self._pending_ship_id or not self._ships:
@@ -868,7 +932,11 @@ class GeometryViewerDialog(QDialog):
         self._open_ship_prepare(ship)
 
     def _open_ship_prepare(self, ship):
-        """定位指定舰船到组合框，并**自动加载默认模型**（临时：涂装入口与加载按钮已屏蔽）。"""
+        """定位指定舰船到组合框。
+
+        源码/调试模式暴露涂装切换器，由用户选择涂装后点击「加载」；
+        发布版屏蔽涂装入口，直接自动加载默认（无涂装）模型。
+        """
         if self._closed:
             return
         idx = self._ships.index(ship)
@@ -877,9 +945,12 @@ class GeometryViewerDialog(QDialog):
         self.ship_combo.blockSignals(False)
         self._reset_viewer_data()
         self._populate_camos(ship)
-        self.stats_label.setText(f"已选择 {ship.display_name}（{ship.game_key}）")
-        # ⚠️【临时标记】涂装入口已屏蔽；自动加载默认（无涂装）模型
-        self._on_load()
+        if CAMO_SWITCHER_ENABLED:
+            self.stats_label.setText(
+                f"已选择 {ship.display_name}（{ship.game_key}）：选择涂装后点击「加载」")
+        else:
+            self.stats_label.setText(f"已选择 {ship.display_name}（{ship.game_key}）")
+            self._on_load()
 
     def _reset_viewer_data(self):
         """清空当前查看数据（模型 + 涂装 + 装甲 + 状态），切船/关闭时调用。"""
@@ -899,11 +970,13 @@ class GeometryViewerDialog(QDialog):
         self.camo_combo.blockSignals(False)
         self.viewport.clear_scene()
         self.progress.setVisible(False)
-        self.stats_label.setText("未加载模型（请选择涂装后点击「加载」）")
+        self.stats_label.setText(
+            "未加载模型（请选择涂装后点击「加载」）" if CAMO_SWITCHER_ENABLED
+            else "未加载模型")
         self.sel_label.setText("未选中（点击装甲板块选中）")
 
     def _on_ship_changed(self):
-        """用户在组合框手动切换舰船：清空旧查看数据并自动加载新舰默认模型。"""
+        """用户在组合框手动切换舰船：清空旧查看数据并重新准备（发布版自动加载默认模型）。"""
         if not self._ships:
             return
         ship = self._selected_ship()

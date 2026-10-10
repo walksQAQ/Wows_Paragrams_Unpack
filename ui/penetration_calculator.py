@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from models.name_mapping import Mapping
 from utils.theme import theme
 from utils import ship_badge
+from utils.path_utils import is_debug_build
 from utils.image_paths import pic_dir, pic_path, pic_path_ci
 
 #: 舰船下拉里徽章图标边长（px）
@@ -303,7 +304,7 @@ class CustomWeaponDialog(QDialog):
             ("散布理想距离", self.f_ideal_distance),
             ("散布 0 距离系数", self.f_radius_zero), ("散布分界系数", self.f_radius_delim),
             ("散布最大系数", self.f_radius_max),
-            ("散布分界点", self.f_delim), ("归一化角(0=按口径)", self.f_norm),
+            ("散布分界点", self.f_delim), ("转正角", self.f_norm),
         ]
         for _i, (_lb, _w) in enumerate(_gun_rows):
             gg.addWidget(QLabel(_lb), _i + 1, 0)
@@ -740,7 +741,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.chart_container = QWidget(self)
         self.chart_layout = QVBoxLayout(self.chart_container)
         self.chart_layout.setContentsMargins(0, 0, 0, 0)
-        self.chart_label = QLabel("穿深曲线：等待计算…")
+        self.chart_label = QLabel("水平穿深：等待计算…")
         self.chart_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         theme.bind(self.chart_label, "color: @text_muted@; border: 1px solid @border@; background: @panel_bg@; border-radius: 6px; padding: 10px 12px;")
         self.chart_layout.addWidget(self.chart_label)
@@ -748,7 +749,7 @@ class PenetrationCalculatorDialog(QDialog):
         self.chart_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.chart_container.setMinimumHeight(180)
         theme.bind(self.chart_container, "QWidget { background: @panel_bg@; border-radius: 6px; }")
-        self.chart_tabs.addTab(self.chart_container, "穿深曲线")
+        self.chart_tabs.addTab(self.chart_container, "水平穿深")
 
         self.ellipse_container = QWidget(self)
         self.ellipse_layout = QVBoxLayout(self.ellipse_container)
@@ -865,9 +866,14 @@ class PenetrationCalculatorDialog(QDialog):
 
         self._metric_tabs = []
         self._metric_tab_map = {}
-        for key, title, ylabel, idx in (
+        _metric_specs = [
             ("angle", "落弹角", "落弹角 (°)", 6),
-        ):
+        ]
+        # 绝对穿深 / 存速曲线：仅源码/调试构建提供（发布版不挂这两个标签页）
+        if is_debug_build():
+            _metric_specs.append(("abs_pen", "绝对穿深", "绝对穿深 (mm)", 11))
+            _metric_specs.append(("velocity", "存速", "存速 (m/s)", 10))
+        for key, title, ylabel, idx in _metric_specs:
             container = QWidget(self)
             layout = QVBoxLayout(container)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -884,8 +890,8 @@ class PenetrationCalculatorDialog(QDialog):
             self._metric_tabs.append(spec)
             self._metric_tab_map[key] = spec
 
-        # Tab 顺序：散布椭圆 → 飞行时间 → 落弹角 → 穿深曲线
-        _tab_order = ["散布椭圆", "飞行时间", "落弹角", "穿深曲线"]
+        # Tab 顺序：散布椭圆 → 飞行时间 → 落弹角 → 水平穿深（后面依次是绝对穿深 / 存速，仅源码模式）
+        _tab_order = ["散布椭圆", "飞行时间", "落弹角", "水平穿深"]
         for _tidx, _tt in enumerate(_tab_order):
             for _t in range(self.chart_tabs.count()):
                 if self.chart_tabs.tabText(_t) == _tt:
@@ -929,7 +935,7 @@ class PenetrationCalculatorDialog(QDialog):
         self._last_rows = []
         self._last_compare_series = []
         self._last_sigma = 1.0
-        self._last_norm_angle = 6.0
+        self._last_norm_angle = 0.0
         self._custom_series = []
         self._ellipse_hidden_series = set()
         self._mod_items = []
@@ -2312,8 +2318,6 @@ class PenetrationCalculatorDialog(QDialog):
         }
 
         self._last_sigma = float(gun_row.get("sigma") or 1.0)
-        _norm_override = gun_row.get("norm_angle")
-        self._last_norm_angle = float(_norm_override) if _norm_override else BallisticsCalculator.get_normalization_angle(caliber)
 
         # HE / SAP(CS) 使用其特有固定穿深，不参与 V3 弹道穿深计算
         ammo_type = (ammo_row.get("ammo_type") or "").upper()
@@ -2322,6 +2326,14 @@ class PenetrationCalculatorDialog(QDialog):
             fixed_pen = float(ammo_row.get("alpha_piercing_he") or 0.0) or (caliber * 1000.0 / 6.0)
         elif ammo_type == "CS":
             fixed_pen = float(ammo_row.get("alpha_piercing_cs") or 0.0)
+
+        # 转正角（只影响 AP 的等效穿深投影）：自定义炮弹用界面手填值（gun_row["norm_angle"]），
+        # 普通 AP 用游戏逐弹字段 bullet_cap_normalize_max（HE/CS 该字段不是转正角语义，取 0）。
+        # 都没有 → 0 = 不转正；不再按口径推断（口径规则对 5% 的 AP 弹不准）。
+        _norm_raw = gun_row.get("norm_angle")
+        if _norm_raw in (None, ""):
+            _norm_raw = ammo_row.get("bullet_cap_normalize_max") if ammo_type == "AP" else 0.0
+        self._last_norm_angle = float(_norm_raw or 0.0)
 
         # 弹道模拟仍用于飞行时间 / 落弹角（与穿深类型无关）
         ballistics = BallisticsCalculator().calculate_full_ballistics(mass, caliber, air_drag, velocity, krupp)
@@ -2340,10 +2352,15 @@ class PenetrationCalculatorDialog(QDialog):
             pt = BallisticsCalculator.interpolate_at_distance(ballistics, distance)
             impact = float(pt["impact_angle_deg"])
             fly = float(pt["fly_time"])
+            # 临时：存速（着速）曲线用，HE/CS 固定穿深分支也需要该值
+            v_imp = float(pt["velocity"])
+            # 穿深曲线（水平项）与绝对穿深曲线：pen = 「水平穿深」= 打侧舷（垂直装甲）时
+            # 沿水平方向的等效穿深 = P_abs·cos(max(0, 落角−转正角))；
+            # pen_abs = 绝对穿深（不受角度/转正角影响）
             if fixed_pen:
                 pen = fixed_pen
+                pen_abs = fixed_pen
             else:
-                v_imp = float(pt["velocity"])
                 pen_abs = BallisticsCalculator.calc_v3_penetration(krupp, mass, v_imp, caliber)
                 pen = BallisticsCalculator.calc_vertical_effective_pen(pen_abs, impact, self._last_norm_angle)
             # 散布公式文字（横向 / 纵向），用于散布椭圆标签的“炮弹名后”说明
@@ -2365,12 +2382,18 @@ class PenetrationCalculatorDialog(QDialog):
             water_area = BallisticsCalculator.calc_dispersion_area(horiz, vert_water)
             # 存全精度（悬浮提示已自行格式化为 2 位小数）；不再对 fly/impact 四舍五入，
             # 否则曲线被量化为 0.1s/0.1° 的阶梯状（锐角）
-            rows.append((distance, horiz, vert, area, fly, pen, impact, formula, vert_water, water_area))
+            # 末位 idx=10 为「存速」（临时功能，仅追加在元组末尾，不影响既有下标）
+            # 末位 idx=10 = 存速、idx=11 = 绝对穿深（绝对穿深仅源码模式画曲线）
+            rows.append((distance, horiz, vert, area, fly, pen, impact, formula, vert_water, water_area, v_imp, pen_abs))
         return rows
 
     def _build_curve_chart(self, rows, compare_series=None):
+        """水平穿深曲线：打侧舷（垂直装甲）时沿水平方向的等效穿深
+
+        = P_abs·cos(max(0, 落角−转正角))（不是甲板/水平装甲方向的投影）。
+        """
         if not rows and not compare_series:
-            self.chart_label.setText("穿深曲线：无可用数据")
+            self.chart_label.setText("水平穿深：无可用数据")
             return
         try:
             import matplotlib
@@ -2386,7 +2409,7 @@ class PenetrationCalculatorDialog(QDialog):
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         except Exception as exc:
-            self.chart_label.setText(f"穿深曲线：matplotlib 不可用（{exc}）")
+            self.chart_label.setText(f"水平穿深：matplotlib 不可用（{exc}）")
             return
 
         for i in reversed(range(self.chart_layout.count())):
@@ -2419,11 +2442,11 @@ class PenetrationCalculatorDialog(QDialog):
             ax.plot(distances, penetrations, color=color_pool[0], linewidth=2)
             ax.scatter(distances[0], penetrations[0], color="#3fa34d", s=28)
             ax.scatter(distances[-1], penetrations[-1], color="#ff7a45", s=28)
-            meta.append(("穿深", distances, penetrations, color_pool[0]))
+            meta.append(("水平穿深", distances, penetrations, color_pool[0]))
 
-        ax.set_title("穿深曲线")
+        ax.set_title("水平穿深曲线")
         ax.set_xlabel("距离 (km)")
-        ax.set_ylabel("穿深 (mm)")
+        ax.set_ylabel("水平穿深 (mm)")
         ax.grid(True, alpha=0.25)
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -2432,9 +2455,9 @@ class PenetrationCalculatorDialog(QDialog):
         point_count = len(rows) if rows else 0
         if compare_series:
             count = sum(1 for s in compare_series if s.get("rows"))
-            self.chart_label.setText(f"穿深曲线：{count} 条弹种曲线，对比样本点 {point_count}")
+            self.chart_label.setText(f"水平穿深：{count} 条弹种曲线，对比样本点 {point_count}")
         else:
-            self.chart_label.setText(f"穿深曲线：{point_count} 个样本点")
+            self.chart_label.setText(f"水平穿深：{point_count} 个样本点")
 
     def _build_flytime_chart(self, rows, compare_series=None):
         if not rows and not compare_series:
@@ -2556,7 +2579,7 @@ class PenetrationCalculatorDialog(QDialog):
         canvas = FigureCanvasQTAgg(figure)
         canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(canvas)
-        _units = {"angle": "°"}
+        _units = {"angle": "°", "velocity": " m/s", "abs_pen": " mm"}
         self._attach_hover_legend(ax, figure, canvas, meta, _units.get(metric_key, ""))
         label_w.setText(f"{title}曲线：{len(rows) if rows else 0} 个样本点")
 
@@ -2692,7 +2715,7 @@ class PenetrationCalculatorDialog(QDialog):
             self._last_compare_series = compare_series
 
             if not rows:
-                self.chart_label.setText("穿深曲线：暂无已添加炮弹")
+                self.chart_label.setText("水平穿深：暂无已添加炮弹")
                 self._set_ellipse_text("当前设定射程：—", "散布椭圆：暂无已添加炮弹")
                 self.flytime_label.setText("飞行时间曲线：暂无已添加炮弹")
                 for spec in self._metric_tabs:
@@ -2706,10 +2729,14 @@ class PenetrationCalculatorDialog(QDialog):
             self._build_curve_chart(rows, compare_series)
             self._build_flytime_chart(rows, compare_series)
             self._build_metric_chart("angle", rows, compare_series)
+            # 绝对穿深 / 存速曲线：仅源码/调试构建挂了这两个标签页
+            for _metric_key in ("abs_pen", "velocity"):
+                if _metric_key in self._metric_tab_map:
+                    self._build_metric_chart(_metric_key, rows, compare_series)
             self._update_dispersion_ellipse()
         except Exception as exc:
             self._last_rows = []
-            self.chart_label.setText(f"穿深曲线：计算失败（{exc}）")
+            self.chart_label.setText(f"水平穿深：计算失败（{exc}）")
             self._set_error(f"计算失败: {exc}")
 
     # ── 散布椭圆图 ──────────────────────────────────────

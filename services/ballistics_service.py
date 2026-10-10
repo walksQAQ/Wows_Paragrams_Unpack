@@ -27,16 +27,6 @@ class BallisticsCalculator:
     FLY_TIME_DIVISOR = 3.1
 
     @staticmethod
-    def get_normalization_angle(caliber_m: float) -> float:
-        if caliber_m <= 0.13:
-            return 10.0
-        if caliber_m <= 0.152:
-            return 8.5
-        if caliber_m <= 0.22:
-            return 7.0
-        return 6.0
-
-    @staticmethod
     def _air_density(height_m: float) -> float:
         """标准大气 ISA 密度（Korabli 原始公式）。
 
@@ -255,10 +245,10 @@ class BallisticsCalculator:
         hori_pen = pen_abs * math.sin(ia_hori)
         return vert_pen, hori_pen
 
-    def calculate_full_ballistics(self, mass: float, caliber_m: float, air_drag: float, velocity: float, krupp: float, norm_angle: float | None = None) -> dict:
-        if norm_angle is None:
-            norm_angle = self.get_normalization_angle(caliber_m)
-        norm_angle_rad = math.radians(float(norm_angle))
+    def calculate_full_ballistics(self, mass: float, caliber_m: float, air_drag: float, velocity: float, krupp: float, norm_angle: float = 0.0) -> dict:
+        # 转正角由调用方给出（游戏逐弹字段 bullet_cap_normalize_max；自定义炮弹由界面手填）；
+        # 缺省 0.0 = 不做转正。不再按口径推断。
+        norm_angle_rad = math.radians(float(norm_angle or 0.0))
         angles = []
         distances = []
         velocities = []

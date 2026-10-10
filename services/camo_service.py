@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, replace
 
@@ -67,6 +68,14 @@ class CamoSchemeInfo:
     model_folder: str = ""           # 替换后的船体几何目录（如 FSB101_Aquitaine_White）
     skin: dict = field(default_factory=dict)            # 皮肤完整数据：hull_config/nodes_config/peculiarity_models
     entry: CamouflageEntry | None = None
+    # ── 归属/展示元数据（独立涂装工具用；普通切换列表不依赖）──
+    species: str = ""                # Exterior species（skin/mskin/permoflage/camouflage）
+    ext_index: str = ""              # Exterior 索引（如 PGES341）
+    nation: str = ""
+    hidden: bool = False
+    hull_model: str = ""             # 皮肤自带船体 .model 路径（origin="model"）
+    #: 客户端是否随包该几何目录；None = 未判断（普通列表不填）
+    geometry_present: bool | None = None
 
 
 # ── 部件分类（对齐 wows-toolkit classify_part_category） ─────
@@ -241,6 +250,8 @@ class CamoService:
         self._db: dict | None = None
         self._icon_map: dict[str, str] = {}
         self._exteriors: list[dict] = []
+        #: 含 .geometry 的模型目录名缓存（None = 尚未构建）
+        self._geom_dirs_cache: set[str] | None = None
 
     def _build_from_db(self):
         entries: dict[str, list[CamouflageEntry]] = {}
@@ -312,6 +323,88 @@ class CamoService:
                 return True
         return False
 
+    def _build_exterior_schemes(self, ext: dict,
+                                permo: set[str] | None = None,
+                                allow_unresolved: bool = False) -> list[CamoSchemeInfo]:
+        """把一个 Exterior（皮肤/永久/通用涂装）展开为可选涂装项（id 由调用方补齐）。
+
+        带 hullConfig/nodesConfig/peculiarityModels → origin="model"（整体替换模型）；
+        否则按 camouflage/unpeculiarCamouflage 关联 camouflages.xml 条目 → origin="mat"
+        （一个 camo 含多个 colorSchemes 时每个配色展开为一项）。
+
+        permo：该船的 permoflages 集合（仅用于 origin="model" 的 model_folder 兜底）；
+        独立涂装工具（无归属舰船）传 None。
+        allow_unresolved：origin="mat" 但找不到对应 camouflages.xml 条目时，
+        仍然列入（entry=None）；独立涂装工具需要「一个不漏」，普通切换列表保持
+        丢弃以免出现无贴图可套的空项。
+        """
+        data = ext.get("data") or {}
+        hull_config = data.get("hullConfig") or {}
+        nodes_config = data.get("nodesConfig") or {}
+        pmodels = data.get("peculiarityModels") or {}
+        ext_name = ext.get("name") or ""
+        ext_index = ext.get("index") or ""
+        key = ext_index or ext_name
+        icon = ext.get("icon_path") or ""
+        # hidden 不在 exteriors 列里，取自原始 Exterior JSON（data）
+        meta = dict(species=ext.get("species") or "", ext_index=ext_index,
+                    nation=ext.get("nation") or "", hidden=bool(data.get("hidden")))
+        out: list[CamoSchemeInfo] = []
+
+        if hull_config or nodes_config or pmodels:
+            # 模型变体（独立建模皮肤）
+            hull_model = ""
+            mf = ""
+            for hv in (hull_config or {}).values():
+                if isinstance(hv, dict) and hv.get("model"):
+                    hull_model = str(hv["model"])
+                    mf = _dir_name(hull_model)
+                    break
+            if not mf and pmodels:
+                for k, v in pmodels.items():
+                    if not isinstance(v, str) or "/" not in v:
+                        continue
+                    if permo is not None and _dir_name(k) not in permo:
+                        continue
+                    mf = _dir_name(v)
+                    break
+            out.append(CamoSchemeInfo(
+                id=-1, display_name=ext.get("display_name") or ext_name or key,
+                raw_name=key, origin="model", icon_path=icon,
+                model_replace=dict(pmodels), model_folder=mf,
+                skin={"hull_config": hull_config, "nodes_config": nodes_config,
+                      "peculiarity_models": pmodels, "model_folder": mf},
+                hull_model=hull_model, **meta))
+            return out
+
+        # 材质涂装：由 camouflage/unpeculiarCamouflage 关联 camouflages.xml 条目
+        camo_name = data.get("camouflage") or data.get("unpeculiarCamouflage") or ""
+        base_name = ext.get("display_name") or ext_name or key
+        entry = None
+        if camo_name:
+            vs = (self._db or {}).get("entries", {}).get(camo_name) or []
+            entry = vs[0] if vs else None
+        if entry is None:
+            if allow_unresolved:
+                out.append(CamoSchemeInfo(
+                    id=-1, display_name=base_name, raw_name=key, origin="mat",
+                    icon_path=icon, entry=None, **meta))
+            return out
+        schemes = entry.color_schemes or ([entry.color_scheme] if entry.color_scheme else [])
+        if not schemes:
+            out.append(CamoSchemeInfo(
+                id=-1, display_name=base_name, raw_name=key, origin="mat",
+                icon_path=icon, entry=replace(entry, colors=None), **meta))
+        else:
+            for si, sch in enumerate(schemes):
+                cs = (self._db or {}).get("color_schemes", {}).get(sch)
+                e2 = replace(entry, colors=cs.colors if cs is not None else None)
+                dname = f"{base_name}（配色{si + 1}）" if len(schemes) > 1 else base_name
+                out.append(CamoSchemeInfo(
+                    id=-1, display_name=dname, raw_name=key, origin="mat",
+                    icon_path=icon, entry=e2, **meta))
+        return out
+
     def list_camos(self, ship_indexes: set[str],
                    ship_permoflages: set | list | None = None) -> list[CamoSchemeInfo]:
         """返回该船可切换涂装列表；第一项是「无涂装」。"""
@@ -358,8 +451,6 @@ class CamoService:
                     break
 
         # 5) Exterior 皮肤/永久/通用涂装：归属以 ship_permoflages（= Vehicle.permoflages()）权威
-        #    带 hullConfig/nodesConfig/peculiarityModels → origin=model（替换模型）；
-        #    否则按 camouflage/unpeculiarCamouflage 关联 camouflages.xml 条目 → origin=mat。
         for ext in getattr(self, "_exteriors", []) or []:
             sp = (ext.get("species") or "").lower()
             if sp not in self._CAMO_SPECIES:
@@ -368,61 +459,114 @@ class CamoService:
             ext_index = ext.get("index") or ""
             if not (ext_name in permo or ext_index in permo):
                 continue
-            data = ext.get("data") or {}
-            hull_config = data.get("hullConfig") or {}
-            nodes_config = data.get("nodesConfig") or {}
-            pmodels = data.get("peculiarityModels") or {}
             key = ext_index or ext_name
             if key in seen:
                 continue
             seen.add(key)
-            if hull_config or nodes_config or pmodels:
-                # 模型变体
-                mf = ""
-                for hv in (hull_config or {}).values():
-                    if isinstance(hv, dict) and hv.get("model"):
-                        mf = _dir_name(hv["model"])
-                        break
-                if not mf and pmodels:
-                    for k, v in pmodels.items():
-                        if _dir_name(k) in permo and "/" in v:
-                            mf = _dir_name(v)
-                            break
-                infos.append(CamoSchemeInfo(
-                    id=len(infos),
-                    display_name=ext.get("display_name") or ext_name or key,
-                    raw_name=key, origin="model",
-                    icon_path=ext.get("icon_path") or "",
-                    model_replace=dict(pmodels), model_folder=mf,
-                    skin={"hull_config": hull_config, "nodes_config": nodes_config,
-                          "peculiarity_models": pmodels, "model_folder": mf}))
-            else:
-                # 材质涂装：由 camouflage/unpeculiarCamouflage 关联 camouflages.xml 条目。
-                # 一个 camo 可含多个 <colorSchemes>（不同配色）→ 每个配色展开为一个可选涂装
-                camo_name = data.get("camouflage") or data.get("unpeculiarCamouflage") or ""
-                entry = None
-                if camo_name:
-                    vs = (self._db or {}).get("entries", {}).get(camo_name) or []
-                    entry = vs[0] if vs else None
-                if entry is not None:
-                    schemes = entry.color_schemes or ([entry.color_scheme] if entry.color_scheme else [])
-                    base_name = ext.get("display_name") or ext_name or key
-                    if not schemes:
-                        infos.append(CamoSchemeInfo(
-                            id=len(infos), display_name=base_name, raw_name=key, origin="mat",
-                            icon_path=ext.get("icon_path") or "",
-                            entry=replace(entry, colors=None)))
-                    else:
-                        for si, sch in enumerate(schemes):
-                            cs = (self._db or {}).get("color_schemes", {}).get(sch)
-                            e2 = replace(entry, colors=cs.colors if cs is not None else None)
-                            dname = base_name
-                            if len(schemes) > 1:
-                                dname = f"{base_name}（配色{si + 1}）"
-                            infos.append(CamoSchemeInfo(
-                                id=len(infos), display_name=dname, raw_name=key, origin="mat",
-                                icon_path=ext.get("icon_path") or "", entry=e2))
+            for s in self._build_exterior_schemes(ext, permo=permo):
+                s.id = len(infos)
+                infos.append(s)
         return infos
+
+    def collect_all_permoflages(self) -> set[str]:
+        """全部舰船 permoflages ∪ nativePermoflage 的并集（= 已归属涂装名集合）。
+
+        优先一次 SQL 从 game_data.db 的 entity_snapshots 取（json_extract，不整行读出），
+        无结果时回退扫描 data/split/Ship/*.json。
+        """
+        out: set[str] = set()
+        try:
+            from app.application import app as app_ctx
+            from services.database_service import get_db
+            db = get_db(getattr(app_ctx.ctx, "wows_type", "") or "")
+            vc = db.get_latest_version_code() or ""
+            if vc:
+                rows = db._conn.execute(
+                    "SELECT json_extract(data_json,'$.permoflages'), "
+                    "json_extract(data_json,'$.nativePermoflage') "
+                    "FROM entity_snapshots WHERE version_code=? AND entity_type='ship'",
+                    (vc,)).fetchall()
+                for arr, npf in rows:
+                    if arr:
+                        for v in json.loads(arr):
+                            if isinstance(v, str) and v:
+                                out.add(v)
+                    if isinstance(npf, str) and npf:
+                        out.add(npf)
+        except Exception:  # noqa: BLE001
+            out = set()
+        if out:
+            return out
+        # 回退：data/split/Ship/*.json（keep_split_json=True 时存在）
+        try:
+            from utils.path_utils import get_split_dir
+            for f in (get_split_dir() / "Ship").glob("*.json"):
+                try:
+                    d = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001
+                    continue
+                for v in (d.get("permoflages") or []):
+                    if isinstance(v, str) and v:
+                        out.add(v)
+                npf = d.get("nativePermoflage")
+                if isinstance(npf, str) and npf:
+                    out.add(npf)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def list_orphan_skins(self) -> list[CamoSchemeInfo]:
+        """未被任何舰船收纳的皮肤类 Exterior（= 客户端存在但无归属。
+
+        归属判定与 :meth:`list_camos` 一致（name/index ∈ 全部船的 permoflages）。
+        返回项按索引排序，id 已顺序赋值；origin="model" 的项会标 geometry_present
+        （客户端是否真随包了该几何目录；False ⇒ 无法 3D 预览，如未发布的皮肤）。
+        """
+        self._ensure_loaded()
+        owned = self.collect_all_permoflages()
+        geom_dirs = self._geometry_folder_names()
+        infos: list[CamoSchemeInfo] = []
+        for ext in getattr(self, "_exteriors", []) or []:
+            sp = (ext.get("species") or "").lower()
+            if sp not in self._CAMO_SPECIES:
+                continue
+            name = ext.get("name") or ""
+            idx = ext.get("index") or ""
+            if name in owned or idx in owned:
+                continue
+            for s in self._build_exterior_schemes(ext, allow_unresolved=True):
+                if s.origin == "model" and s.model_folder and geom_dirs is not None:
+                    s.geometry_present = s.model_folder in geom_dirs
+                s.id = len(infos)
+                infos.append(s)
+        infos.sort(key=lambda s: (s.ext_index or s.raw_name))
+        for i, s in enumerate(infos):
+            s.id = i
+        return infos
+
+    def _geometry_folder_names(self) -> set[str] | None:
+        """客户端 pkg 索引中含 .geometry 的模型目录名集合（懒构建缓存）。
+
+        供「独立涂装」工具判断某皮肤自带模型是否真的随包；无 extractor 时返回 None。
+        """
+        if self._geom_dirs_cache is not None:
+            return self._geom_dirs_cache
+        ex = self._extractor
+        if ex is None:
+            return None
+        try:
+            names: set[str] = set()
+            for path in ex.file_tree:
+                if not path.endswith(".geometry"):
+                    continue
+                head, _, _ = path.rpartition("/")
+                folder = head.rpartition("/")[2]
+                if folder:
+                    names.add(folder)
+            self._geom_dirs_cache = names
+        except Exception:  # noqa: BLE001
+            return None
+        return self._geom_dirs_cache
 
     def entry_by_name(self, name: str, ship_indexes: set[str]) -> CamouflageEntry | None:
         self._ensure_loaded()

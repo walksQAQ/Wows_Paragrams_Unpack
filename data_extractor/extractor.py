@@ -409,11 +409,7 @@ class GameExtractor:
         # 计算公共前缀（用于 strip_prefix）
         common_prefix = ""
         if strip_prefix and matched_entries:
-            paths = list(matched_entries.keys())
-            common_prefix = os.path.commonpath(paths)
-            # 确保前缀是完整目录名
-            if common_prefix and '/' in common_prefix:
-                common_prefix = common_prefix.rsplit('/', 1)[0] + '/'
+            common_prefix = common_dir_prefix(list(matched_entries.keys()))
 
         matches = []
         for path, entry in matched_entries.items():
@@ -492,6 +488,28 @@ class GameExtractor:
     def close(self) -> None:
         """释放资源"""
         self._pkg_reader.close()
+
+
+def common_dir_prefix(paths: list[str]) -> str:
+    """多个 VFS 路径的公共**目录**前缀（统一 '/' 分隔，以 '/' 结尾）。
+
+    无公共目录时返回 ''；单个路径返回其所在目录。
+
+    注：**不能**用 ``os.path.commonpath`` —— 它在 Windows 上返回反斜杠，与 VFS 的
+    '/' 不一致，会让 ``strip_prefix`` 静默失效（算出的前缀根本匹配不上）。
+    """
+    if not paths:
+        return ""
+    if len(paths) == 1:
+        head = paths[0].rpartition("/")[0]
+        return f"{head}/" if head else ""
+    dirs = [p.split("/")[:-1] for p in paths]
+    common: list[str] = []
+    for segs in zip(*dirs):
+        if len(set(segs)) != 1:
+            break
+        common.append(segs[0])
+    return ("/".join(common) + "/") if common else ""
 
 
 # ── 便捷函数 ──────────────────────────────────────────────

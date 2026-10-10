@@ -25,6 +25,7 @@ from PySide6.QtGui import QFont
 
 from app.signals import bus
 from app.application import app
+from utils.path_utils import is_debug_build
 from ui.toolbar_widget import TopToolbar
 from ui.category_bar import CategoryBar
 from ui.browser_panel import BrowserPanel
@@ -166,6 +167,16 @@ class MainWindow(QMainWindow):
         diff_action = tools_menu.addAction("版本数据比对...")
         diff_action.triggered.connect(self._on_open_version_diff)
 
+        unpacker_action = tools_menu.addAction("资源解包器...")
+        unpacker_action.setToolTip("浏览客户端 .pkg 虚拟文件系统，按选择/glob 解包到目录")
+        unpacker_action.triggered.connect(self._on_open_unpacker)
+
+        # 独立涂装：仅源码/调试模式挂入口（发布版不显示）
+        if is_debug_build():
+            orphan_action = tools_menu.addAction("独立涂装...")
+            orphan_action.setToolTip("列出客户端存在但未被任何舰船收纳的独立涂装（仅源码模式）")
+            orphan_action.triggered.connect(self._on_open_orphan_camo)
+
         settings_menu = menubar.addMenu("设置")
 
         adv_action = settings_menu.addAction("高级设置...")
@@ -204,6 +215,30 @@ class MainWindow(QMainWindow):
         from ui.version_diff_dialog import VersionDiffDialog
         from utils.window_utils import ensure_dialog_shown
         ensure_dialog_shown(self, "_version_diff_dlg", VersionDiffDialog, self)
+
+    def _on_open_unpacker(self) -> None:
+        """打开资源解包器（GUI）：浏览客户端 VFS 并导出任意文件。
+
+        原为工具栏按钮，现移入「工具」菜单（独立顶层窗口，懒创建单实例）。
+        """
+        try:
+            from ui.unpacker_dialog import UnpackerDialog
+            from utils.window_utils import ensure_dialog_shown
+            ensure_dialog_shown(self, "_unpacker_dlg", UnpackerDialog, self)
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"❌ 打开解包器失败: {exc}")
+
+    def _on_open_orphan_camo(self) -> None:
+        """打开「独立涂装」工具（源码模式）：列出未被任何舰船收纳的 Exterior。
+
+        原为工具栏按钮（仅调试模式可见），现移入「工具」菜单（同样只在调试模式挂出）。
+        """
+        try:
+            from ui.orphan_camo_dialog import OrphanCamoDialog
+            from utils.window_utils import ensure_dialog_shown
+            ensure_dialog_shown(self, "_orphan_camo_dlg", OrphanCamoDialog, self)
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"❌ 打开独立涂装工具失败: {exc}")
 
     def _on_advanced_settings(self) -> None:
         from ui.advanced_settings import AdvancedSettingsDialog

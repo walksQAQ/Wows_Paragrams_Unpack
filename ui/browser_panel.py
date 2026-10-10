@@ -2,6 +2,7 @@
 BrowserPanel —— 文件列表面板（300px 固定宽度）。
 
 支持按国籍/舰种/等级多选筛选舰船，按本地化舰名或编号搜索。
+可切换「本地化缺失」筛选，只显示名称回退到数据文件名（无中文译名）的舰船。
 """
 
 from __future__ import annotations
@@ -160,6 +161,24 @@ class BrowserPanel(QWidget):
             QPushButton:hover { background: @hover_bg@; border-color: #0078d4; color: @text@; }
         """)
 
+        # 本地化缺失筛选：只显示无中文译名、名称回退到数据文件名的舰船
+        self.btn_missing_loc = QPushButton("⚠ 本地化缺失")
+        self.btn_missing_loc.setCheckable(True)
+        self.btn_missing_loc.setToolTip("只显示本地化完全缺失、名称回退到数据文件名的舰船")
+        self.btn_missing_loc.setVisible(False)
+        theme.bind(self.btn_missing_loc, """
+            QPushButton {
+                background: @panel_alt@; border: 1px solid @border@;
+                border-radius: 3px; font-size: 11px; padding: 3px 6px;
+                color: @text@;
+            }
+            QPushButton:hover { border-color: #0078d4; color: @text@; }
+            QPushButton:checked {
+                background: #b06f00; border-color: #e0a040;
+                color: #ffffff; font-weight: bold;
+            }
+        """)
+
         filter_row1 = QHBoxLayout()
         filter_row1.setSpacing(4)
         filter_row1.addWidget(self.ms_nation)
@@ -170,6 +189,7 @@ class BrowserPanel(QWidget):
         filter_row2.setSpacing(4)
         filter_row2.addWidget(self.ms_tier)
         filter_row2.addWidget(self.ms_crew_type)
+        filter_row2.addWidget(self.btn_missing_loc)
         filter_row2.addWidget(self.btn_reset)
         layout.addLayout(filter_row2)
 
@@ -216,6 +236,7 @@ class BrowserPanel(QWidget):
         self.ms_type.selection_changed.connect(self._apply_filter)
         self.ms_tier.selection_changed.connect(self._apply_filter)
         self.btn_reset.clicked.connect(self._reset_filters)
+        self.btn_missing_loc.toggled.connect(self._apply_filter)
         self.ms_crew_type.selection_changed.connect(self._apply_filter)
         bus.folder_selected.connect(self._on_category_selected)
         # 主题切换：徽章按主题着色（深浅色不同），清缓存后重建列表
@@ -244,6 +265,7 @@ class BrowserPanel(QWidget):
         self.ms_type.setVisible(is_ship)
         self.ms_tier.setVisible(is_ship)
         self.ms_crew_type.setVisible(is_crew)
+        self.btn_missing_loc.setVisible(is_ship)
         self.btn_reset.setVisible(is_ship or is_crew)
 
         if is_ship or is_crew:
@@ -282,12 +304,20 @@ class BrowserPanel(QWidget):
         from models.name_mapping import Mapping as NM
         vc = db.get_latest_version_code() or ""
 
+        # 名称解析与详情面板一致：name_mapping_id → (category='ship', ship_index)；
+        # 两者皆无有效译名时回退 entity_id（数据文件名），并标记 loc_missing 供筛选。
         rows = db._conn.execute("""
             SELECT e.entity_id,
-                   COALESCE(NULLIF(TRIM(nm.lang_zh), ''), e.entity_id) AS display_name,
+                   COALESCE(NULLIF(TRIM(nmd.lang_zh), ''),
+                            NULLIF(TRIM(nm.lang_zh), ''),
+                            e.entity_id) AS display_name,
+                   CASE WHEN NULLIF(TRIM(nmd.lang_zh), '') IS NULL
+                             AND NULLIF(TRIM(nm.lang_zh), '') IS NULL
+                        THEN 1 ELSE 0 END AS loc_missing,
                    e.nation, b.shiptype, b.tier, b.group_status_key
             FROM entity_registry e
             LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
+            LEFT JOIN name_mappings nmd ON nmd.id = b.name_mapping_id
             LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name = b.ship_index
             WHERE e.version_code=? AND e.entity_type='ship'
             ORDER BY e.entity_id
@@ -380,6 +410,7 @@ class BrowserPanel(QWidget):
         type_vals = self.ms_type.selected_data() if self.ms_type.isVisible() else []
         tier_vals = [int(t) for t in self.ms_tier.selected_data()] if self.ms_tier.isVisible() else []
         crew_type_vals = self.ms_crew_type.selected_data() if self.ms_crew_type.isVisible() else []
+        missing_loc_only = self.btn_missing_loc.isChecked() and self.btn_missing_loc.isVisible()
 
         from models.name_mapping import Mapping as NM
 
@@ -407,6 +438,8 @@ class BrowserPanel(QWidget):
                         break
                 if not has_type:
                     continue
+            if missing_loc_only and not ent.get("loc_missing"):
+                continue
 
             if keyword and keyword not in dname.lower() and keyword not in eid.lower():
                 continue
@@ -436,6 +469,7 @@ class BrowserPanel(QWidget):
         self.ms_type.reset()
         self.ms_tier.reset()
         self.ms_crew_type.reset()
+        self.btn_missing_loc.setChecked(False)
         self._apply_filter()
 
     # ── 信号槽 ──────────────────────────────────────────
