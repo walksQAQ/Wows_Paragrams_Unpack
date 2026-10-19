@@ -251,6 +251,19 @@ def main() -> None:
     bus.log_message.emit(f"数据目录: {app_ctx.ctx.data_dir}")
     bus.log_message.emit(f"当前服务器: {app_ctx.ctx.wows_type}")
 
+    # 5.1 校验游戏目录与当前服务器是否匹配（防止读到另一服客户端的数据）
+    try:
+        from utils.path_utils import detect_wows_type
+        _gp = app_ctx.ctx.game_path
+        _server = app_ctx.ctx.wows_type
+        _detected = detect_wows_type(_gp) if _gp and _gp != "未设置" else ""
+        if _detected and _server in ("Lesta", "Wargaming") and _detected != _server:
+            bus.log_message.emit(
+                f"⚠️ 配置的游戏目录（{_gp}）属于 {_detected} 客户端，与当前服务器 "
+                f"{_server} 不一致 —— 会读到另一服的数据，请在设置中重新选择目录")
+    except Exception:  # noqa: BLE001
+        pass
+
     # 6. 启动后自动刷新（如果已有可用数据库）
     from PySide6.QtCore import QTimer
 

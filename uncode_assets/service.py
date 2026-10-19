@@ -63,7 +63,8 @@ def collect_fx_catalog(file_tree, out: Optional[Dict[str, object]] = None) -> Di
 
 
 def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None,
-                          fx_catalog: Optional[Dict[str, object]] = None) -> bytes:
+                          fx_catalog: Optional[Dict[str, object]] = None,
+                          pkg_paths: Optional[set] = None) -> bytes:
     """从游戏 .pkg 现场读取 content/assets.bin 原始字节（**全内存，不落盘**）。
 
     这是 assets.bin 的唯一提取入口：不读任何既有解包产物、也不写临时文件，
@@ -72,6 +73,8 @@ def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None
 
     传入 `fx_catalog` 时，顺便用同一个 extractor 的文件树填充
     `fx 短名 → 完整 .fx 路径`（不额外读盘）。
+    ‼ 传入 `pkg_paths`（一个 set）时，用同一个文件树填充 **PKG 内全部文件路径**，
+    供 VFS 标记「无 prototype 的路径条目是否真存在于 PKG 」（几万个字符串，约几十 MB）。
     """
     from data_extractor import GameExtractor
 
@@ -80,6 +83,11 @@ def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None
         if fx_catalog is not None:
             try:
                 collect_fx_catalog(extractor.file_tree, fx_catalog)
+            except Exception:  # noqa: BLE001
+                pass
+        if pkg_paths is not None:
+            try:
+                pkg_paths.update(extractor.file_tree.keys())
             except Exception:  # noqa: BLE001
                 pass
         entry = extractor.file_tree.get(ASSETS_BIN_PATH)
@@ -103,6 +111,7 @@ class AssetsBinService:
         assets_bytes: Optional[bytes] = None,
         bin_folder: Optional[str] = None,
         wows_type: str = "",
+        pkg_paths: Optional[set] = None,
     ):
         """
         参数:
@@ -113,6 +122,9 @@ class AssetsBinService:
             bin_folder: 游戏 bin 子版本号（继承主应用设置时传入）
             wows_type: 服务器类型（'Wargaming'→WG 10 类型表；其余→Korabli 12 类型表）。
                       需在解析**之前**传入，内部按服务器设置类型表上下文。
+            pkg_paths: 可选的 PKG 文件路径集合（调用方传入空 set 即启用收集）。
+                      传入后 VFS 会为「无 prototype 的路径条目」标记 `in_pkg`，
+                      用于区分「PKG 中确有该文件」与「仅是 assets.bin 路径残留」。
         """
         self._wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
         set_wows_type(self._wows_type)
@@ -122,6 +134,8 @@ class AssetsBinService:
         self._bin_folder: Optional[str] = bin_folder
         self._from_cache: bool = False
         self._cache_path: Optional[Path] = None
+        #: PKG 文件树路径集合（None = 未收集，资源节点不带 in_pkg 标记）
+        self._pkg_paths: Optional[set] = pkg_paths
         #: fx 短名 → 完整路径（仅从游戏目录加载时填充）
         self._fx_catalog: Dict[str, object] = {}
 
@@ -144,7 +158,8 @@ class AssetsBinService:
         """
         game_dir = Path(game_dir)
         data = read_assets_bin_bytes(game_dir, bin_folder=self._bin_folder,
-                                     fx_catalog=self._fx_catalog)
+                                     fx_catalog=self._fx_catalog,
+                                     pkg_paths=self._pkg_paths)
         self._game_dir = game_dir
         self.load_bytes(data)
         return data
@@ -195,7 +210,8 @@ class AssetsBinService:
                 return
             except Exception:  # noqa: BLE001
                 pass
-        self._vfs = AssetsBinVfs(self._db, wows_type=self._wows_type)
+        self._vfs = AssetsBinVfs(self._db, wows_type=self._wows_type,
+                                 pkg_paths=self._pkg_paths)
         self._from_cache = False
         if cache_path is not None:
             try:
@@ -247,6 +263,7 @@ class AssetsBinService:
             "paths_count": len(db.paths_storage),
             "databases_count": len(db.databases),
             "file_count": self.vfs.file_count(),
+            "resource_count": self.vfs.resource_count(),
             "dir_count": self.vfs.dir_count(),
         }
 
@@ -389,6 +406,8 @@ class AssetsBinService:
         stats: Dict[str, int] = {}
         count = 0
         for f in self.vfs.all_files():
+            if f.prototype_type is None:  # PKG 资源节点：assets.bin 中无记录可导出
+                continue
             if type_filter:
                 tname = f.prototype_type.name if f.prototype_type else ""
                 if type_filter.lower() not in tname.lower():

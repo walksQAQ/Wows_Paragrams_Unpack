@@ -68,6 +68,7 @@ class UnpackerDialog(QDialog):
         self._task = None          # 解包任务句柄
         self._loading = False      # 解包进行中
         self._gen = 0              # 代数：新任务取代旧任务
+        self._suppress_save = False  # 初始化阶段不写配置（避免把回退值当归属主）
 
         self._build_ui()
         theme.bind(self, """
@@ -283,18 +284,62 @@ class UnpackerDialog(QDialog):
     # ── 初始化 ────────────────────────────────────────────
 
     def _bootstrap(self):
-        """用应用配置里的游戏目录/版本预填。"""
-        try:
-            gp = app_ctx.ctx.game_path or ""
-        except Exception:  # noqa: BLE001
-            gp = ""
-        self.ed_game.setText(str(gp))
-        self._refresh_versions()
-        if gp:
-            self._open_extractor()
+        """用**解包器自己的**记录预填（不跟随主程序游戏路径）。
 
-    def _refresh_versions(self):
-        """填充版本下拉：bin 下含 idx/ 的数字目录（新→旧）。"""
+        首次使用（自身记录为空）时，回退到主程序当前游戏目录作为默认值，
+        但一旦用户选定就会写入独立字段，此后与主程序配置互不影响。
+        """
+        cfg = self._cfg()
+        gp = ""
+        saved_bin = ""
+        saved_out = ""
+        if cfg is not None:
+            gp = getattr(cfg, "unpacker_game_path", "") or ""
+            saved_bin = getattr(cfg, "unpacker_bin_folder", "") or ""
+            saved_out = getattr(cfg, "unpacker_output_dir", "") or ""
+        if not gp:
+            try:
+                gp = app_ctx.ctx.game_path or ""
+            except Exception:  # noqa: BLE001
+                gp = ""
+        if saved_out:
+            self.ed_out.setText(saved_out)
+        self.ed_game.setText(str(gp))
+        self._refresh_versions(saved_bin)
+        if gp:
+            # 初始化阶段加载：不写回配置（若 gp 只是回退到主程序路径，不应固化）
+            self._suppress_save = True
+            try:
+                self._open_extractor()
+            finally:
+                self._suppress_save = False
+
+    @staticmethod
+    def _cfg():
+        """取 ConfigManager（失败返回 None：独立运行时不影响使用）。"""
+        try:
+            return app_ctx.config
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _save_setting(self, **kw) -> None:
+        """写入解包器独立配置项（静默失败）。"""
+        if self._suppress_save:
+            return
+        cfg = self._cfg()
+        if cfg is None:
+            return
+        try:
+            for k, v in kw.items():
+                setattr(cfg, k, v)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_versions(self, prefer: str = ""):
+        """填充版本下拉：bin 下含 idx/ 的数字目录（新→旧）。
+
+        prefer 为上次使用的版本目录名，存在则选中它。
+        """
         self.cb_bin.clear()
         game = Path(self.ed_game.text().strip() or ".")
         bin_dir = game / "bin"
@@ -310,6 +355,8 @@ class UnpackerDialog(QDialog):
             self.cb_bin.addItem("（最新）", "")
             for f in folders:
                 self.cb_bin.addItem(f, f)
+            if prefer and prefer in folders:
+                self.cb_bin.setCurrentIndex(self.cb_bin.findData(prefer))
         else:
             self.cb_bin.addItem("（自动）", "")
 
@@ -322,6 +369,8 @@ class UnpackerDialog(QDialog):
             return
         self.ed_game.setText(path)
         self._refresh_versions()
+        # 写入解包器独立记录（下次打开沿用，不受主程序游戏路径变动影响）
+        self._save_setting(unpacker_game_path=path, unpacker_bin_folder="")
         self._open_extractor()
 
     def _open_extractor(self):
@@ -332,6 +381,7 @@ class UnpackerDialog(QDialog):
             self.lbl_status.setText("游戏目录不存在，请重新选择。")
             return
         bin_folder = self.cb_bin.currentData() or ""
+        self._save_setting(unpacker_game_path=game, unpacker_bin_folder=bin_folder)
         self.btn_open.setEnabled(False)
         self.lbl_status.setText("正在读取 idx（首次约需数秒）...")
         self._ex = None
@@ -506,6 +556,7 @@ class UnpackerDialog(QDialog):
         path = QFileDialog.getExistingDirectory(self, "选择输出目录", cur or str(get_app_dir()))
         if path:
             self.ed_out.setText(path)
+            self._save_setting(unpacker_output_dir=path)
 
     def _on_flatten_toggled(self, on: bool):
         if on and self.cb_par.isChecked():
@@ -529,6 +580,9 @@ class UnpackerDialog(QDialog):
             return
         game = self.ed_game.text().strip()
         bin_folder = self.cb_bin.currentData() or ""
+        # 记住本次使用的目录组合（解包器独立记录）
+        self._save_setting(unpacker_game_path=game, unpacker_bin_folder=bin_folder,
+                           unpacker_output_dir=out_dir)
         paths = list(self._queue)
         strip = self.cb_strip.isChecked()
         flatten = self.cb_flatten.isChecked()

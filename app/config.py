@@ -32,6 +32,12 @@ class AppConfig:
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
+    # 资源解包器（UnpackerDialog）的**独立**记录：与主程序的 game_path_* 完全分离，
+    # 主程序切换服务器/改路径不会影响解包器上次使用的目录。
+    unpacker_game_path: str = ""
+    unpacker_bin_folder: str = ""
+    unpacker_output_dir: str = ""
+
     # ── 游戏路径（按当前服务器动态解析） ──────────────────
     @property
     def game_path(self) -> str:
@@ -188,6 +194,35 @@ class ConfigManager:
     @include_prerelease.setter
     def include_prerelease(self, value: bool) -> None:
         self._config.include_prerelease = bool(value)
+        self.save()
+
+    # ── 资源解包器独立记录 ───────────────────────────────
+
+    @property
+    def unpacker_game_path(self) -> str:
+        return self._config.unpacker_game_path
+
+    @unpacker_game_path.setter
+    def unpacker_game_path(self, value: str) -> None:
+        self._config.unpacker_game_path = str(value or "")
+        self.save()
+
+    @property
+    def unpacker_bin_folder(self) -> str:
+        return self._config.unpacker_bin_folder
+
+    @unpacker_bin_folder.setter
+    def unpacker_bin_folder(self, value: str) -> None:
+        self._config.unpacker_bin_folder = str(value or "")
+        self.save()
+
+    @property
+    def unpacker_output_dir(self) -> str:
+        return self._config.unpacker_output_dir
+
+    @unpacker_output_dir.setter
+    def unpacker_output_dir(self, value: str) -> None:
+        self._config.unpacker_output_dir = str(value or "")
         self.save()
 
     # ── 供 Application 内部使用 ─────────────────────────

@@ -107,3 +107,40 @@ def find_latest_bin_folder(game_path, require_idx: bool = False) -> str | None:
         return None
     folders.sort(key=int)
     return folders[-1]
+
+
+def detect_wows_type(game_dir) -> str:
+    """按目录内容探测客户端类型：``'Lesta'``（Korabli*.exe）/ ``'Wargaming'``（WorldOfWarships*.exe）。
+
+    找不到返回空串。用途：防止把一服的客户端目录写进另一服的配置槽位
+    （config 的 game_path_lesta / game_path_wargaming 按当前 wows_type 分槽），
+    否则主程序会「用 Lesta 身份去读 WG 客户端」，表现就是读到另一服的数据。
+    """
+    import os
+
+    root = str(game_dir or "")
+    if not root or not os.path.isdir(root):
+        return ""
+
+    def _probe(base: str) -> str:
+        for name in ("Korabli64.exe", "Korabli.exe"):
+            if os.path.exists(os.path.join(base, name)):
+                return "Lesta"
+        for name in ("WorldOfWarships64.exe", "WorldOfWarships.exe"):
+            if os.path.exists(os.path.join(base, name)):
+                return "Wargaming"
+        return ""
+
+    hit = _probe(root)
+    if hit:
+        return hit
+    bin_dir = os.path.join(root, "bin")
+    if os.path.isdir(bin_dir):
+        try:
+            for sub in sorted(os.listdir(bin_dir), reverse=True):
+                hit = _probe(os.path.join(bin_dir, sub, "bin64"))
+                if hit:
+                    return hit
+        except OSError:
+            pass
+    return ""

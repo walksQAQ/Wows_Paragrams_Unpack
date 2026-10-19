@@ -73,7 +73,7 @@ KORABLI_TYPES: Tuple[PrototypeType, ...] = (
 WG_TYPES: Tuple[PrototypeType, ...] = (
     PrototypeType("MaterialPrototype", 0x5069C471, 0x78, 0, "材质属性表（WG 实测 0x78）", (".mfm",)),
     PrototypeType("VisualPrototype", 0x480DC57B, 0x70, 1, "渲染集合（WG 实测 0x70）", (".visual",)),
-    PrototypeType("SkeletonExtenderPrototype", 0x1AE023FF, 0x20, 2, "骨架扩展（WG 独有）", (".skeleton_extender",)),
+    PrototypeType("SkeletonExtenderPrototype", 0x1AE023FF, 0x20, 2, "骨架扩展（WG 独有）", (".skel_ext", ".skeleton_extender")),
     PrototypeType("ModelPrototype", 0xA9576F28, 0x28, 3, "模型引用（WG 实测 0x28）", (".model",)),
     PrototypeType("PointLightPrototype", 0x0D3665A4, 0x70, 4, "点光源（WG 独有）", (".point_light",)),
     PrototypeType("EffectPrototype", 0xEB23E0AF, 0x10, 5, "粒子效果"),

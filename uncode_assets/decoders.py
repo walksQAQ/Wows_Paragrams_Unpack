@@ -40,6 +40,31 @@ def _f(v: float) -> float:
     return round(v, 6)
 
 
+def read_material_header(data: bytes, wargaming: Optional[bool] = None) -> dict:
+    """只读 MaterialPrototype 的头部字段（不解析属性，用于建 fx 索引）。
+
+    比 :func:`decode_material` 快两个数量级（不读贴图/数组），
+    但仍返回与解码结果同名的 `shader_id`（`0x%08X`）与 `material_hash`（`0x%016X`）。
+
+    Args:
+        data: 记录字节（从记录起始）。
+        wargaming: 是否 WG 0x78 布局；None → 按当前线程服务器判定。
+    """
+    wg = get_wows_type() == "Wargaming" if wargaming is None else bool(wargaming)
+    shader_off = 0x04 if wg else 0x08
+    mat_hash_off = 0x68 if wg else 0x78
+    if len(data) < mat_hash_off + 8:
+        return {"shader_id": "", "material_hash": "", "collisionFlags": 0}
+    shader_id = B.read_u32(data, shader_off)
+    flags = B.read_u16(data, 0x02)
+    material_hash = B.read_u64(data, mat_hash_off)
+    return {
+        "shader_id": f"0x{shader_id:08X}",
+        "material_hash": f"0x{material_hash:016X}",
+        "collisionFlags": flags,
+    }
+
+
 def _arr(iterable) -> List:
     return list(iterable)
 
@@ -244,7 +269,7 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
     """解码 VisualPrototype（Korabli 实测 0x40B/条，blob 2）。
 
     Korabli 布局（2026-08-19 重新实测，并与 wows-toolkit 交叉验证）：
-      +0x00/+0x0C bbox min/max（vec3）
+      +0x00 vec4 min（取 xyz）, +0x10 vec4 max（取 xyz）
       +0x20 u64 geometry 资源ID（.geometry）, +0x28 u64 primitives 资源ID
       +0x30 u64 render_sets_count, +0x38 u64 render_sets relptr（**record-relative**）
     渲染集 OOL（步长 0x50）：+0x00 u32 shape.vertices 名 / +0x04 u32 indices 名 /
@@ -273,7 +298,7 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
         "_type": "VisualPrototype",
         "bounding_box": {
             "min": _arr(B.parse_vec3(data, 0x00)),
-            "max": _arr(B.parse_vec3(data, 0x0C)),
+            "max": _arr(B.parse_vec3(data, 0x10)),
         },
         "geometry": {
             "path": path_of(B.read_u64(data, 0x20)),
@@ -308,6 +333,21 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
     return result
 
 
+def _render_set_bbox(data: bytes, off: int) -> Optional[dict]:
+    """renderSet 自带的包围盒（+0x30 min vec3 / +0x40 max vec3，各带 4B 填充）。
+
+    未填充时为哨兵（min = FLT_MAX, max = -FLT_MAX），此时返回 None（明文中省略）。
+    """
+    try:
+        mn = [B.read_f32(data, off + 0x30 + k * 4) for k in range(3)]
+        mx = [B.read_f32(data, off + 0x40 + k * 4) for k in range(3)]
+    except Exception:  # noqa: BLE001
+        return None
+    if any(abs(v) >= 3.0e38 or v != v for v in mn + mx):
+        return None
+    return {"min": mn, "max": mx}
+
+
 def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
                         self_id_index: Dict[int, int],
                         end_pos: Optional[int] = None,
@@ -339,6 +379,21 @@ def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
         if i is not None:
             smfm = db.reconstruct_path(i, self_id_index)
         damage = ("_crack_" in shape or "_lod" in shape or "Crack" in mat)
+        # +0x0C u8 skinned / +0x0D u8 node_count / +0x28 u32 node_names relptr
+        # （相对 render_set 起始）；节点名顺序与官方 Mod SDK 明文一致
+        skinned = B.read_u8(data, off + 0x0C)
+        node_count = B.read_u8(data, off + 0x0D)
+        nodes_rel = B.read_u32(data, off + 0x28)
+        node_names: List[str] = []
+        if node_count and nodes_rel:
+            for j in range(node_count):
+                try:
+                    sid = B.read_u32(data, off + nodes_rel + j * 4)
+                except Exception:  # noqa: BLE001
+                    break
+                nm = db.strings.get_string_by_id(sid)
+                if nm:
+                    node_names.append(nm)
         items.append({
             # 官方 ModsSDK 明文格式（<renderSet><geometry><vertices/primitive/material>）
             "vertices": shape,
@@ -346,6 +401,9 @@ def _visual_render_sets(data: bytes, pos: int, db: PrototypeDatabase,
             "material_identifier": mat,
             "material_mfm": smfm,
             "damage": damage,
+            "skinned": bool(skinned),
+            "nodes": node_names,
+            "bounding_box": _render_set_bbox(data, off),
         })
         if max_items and len(items) >= max_items:
             break
@@ -418,20 +476,27 @@ def decode_visual_wg(data: bytes, db: PrototypeDatabase, record_base: int = 0) -
                 break
             nid = B.read_u32(data, o)
             mid = B.read_u32(data, o + 0x04)
+            vmap_id = B.read_u32(data, o + 0x08)
+            imap_id = B.read_u32(data, o + 0x0C)
             mfm_h = B.read_u64(data, o + 0x10)
             skinned = B.read_u8(data, o + 0x18)
             ncnt = B.read_u8(data, o + 0x19)
             node_names: List[str] = []
             nrel = B.read_i64(data, o + 0x20)
-            if skinned and ncnt and nrel:
+            # ⚠️ node 列表**不依赖 skinned**：非蒙皮渲染集同样带绑定节点
+            # （实测 3005 个渲染集里 2892 个 skinned=0 但 ncnt>0）。
+            if ncnt and nrel:
                 nabs = o + nrel
                 if nabs + ncnt * 4 <= len(data):
                     node_names = [str_of(B.read_u32(data, nabs + j * 4)) for j in range(ncnt)]
             render_sets.append({
                 "name": str_of(nid),
                 "material_identifier": str_of(mid),
-                "vertices_mapping_id": f"0x{B.read_u32(data, o + 0x08):08X}",
-                "indices_mapping_id": f"0x{B.read_u32(data, o + 0x0C):08X}",
+                "vertices_mapping_id": f"0x{vmap_id:08X}",
+                "indices_mapping_id": f"0x{imap_id:08X}",
+                # mapping id 就是 shape 名的 MurmurHash3_x86_32，可直接反查字符串表
+                "vertices": str_of(vmap_id),
+                "primitive": str_of(imap_id),
                 "material_mfm": path_of(mfm_h),
                 "skinned": bool(skinned),
                 "nodes": node_names,
@@ -484,7 +549,7 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
       +0x00 model_resource_id  → .model 路径（可为 0）
       +0x08 visual_resource_id → .visual 路径
       +0x10 2×f32  距离/尺寸参数（3/8/10/16/400/50000…）
-      +0x18 u32    count（多数 11，少数 8/9/10）
+      +0x18 u32    count（位标志：bit1 = castsShadow；实测 8/9→false，10/11→true）
       +0x1C u32    tail（通常 0）
     """
     if len(data) < 0x20:
@@ -500,18 +565,19 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
         idx = index.get(self_id)
         return db.reconstruct_path(idx, index) if idx is not None else f"0x{self_id:016X}"
 
+    count = B.read_u32(data, 0x18)
     return {
         "_type": "ModelPrototype",
-        # 官方 ModsSDK 明文格式（<model><parent>/<nodefullVisual>/<extent>）
+        # 官方 ModsSDK 明文格式（<model><castsShadow>/<parent>/<extent>/<nodefullVisual>/<metaData>）
         "parent": path_of(model_id),
         "nodefullVisual": path_of(visual_id),
         "extent": {
             "distance_a": _f(B.read_f32(data, 0x10)),
             "distance_b": _f(B.read_f32(data, 0x14)),
         },
-        "castsShadow": None,
+        "castsShadow": bool(count & 0x02),
         "metaData": "Lesta Studio",
-        "count": B.read_u32(data, 0x18),
+        "count": count,
         "tail": B.read_u32(data, 0x1C),
         "raw_hex": data[:0x20].hex(),
     }
@@ -543,19 +609,70 @@ def decode_model_wg(data: bytes, db: PrototypeDatabase) -> dict:
         idx = index.get(self_id)
         return db.reconstruct_path(idx, index) if idx is not None else f"0x{self_id:016X}"
 
+    def str_of(h: int) -> str:
+        return db.strings.get_string_or_hex(h)
+
     visual_id = B.read_u64(data, 0x00)
     skel_ext_count = data[0x08]
     misc_type = data[0x09]
     animations_count = data[0x0A]
     dyes_count = data[0x0B]
+    skel_ext_ids: List[int] = []
+    if skel_ext_count and B.read_i64(data, 0x10):
+        try:
+            skel_ext_ids = B.parse_u64_array(data, B.read_i64(data, 0x10), skel_ext_count)
+        except Exception:  # noqa: BLE001
+            skel_ext_ids = []
+    # animations：u64 路径 selfId 数组（.ssm 动画状态机）
+    animations: List[str] = []
+    anim_rel = B.read_i64(data, 0x18)
+    if animations_count and anim_rel:
+        try:
+            animations = [path_of(v) for v in
+                          B.parse_u64_array(data, anim_rel, animations_count)]
+        except Exception:  # noqa: BLE001
+            animations = []
+    # dyes：DyeEntry 0x20（matter/replaces + tint 名与材质路径）
+    dyes: List[dict] = []
+    dye_rel = B.read_i64(data, 0x20)
+    if dyes_count and dye_rel:
+        for k in range(dyes_count):
+            off = dye_rel + k * 0x20
+            if off + 0x20 > len(data):
+                break
+            matter = B.read_u32(data, off)
+            replaces = B.read_u32(data, off + 0x04)
+            tnum = B.read_i32(data, off + 0x08)
+            tnum = max(0, min(tnum, 512))
+            tint_names: List[str] = []
+            tint_mats: List[str] = []
+            if tnum:
+                try:
+                    nrel = B.read_i64(data, off + 0x10)
+                    mrel = B.read_i64(data, off + 0x18)
+                    if nrel:
+                        tint_names = [str_of(v) for v in B.parse_u32_array(data, nrel, tnum)]
+                    if mrel:
+                        tint_mats = [path_of(v) for v in B.parse_u64_array(data, mrel, tnum)]
+                except Exception:  # noqa: BLE001
+                    pass
+            dyes.append({
+                "matter": str_of(matter),
+                "replaces": str_of(replaces),
+                "tint_names": tint_names,
+                "tint_materials": tint_mats,
+            })
     return {
         "_type": "ModelPrototype",
         "visualResourceId": f"0x{visual_id:016X}",
         "visual": path_of(visual_id),            # 该模型引用的 .visual（独立展示）
         "skelExtResIdCount": skel_ext_count,
+        "skelExtResIds": [path_of(i) for i in skel_ext_ids],
         "miscType": misc_type,
         "animationsCount": animations_count,
+        "animations": animations,
         "dyesCount": dyes_count,
+        "dyes": dyes,
         "skelExtResIdsPtr": f"0x{B.read_u64(data, 0x10):016X}",
         "animationsPtr": f"0x{B.read_u64(data, 0x18):016X}",
         "dyesPtr": f"0x{B.read_u64(data, 0x20):016X}",

@@ -118,6 +118,14 @@ def parse_u32_array(data: bytes, offset: int, count: int) -> List[int]:
     return list(struct.unpack_from(f'<{count}I', data, offset))
 
 
+def parse_u64_array(data: bytes, offset: int, count: int) -> List[int]:
+    """u64 数组（如 WG ModelPrototype 的 skelExtResIds / tintMaterialIds）。"""
+    if count <= 0:
+        return []
+    _check(data, offset, count * 8)
+    return list(struct.unpack_from(f'<{count}Q', data, offset))
+
+
 def parse_matrix_array(data: bytes, offset: int, count: int) -> List[List[float]]:
     """解析 count 个 4×4 矩阵（每个 16×f32 = 64 字节）。"""
     if count <= 0:
