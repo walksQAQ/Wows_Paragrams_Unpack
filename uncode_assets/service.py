@@ -32,18 +32,56 @@ from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
 
+#: 已编译 fx 的资源后缀（一个 .fx 对应一份 .win.dx11.fxo）
+FXO_SUFFIX = ".win.dx11.fxo"
 
-def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None) -> bytes:
+
+def collect_fx_catalog(file_tree, out: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+    """从 pkg 文件树构建 fx 短名 → 完整路径。
+
+    运行时 fx 名以**短名**形式保存（如 `flag.fx`），完整路径由
+    `shaders/<目录>/<短名>` 拼接；客户端内没有静态的短名→路径表，
+    只能从 `.fxo` 清单反推。同名多目录时值为路径列表。
+
+    `file_tree` 为 `GameExtractor.file_tree`（键为 VFS 路径）。
+    """
+    cat: Dict[str, object] = {} if out is None else out
+    for p in file_tree:
+        if not p.endswith(FXO_SUFFIX):
+            continue
+        fx = p[:-len(FXO_SUFFIX)] + ".fx"
+        short = fx.rsplit("/", 1)[-1]
+        prev = cat.get(short)
+        if prev is None:
+            cat[short] = fx
+        elif isinstance(prev, list):
+            if fx not in prev:
+                prev.append(fx)
+        elif prev != fx:
+            cat[short] = [prev, fx]
+    return cat
+
+
+def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None,
+                          fx_catalog: Optional[Dict[str, object]] = None) -> bytes:
     """从游戏 .pkg 现场读取 content/assets.bin 原始字节（**全内存，不落盘**）。
 
     这是 assets.bin 的唯一提取入口：不读任何既有解包产物、也不写临时文件，
     因此绝不会读到别的客户端/旧版本的残留。失败抛 :class:`AssetsBinError`。
     注意 assets.bin 为 Kraken container，解压 220MB+ 较慢（纯 Python 解码）。
+
+    传入 `fx_catalog` 时，顺便用同一个 extractor 的文件树填充
+    `fx 短名 → 完整 .fx 路径`（不额外读盘）。
     """
     from data_extractor import GameExtractor
 
     extractor = GameExtractor(game_dir, bin_folder=bin_folder)
     try:
+        if fx_catalog is not None:
+            try:
+                collect_fx_catalog(extractor.file_tree, fx_catalog)
+            except Exception:  # noqa: BLE001
+                pass
         entry = extractor.file_tree.get(ASSETS_BIN_PATH)
         if entry is None or entry.is_directory or entry.file_info is None:
             raise AssetsBinError(f"未在文件树中找到 {ASSETS_BIN_PATH}")
@@ -84,6 +122,8 @@ class AssetsBinService:
         self._bin_folder: Optional[str] = bin_folder
         self._from_cache: bool = False
         self._cache_path: Optional[Path] = None
+        #: fx 短名 → 完整路径（仅从游戏目录加载时填充）
+        self._fx_catalog: Dict[str, object] = {}
 
         if assets_bytes is not None:
             self.load_bytes(assets_bytes)
@@ -103,7 +143,8 @@ class AssetsBinService:
         不落盘、不复用任何既有解包产物。
         """
         game_dir = Path(game_dir)
-        data = read_assets_bin_bytes(game_dir, bin_folder=self._bin_folder)
+        data = read_assets_bin_bytes(game_dir, bin_folder=self._bin_folder,
+                                     fx_catalog=self._fx_catalog)
         self._game_dir = game_dir
         self.load_bytes(data)
         return data
@@ -184,6 +225,11 @@ class AssetsBinService:
     @property
     def game_dir(self) -> Optional[Path]:
         return self._game_dir
+
+    @property
+    def fx_catalog(self) -> Dict[str, object]:
+        """fx 短名 → 完整 `.fx` 路径；直接打开 assets.bin 文件时为空字典。"""
+        return self._fx_catalog
 
     # ── 概览 ─────────────────────────────────────────────
 

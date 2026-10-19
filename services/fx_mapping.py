@@ -87,6 +87,94 @@ def fx_name(wows_type: str, shader_id: str, material_hash: str) -> str:
     return m.get((sh, material_hash.lower())) or shader_id
 
 
+def fx_full_path(
+    wows_type: str,
+    shader_id: str,
+    material_hash: str,
+    short_map: Dict[str, object] | None = None,
+) -> str:
+    """返回完整 fx 路径（如 `shaders/std_effects/flag.fx`）。
+
+    `short_map` 由调用方从**当前客户端的 pkg 清单**现场扫描得到
+    （短名 → 完整路径）；未提供时只认映射表里的完整路径。
+    同一短名可能对应多个目录，此时用 ` | ` 连接返回。
+    """
+    fx = fx_name(wows_type, shader_id, material_hash)
+    if not fx:
+        return ""
+    low = fx.lower()
+    if "/" in fx and low.endswith(".fx"):
+        return fx
+    if short_map and low.endswith(".fx"):
+        hit = short_map.get(fx)
+        if isinstance(hit, str):
+            return hit
+        if isinstance(hit, list) and hit:
+            return " | ".join(str(x) for x in hit)
+    return ""
+
+
+def fx_names_by_material_hash(wows_type: str, material_hash: str) -> list[str]:
+    """同一 material_hash 在其它 shader 族下的 fx 名（**仅供参考，不参与判定**）。
+
+    材质模板会跨 shader 族复用（同一 hash 常见于 0x0005/0x0006/0x0007 多个族），
+    因此精确未命中时用它提示“大概对应哪个 fx”。
+    """
+    if not material_hash:
+        return []
+    h = material_hash.lower()
+    out: list[str] = []
+    for (_sh, mh), fx in load(wows_type).items():
+        if mh == h and fx and fx.lower().endswith(".fx") and fx not in out:
+            out.append(fx)
+    return out
+
+
+def _resolve_short(fx: str, short_map: Dict[str, object]) -> str:
+    """短名 → 完整路径（同短名多目录用 ` | ` 连接）；已是完整路径则原样返回。"""
+    if "/" in fx:
+        return fx
+    hit = short_map.get(fx)
+    if isinstance(hit, str):
+        return hit
+    if isinstance(hit, list) and hit:
+        return " | ".join(str(x) for x in hit)
+    return fx
+
+
+def fx_display(
+    wows_type: str,
+    shader_id: str,
+    material_hash: str,
+    short_map: Dict[str, object] | None = None,
+) -> str:
+    """给界面用的 fx 展示文本。
+
+    - 无 `short_map`（直接打开单个 assets.bin 文件）→ 空串，界面不显示该行
+    - 命中 → 完整路径；映射表路径在当前客户端不存在/已改目录时附注
+    - 未命中 → `(未映射 · 技术族=... · 参考同 material_hash: ...)`
+    """
+    if not short_map:
+        return ""
+    path = fx_full_path(wows_type, shader_id, material_hash, short_map)
+    if path:
+        hit = short_map.get(path.rsplit("/", 1)[-1])
+        if hit is None:
+            return f"{path}  (当前客户端中不存在)"
+        if isinstance(hit, str) and hit != path:
+            return f"{path}  (当前客户端路径: {hit})"
+        return path
+    fam = tech_family(wows_type, shader_id, material_hash)
+    refs: list[str] = []
+    for name in fx_names_by_material_hash(wows_type, material_hash):
+        p = _resolve_short(name, short_map)
+        if p not in refs:
+            refs.append(p)
+    if refs:
+        return f"(未映射 · 技术族={fam} · 参考同 material_hash: {', '.join(refs[:3])})"
+    return f"(未映射 · 技术族={fam} · material_hash={material_hash})"
+
+
 def tech_family(wows_type: str, shader_id: str, material_hash: str) -> str:
     """按 fx 名判定渲染类别（渲染分支用）；无映射退回 shader_id 高 16 位族。
 

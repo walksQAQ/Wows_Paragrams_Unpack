@@ -49,6 +49,20 @@ QLabel#source { color: #7f7f7f; padding: 0 8px; font-size: 11px; }
 """
 
 
+def _insert_after(data: dict, anchor: str, key: str, value) -> dict:
+    """在 `anchor` 键之后插入一个新键（保持其余键顺序）；无 anchor 时追加到末尾。"""
+    out: dict = {}
+    placed = False
+    for k, v in data.items():
+        out[k] = v
+        if k == anchor:
+            out[key] = value
+            placed = True
+    if not placed:
+        out[key] = value
+    return out
+
+
 class _LoadWorker(QThread):
     """后台加载线程：解析 assets.bin 并构建 VFS。"""
 
@@ -338,11 +352,32 @@ class AssetsBinViewer(QMainWindow):
             return
         try:
             decoded = self._svc.vfs.decode_file(path)
+            fx_text = self._fx_text(decoded)
+            if fx_text:
+                decoded = _insert_after(decoded, "material_hash", "fx_path", fx_text)
             text = json.dumps(decoded, ensure_ascii=False, indent=2, allow_nan=False)
         except (AssetsBinError, KeyError, ValueError, Exception) as e:  # noqa: BLE001
             text = f"解码失败: {e}"
         self.json_view.setPlainText(text)
         self.status_label.setText(f"{path}")
+
+    def _fx_text(self, decoded) -> str:
+        """MaterialPrototype 对应的 fx 文本（插到 `material_hash` 字段之后）。
+
+        fx 短名 → 完整路径的对照由当前客户端的 `.fxo` 清单反推；
+        **直接打开 assets.bin 文件时没有清单**，此时不输出该字段。
+        """
+        if not isinstance(decoded, dict) or decoded.get("_type") != "MaterialPrototype":
+            return ""
+        cat = self._svc.fx_catalog if self._svc is not None else {}
+        if not cat:
+            return ""
+        try:
+            from services.fx_mapping import fx_display
+            return fx_display(self._wows_type, decoded.get("shader_id") or "",
+                              decoded.get("material_hash") or "", cat)
+        except Exception:  # noqa: BLE001
+            return ""
 
     # ── 搜索 ────────────────────────────────────────────
 
