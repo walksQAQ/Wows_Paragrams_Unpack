@@ -242,6 +242,15 @@ class HullMesh:
     indices: np.ndarray            # (M,) u32
     vertex_count: int = 0
     uvs: np.ndarray | None = None  # (N,2) f32（贴图用）
+    #: 第二套 UV（格式含 uv2 时）
+    uv2: np.ndarray | None = None
+    #: 切线/副切线（格式含 tb 时）
+    tangents: np.ndarray | None = None
+    binormals: np.ndarray | None = None
+    #: 单独 t 属性的原始 4 字节（语义未知，原样保留）
+    t4: np.ndarray | None = None
+    #: ``r`` 属性原始 4 字节（(N,4) uint8，不做语义解释）
+    extra: np.ndarray | None = None
     material: str | None = None    # 材质名（如 TL2_SHIPMAT_PBS_DeckHouse）
     texture_dds: bytes | None = None   # 该材质独立贴图（.mfm diffuseMap 或 INDEXED albedoArray）
     texture_path: str = ""
@@ -289,6 +298,12 @@ class MountMesh:
     normals: np.ndarray            # (N,3) f32
     indices: np.ndarray            # (M,) u32
     uvs: np.ndarray | None = None  # (N,2) f32
+    #: 第二套 UV / 切线 / 副切线 / 未知 t4 / r 属性（与 HullMesh 同义）
+    uv2: np.ndarray | None = None
+    tangents: np.ndarray | None = None
+    binormals: np.ndarray | None = None
+    t4: np.ndarray | None = None
+    extra: np.ndarray | None = None
     model_matrix: np.ndarray | None = None  # (4,4) f32 行主序（渲染空间）
     texture_dds: bytes | None = None
     texture_path: str = ""
@@ -479,6 +494,10 @@ class GeometryService:
         self._mfm_textures_db: dict | None = None
         #: 舰船实体 JSON 快照缓存 {game_key: dict}（DB-first：只读主库 entity_snapshots）
         self._ship_snapshot_cache: dict = {}
+        #: 实时骨架读取（assets.bin，独立模型查看器用）：stem → 骨架文件路径索引
+        self._live_skel_index: dict | None = None
+        #: 实时骨架缓存 {stem: {bone_name: (4,4)}}（assets.bin bind pose 世界矩阵）
+        self._live_skel_cache: dict = {}
     @classmethod
     def instance(cls) -> "GeometryService":
         with cls._lock:
@@ -496,6 +515,13 @@ class GeometryService:
                 bin_folder=app_ctx.ctx.bin_folder,
             )
         return self._extractor
+
+    def get_extractor(self):
+        """公开访问共享的客户端提取器（独立工具复用，避免重复解析 IDX）。
+
+        只读用途（枚举 VFS / 读取单个文件），不要在调用方持有或关闭它。
+        """
+        return self._get_extractor()
 
     def _release_extractor(self):
         if self._extractor is not None:
@@ -1111,6 +1137,9 @@ class GeometryService:
                 name=folder, component=comp,
                 positions=hm.positions, normals=hm.normals,
                 uvs=hm.uvs, indices=hm.indices,
+                uv2=hm.uv2, tangents=hm.tangents, binormals=hm.binormals,
+                t4=hm.t4,
+                extra=hm.extra,
                 model_matrix=None,
                 instance_matrices=[np.ascontiguousarray(m, dtype=np.float32)
                                    for m in mats],
@@ -1174,6 +1203,9 @@ class GeometryService:
                 name=name, component=rep.component,
                 positions=rep.positions, normals=rep.normals,
                 uvs=rep.uvs, indices=rep.indices,
+                uv2=rep.uv2, tangents=rep.tangents, binormals=rep.binormals,
+                t4=rep.t4,
+                extra=rep.extra,
                 model_matrix=None,
                 texture_dds=rep.texture_dds, texture_path=rep.texture_path,
                 model_folder=rep.model_folder, vertex_count=rep.vertex_count,
@@ -1609,6 +1641,78 @@ class GeometryService:
         self._mount_model_cache[key] = world
         return world
 
+    def _live_skel_path_index(self) -> dict:
+        """实时索引：模型目录 stem → 该目录下**全部** SkeletonPrototype 路径。
+
+        同一模型目录可能有多个骨架文件（舰体主骨架 + 各分段/天线骨架），
+        必须全部合并才能得到完整骨骼表。
+        """
+        if self._live_skel_index is not None:
+            return self._live_skel_index
+        idx: dict = {}
+        try:
+            svc = self._get_assets_service()
+            if svc is not None:
+                for f in svc.vfs.all_files():
+                    try:
+                        pt = f.prototype_type
+                        if pt is None or pt.name != "SkeletonPrototype":
+                            continue
+                    except Exception:  # noqa: BLE001
+                        continue
+                    parts = [p for p in f.path.replace("/@", "/").split("/") if p]
+                    stem = parts[-2] if len(parts) >= 2 else ""
+                    if stem:
+                        idx.setdefault(stem, []).append(f.path)
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 实时骨架索引构建失败: {exc}")
+        self._live_skel_index = idx
+        return idx
+
+    def live_skeleton(self, stem: str) -> dict:
+        """**实时从客户端 assets.bin** 读取某模型骨架（bind pose 世界矩阵）。
+
+        返回 {bone_name: (4,4) 行主序}；不读写 assets_data.db。
+        合并该模型目录下**全部** SkeletonPrototype（主骨架 + 分段骨架），
+        矩阵列主序 → 行主序后按 parent_ids 累积到世界空间。
+        无游戏目录 / assets.bin 无该骨架时返回空 dict。
+        """
+        cached = self._live_skel_cache.get(stem)
+        if cached is not None:
+            return cached
+        out: dict = {}
+        try:
+            svc = self._get_assets_service()
+            paths = self._live_skel_path_index().get(stem) or []
+            for path in paths:
+                try:
+                    sk = svc.decode_skeleton_path(path)
+                except Exception:  # noqa: BLE001
+                    continue
+                names = sk.get("name_ids") or []
+                mats = sk.get("matrices") or []
+                parents = sk.get("parent_ids") or []
+                n = len(names)
+                if not n or n != len(mats):
+                    continue
+                local = [np.array(mats[i], dtype=np.float32).reshape(4, 4).T
+                         for i in range(n)]
+                world: list = [None] * n
+                for i in range(n):
+                    p = parents[i] if i < len(parents) else 65535
+                    if p >= n or p == i or p == 65535:
+                        world[i] = local[i]
+                    else:
+                        world[i] = (world[p] if world[p] is not None
+                                    else np.eye(4, dtype=np.float32)) @ local[i]
+                for i, nm in enumerate(names):
+                    if i < len(world) and world[i] is not None:
+                        out.setdefault(str(nm), world[i])
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 实时骨架读取失败({stem}): {exc}")
+        self._live_skel_cache[stem] = out
+        return out
+
     def _mp_model_folder(self, mp_name: str) -> str:
         """MP_ 节点 → 模型目录：WG 用完整 miscName（如 AM003_Fairlead_1），Lesta 用 baseID（AM003）。
 
@@ -1709,6 +1813,9 @@ class GeometryService:
                     name=mp_name, component=component,
                     positions=hm.positions, normals=hm.normals,
                     uvs=hm.uvs, indices=hm.indices,
+                    uv2=hm.uv2, tangents=hm.tangents, binormals=hm.binormals,
+                    t4=hm.t4,
+                    extra=hm.extra,
                     model_matrix=(armor_mtx if hm.skinned_applied else mtx),
                     texture_dds=hm.texture_dds, texture_path=hm.texture_path,
                     model_folder=sub_folder, vertex_count=hm.vertex_count,
@@ -1856,11 +1963,28 @@ class GeometryService:
                 sind = db.strings.get_string_by_id(iid) or ''
                 mat = db.strings.get_string_by_id(mat_h) or ''
                 smfm = path_of(mfm_h)
+                # 蒙皮标志 + 调色板节点名（与入库存库逻辑一致）：
+                #   +0x0C u8 skinned / +0x0D u8 nodes_count /
+                #   +0x28 u64 node_name_ids relptr（item-relative）→ u32 名ID 数组
+                skinned = bool(data[o + 0x0C])
+                ncnt = data[o + 0x0D]
+                nodes: list[str] = []
+                if ncnt:
+                    nrel = struct.unpack_from('<Q', data, o + 0x28)[0]
+                    if nrel:
+                        nabs = o + nrel
+                        if nabs + ncnt * 4 <= len(data):
+                            for j in range(ncnt):
+                                nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
+                                nm = db.strings.get_string_by_id(nid) or ''
+                                if nm:
+                                    nodes.append(nm)
                 # 仅跳过 crack 损伤与低模 LOD；patch/wire/hide 保留渲染
                 damage = ('_crack_' in shape or '_lod' in shape or 'Crack' in mat)
                 if shape not in out:
                     out[shape] = {'shape': shape, 'indices': sind,
-                                  'material': mat, 'mfm': smfm, 'damage': damage}
+                                  'material': mat, 'mfm': smfm, 'damage': damage,
+                                  'skinned': skinned, 'nodes': nodes}
         return list(out.values())
 
     def _geometry_folder_index(self, extractor) -> dict:
@@ -2595,7 +2719,9 @@ class GeometryService:
 
         修正：按渲染集调色板 + 顶点骨骼索引/权重做标准线性混合蒙皮：
             p' = Σ_j w_j · (R_j · p + t_j)
-        顶点骨骼索引 = 调色板 slot × 3（Korabli 实测），权重 4×u8/255（和=1）。
+        顶点组索引 = 调色板 slot × 3（Korabli 实测）；iiiww 的 8B 布局为
+        ``u8 idx[3] + 2B pad + u8 w[2] + 1B pad``：i0↔w0、i1↔w1，
+        第三个顶点组权重 = 1-w0-w1（解析层已转换为 4 列）。
 
         - 调色板缺失 / 骨架缺失 / 全部骨骼为恒等 → 不修改（保持原样，安全回退）。
         - 法线用旋转部分（忽略平移）混合后归一化。
@@ -2627,7 +2753,10 @@ class GeometryService:
             if m is not None and not np.allclose(m, np.eye(4), atol=1e-4):
                 any_non_identity = True
         if not any_non_identity:
-            return False  # 全部恒等 → 无需变换
+            # 骨骼全为恒等：无需变换顶点，但仍保留 skin 数据（供 GLB 导出 skin）
+            prim.skin_bones = list(palette)
+            prim.skin_bind = mats
+            return False
 
         idx = prim.bone_indices  # (N,4) uint8
         wts = prim.bone_weights  # (N,4) float32
@@ -2727,6 +2856,13 @@ class GeometryService:
             normals=p.normals.copy(),
             uvs=None if p.uvs is None else p.uvs.copy(),
             indices=None if p.indices is None else p.indices.copy(),
+            uv2=None if getattr(p, "uv2", None) is None else p.uv2.copy(),
+            tangents=(None if getattr(p, "tangents", None) is None
+                      else p.tangents.copy()),
+            binormals=(None if getattr(p, "binormals", None) is None
+                       else p.binormals.copy()),
+            t4=None if getattr(p, "t4", None) is None else p.t4.copy(),
+            extra=None if getattr(p, "extra", None) is None else p.extra.copy(),
             mapping_id=p.mapping_id,
             is_skinned=p.is_skinned,
             bone_indices=None if p.bone_indices is None else p.bone_indices.copy(),
@@ -2843,16 +2979,32 @@ class GeometryService:
         v_total = sum(p.positions.shape[0] for p in primitives)
         i_total = sum(0 if p.indices is None else p.indices.size for p in primitives)
         has_uv = any(p.uvs is not None for p in primitives)
+        has_uv2 = any(getattr(p, "uv2", None) is not None for p in primitives)
+        has_tb = any(getattr(p, "tangents", None) is not None for p in primitives)
+        has_t4 = any(getattr(p, "t4", None) is not None for p in primitives)
+        has_extra = any(getattr(p, "extra", None) is not None for p in primitives)
         has_bone = any(p.bone_indices is not None for p in primitives)
 
         positions = np.empty((v_total, 3), dtype=np.float32)
         normals = np.empty((v_total, 3), dtype=np.float32)
         uvs = np.empty((v_total, 2), dtype=np.float32) if has_uv else None
+        uv2 = np.empty((v_total, 2), dtype=np.float32) if has_uv2 else None
+        tangents = np.empty((v_total, 3), dtype=np.float32) if has_tb else None
+        binormals = np.empty((v_total, 3), dtype=np.float32) if has_tb else None
+        t4 = np.empty((v_total, 4), dtype=np.uint8) if has_t4 else None
+        extra = np.empty((v_total, 4), dtype=np.uint8) if has_extra else None
         indices = np.empty(i_total, dtype=np.uint32)
         bone_indices = np.empty((v_total, 4), dtype=np.uint8) if has_bone else None
         bone_weights = np.empty((v_total, 4), dtype=np.float32) if has_bone else None
         skin_bones: list = []
         skin_bind: list = []
+
+        def _copy_attr(dst, src_val, fill=0.0):
+            if dst is not None:
+                if src_val is not None:
+                    dst[voff:voff + n] = src_val
+                else:
+                    dst[voff:voff + n] = fill
 
         voff = 0
         ioff = 0
@@ -2860,11 +3012,12 @@ class GeometryService:
             n = p.positions.shape[0]
             positions[voff:voff + n] = p.positions
             normals[voff:voff + n] = p.normals
-            if uvs is not None:
-                if p.uvs is not None:
-                    uvs[voff:voff + n] = p.uvs
-                else:
-                    uvs[voff:voff + n] = 0.0
+            _copy_attr(uvs, p.uvs)
+            _copy_attr(uv2, getattr(p, "uv2", None))
+            _copy_attr(tangents, getattr(p, "tangents", None))
+            _copy_attr(binormals, getattr(p, "binormals", None))
+            _copy_attr(t4, getattr(p, "t4", None), fill=0)
+            _copy_attr(extra, getattr(p, "extra", None), fill=0)
             if bone_indices is not None:
                 if p.bone_indices is not None:
                     bone_indices[voff:voff + n] = p.bone_indices
@@ -2885,6 +3038,11 @@ class GeometryService:
             positions=positions,
             normals=normals,
             uvs=uvs,
+            uv2=uv2,
+            tangents=tangents,
+            binormals=binormals,
+            t4=t4,
+            extra=extra,
             indices=indices[:ioff] if ioff < i_total else indices,
             vertex_count=voff,
             bone_indices=bone_indices,

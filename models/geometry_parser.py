@@ -95,14 +95,24 @@ class MeshPrimitive:
     normals: np.ndarray            # (N,3) float32
     uvs: np.ndarray | None = None  # (N,2) float32
     indices: np.ndarray | None = None  # (M,) uint32
+    #: 第二套 UV（格式含 uv2 时），(N,2) float32
+    uv2: np.ndarray | None = None
+    #: 切线/副切线（格式含 tb 时），(N,3) float32（packed 4B 解出）
+    tangents: np.ndarray | None = None
+    binormals: np.ndarray | None = None
+    #: 单独的 ``t`` 属性原始 4 字节（语义未知，原样保留），(N,4) uint8
+    t4: np.ndarray | None = None
+    #: ``r`` 属性原始 4 字节（不做语义解释），(N,4) uint8
+    extra: np.ndarray | None = None
     mapping_id: int = 0            # vertices_mapping[i].mapping_id（连接渲染集用）
     #: 源顶点缓冲带骨骼语义（格式含 iiiww / i，即蒙皮网格）。
     #: ⚠️ 不能用 VertexBuffer.is_skinned——Korabli 文件里该标志恒为 0，
     #: 只能按顶点格式串判定（见 _build_primitives）。
     is_skinned: bool = False
     #: 蒙皮数据（仅 iiiww 8B 骨骼属性时非 None）：
-    #: bone_indices (N,4) uint8 原始索引（Korabli 实测 = 调色板 slot × 3）；
-    #: bone_weights (N,4) float32（4×u8/255，逐顶点和=1）。
+    #: bone_indices (N,4) uint8 顶点组索引（= 调色板 slot × 3）：前 3 列来自文件，
+    #: 第 4 列恒 0；bone_weights (N,4) float32：w0/w1 来自 2×u8/255，
+    #: w2 = 1-w0-w1（第三个顶点组的隐含权重），第 4 列恒 0。
     #: 由 geometry_service._apply_skinning 按渲染集调色板施加 bind pose 混合。
     bone_indices: np.ndarray | None = None
     bone_weights: np.ndarray | None = None
@@ -152,10 +162,16 @@ class ParsedGeometry:
 def parse_vertex_format(format_name: str) -> list[tuple[str, int, int]]:
     """解析格式字符串（如 set3/xyznuvtpc）→ [(semantic, offset, size), ...]。
 
-    语义: xyz=POSITION(12B) n=NORMAL(4B) uv/uv2=TEXCOORD(4B) tb=TANGENT+BINORMAL(8B)
-          iiiww=BONE(8B) i=BONE4B r=EXTRA(4B) pc/oi=标记(0B)
+    语义: xyz=POSITION(12B) n=NORMAL(4B) uv/uv2=TEXCOORD(4B) t=EXTRA(4B)
+          tb=TANGENT+BINORMAL(8B) iiiww=BONE(8B) i=BONE4B r=EXTRA(4B) pc/oi=标记(0B)
+
+    ⚠️ 末尾的 ``_encd``（ENCD 压缩标记，如 ``xyznuvtbipc_encd``）只是数据块
+    压缩方式的标记，不参与布局；必须先剥掉，否则后缀里的 ``n``/``d`` 会被
+    当成 normal / 其他属性，导致法线偏移错位。
     """
     code = format_name.rsplit("/", 1)[-1]
+    if code.lower().endswith("_encd"):
+        code = code[:-5]
     attrs: list[tuple[str, int, int]] = []
     offset = 0
     uv_count = 0
@@ -181,6 +197,12 @@ def parse_vertex_format(format_name: str) -> list[tuple[str, int, int]]:
             uv_count += 1
             attrs.append((name, offset, 4))
             offset += 4
+            # uv2/uv3：额外的贴图坐标套数（各 4B，2×f16）
+            if i < n and code[i] in "23456789":
+                i += 1
+                attrs.append((f"uv{uv_count}", offset, 4))
+                offset += 4
+                uv_count += 1
         elif ch == "t":
             i += 1
             if i < n and code[i] == "b":
@@ -188,6 +210,11 @@ def parse_vertex_format(format_name: str) -> list[tuple[str, int, int]]:
                 attrs.append(("tangent", offset, 4))
                 offset += 4
                 attrs.append(("binormal", offset, 4))
+                offset += 4
+            else:
+                # 单独 t：计 4B 步长（实测不是 packed 切线，解出的向量长度不固定），
+                # 作为未知属性原样保留（t4），不参与切线导出。
+                attrs.append(("t4", offset, 4))
                 offset += 4
         elif ch == "i":
             # iiiww → 8B 骨骼；单独 i → 4B 实例
@@ -225,38 +252,73 @@ def parse_vertex_format(format_name: str) -> list[tuple[str, int, int]]:
 def unpack_vertices(raw: np.ndarray, fmt: str) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     """把 (count, stride) uint8 顶点数据拆成 (positions, normals, uvs)。
 
-    - positions: (N,3) float32
-    - normals:   (N,3) float32（4 字节 packed normal → 有符号字节 /127）
-    - uvs:       (N,2) float32 或 None（2×f16 + 0.5 偏置）
+    兼容旧调用；需要全部属性（uv2/tangent/binormal/extra）时用
+    :func:`unpack_vertex_attributes`。
+    """
+    attrs = unpack_vertex_attributes(raw, fmt)
+    return attrs["positions"], attrs["normals"], attrs["uv"]
+
+
+def unpack_vertex_attributes(raw: np.ndarray, fmt: str) -> dict:
+    """把 (count, stride) uint8 顶点数据拆成**全部**顶点属性。
+
+    返回 dict：
+
+    - ``positions`` (N,3) float32
+    - ``normals``   (N,3) float32（4B packed normal → 有符号字节 /127）
+    - ``uv``        (N,2) float32 | None（2×f16 + 0.5 偏置）
+    - ``uv2``       (N,2) float32 | None（第二套 UV，格式里的 ``uv2``）
+    - ``tangent``   (N,3) float32 | None（``tb`` 的前 4B，packed）
+    - ``binormal``  (N,3) float32 | None（``tb`` 的后 4B，packed）
+    - ``extra``     (N,4) uint8 | None（``r`` 属性原始字节，不做语义解释）
     """
     count = raw.shape[0]
     attrs = {name: (off, size) for name, off, size in parse_vertex_format(fmt)}
-    pos = attrs.get("position")
-    nrm = attrs.get("normal")
-    uv = attrs.get("uv")
-
     positions = np.zeros((count, 3), dtype=np.float32)
     normals = np.zeros((count, 3), dtype=np.float32)
-    uvs: np.ndarray | None = None
 
+    pos = attrs.get("position")
     if pos:
         off, size = pos
-        positions = np.frombuffer(raw[:, off:off + size].tobytes(), dtype="<f4", count=count * 3).reshape(count, 3)
+        positions = np.frombuffer(raw[:, off:off + size].tobytes(), dtype="<f4",
+                                  count=count * 3).reshape(count, 3)
 
-    if nrm:
-        off, _ = nrm
-        nb = raw[:, off:off + 4]
-        # 有符号字节 → [-1, 1]（用 view 按位重解释，避免 astype 溢出告警）
-        sb = nb.view(np.int8).astype(np.float32) / 127.0
-        normals = sb[:, :3]
+    def _packed3(name: str) -> np.ndarray:
+        off, _ = attrs[name]
+        nb = np.ascontiguousarray(raw[:, off:off + 4])
+        return nb.view(np.int8).astype(np.float32)[:, :3] / 127.0
 
-    if uv:
-        off, _ = uv
+    if "normal" in attrs:
+        normals = _packed3("normal")
+
+    def _uv(name: str) -> np.ndarray:
+        off, _ = attrs[name]
         ub = raw[:, off:off + 4].tobytes()
-        # 2×f16 + 0.5 偏置
-        uvs = (np.frombuffer(ub, dtype="<f2").astype(np.float32) + 0.5).reshape(count, 2)
+        return (np.frombuffer(ub, dtype="<f2").astype(np.float32) + 0.5).reshape(count, 2)
 
-    return positions, normals, uvs
+    uv = _uv("uv") if "uv" in attrs else None
+    uv2 = _uv("uv1") if "uv1" in attrs else None
+    tangent = _packed3("tangent") if "tangent" in attrs else None
+    binormal = _packed3("binormal") if "binormal" in attrs else None
+    t4 = None
+    if "t4" in attrs:
+        off, size = attrs["t4"]
+        t4 = np.ascontiguousarray(raw[:, off:off + size]).copy()
+    extra = None
+    if "extra" in attrs:
+        off, size = attrs["extra"]
+        extra = np.ascontiguousarray(raw[:, off:off + size]).copy()
+
+    return {
+        "positions": positions,
+        "normals": normals,
+        "uv": uv,
+        "uv2": uv2,
+        "tangent": tangent,
+        "binormal": binormal,
+        "t4": t4,
+        "extra": extra,
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -531,11 +593,18 @@ def _build_primitives(geom: ParsedGeometry, cancel_event=None):
             continue
 
         vraw = vb.data[v_start:v_start + v_count]
-        positions, normals, uvs = unpack_vertices(vraw, vb.format_name)
+        va = unpack_vertex_attributes(vraw, vb.format_name)
+        positions, normals, uvs = va["positions"], va["normals"], va["uv"]
         # 蒙皮判定 + 数据：按顶点格式串是否含骨骼语义（iiiww / i）。
         # ⚠️ VertexBuffer.is_skinned 在 Korabli 文件里恒为 0，不可用。
-        # iiiww 8B 属性 = 4×u8 骨骼索引（3 索引+1 pad）+ 4×u8 权重(/255，和=1)
-        # （PASA111 实测；wows-toolkit 同样只跳过该属性不做蒙皮）。
+        # ``iiiww`` 8B 实测布局（跨 138 个缓冲 / 395k 顶点统计）：
+        #   b0..b2 = 3 个顶点组索引（u8，全部为 3 的倍数 = 调色板 slot × 3）
+        #   b3,b4  = 0（对齐填充）
+        #   b5,b6  = 2 个权重（u8/255；b5+b6=255 占 99.2%，即其余骨骼权重为 0）
+        #   b7     = 0（对齐填充）
+        # 配对：i0↔w0(b5)、i1↔w1(b6)，第三个顶点组的权重 = 1-w0-w1（通常为 0）。
+        # 实测分布：w1 恒非零（主顶点组=i1），w0 仅 1.6% 非零（双骨骼混合），
+        # 1-w0-w1 仅 0.75% 非零（三骨骼混合）—— 与「最多 3 个顶点组」一致。
         bone_attr = next((a for a in parse_vertex_format(vb.format_name)
                           if a[0] == 'bone'), None)
         is_skinned = bone_attr is not None
@@ -544,8 +613,15 @@ def _build_primitives(geom: ParsedGeometry, cancel_event=None):
         if is_skinned and bone_attr[2] == 8 and v_count > 0:
             boff = bone_attr[1]
             chunk = np.ascontiguousarray(vraw[:, boff:boff + 8])
-            bone_indices = chunk[:, :4].copy()
-            bone_weights = chunk[:, 4:8].astype(np.float32) / 255.0
+            idx3 = chunk[:, 0:3]
+            w01 = chunk[:, 5:7].astype(np.float32) / 255.0
+            w2 = np.clip(1.0 - w01[:, 0] - w01[:, 1], 0.0, 1.0)
+            bone_indices = np.zeros((chunk.shape[0], 4), dtype=np.uint8)
+            bone_indices[:, :3] = idx3
+            bone_weights = np.zeros((chunk.shape[0], 4), dtype=np.float32)
+            bone_weights[:, 0] = w01[:, 0]
+            bone_weights[:, 1] = w01[:, 1]
+            bone_weights[:, 2] = w2
 
         # 索引 mapping：优先按 unknown(td) 字段配对（BigWorld 权威方式）
         im = None
@@ -592,6 +668,11 @@ def _build_primitives(geom: ParsedGeometry, cancel_event=None):
             positions=positions,
             normals=normals,
             uvs=uvs,
+            uv2=va["uv2"],
+            tangents=va["tangent"],
+            binormals=va["binormal"],
+            t4=va["t4"],
+            extra=va["extra"],
             indices=indices,
             mapping_id=vm.mapping_id,
             is_skinned=is_skinned,

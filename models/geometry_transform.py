@@ -25,7 +25,8 @@ import numpy as np
 
 
 def prepare_render_mesh(positions, normals, indices,
-                        colors=None, uvs=None):
+                        colors=None, uvs=None,
+                        extra_attributes=None, vector_attributes=None):
     """把解析空间网格变换为渲染空间（右手系，与 glTF 同构）网格。
 
     参数：
@@ -34,10 +35,16 @@ def prepare_render_mesh(positions, normals, indices,
       indices   (M,)  u32  三角形索引
       colors    (N,4) f32  （可选）逐顶点颜色，随顶点拆分同步扩展
       uvs       (N,2) f32  （可选）逐顶点 UV，随顶点拆分同步扩展
+      extra_attributes  list[np.ndarray|None]  （可选）逐顶点标量属性
+                        （uv2 / r 等）；绕序拆分时**原地**同步复制。
+      vector_attributes list[np.ndarray|None]  （可选）逐顶点方向属性
+                        （tangent / binormal）；拆分同步复制并随空间镜像
+                        乘以 flip（与法线一致）。
 
     返回：
       (render_positions, render_normals, render_indices, render_uvs, render_colors)
       均为渲染空间数据；colors/uvs 在未提供时原样返回 None。
+      extra_attributes / vector_attributes 通过传入的 list **原地**更新。
 
     变换规则（与 ui/geometry_renderer._build_meshes 完全同源）：
       1. 位置 Z 镜像（negz）：det=-1 反射转右手系
@@ -82,6 +89,12 @@ def prepare_render_mesh(positions, normals, indices,
                     bad_flat = np.flatnonzero(bad)
                     for j, t in enumerate(bad_flat):
                         new_idx[t * 3:(t + 1) * 3] = extra_idx[j]
+                    for store in (extra_attributes, vector_attributes):
+                        if store is None:
+                            continue
+                        for k, arr in enumerate(store):
+                            if arr is not None and len(arr) == n_old:
+                                store[k] = np.concatenate([arr, arr[src]], axis=0)
                     n_old = len(pos0)
                     pos0 = np.vstack([pos0, extra_pos])
                     n0 = np.vstack([n0, extra_n])
@@ -95,6 +108,11 @@ def prepare_render_mesh(positions, normals, indices,
             pass
     p = np.ascontiguousarray(pos0 * np.array([1.0, 1.0, -1.0], dtype=np.float32))
     n = np.ascontiguousarray(n0 * flip)
+    if vector_attributes is not None:
+        for k, arr in enumerate(vector_attributes):
+            if arr is not None:
+                vector_attributes[k] = np.ascontiguousarray(
+                    np.asarray(arr, dtype=np.float32) * flip)
     if colors0 is not None:
         colors0 = np.ascontiguousarray(colors0, dtype=np.float32)
     return p, n, idx, uvs0, colors0

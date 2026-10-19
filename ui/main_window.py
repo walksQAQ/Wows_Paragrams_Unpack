@@ -171,6 +171,11 @@ class MainWindow(QMainWindow):
         unpacker_action.setToolTip("浏览客户端 .pkg 虚拟文件系统，按选择/glob 解包到目录")
         unpacker_action.triggered.connect(self._on_open_unpacker)
 
+        model_viewer_action = tools_menu.addAction("模型文件查看器...")
+        model_viewer_action.setToolTip(
+            "独立加载任意 .geometry 模型（本地文件或游戏客户端），只显示几何、不加载材质")
+        model_viewer_action.triggered.connect(self._on_open_model_file_viewer)
+
         # 独立涂装：仅源码/调试模式挂入口（发布版不显示）
         if is_debug_build():
             orphan_action = tools_menu.addAction("独立涂装...")
@@ -227,6 +232,20 @@ class MainWindow(QMainWindow):
             ensure_dialog_shown(self, "_unpacker_dlg", UnpackerDialog, self)
         except Exception as exc:  # noqa: BLE001
             bus.log_message.emit(f"❌ 打开解包器失败: {exc}")
+
+    def _on_open_model_file_viewer(self) -> None:
+        """打开独立模型文件查看器（无材质）。
+
+        与舰船 3D 查看器解耦：直接加载任意 .geometry（本地文件或游戏客户端
+        VFS），只渲染几何，不解析材质/贴图/装甲。
+        """
+        try:
+            from ui.model_file_viewer import ModelFileViewerDialog
+            from utils.window_utils import ensure_dialog_shown
+            ensure_dialog_shown(self, "_model_file_viewer_dlg",
+                                ModelFileViewerDialog, self)
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"❌ 打开模型文件查看器失败: {exc}")
 
     def _on_open_orphan_camo(self) -> None:
         """打开「独立涂装」工具（源码模式）：列出未被任何舰船收纳的 Exterior。

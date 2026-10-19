@@ -351,7 +351,11 @@ class _GlbBuilder:
                  extras: dict | None = None, cache_key=None,
                  flip_winding: bool = True,
                  joints0: np.ndarray | None = None,
-                 weights0: np.ndarray | None = None) -> int:
+                 weights0: np.ndarray | None = None,
+                 uvs2: np.ndarray | None = None,
+                 tangents: np.ndarray | None = None,
+                 t4: np.ndarray | None = None,
+                 extra: np.ndarray | None = None) -> int:
         """加入一个网格，返回 mesh 索引。
 
         positions/normals/indices 必须已是渲染空间（右手系）数据。
@@ -379,6 +383,23 @@ class _GlbBuilder:
             uv_acc = self.add_accessor(np.asarray(uvs, dtype=np.float32),
                                        "VEC2", _FLOAT, _ARRAY_BUFFER)
             attrs.TEXCOORD_0 = uv_acc
+        if uvs2 is not None and uvs2.shape[0] == positions.shape[0] and uvs2.shape[1] == 2:
+            attrs.TEXCOORD_1 = self.add_accessor(np.asarray(uvs2, dtype=np.float32),
+                                                 "VEC2", _FLOAT, _ARRAY_BUFFER)
+        if tangents is not None and tangents.shape[0] == positions.shape[0] \
+                and tangents.shape[1] == 4:
+            attrs.TANGENT = self.add_accessor(np.asarray(tangents, dtype=np.float32),
+                                              "VEC4", _FLOAT, _ARRAY_BUFFER)
+        if extra is not None and extra.shape[0] == positions.shape[0]:
+            # 自定义属性（glTF 无标准语义）：原样保留 ``r`` 的 4 个字节
+            acc = self.add_accessor(np.asarray(extra, dtype=np.uint8),
+                                    "VEC4", _UNSIGNED_BYTE, _ARRAY_BUFFER)
+            attrs.__dict__["_EXTRA"] = acc
+        if t4 is not None and t4.shape[0] == positions.shape[0]:
+            # 自定义属性：单独 ``t`` 的原始 4 字节（语义未知，原样保留）
+            acc = self.add_accessor(np.asarray(t4, dtype=np.uint8),
+                                    "VEC4", _UNSIGNED_BYTE, _ARRAY_BUFFER)
+            attrs.__dict__["_T4"] = acc
         if joints0 is not None and weights0 is not None:
             if joints0.shape[0] == positions.shape[0] and weights0.shape[0] == positions.shape[0]:
                 j_acc = self.add_accessor(np.asarray(joints0, dtype=np.uint8),
@@ -556,8 +577,19 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         if getattr(src, "is_wire", False):
             report.skipped_meshes += 1
             return False, None
+        # 附加顶点属性：与 prepare_render_mesh 的顶点拆分/空间镜像同步
+        uv2 = getattr(src, "uv2", None)
+        tan = getattr(src, "tangents", None)
+        bin_ = getattr(src, "binormals", None)
+        raw_t4 = getattr(src, "t4", None)
+        raw_extra = getattr(src, "extra", None)
+        scalar_attrs = [uv2, raw_t4, raw_extra]
+        vector_attrs = [tan, bin_]
         p, n, idx, uvs, _c = prepare_render_mesh(
-            src.positions, src.normals, src.indices, None, getattr(src, "uvs", None))
+            src.positions, src.normals, src.indices, None, getattr(src, "uvs", None),
+            extra_attributes=scalar_attrs, vector_attributes=vector_attrs)
+        uv2, raw_t4, raw_extra = scalar_attrs
+        tan, bin_ = vector_attrs
         if p.shape[0] == 0 or idx.size == 0:
             report.skipped_meshes += 1
             return False, None
@@ -568,6 +600,20 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
             ln = np.linalg.norm(n, axis=1, keepdims=True)
             ln[ln < 1e-8] = 1.0
             n = (n / ln).astype(np.float32)
+            if tan is not None:
+                tan = _apply_matrix3(np.asarray(tan, dtype=np.float32), matrix)
+            if bin_ is not None:
+                bin_ = _apply_matrix3(np.asarray(bin_, dtype=np.float32), matrix)
+        # TANGENT = xyz + w（由 normal×tangent 与 binormal 的朝向得到）
+        tangent4 = None
+        if tan is not None:
+            t = np.asarray(tan, dtype=np.float32)
+            nv = np.asarray(n, dtype=np.float32)
+            b = (np.asarray(bin_, dtype=np.float32) if bin_ is not None
+                 else np.cross(nv, t))
+            w = np.sign(np.sum(np.cross(nv, t) * b, axis=1))
+            w[w == 0] = 1.0
+            tangent4 = np.hstack([t, w[:, None]]).astype(np.float32)
         tex = getattr(src, "texture_dds", None) or fallback_tex
         tex_idx = None
         if options.embed_textures and tex:
@@ -575,7 +621,8 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
             if tex_idx is None:
                 report.skipped_textures += 1
         mat_idx = builder_.add_material(
-            label, base_color=(1.0, 1.0, 1.0, 1.0), texture_idx=tex_idx,
+            getattr(src, "material", None) or label,
+            base_color=(1.0, 1.0, 1.0, 1.0), texture_idx=tex_idx,
             double_sided=options.double_sided,
             extras={"component": component,
                     "texture_path": getattr(src, "texture_path", "")})
@@ -583,7 +630,9 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         mesh_idx = builder_.add_mesh(f"{label}_Shape", p, n, idx, uvs, mat_idx,
                                      extras={"component": component},
                                      flip_winding=options.flip_winding,
-                                     joints0=joints0, weights0=weights0)
+                                     joints0=joints0, weights0=weights0,
+                                     uvs2=uv2, tangents=tangent4, t4=raw_t4,
+                                     extra=raw_extra)
         # 蒙皮：joint 放世界 bind（挂载乘矩阵），挂到所属空物体骨骼下
         skin_idx = None
         if joints0 is not None:

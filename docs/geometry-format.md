@@ -41,7 +41,11 @@
 
 `i64 verticesDataPtr / PackedString formatName / u32 sizeInBytes / u16 strideInBytes / u8 isSkinned / u8 isBumped`
 
-顶点格式名如 `set3/xyznuvtbpc`：`xyz`=POSITION f32×3，`n`=NORMAL packed 4B，`uv`=TEXCOORD 2×f16，`tb`=切线/副切线，`iiiww`=骨骼索引×3+权重×2。
+顶点格式名如 `set3/xyznuvtbpc`：`xyz`=POSITION f32×3，`n`=NORMAL packed 4B，
+`uv`=TEXCOORD 2×f16（`uv2` 为第二套），`t`=4B（单独切线/额外属性）、`tb`=切线+副切线 8B，
+`iiiww`=顶点组索引×3 + 权重×2（8B：`u8 idx[3] + 2B pad + u8 w[2] + 1B pad`；
+`i0↔w0`、`i1↔w1`，第三个顶点组权重 = `1-w0-w1`），`r`=EXTRA 4B，
+`pc`/`oi`=打包标记（0B）。末尾 `_encd` 仅标记 ENCD 压缩方式，不影响布局。
 
 ## A.4 IndicesPrototype（0x10 字节）
 
