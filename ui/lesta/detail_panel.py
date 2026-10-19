@@ -149,18 +149,7 @@ class LestaDetailPanel(DetailPanel):
                 # 每秒回复百分比（基础比例）
                 kv("每秒回复百分比", f"+{rr*100:.2f}%")
                 # 每秒回复血量 / 单次总可回复量：按当前舰船血量换算（无血量数据时用比例兜底）
-                _health = None
-                try:
-                    ship_id = self._current_filename or ""
-                    _letter = getattr(self, '_active_config_letter', 'A')
-                    h_hp = conn.execute(
-                        "SELECT health FROM ship_module_hulls "
-                        "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
-                        (vc, ship_id, f"{_letter}%")).fetchone()
-                    if h_hp:
-                        _health = h_hp['health']
-                except Exception:
-                    _health = None
+                _health = self._current_hull_health(conn, vc)
                 if _health:
                     kv("每秒回复血量", f"+{rr * _health:.0f} HP")
                     if wt:
@@ -247,19 +236,57 @@ class LestaDetailPanel(DetailPanel):
             if dgm:
                 kv("伤害转化系数", f"{dgm*100:.2f}%")
         elif ct == "massHeal":
-            ohp = cfgd.get('ownHealPart', 0)
-            if ohp:
-                kv("自身每秒回复", f"{ohp*100:.2f}%")
+            # 机动维修站：自身按百分比秒回，同时在作用半径内为友军提供每秒回复增益。
+            # 自身回复与维修小组（regenCrew）同口径：按当前舰船血量换算成实际 HP。
+            _health = self._current_hull_health(conn, vc)
+            ohp = float(cfgd.get('ownHealPart', 0) or 0)
+            if ohp > 0:
+                kv("自身每秒回复", f"+{ohp*100:.2f}%")
+                if _health:
+                    kv("自身每秒回复血量", f"+{ohp * _health:.0f} HP")
+                    if wt:
+                        kv("自身单次总回复量", f"+{ohp * wt * _health:.0f} HP")
+                elif wt:
+                    kv("自身单次总回复量", f"+{ohp * wt * 100:.2f}%")
+            # 友军回复：数值取友军增益实体在当前等级的数据（按友军自身血量计）
+            _ally = self._ally_heal_percent(conn, vc, cfgd)
+            if _ally > 0:
+                kv("友军每秒回复", f"+{_ally*100:.2f}%")
+                if wt:
+                    kv("友军单次总回复量", f"+{_ally * wt * 100:.2f}%")
+            elif cfgd.get('allyBuffName'):
+                # 增益实体缺数据时兜底显示原始 ID（便于排查），正常情况不显示
+                kv("友军增益", f"{cfgd.get('allyBuffName')} (等级{cfgd.get('allyBuffLevel', 1)})")
             wr = cfgd.get('workRadius', 0)
             if wr:
                 kv("回复作用半径", f"{wr*3/100:.2f} km")
-            abn = cfgd.get('allyBuffName', '')
-            abl = cfgd.get('allyBuffLevel', 1)
-            if abn:
-                kv("友军增益", f"{abn} (等级{abl})")
         else:
             _handled = False
         return _handled
+
+
+    def _current_hull_health(self, conn, vc: str):
+        """当前舰船 + 当前配置组（_active_config_letter）的船体血量；取不到返回 None。
+
+        用于把消耗品的「每秒回复百分比」换算成实际 HP
+        （维修小组 regenCrew 与机动维修站 massHeal 同口径）。
+        """
+        try:
+            from presenters.lesta.ship import LestaShipPresenter
+            return LestaShipPresenter.hull_health(
+                conn, vc, self._current_filename or "",
+                getattr(self, '_active_config_letter', 'A'))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _ally_heal_percent(conn, vc: str, cfgd: dict) -> float:
+        """massHeal 的友军每秒回复比例（取 allyBuffName 指向的增益在当前等级的数据）。"""
+        try:
+            from presenters.lesta.ship import LestaShipPresenter
+            return LestaShipPresenter.mass_heal_ally_percent(conn, vc, cfgd)
+        except Exception:
+            return 0.0
 
 
     def _build_lesta_commander_column(self, config, _col, layout):

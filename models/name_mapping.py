@@ -699,7 +699,9 @@ class Mapping:
         "batteryRegenBatteryLastChanceCoeff": "direct_pct",
         "batteryCapacityCoeff": "coeff",
         "maxBuoyancySpeedCoeff": "coeff",
-        "speedBatteryLastChanceCoeff": "coeff",
+        # 每消耗 1% 下潜能力提升的水面最高航速：存储值即百分数（0.125 = +0.125%），
+        # 不是乘数系数（按 coeff 会算成 -87.5%）
+        "speedBatteryLastChanceCoeff": "direct_pct",
         "shootShift": "coeff",
         "shootShiftBatteryLastChanceCoeff": "direct_pct",
         "lastChanceReloadCoefficient": "direct_pct",

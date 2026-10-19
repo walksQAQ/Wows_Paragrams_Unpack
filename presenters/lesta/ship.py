@@ -414,7 +414,10 @@ class LestaShipPresenter(LestaBasePresenter):
         # 升级品/技能修饰符要先就位：消耗品卡片要按它们修正「数量 / 持续时间 / 最高航速」
         self._modifiers = modifiers or {}
         self._mod_ship_type = basic['shiptype'] or ''
-        self._append_consumables(conn, vc, ship_id, sections)
+        # 船体配置字母（"hull"/"_Hull" 两种键名都见过）→ 消耗品回复量按该船体血量换算
+        _hull_key = active_module_keys.get('hull') or active_module_keys.get('_Hull') or "A"
+        self._append_consumables(conn, vc, ship_id, sections,
+                                 hull_letter=str(_hull_key or "A")[:1])
 
         # ── 3. 战斗指令 ───────────────────────────────────
         self._append_rage_mode(conn, vc, ship_id, sections)
@@ -733,7 +736,57 @@ class LestaShipPresenter(LestaBasePresenter):
             if display_name_id else self.resolve_name('consumable', consumable_id)
         return name or consumable_id or ""
 
-    def _append_consumables(self, conn, vc, ship_id, sections):
+    @staticmethod
+    def hull_health(conn, vc: str, ship_id: str, hull_letter: str = "A"):
+        """船体基础血量（按配置字母取；无数据返回 None）。
+
+        用于把消耗品的「每秒回复百分比」换算成实际 HP（维修小组 / 机动维修站）。
+        """
+        try:
+            if not ship_id:
+                return None
+            row = conn.execute(
+                "SELECT health FROM ship_module_hulls "
+                "WHERE version_code=? AND ship_id=? AND config_group LIKE ? AND health IS NOT NULL LIMIT 1",
+                (vc, ship_id, f"{hull_letter or 'A'}%")).fetchone()
+            if row and row['health']:
+                return float(row['health'])
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    @staticmethod
+    def mass_heal_ally_percent(conn, vc: str, cfgd: dict) -> float:
+        """massHeal 的友军每秒回复比例：取 allyBuffName 指向的增益在 allyBuffLevel 级的数值。
+
+        数值取自 consumable_buff.ally_health_regen_percent（兜底解析 buff_json 里的
+        allyHealthRegenPercent）；无数据返回 0.0。
+        """
+        buff_id = cfgd.get('allyBuffName') or ''
+        if not buff_id:
+            return 0.0
+        try:
+            level = int(cfgd.get('allyBuffLevel', 1) or 1)
+        except (TypeError, ValueError):
+            level = 1
+        try:
+            row = conn.execute(
+                "SELECT ally_health_regen_percent, buff_json FROM consumable_buff "
+                "WHERE version_code=? AND buff_id=? AND buff_level=? LIMIT 1",
+                (vc, buff_id, level)).fetchone()
+            if row is None:
+                return 0.0
+            try:
+                if row['ally_health_regen_percent'] is not None:
+                    return float(row['ally_health_regen_percent'] or 0)
+            except (IndexError, TypeError, ValueError):
+                pass
+            _bj = json.loads(row['buff_json'] or '{}') or {}
+            return float(_bj.get('allyHealthRegenPercent', 0) or 0)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _append_consumables(self, conn, vc, ship_id, sections, hull_letter: str = "A"):
         slots = conn.execute(
             "SELECT * FROM ship_consumable_slots WHERE version_code=? AND ship_id=? ORDER BY slot_index, item_index",
             (vc, ship_id)).fetchall()
@@ -917,14 +970,31 @@ class LestaShipPresenter(LestaBasePresenter):
                     dgm = cfgd.get('damageGMHealCoeff', 0)
                     if dgm: items.append(self.make_item(f"          伤害转化系数: {dgm*100:.2f}%", "", len(items)))
                 elif ct == "massHeal":
-                    ohp = cfgd.get('ownHealPart', 0)
-                    if ohp: items.append(self.make_item(f"          自身每秒回复: {ohp*100:.2f}%", "", len(items)))
+                    # 机动维修站：自身按百分比秒回，同时在作用半径内为友军提供每秒回复增益。
+                    # 自身回复与维修小组（regenCrew）同口径：按当前船体血量换算实际 HP。
+                    _hp = self.hull_health(conn, vc, ship_id, hull_letter)
+                    ohp = float(cfgd.get('ownHealPart', 0) or 0)
+                    if ohp > 0:
+                        items.append(self.make_item(f"          自身每秒回复: +{ohp*100:.2f}%", "", len(items)))
+                        if _hp:
+                            items.append(self.make_item(f"          自身每秒回复血量: +{ohp*_hp:.0f} HP", "", len(items)))
+                            if wt:
+                                items.append(self.make_item(f"          自身单次总回复量: +{ohp*wt*_hp:.0f} HP", "", len(items)))
+                        elif wt:
+                            items.append(self.make_item(f"          自身单次总回复量: +{ohp*wt*100:.2f}%", "", len(items)))
+                    # 友军回复：数值取友军增益实体在当前等级的数据（按友军自身血量计）
+                    _ally = self.mass_heal_ally_percent(conn, vc, cfgd)
+                    if _ally > 0:
+                        items.append(self.make_item(f"          友军每秒回复: +{_ally*100:.2f}%", "", len(items)))
+                        if wt:
+                            items.append(self.make_item(f"          友军单次总回复量: +{_ally*wt*100:.2f}%", "", len(items)))
+                    elif cfgd.get('allyBuffName'):
+                        items.append(self.make_item(
+                            f"          友军增益: {cfgd.get('allyBuffName')} (等级{cfgd.get('allyBuffLevel', 1)})",
+                            "", len(items)))
                     wr = cfgd.get('workRadius', 0)
-                    if wr: items.append(self.make_item(f"          回复作用半径: {wr*3/100:.2f} km", "", len(items)))
-                    abn = cfgd.get('allyBuffName', '')
-                    abl = cfgd.get('allyBuffLevel', 1)
-                    if abn:
-                        items.append(self.make_item(f"          友军增益: {abn} (等级{abl})", "", len(items)))
+                    if wr:
+                        items.append(self.make_item(f"          回复作用半径: {wr*3/100:.2f} km", "", len(items)))
         if last_slot is not None:
             items.append(self.make_item(f"      {'─' * 20}", "", len(items)))
         # 收集原始消耗品数据供 UI 构建按钮
