@@ -98,6 +98,25 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 旁证：`Korabli64.exe` 里 `collisionFlags` / `materialKind` 字符串各 **0 处**，只有
 `fxPathId` / `sortOrder` 各 1 处；而 `WorldOfWarships64.exe` 里三者齐备。
 
+Lesta 侧用 **Ghidra 反编译**（`Korabli64.exe -26.10ST2`，71,730 个函数）核对过字段注册函数
+`FUN_140643320` 的尾部，字段表到 `sortOrder` 就结束了：
+
+```c
+param_1[1] = lVar6 + 0x78;   /* → "fxPathId"  @ +0x78 */
+...
+param_1[1] = lVar6 + 0x80;   /* → "sortOrder" @ +0x80 */
+return param_1;              /* 之后不再注册任何字段 → +0x84 是填充 */
+```
+
+配合数据实测（`+0x84` 在 29,377 条记录里全为 0），可确认 Korabli 的二进制原型
+**没有** `collisionFlags` 字段：
+
+- `<collisionFlags>` 只存在于 **Mod SDK 明文**（Lesta 26.10 有 13,068 处、值全为 0），
+  属于导出器沿用共享代码留下的**残留标签**——`Korabli64.exe` 里连这个字符串都没有
+  （ASCII / UTF-16 均为 0 处），客户端不会解析它；
+- 碰撞相关的运行时接口是另一套：`collisionMaterialName` / `getCollisionMaterialsNum`
+  （Python API，碰撞材质名），与 `collisionFlags` 无关。
+
 **实测取值**：
 
 | 字段 | WG（31,534 个材质） | Lesta（29,377 个） |
