@@ -32,38 +32,8 @@ from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
 
-#: 已编译 fx 的资源后缀（一个 .fx 对应一份 .win.dx11.fxo）
-FXO_SUFFIX = ".win.dx11.fxo"
-
-
-def collect_fx_catalog(file_tree, out: Optional[Dict[str, object]] = None) -> Dict[str, object]:
-    """从 pkg 文件树构建 fx 短名 → 完整路径。
-
-    运行时 fx 名以**短名**形式保存（如 `flag.fx`），完整路径由
-    `shaders/<目录>/<短名>` 拼接；客户端内没有静态的短名→路径表，
-    只能从 `.fxo` 清单反推。同名多目录时值为路径列表。
-
-    `file_tree` 为 `GameExtractor.file_tree`（键为 VFS 路径）。
-    """
-    cat: Dict[str, object] = {} if out is None else out
-    for p in file_tree:
-        if not p.endswith(FXO_SUFFIX):
-            continue
-        fx = p[:-len(FXO_SUFFIX)] + ".fx"
-        short = fx.rsplit("/", 1)[-1]
-        prev = cat.get(short)
-        if prev is None:
-            cat[short] = fx
-        elif isinstance(prev, list):
-            if fx not in prev:
-                prev.append(fx)
-        elif prev != fx:
-            cat[short] = [prev, fx]
-    return cat
-
 
 def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None,
-                          fx_catalog: Optional[Dict[str, object]] = None,
                           pkg_paths: Optional[set] = None) -> bytes:
     """从游戏 .pkg 现场读取 content/assets.bin 原始字节（**全内存，不落盘**）。
 
@@ -71,20 +41,13 @@ def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None
     因此绝不会读到别的客户端/旧版本的残留。失败抛 :class:`AssetsBinError`。
     注意 assets.bin 为 Kraken container，解压 220MB+ 较慢（纯 Python 解码）。
 
-    传入 `fx_catalog` 时，顺便用同一个 extractor 的文件树填充
-    `fx 短名 → 完整 .fx 路径`（不额外读盘）。
     ‼ 传入 `pkg_paths`（一个 set）时，用同一个文件树填充 **PKG 内全部文件路径**，
-    供 VFS 标记「无 prototype 的路径条目是否真存在于 PKG 」（几万个字符串，约几十 MB）。
+    供 VFS 标记「无 prototype 的路径条目是否真存在于 PKG」（几万个字符串，约几十 MB）。
     """
     from data_extractor import GameExtractor
 
     extractor = GameExtractor(game_dir, bin_folder=bin_folder)
     try:
-        if fx_catalog is not None:
-            try:
-                collect_fx_catalog(extractor.file_tree, fx_catalog)
-            except Exception:  # noqa: BLE001
-                pass
         if pkg_paths is not None:
             try:
                 pkg_paths.update(extractor.file_tree.keys())
@@ -136,8 +99,6 @@ class AssetsBinService:
         self._cache_path: Optional[Path] = None
         #: PKG 文件树路径集合（None = 未收集，资源节点不带 in_pkg 标记）
         self._pkg_paths: Optional[set] = pkg_paths
-        #: fx 短名 → 完整路径（仅从游戏目录加载时填充）
-        self._fx_catalog: Dict[str, object] = {}
 
         if assets_bytes is not None:
             self.load_bytes(assets_bytes)
@@ -158,7 +119,6 @@ class AssetsBinService:
         """
         game_dir = Path(game_dir)
         data = read_assets_bin_bytes(game_dir, bin_folder=self._bin_folder,
-                                     fx_catalog=self._fx_catalog,
                                      pkg_paths=self._pkg_paths)
         self._game_dir = game_dir
         self.load_bytes(data)
@@ -241,11 +201,6 @@ class AssetsBinService:
     @property
     def game_dir(self) -> Optional[Path]:
         return self._game_dir
-
-    @property
-    def fx_catalog(self) -> Dict[str, object]:
-        """fx 短名 → 完整 `.fx` 路径；直接打开 assets.bin 文件时为空字典。"""
-        return self._fx_catalog
 
     # ── 概览 ─────────────────────────────────────────────
 

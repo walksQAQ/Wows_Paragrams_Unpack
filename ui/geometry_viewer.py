@@ -483,13 +483,27 @@ class GeometryViewerDialog(QDialog):
         export_row.addWidget(self.btn_export_render)
         export_row.addWidget(self.btn_export_armor)
         pl.addLayout(export_row)
+        self.chk_export_skins = QCheckBox("导出骨骼顶点组")
+        self.chk_export_skins.setChecked(True)
+        self.chk_export_skins.setToolTip(
+            "默认勾选：写 glTF skin（顶点组 + 权重 + Armature），Blender 里直接可用；\n"
+            "每个 skin 会加一根 <网格名>_root 骨骼（恒等变换）+ 0.2m 骨尖，\n"
+            "使 Blender 推断出的骨长恒为 0.2（骨骼棱角球不再比部件还大）。\n"
+            "不勾选：权重仍完整保留（自定义属性 _JOINTS_0/_WEIGHTS_0 + bone_palette），\n"
+            "导入后没有骨架、也没有骨骼显示球；需要顶点组时在 Blender 运行\n"
+            "tools/blender_wows_vertex_groups.py 还原（不会创建骨架）。")
+        theme.bind(self.chk_export_skins,
+                   "QCheckBox { color:@text_muted@; font-size:11px; background:transparent; }")
+        pl.addWidget(self.chk_export_skins)
         self.export_progress = QProgressBar()
         self.export_progress.setVisible(False)
         self.export_progress.setFixedHeight(14)
         theme.bind(self.export_progress, "QProgressBar { border:1px solid #0078d4; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
                     "QProgressBar::chunk { background:#0078d4; }")
         pl.addWidget(self.export_progress)
-        self.export_status = QLabel("渲染模型：舰体 + 挂载；装甲模型：厚度着色板块")
+        self.export_status = QLabel(
+            "渲染模型：舰体 + 挂载（含 PBR 通道贴图 / 挂点层级 / 顶点权重）；"
+            "装甲模型：厚度着色板块")
         self.export_status.setWordWrap(True)
         self.export_status.setAlignment(Qt.AlignTop)
         theme.bind(self.export_status, "color:@text_hint@; font-size:11px; background:transparent; border:none;")
@@ -1388,13 +1402,16 @@ class GeometryViewerDialog(QDialog):
         self.export_status.setText("导出中，请稍候...")
         geom = self._current_geom
         armor_scene = self._armor_scene
+        # 主线程读取控件状态（后台线程不得触碰 Qt）
+        export_skins = bool(self.chk_export_skins.isChecked())
         # 冻结当前查看器的装甲显隐掩码（后台线程读取快照）
         visible = None
         if armor and armor_scene is not None and self.viewport._visible_tris is not None:
             visible = np.asarray(self.viewport._visible_tris, dtype=bool).copy()
 
         def _work(cancel_event):
-            from services.export_service import export_render_glb, export_armor_glb
+            from services.export_service import (
+                GlbRenderOptions, export_armor_glb, export_render_glb)
             if armor:
                 return export_armor_glb(
                     geom, armor_scene, path, visible_tris=visible,
@@ -1402,6 +1419,7 @@ class GeometryViewerDialog(QDialog):
                     progress_cb=lambda p, m: self.export_progress_changed.emit(float(p), m))
             return export_render_glb(
                 geom, path, cancel_event=cancel_event,
+                options=GlbRenderOptions(export_skins=export_skins),
                 progress_cb=lambda p, m: self.export_progress_changed.emit(float(p), m))
 
         self._export_task = run_async(

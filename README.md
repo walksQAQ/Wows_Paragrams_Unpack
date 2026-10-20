@@ -30,7 +30,7 @@
 | 📦 **单文件打包** | 基于 Nuitka 编译为独立 exe，无需 Python 环境 |
 | ⚔️ **3D 可视化** | `.geometry` 模型解析 + 装甲厚度着色渲染（PyOpenGL） |
 | 🎯 **穿深 / 散布** | 基于游戏公式的穿深、纵向 / 横向散布计算 |
-| 🧊 **模型导出** | 导出 GLB / glTF 2.0（含装甲模型） |
+| 🧊 **模型导出** | 导出 GLB / glTF 2.0（含装甲模型、PBR 通道贴图、挂点层级、顶点权重） |
 
 
 ### 使用流程
@@ -41,6 +41,22 @@
 3. 🌐 点击"加载文本" — 下载中文语言文件（可选）
 4. 左侧选择分类 → 中间筛选文件 → 右侧查看详情
 ```
+
+#### 导出的 GLB 在 Blender 里怎么用
+
+- **默认（勾选“导出骨骼顶点组”）**：层级/命名与 BigWorld 插件（`.primitives + .visual`）
+  一致，`Scene Root → 部件 → visual 节点 → <Shape>`；蒙皮网格写标准 glTF skin，
+  Blender 里直接得到顶点组与 Armature。骨骼显示球是 Blender 导入选项 "Bone Shape"
+  造成的，导入时取消勾选即可隐藏。
+- **取消勾选“导出骨骼顶点组”**（`GlbRenderOptions(export_skins=False)`）：**不含骨架**，
+  所以没有骨骼球。顶点权重仍完整保存在网格属性里（`_JOINTS_0`/`_WEIGHTS_0` +
+  `bone_palette`），需要顶点组时在 Blender 运行一次
+  `tools/blender_wows_vertex_groups.py`（Scripting 工作区 → Run Script，或
+  `blender --background --python tools/blender_wows_vertex_groups.py -- 模型.glb`），
+  它会按上述属性还原顶点组，**不会创建骨架**。
+- **顶点组与游戏内一致**：骨骼索引 = 渲染集调色板 slot × 3（同 BigWorld 插件的
+  `index//3`），调色板按 `.visual` 原始顺序保留；同一材质下不同调色板的 shape 会
+  拆成独立网格，避免权重被翻译到别人的骨骼上。
 
 
 ---

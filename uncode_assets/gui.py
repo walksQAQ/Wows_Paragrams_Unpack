@@ -7,6 +7,7 @@
   - 点击文件在右侧显示解码 JSON（深色等宽主题）
   - 顶部搜索：文件名/路径模糊匹配（多关键词交集），或按材质 **fx** 搜索
     （列出使用该 fx 的 `.mfm`；首次建立索引仅需秒级，之后即时）
+  - 明文导出：单文件弹「另存为」；**多选（Ctrl/Shift）时选文件夹批量导出**
   - 状态栏显示数据库概览
   - 关闭窗口时询问是否清理 .uncode_cache 索引缓存
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -26,7 +28,7 @@ from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
     QPushButton, QLabel, QFileDialog, QLineEdit, QStatusBar, QToolBar,
-    QHeaderView, QAbstractItemView, QMessageBox, QComboBox,
+    QHeaderView, QAbstractItemView, QMessageBox, QComboBox, QApplication,
 )
 
 from .errors import AssetsBinError
@@ -72,11 +74,12 @@ class _FxIndexWorker(QThread):
     """后台构建 `.mfm → fx` 索引（只读材质头，不解析属性）。
 
     全量 `.mfm` 约 3 万个，解析属性需 1 分钟以上；只取 shader_id +
-    material_hash 再查映射表，仅需数秒。
+    material_hash（= fx 资源 selfId），在 assets.bin 路径树里解析 fx 路径，
+    仅需数秒。
     """
 
     progress = Signal(int, int)
-    done = Signal(object)  # list[tuple[path, fx_text, shader_id, material_hash]]
+    done = Signal(object)  # list[tuple[path, fx_path, shader_id, material_hash]]
     failed = Signal(str)
 
     def __init__(self, svc: AssetsBinService, wows_type: str, parent=None):
@@ -87,12 +90,14 @@ class _FxIndexWorker(QThread):
     def run(self) -> None:
         try:
             from .decoders import read_material_header
+            from .mfm_fx import resolve_fx_path
             from .types import set_wows_type
-            from services.fx_mapping import fx_display, fx_name
 
             set_wows_type(self._wows_type)
             svc = self._svc
-            cat = svc.fx_catalog or {}
+            # svc.db 是 assets.bin 解析出的内存 PrototypeDatabase（含路径树），
+            # **不是** assets_data.db：浏览器始终直接读当前 assets.bin。
+            db = svc.db
             wg = (self._wows_type or "").lower() == "wargaming"
             # 只取记录头部：材质记录 0x88（WG 0x78），避免整 blob 尾部拷贝
             need = 0x78 if wg else 0x88
@@ -103,18 +108,17 @@ class _FxIndexWorker(QThread):
             out: list[tuple[str, str, str, str]] = []
             for i, path in enumerate(files):
                 try:
-                    hdr = read_material_header(
-                        svc.vfs.open_file_len(path, need), wargaming=wg)
+                    data = svc.vfs.open_file_len(path, need)
+                except Exception:  # noqa: BLE001
+                    continue
+                try:
+                    hdr = read_material_header(data, wargaming=wg)
                 except Exception:  # noqa: BLE001
                     continue
                 sh = hdr["shader_id"]
                 mh = hdr["material_hash"]
-                try:
-                    text = (fx_display(self._wows_type, sh, mh, cat) if cat
-                            else fx_name(self._wows_type, sh, mh))
-                except Exception:  # noqa: BLE001
-                    text = ""
-                out.append((path, text, sh, mh))
+                fx = resolve_fx_path(db, mh)
+                out.append((path, fx, sh, mh))
                 if (i & 1023) == 0:
                     self.progress.emit(i, total)
             self.progress.emit(total, total)
@@ -180,6 +184,8 @@ class AssetsBinViewer(QMainWindow):
         #: 当前选中文件的路径与解码结果（切换显示方式时重用）
         self._current_path: Optional[str] = None
         self._current_decoded = None
+        #: 批量导出上次使用的目标文件夹
+        self._last_export_dir: str = ""
         #: 是否以 Mod SDK 明文 .mfm 样式显示材质
         self._mfm_plain = False
         # 服务器类型表：继承主应用设置（WG→10 类型表，Lesta→12 类型表）
@@ -227,7 +233,8 @@ class AssetsBinViewer(QMainWindow):
         toolbar.addWidget(self.btn_plain)
 
         self.btn_export_file = QPushButton("导出明文")
-        self.btn_export_file.setToolTip("明文导出当前所选文件（材质 .mfm / 视觉 .visual）")
+        self.btn_export_file.setToolTip(
+            "明文导出所选文件（可 Ctrl/Shift 多选，批量导出到文件夹）")
         self.btn_export_file.setEnabled(False)
         self.btn_export_file.clicked.connect(self._on_export_file)
         toolbar.addWidget(self.btn_export_file)
@@ -245,7 +252,8 @@ class AssetsBinViewer(QMainWindow):
         self.search_mode.setFixedWidth(96)
         self.search_mode.setToolTip(
             "文件名/路径：模糊匹配路径或文件名（多关键词取交集）\n"
-            "fx：在全部 .mfm 材质里按 fx 路径/短名搜索（也可输入 shader_id/material_hash）")
+            "fx：在全部 .mfm 材质里按 fx 路径搜索（fx 由 material_hash 在\n"
+            "     assets.bin 路径树中解析；也可输入 shader_id/material_hash）")
         toolbar.addWidget(self.search_mode)
 
         # ⚠️ 计数/来源不再放在工具栏：QToolBar 宽度不足时会把后续原部件收进「»」
@@ -266,8 +274,11 @@ class AssetsBinViewer(QMainWindow):
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.tree.setAutoScroll(True)
+        # 支持多选：Ctrl/Shift 选中多个文件后「导出明文」批量导出到文件夹
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.itemExpanded.connect(self._on_item_expanded)
         self.tree.itemClicked.connect(self._on_item_clicked)
+        self.tree.itemSelectionChanged.connect(self._update_export_state)
         splitter.addWidget(self.tree)
 
         self.json_view = QTextEdit()
@@ -539,22 +550,57 @@ class AssetsBinViewer(QMainWindow):
         self.json_view.setPlainText("\n".join(lines))
         self.status_label.setText(f"{vfile.path}  [PKG 资源，需解包查看]")
 
+    #: 可明文导出的 prototype 类型 → (扩展名, 另存为过滤器)
+    _EXPORT_KINDS = {
+        "MaterialPrototype": (".mfm", "Material (*.mfm);;所有文件 (*)"),
+        "VisualPrototype": (".visual", "Visual (*.visual);;所有文件 (*)"),
+        "ModelPrototype": (".model", "Model (*.model);;所有文件 (*)"),
+        "SkeletonExtenderPrototype": (".skel_ext",
+                                      "SkeletonExtender (*.skel_ext);;所有文件 (*)"),
+    }
+
+    def _selected_export_files(self) -> list[VirtualFile]:
+        """当前树中选中的、可明文导出的文件（Ctrl/Shift 多选，按选择顺序去重）。"""
+        if self._svc is None:
+            return []
+        vfs = self._svc.vfs
+        out: list[VirtualFile] = []
+        seen: set[str] = set()
+        for item in self.tree.selectedItems():
+            path = self._node_path(item)
+            if not path or path in seen:
+                continue
+            try:
+                if vfs.is_dir(path):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            f = vfs.get_file(path)
+            if f is None or f.prototype_type is None:
+                continue
+            if f.prototype_type.name not in self._EXPORT_KINDS:
+                continue
+            seen.add(path)
+            out.append(f)
+        return out
+
     def _update_export_state(self) -> None:
-        """导出按钮仅在选中可明文导出的文件时启用（.mfm / .visual / .model / .skel_ext）。"""
-        decoded = self._current_decoded
-        kind = ""
-        if self._is_material(decoded):
-            kind = ".mfm（材质）"
-        elif self._is_visual(decoded):
-            kind = ".visual（视觉）"
-        elif self._is_model(decoded):
-            kind = ".model（模型）"
-        elif self._is_skel_ext(decoded):
-            kind = ".skel_ext（骨架扩展）"
-        self.btn_export_file.setEnabled(bool(kind))
-        self.btn_export_file.setToolTip(
-            "明文导出当前所选文件（官方 Mod SDK 格式）" if kind
-            else "明文导出当前所选文件——目前支持 .mfm / .visual / .model / .skel_ext（其他类型暂未支持）")
+        """导出按钮在选中可明文导出的文件时启用（.mfm / .visual / .model / .skel_ext）。"""
+        files = self._selected_export_files()
+        n = len(files)
+        self.btn_export_file.setEnabled(n > 0)
+        self.btn_export_file.setText("导出明文" if n <= 1 else f"导出明文（{n}）")
+        if n <= 0:
+            self.btn_export_file.setToolTip(
+                "明文导出所选文件——目前支持 .mfm / .visual / .model / .skel_ext"
+                "（其他类型暂未支持；可 Ctrl/Shift 多选批量导出）")
+        elif n == 1:
+            ext = self._EXPORT_KINDS[files[0].prototype_type.name][0]
+            self.btn_export_file.setToolTip(
+                f"明文导出当前所选文件（{ext}，官方 Mod SDK 格式）")
+        else:
+            self.btn_export_file.setToolTip(
+                f"明文导出所选 {n} 个文件（选择目标文件夹）")
 
     def _render(self) -> None:
         """根据当前显示模式重绘右侧内容（JSON / 明文）。"""
@@ -574,10 +620,10 @@ class AssetsBinViewer(QMainWindow):
             if self._is_skel_ext(decoded):
                 self.json_view.setPlainText(self._skel_ext_text(self._current_path or "", decoded))
                 return
-        fx_text = self._fx_text(decoded)
         data = decoded
-        if fx_text:
-            data = _insert_after(decoded, "material_hash", "fx_path", fx_text)
+        fx_path = self._material_fx_path(decoded)
+        if fx_path:
+            data = _insert_after(decoded, "material_hash", "fx_path", fx_path)
         try:
             text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False)
         except ValueError as e:
@@ -587,6 +633,17 @@ class AssetsBinViewer(QMainWindow):
     @staticmethod
     def _is_material(decoded) -> bool:
         return isinstance(decoded, dict) and decoded.get("_type") == "MaterialPrototype"
+
+    def _material_fx_path(self, decoded) -> str:
+        """mfm 的 fx 解析（独立功能）：material_hash → fx 路径。
+
+        只查当前 assets.bin 的内存路径树，不读/写 assets_data.db；
+        直接打开单个 assets.bin 文件时同样可用。
+        """
+        if not self._is_material(decoded) or self._svc is None:
+            return ""
+        from .mfm_fx import resolve_fx_path
+        return resolve_fx_path(self._svc.db, decoded.get("material_hash") or "")
 
     @staticmethod
     def _is_visual(decoded) -> bool:
@@ -614,9 +671,7 @@ class AssetsBinViewer(QMainWindow):
         """解码结果 → 官方 Mod SDK 明文 `.mfm` 文本。"""
         from .mfm_text import format_mfm_text
         name = (path or "").rsplit("/", 1)[-1] or "material.mfm"
-        disp = self._fx_text(decoded)
-        fx = disp if disp.endswith(".fx") else ""
-        return format_mfm_text(decoded, name=name, fx=fx)
+        return format_mfm_text(decoded, name=name, fx=self._material_fx_path(decoded))
 
     def _visual_text(self, path: str, decoded) -> str:
         """解码结果 → 官方 Mod SDK 明文 `.visual` 文本（寄服/莱服两套格式）。"""
@@ -636,27 +691,80 @@ class AssetsBinViewer(QMainWindow):
         name = (path or "").rsplit("/", 1)[-1] or "skeleton_extender.skel_ext"
         return format_skel_ext_text(decoded, name=name)
 
-    def _on_export_file(self) -> None:
-        """把当前所选文件导出（材质 .mfm / 视觉 .visual 的明文）。"""
-        decoded = self._current_decoded
-        path = self._current_path or ""
+    def _export_payload(self, path: str, decoded):
+        """解码结果 → (标题, 过滤器, 默认文件名, 明文文本)；不支持的类型返回 None。"""
+        name = (path or "").rsplit("/", 1)[-1]
         if self._is_material(decoded):
-            default = path.rsplit("/", 1)[-1] or "material.mfm"
-            caption, filt, text = "导出明文 .mfm", "Material (*.mfm);;所有文件 (*)", self._mfm_text(path, decoded)
-        elif self._is_visual(decoded):
-            default = path.rsplit("/", 1)[-1] or "visual.visual"
-            caption, filt, text = "导出明文 .visual", "Visual (*.visual);;所有文件 (*)", self._visual_text(path, decoded)
-        elif self._is_model(decoded):
-            default = path.rsplit("/", 1)[-1] or "model.model"
-            caption, filt, text = "导出明文 .model", "Model (*.model);;所有文件 (*)", self._model_text(path, decoded)
-        elif self._is_skel_ext(decoded):
-            default = path.rsplit("/", 1)[-1] or "skeleton_extender.skel_ext"
-            caption, filt, text = ("导出明文 .skel_ext", "SkeletonExtender (*.skel_ext);;所有文件 (*)",
-                                  self._skel_ext_text(path, decoded))
-        else:
-            # 按钮此时应为禁用态；兑底不弹框以免打断
-            self.status_label.setText("当前所选文件暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
+            return ("导出明文 .mfm", self._EXPORT_KINDS["MaterialPrototype"][1],
+                    name or "material.mfm", self._mfm_text(path, decoded))
+        if self._is_visual(decoded):
+            return ("导出明文 .visual", self._EXPORT_KINDS["VisualPrototype"][1],
+                    name or "visual.visual", self._visual_text(path, decoded))
+        if self._is_model(decoded):
+            return ("导出明文 .model", self._EXPORT_KINDS["ModelPrototype"][1],
+                    name or "model.model", self._model_text(path, decoded))
+        if self._is_skel_ext(decoded):
+            return ("导出明文 .skel_ext",
+                    self._EXPORT_KINDS["SkeletonExtenderPrototype"][1],
+                    name or "skeleton_extender.skel_ext",
+                    self._skel_ext_text(path, decoded))
+        return None
+
+    def _decode_for_export(self, path: str):
+        """解码待导出文件（当前展示的那个直接复用缓存，避免重复解析）。"""
+        if self._svc is None:
+            return None
+        if path == self._current_path and self._current_decoded is not None:
+            return self._current_decoded
+        try:
+            return self._svc.vfs.decode_file(path)
+        except Exception as e:  # noqa: BLE001
+            self.status_label.setText(f"解码失败: {path} ({e})")
+            return None
+
+    @staticmethod
+    def _visual_export_note(decoded) -> str:
+        """visual 无节点记录时的提示后缀（单文件导出用）。"""
+        skel = decoded.get("skeleton") or {}
+        nodes = decoded.get("nodes") or {}
+        has_tree = bool(skel.get("name_ids")) or (
+            isinstance(nodes, dict) and bool(nodes.get("name_ids")))
+        return "" if has_tree else "（该 visual 无节点记录，未包含节点树）"
+
+    @staticmethod
+    def _unique_export_name(name: str, used: dict) -> str:
+        """同一批导出内的重名处理：`x.mfm` → `x (1).mfm`、`x (2).mfm`…"""
+        p = Path(name)
+        key = name.lower()
+        n = used.get(key, 0)
+        used[key] = n + 1
+        return name if n == 0 else f"{p.stem} ({n}){p.suffix}"
+
+    def _on_export_file(self) -> None:
+        """明文导出所选文件：单个 → 另存为；多选 → 选文件夹批量导出。"""
+        files = self._selected_export_files()
+        if not files:
+            self.status_label.setText(
+                "当前所选文件暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
             return
+        if len(files) == 1:
+            self._export_single_file(files[0])
+        else:
+            self._export_many_files(files)
+
+    def _export_single_file(self, f: VirtualFile) -> None:
+        """单文件导出：弹「另存为」。"""
+        path = f.path
+        decoded = self._decode_for_export(path)
+        if decoded is None:
+            QMessageBox.warning(self, "导出失败", f"无法解码该文件：\n{path}")
+            return
+        payload = self._export_payload(path, decoded)
+        if payload is None:
+            self.status_label.setText(
+                f"{f.filename} 暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
+            return
+        caption, filt, default, text = payload
         out, _sel = QFileDialog.getSaveFileName(self, caption, default, filt)
         if not out:
             return
@@ -665,33 +773,57 @@ class AssetsBinViewer(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "导出失败", str(e))
             return
-        note = ""
-        if self._is_visual(decoded):
-            skel = decoded.get("skeleton") or {}
-            nodes = decoded.get("nodes") or {}
-            has_tree = bool(skel.get("name_ids")) or (
-                isinstance(nodes, dict) and bool(nodes.get("name_ids")))
-            if not has_tree:
-                note = "（该 visual 无节点记录，未包含节点树）"
+        note = self._visual_export_note(decoded) if self._is_visual(decoded) else ""
         self.status_label.setText(f"已导出: {out}{note}")
 
-    def _fx_text(self, decoded) -> str:
-        """MaterialPrototype 对应的 fx 文本（插到 `material_hash` 字段之后）。
-
-        fx 短名 → 完整路径的对照由当前客户端的 `.fxo` 清单反推；
-        **直接打开 assets.bin 文件时没有清单**，此时不输出该字段。
-        """
-        if not self._is_material(decoded):
-            return ""
-        cat = self._svc.fx_catalog if self._svc is not None else {}
-        if not cat:
-            return ""
+    def _export_many_files(self, files: list[VirtualFile]) -> None:
+        """多文件导出：选目标文件夹，逐个写明文（同名自动加序号）。"""
+        n = len(files)
+        if n > 200:
+            ret = QMessageBox.question(
+                self, "批量导出",
+                f"将导出 {n} 个文件，可能耗时较长（大 .visual 需要完整解码）。\n"
+                "是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+        out_dir = QFileDialog.getExistingDirectory(
+            self, f"选择导出文件夹（{n} 个文件）", self._last_export_dir or "")
+        if not out_dir:
+            return
+        self._last_export_dir = out_dir
+        dest = Path(out_dir)
+        used: dict[str, int] = {}
+        exported = 0
+        failed: list[str] = []
+        t0 = time.time()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            from services.fx_mapping import fx_display
-            return fx_display(self._wows_type, decoded.get("shader_id") or "",
-                              decoded.get("material_hash") or "", cat)
-        except Exception:  # noqa: BLE001
-            return ""
+            for i, f in enumerate(files, 1):
+                self.status_label.setText(f"导出明文 {i}/{n}：{f.filename}")
+                QApplication.processEvents()
+                decoded = self._decode_for_export(f.path)
+                payload = self._export_payload(f.path, decoded) if decoded else None
+                if payload is None:
+                    failed.append(f.filename)
+                    continue
+                _caption, _filt, default, text = payload
+                name = self._unique_export_name(default or f.filename, used)
+                try:
+                    (dest / name).write_text(text, encoding="utf-8")
+                    exported += 1
+                except OSError as e:
+                    failed.append(f"{f.filename}({e})")
+        finally:
+            QApplication.restoreOverrideCursor()
+        msg = f"已导出 {exported}/{n} 个文件 → {out_dir}（{time.time() - t0:.1f}s）"
+        if failed:
+            more = f" 等 {len(failed)} 个" if len(failed) > 3 else ""
+            msg += f"；失败: {', '.join(failed[:3])}{more}"
+        self.status_label.setText(msg)
+        (QMessageBox.information if not failed else QMessageBox.warning)(
+            self, "导出完成", msg)
 
     # ── 搜索 ────────────────────────────────────────────
 
@@ -781,7 +913,7 @@ class AssetsBinViewer(QMainWindow):
             self._apply_fx_search(query)
 
     def _apply_fx_search(self, keyword: str) -> None:
-        """在 fx 索引里匹配：fx 路径/短名、shader_id、material_hash 均可搜。"""
+        """在 fx 索引里匹配：fx 路径、shader_id、material_hash 均可搜。"""
         words = [w for w in keyword.lower().split() if w]
         if not words:
             return
@@ -789,7 +921,7 @@ class AssetsBinViewer(QMainWindow):
         for path, fx, sh, mh in self._fx_index or []:
             hay = f"{fx} {sh} {mh}".lower()
             if all(w in hay for w in words):
-                note = fx or f"{sh} (未映射)"
+                note = fx or f"{sh} (无法解析 fx)"
                 hits.append((path, note))
                 if len(hits) >= self.MAX_SEARCH_RESULTS:
                     break

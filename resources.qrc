@@ -7,8 +7,6 @@
     <file>resources/database/wargaming/assets_database.sql</file>
     <file>resources/database/wargaming/collision_materials.json</file>
     <file>resources/database/wargaming/database_new.sql</file>
-    <file>resources/fx_mapping_lesta.md</file>
-    <file>resources/fx_mapping_wargaming.md</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_depthcharge_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_fighter_fighter_0.png</file>
     <file>resources/pictures/lesta/ammo_types/ammo_airsupport_he_0.png</file>

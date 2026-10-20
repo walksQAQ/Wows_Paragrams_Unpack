@@ -73,13 +73,14 @@ CREATE TABLE IF NOT EXISTS mfm_textures (
     PRIMARY KEY(bin_folder, mfm_path)
 );
 
--- 材质完整信息：shader_id / 技术族 / 全部贴图原始路径(JSON) / INDEXED vec4 数组(JSON)
+-- 材质完整信息：shader_id / 技术族 / fx 路径 / 全部贴图原始路径(JSON) / INDEXED vec4 数组(JSON)
 CREATE TABLE IF NOT EXISTS material_full (
     bin_folder TEXT NOT NULL,
     mfm_path TEXT NOT NULL,
     shader_id TEXT NOT NULL DEFAULT '0x0',
     family TEXT NOT NULL DEFAULT '',
     material_hash TEXT NOT NULL DEFAULT '',
+    fx_path TEXT NOT NULL DEFAULT '',
     textures TEXT NOT NULL DEFAULT '',
     indexed TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(bin_folder, mfm_path)

@@ -70,16 +70,22 @@
 - `assets_data.db / material_full` 已入库**全部材质**（29139 个）的 `shader_id`、全部贴图原始路径
   （`textures` JSON，含 `diffuseMap/ambientOcclusionMap/metallicGlossMap/normalMap/detailMap` 等）、
   `family`（`pbs` / `indexed` / `other`）、INDEXED 的 vec4 数组。
-- `services/geometry_service.py::_resolve_material_full()` 从库返回 `tech_family` + `textures` + `indexed_params`，
+- `services/geometry_service.py::_resolve_material_full()` 从库返回 `tech_family` + `fx_path` + `textures` + `indexed_params`，
   非 INDEXED 渲染目前优先读取 `diffuseMap`，并在 `renderer` 中按 `.dd0/.dd1/.dd2/.dds` 分级实时解包。
-- `shader_id` 解析逻辑来自 `geometry_service._material_family()`：高 16 位 `0x0009` 归类为 `indexed`，`0x0005` 归类为 `pbs`，其余为 `other`。
+- **fx 路径**：MaterialPrototype 的 `material_hash`（Korabli +0x78 / WG +0x68）就是
+  assets.bin 路径树里的 **selfId**，`PrototypeDatabase.resolve_self_path()` 直接解析出
+  完整 fx 路径（如 `shaders/std_effects/PBS_ship.fx`；Lesta 全量 28,822 个材质 100% 可解析）。
+  源码与打包 exe 行为一致，**不使用固定映射表**。
+- `shader_id` 仅作 fx 解析失败时的兜底：高 16 位 `0x0009` 归类为 `indexed`，`0x0005` 归类为 `pbs`，其余为 `other`。
 - 本文档的 detail/glass 参数属于**语义参考**：它描述 `.mfm` 明文字段的命名/用途，但程序当前真正的渲染采样路径是数据库缓存后再按材质 family 选择渲染分支。
 
 ### 运行时解析方式（当前代码）
 
-1. `assets_cache_service.populate()` 遍历所有 `.mfm`，读取 `shader_id`、名称哈希、属性类型和 `vec4` 数组，写入 `material_full` 和 `mfm_textures`。
+1. `assets_cache_service.populate()` 遍历所有 `.mfm`，读取 `shader_id`、`material_hash`、名称哈希、属性类型和 `vec4` 数组，
+   用 `uncode_assets.mfm_fx.resolve_fx_path()` 解析 fx，并把 `fx_path` 与贴图路径写入 `material_full` / `mfm_textures`。
 2. `geometry_service._resolve_material_full()` 读取 `material_full`，构造：
-   - `tech_family`
+   - `tech_family`（由 `fx_path` 判定）
+   - `fx_path`（完整 fx 路径，随客户端更新，非固定表）
    - `textures`：`{name: 原始路径}`
    - `indexed_params`：含 `arrays`（真实 vec4 数组，见下） + 渲染回退参数 `offset`/`grid`
 3. 真实贴图 bytes 在渲染阶段通过 `_load_texture_tier()` 从客户端 pkg 资源里按 `.dd0` → `.dd1` → `.dd2` → `.dds` 依次加载。

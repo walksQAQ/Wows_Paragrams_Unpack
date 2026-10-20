@@ -139,6 +139,18 @@ def _attach_assets_live(parsed, geom_path: str, cancel_event=None) -> tuple[dict
     return rs_by_mid, info
 
 
+def _shape_stem(entry) -> str:
+    """渲染集的 shape 名（`TurretShape.vertices` → `TurretShape`），无则空串。"""
+    name = str((entry or {}).get("shape") or "")
+    return name[:-len(".vertices")] if name.endswith(".vertices") else name
+
+
+def _bound_node(entry) -> str:
+    """渲染集绑定的 visual 节点名（第一个），无则空串。"""
+    nodes = (entry or {}).get("nodes") or []
+    return str(nodes[0]) if nodes else ""
+
+
 def geometry_from_parsed(name: str, parsed, file_path: str = "",
                          cancel_event=None, source: str = "client",
                          load_materials: bool = True) -> ShipGeometry:
@@ -223,6 +235,13 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
                         else list(getattr(prim, "skin_bones", []) or [])),
             skin_bind=([] if drop_skin
                        else list(getattr(prim, "skin_bind", []) or [])),
+            # 单 primitive 网格 → 一个 shape 切片：导出时网格名 = visual 的 Shape 名
+            shape_names=[_shape_stem(entry)] if _shape_stem(entry) else [],
+            node_names=[_bound_node(entry)] if _bound_node(entry) else [],
+            shape_spans=(
+                [(_shape_stem(entry), _bound_node(entry), 0,
+                  int(positions.shape[0]), 0, int(indices.size))]
+                if _shape_stem(entry) else []),
         )
         if svc is not None and entry is not None and entry.get("mfm"):
             try:

@@ -53,29 +53,82 @@
 
 | 当前对象 | GLB 对象 | 处理方式 |
 |---|---|---|
-| `ShipGeometry` | 根节点 `ship_<game_key>` | 写入舰船 ID、名称、模型目录和导出版本到 `node.extras` |
-| `HullMesh` | 一个 glTF `mesh` + `node` | 位置、法线、UV、索引直接转为 accessor；舰体坐标保持统一 |
-| `MountMesh` | 一个带局部矩阵的 `node` | 几何保留本地坐标，`model_matrix` 写入 node.matrix；不得再次烘焙矩阵 |
+| `ShipGeometry` | 根节点 `Scene Root` | 写入舰船 ID、名称、模型目录和导出版本到 `asset.extras` |
+| `HullMesh` | 按 `shape_spans` 拆成多个 `mesh` + `node` | 一个 renderSet（Shape）一个网格；名字取 visual 的 `<vertices>` 去后缀 |
+| `MountMesh` | 每个挂载节点（HP_*/MP_*）一个空物体，内含模型形状 | 顶点烘焙到世界坐标；同一挂载的多材质分片共用一个空物体 |
 | `ArmorMesh` | 独立的 `armor` 节点/mesh | 应用与 `ArmorScene` 相同的世界空间变换；按 `component` 和 `plate_key` 分组 |
 | `texture_dds` | glTF image / bufferView | 转码为 PNG 或 JPEG 后嵌入 GLB；原始 DDS 路径写入 `extras` |
 | `material_textures` | PBR 贴图集合 | 首期至少映射 diffuse/albedo；normal、metallic/roughness 按可解码性映射 |
 | `indexed_params` | `extras.wows_indexed` | 保存数组、网格、offset 和原始材质路径，首期不直接作为标准 shader 输出 |
 
-推荐节点层级：
+节点层级**对齐 BigWorld 插件（`.primitives` + `.visual`）的导入样式**，
+这样 GLB 在 Blender 里打开的效果与用该插件导入原始模型一致：
 
 ```text
-ship_<game_key>
-├─ Hull
-│  ├─ <hull mesh part> ...
-├─ Mounts
-│  ├─ MainBattery/<mount> ...
-│  ├─ Secondary/<mount> ...
-│  ├─ AA/<mount> ...
-│  └─ Equipment/<mount> ...
-└─ Armor
-   ├─ Hull/<zone>/<part>/<thickness> ...
-   └─ Mounts/<component>/<part>/<thickness> ...
+Scene Root                       ← visual 根节点
+├─ Bow                           ← 舰体分段（visual 部件根节点）
+│  ├─ Bow_wire                   ← .visual <node>
+│  │  └─ Bow_wireShape           ← 网格名 = <vertices> 去后缀
+│  ├─ Bow_crack_MidFront
+│  │  ├─ Bow_crack_MidFront_in
+│  │  │  └─ Bow_crack_MidFront_inShape
+│  │  └─ Bow_crack_MidFrontShape
+│  └─ BowShape
+├─ MidFront / MidBack / Stern ...
+├─ HP_JGM_1                      ← 挂载节点（ship.visual 里的 HP_/MP_ 名）
+│  └─ Roll_Back1_BlendBone
+│     └─ TurretShape
+└─ MP_... （甲板设备）
 ```
+
+⚠️ **默认导出 glTF `skin` / joints**（「导出骨骼顶点组」默认勾选）：Blender 里直接
+得到按 visual 骨骼名命名的顶点组与可绑定骨架。每个 skin 额外挂一根
+`<网格名>_root` 骨骼（恒等变换）+ 0.2m 的 `_tip` 子骨骼，把 Blender 推断出的
+骨长固定为 0.2（见下文「骨骼显示尺寸」），代价是每个 skin 多 2 个空顶点组。
+蒙皮几何在加载阶段已按 bind pose 烘焙进顶点，去掉 skin 也不影响外观
+（`GlbRenderOptions(export_skins=False)` / 取消勾选即走无骨架模式）。
+
+节点变换：HP_*/MP_* 挂载空物体携带**真实挂点矩阵**（网格顶点写在其局部坐标，
+world = 节点矩阵 × 顶点 → 世界位置不变，但层级在 Blender 里有实际位置）；
+舰体分段节点在源数据里本就是恒等，仍在原点（与插件导入原始模型一致）。
+
+顶点组/权重（`xyznuviiiwwtb` 的 `iiiww`）**不丢**：默认写标准 skin
+（`GlbRenderOptions(export_skins=True)`，查看器「导出骨骼顶点组」默认勾选）；
+关掉该选项时改为写 `_JOINTS_0` / `_WEIGHTS_0` 自定义属性 +
+`mesh.extras.bone_palette`（骨骼名表），需要顶点组时再用
+`tools/blender_wows_vertex_groups.py` 还原。骨架节点挂在
+`Scene Root` 下的 `<部件>_bones` 空物体里（恒等变换）：骨骼矩阵即世界矩阵，
+bind 矩阵先共轭到渲染空间 —— 挂在带挂点矩阵的部件下会让 Blender 重复施加父变换，
+骨骼显示位置跑到船外。骨骼位置严格按源数据（bind 平移为 0 的 `*_BlendBone` 就在原点）。
+**调色板顺序必须保留 `.visual` 原始顺序**：顶点骨骼索引是调色板 slot × 3
+（与 BigWorld 插件 `import_bw_primitives.py` 的 `index//3` 完全一致），
+缓存库曾按 `sorted(set(nodes))` 入库 → 顺序被打乱，`Mk56Shape`
+（`[Rotate_Y, Root]` 被存成 `[Root, Rotate_Y]`）、舰体天线索具
+（`[front_hilder, back_holder, Antenna_1, Antenna_2]` 被排序）、炮塔 LOD
+等形状的权重会落到**别的骨骼**上（Rotate_Y 的权重显示在 Rotate_X 组里）。
+同一材质下不同 shape 的调色板也可能不同（如 `TurretShape` 4 骨骼 +
+`insideShape`/`XM405_Gun_DetailShape` 1 骨骼），合并成一个网格同样会把权重
+翻译错 —— 因此合并前按调色板拆分成多个网格（名称加 `#bonesN`）。
+骨骼显示尺寸由 Blender 推断（`vnode.py: pick_bone_length()`）：有骨子骨骼 → 取
+min(子骨偏移)；否则父级是骨骼 → 继承父骨长；都没有才退化用「到骨架原点的距离」
+（炮塔实测 6.6，舰体可达上百米）→ 棱角球比部件还大。旧版本把全部 joint 平铺在
+`<部件>_bones` 空物体下，每个都是「无子骨骼的根骨骼」，必然走最后一条。
+现在默认给每个 skin 加一根 `<网格名>_root`（恒等变换）+ `_tip`（+Y 0.2m）：
+根骨长 = min(子骨偏移) = 0.2，其余关节继承父骨长 = 0.2 → 全部骨骼尺寸恒定。
+只多 2 个节点/空顶点组；`GlbRenderOptions(bone_length=0)` 可退回旧行为，
+`tip_bones=True` 则给每根骨骼单独加骨尖（顶点组数量翻倍）。
+
+想在 Blender 里**有顶点组但不要骨架**：取消勾选「导出骨骼顶点组」再导出，然后运行
+`tools/blender_wows_vertex_groups.py`（Scripting 工作区 Run Script，或
+`blender --background --python tools/blender_wows_vertex_groups.py -- 模型.glb`）——
+它按自定义属性还原顶点组并清除这些临时属性，不创建任何 Armature（实测重建结果
+与 skin 模式的顶点组逐组权重完全一致）。
+
+材质按 .mfm 声明映射到 glTF 标准 PBR 槽（不是全压到 baseColor）：
+`diffuseMap`→baseColor、`normalMap`→normal（补 Z）、`metallicGlossMap`→
+metallicRoughness（R=F0/G=gloss 换算成 G=roughness/B=metallic）、
+`ambientOcclusionMap`→occlusion；`detailMap`/INDEXED 数组无等价物，只记在
+`material.extras.wows_textures`。
 
 #### 3. 坐标系与矩阵规则
 
@@ -161,7 +214,7 @@ def export_ship_glb(
 1. 校验 `ShipGeometry` 非空，并冻结当前查看器的装甲显隐掩码；
 2. 建立 glTF buffer、bufferView、accessor，按 mesh 批量追加顶点/法线/UV/索引；
 3. 建立材质缓存，使用“材质属性 + 贴图路径 + alpha 状态”作为去重键；
-4. 写入 Hull、Mounts、Armor 节点和矩阵；
+4. 写入 `Scene Root` → 部件空物体 → visual 节点空物体 → Shape 网格（顶点烘焙到世界坐标，不写 skin）；
 5. 转码并嵌入贴图，失败时保留几何并追加 warning；
 6. 计算每个 mesh 的 bounds 与总 bounds；
 7. 写入 `asset.extras.wows_export`、节点 extras 和可选的原始路径信息；

@@ -108,17 +108,11 @@ class _ScanWorker(QThread):
     def run(self) -> None:
         try:
             from data_extractor import GameExtractor
-            from uncode_assets.service import collect_fx_catalog
             extractor = GameExtractor(self._game_dir, bin_folder=self._bin_folder)
-            # 顺便遍历 pkg 清单：fx 短名 → 完整路径（运行时由 "shaders/" + 目录拼接）
-            try:
-                fx_cat = collect_fx_catalog(extractor.file_tree)
-            except Exception:  # noqa: BLE001
-                fx_cat = {}
             resolver = build_resolver(self._game_dir, self._wows_type,
                                       bin_folder=self._bin_folder)
             scenes = scan_scenes(extractor, resolver)
-            self.loaded.emit((extractor, resolver, scenes, fx_cat))
+            self.loaded.emit((extractor, resolver, scenes))
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{type(e).__name__}: {e}")
 
@@ -233,11 +227,7 @@ class SpaceBrowser(QMainWindow):
         self._worker.start()
 
     def _on_loaded(self, payload) -> None:
-        if len(payload) >= 4:
-            self._extractor, self._resolver, self._scenes, self._fx_cat_cache = payload
-        else:
-            self._extractor, self._resolver, self._scenes = payload
-            self._fx_cat_cache = {}
+        self._extractor, self._resolver, self._scenes = payload
         self._build_tree()
         self.status_label.setText("加载完成")
         self.info_label.setText(
@@ -512,24 +502,15 @@ class SpaceBrowser(QMainWindow):
         self._mfm_cache[mfm_id] = props
         return props
 
-    def _dynamic_fx_catalog(self) -> dict:
-        """fx 短名 → 完整路径（从客户端加载时，由 _ScanWorker 一并遍历生成）。
+    def _fx_display(self, material_hash: str) -> str:
+        """mfm 的 fx 解析（独立功能）：material_hash → fx 路径。
 
-        仅在“选择游戏目录”模式下可用；直接加载单个文件时为空，
-        此时材质详情不显示 fx 行（不做静态目录）。
+        只查当前 assets.bin 的内存路径树，不碰 assets_data.db。
         """
-        return getattr(self, "_fx_cat_cache", {}) or {}
-
-    def _fx_display(self, shader: str, material_hash: str) -> str:
-        """shader_id + material_hash → 完整 fx 路径；无客户端目录时不显示。"""
-        cat = self._dynamic_fx_catalog()
-        if not cat:
+        if not material_hash or self._resolver is None:
             return ""
-        try:
-            from services.fx_mapping import fx_display
-            return fx_display(self._wows_type, shader, material_hash, cat)
-        except Exception:  # noqa: BLE001
-            return ""
+        from .mfm_fx import resolve_fx_path
+        return resolve_fx_path(getattr(self._resolver, "db", None), material_hash)
 
     def _fmt_mfm(self, mfm_id: int, indent: str = "        ") -> list[str]:
         """把 mfm 材质格式化为多行缩进文本。"""
@@ -542,7 +523,7 @@ class SpaceBrowser(QMainWindow):
         shader = props.get("shader_id")
         if shader not in (None, "", "0x00000000"):
             lines.append(f"{indent}shader: {shader}")
-            fxp = self._fx_display(shader, props.get("material_hash") or "")
+            fxp = self._fx_display(props.get("material_hash") or "")
             if fxp:
                 lines.append(f"{indent}fx: {fxp}")
         for p in props.get("properties", []) or []:

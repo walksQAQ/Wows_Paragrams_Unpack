@@ -282,6 +282,10 @@ class HullMesh:
     #: 逐节点实例矩阵（渲染空间 4x4 行主序）；非空时该网格是一份原始几何，
     #: 渲染时按其每个矩阵各画一次（左右舷/多处实例，如切锯机 _0/_1）。
     instance_matrices: list = field(default_factory=list)
+    #: 按 shape 切片的区间：[(shape_name, node_name, v_start, v_count, i_start,
+    #: i_count), ...]，与 `_merge_hull` 的合并顺序一致。GLB 导出据此把合并网格
+    #: 重新拆成 .visual 的每个 renderSet（一个 Shape 一个网格对象）。
+    shape_spans: list = field(default_factory=list)
 
 
 @dataclass
@@ -333,6 +337,11 @@ class MountMesh:
     #: 逐节点实例矩阵（渲染空间 4x4 行主序）；非空时该网格是一份原始几何，
     #: 渲染时按其每个矩阵各画一次（挂载模型内的多处实例）。
     instance_matrices: list = field(default_factory=list)
+    #: 与 instance_matrices 对应的节点名（HP_/MP_ 挂点名）；GLB 导出用它命名
+    #: 每个实例的空物体，缺省时回退到网格名。
+    instance_labels: list = field(default_factory=list)
+    #: 按 shape 切片的区间（同 HullMesh.shape_spans）。
+    shape_spans: list = field(default_factory=list)
 
     def bounds_in_world(self) -> tuple[np.ndarray, np.ndarray]:
         """本地包围盒经 model_matrix 变换后的世界包围盒。"""
@@ -1009,46 +1018,54 @@ class GeometryService:
                         # __inst__# 组：真实材质在 g['material']，带逐节点实例矩阵
                         if isinstance(mat_key, str) and mat_key.startswith('__inst__#'):
                             real = g.get('material')
-                            nm = part_name if real is None else f"{part_name}#{real}"
+                            base = part_name if real is None else f"{part_name}#{real}"
                         else:
                             real = mat_key
-                            nm = part_name if mat_key is None else f"{part_name}#{mat_key}"
-                        hm = self._merge_hull(nm, g['prims'],
-                                              shape_names=g.get('shape_names', []),
-                                              node_names=g.get('node_names', []),
-                                              instance_matrices=inst)
-                        if real is not None:
-                            hm.material = real
-                        if mat_key == '__wire__' or mat_key == 'WIRE':
-                            hm.is_wire = True
-                        if isinstance(mat_key, str) and mat_key.startswith('__crack__'):
-                            hm.is_crack = True
-                        if real is not None:
-                            # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
-                            # ★ 只认 mfm 声明的贴图属性；未声明颜色贴图 → 无色（不按名补全）
-                            bundle = self._resolve_material_full(g.get('mfm') or '', extractor)
-                            self._apply_declared_color(hm, bundle, extractor)
+                            base = part_name if mat_key is None else f"{part_name}#{mat_key}"
+                        # 同一材质的蒙皮分片可能用不同骨骼调色板 → 必须拆成多个网格，
+                        # 否则合并后顶点组索引按别人的调色板翻译（权重绑错骨骼）。
+                        subs = self._palette_subgroups(g['prims'])
+                        for si, sub in enumerate(subs, 1):
+                            nm = base if len(subs) == 1 else f"{base}#bones{si}"
+                            hm = self._merge_hull(nm, sub,
+                                                  shape_names=g.get('shape_names', []),
+                                                  node_names=g.get('node_names', []),
+                                                  instance_matrices=inst)
+                            if real is not None:
+                                hm.material = real
+                            if mat_key == '__wire__' or mat_key == 'WIRE':
+                                hm.is_wire = True
+                            if isinstance(mat_key, str) and mat_key.startswith('__crack__'):
+                                hm.is_crack = True
+                            if real is not None:
+                                # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
+                                # ★ 只认 mfm 声明的贴图属性；未声明颜色贴图 → 无色（不按名补全）
+                                bundle = self._resolve_material_full(g.get('mfm') or '', extractor)
+                                self._apply_declared_color(hm, bundle, extractor)
+                            geom.hull_meshes.append(hm)
+                            if hm.positions.size:
+                                if inst:
+                                    # 实例化网格：包围盒按各个节点矩阵求并集
+                                    for _m in inst:
+                                        mn, mx = self._instanced_bounds(hm.positions, _m)
+                                        bmin = np.minimum(bmin, mn)
+                                        bmax = np.maximum(bmax, mx)
+                                else:
+                                    pmin = hm.positions.min(axis=0)
+                                    pmax = hm.positions.max(axis=0)
+                                    bmin = np.minimum(bmin, pmin)
+                                    bmax = np.maximum(bmax, pmax)
+                else:
+                    subs = self._palette_subgroups(parsed.primitives)
+                    for si, sub in enumerate(subs, 1):
+                        hm = self._merge_hull(
+                            part_name if len(subs) == 1 else f"{part_name}#bones{si}", sub)
                         geom.hull_meshes.append(hm)
                         if hm.positions.size:
-                            if inst:
-                                # 实例化网格：包围盒按各个节点矩阵求并集
-                                for _m in inst:
-                                    mn, mx = self._instanced_bounds(hm.positions, _m)
-                                    bmin = np.minimum(bmin, mn)
-                                    bmax = np.maximum(bmax, mx)
-                            else:
-                                pmin = hm.positions.min(axis=0)
-                                pmax = hm.positions.max(axis=0)
-                                bmin = np.minimum(bmin, pmin)
-                                bmax = np.maximum(bmax, pmax)
-                else:
-                    hm = self._merge_hull(part_name, parsed.primitives)
-                    geom.hull_meshes.append(hm)
-                    if hm.positions.size:
-                        pmin = hm.positions.min(axis=0)
-                        pmax = hm.positions.max(axis=0)
-                        bmin = np.minimum(bmin, pmin)
-                        bmax = np.maximum(bmax, pmax)
+                            pmin = hm.positions.min(axis=0)
+                            pmax = hm.positions.max(axis=0)
+                            bmin = np.minimum(bmin, pmin)
+                            bmax = np.maximum(bmax, pmax)
 
             # 装甲网格（舰体装甲 → 归属"船体"，已在舰船坐标系）
             for am in parsed.armor_models:
@@ -1164,6 +1181,8 @@ class GeometryService:
                 bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                 skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 shape_names=hm.shape_names, node_names=hm.node_names,
+                shape_spans=hm.shape_spans,
+                instance_labels=[str(_label) for (_label, _mtx, _amtx) in group_items],
             )
             geom.mounts.append(mm)
             if mm.positions.size:
@@ -1190,23 +1209,29 @@ class GeometryService:
             key = (getattr(mm, 'model_folder', ''), id(mm.positions),
                    getattr(mm, 'component', ''), getattr(mm, 'tech_family', 'pbs'))
             if key not in groups:
-                groups[key] = [mm, []]
+                groups[key] = [mm, [], []]
                 order.append(key)
             g = groups[key]
+            labels = list(getattr(mm, 'instance_labels', None) or [])
             if mm.instance_matrices:
                 g[1].extend(list(mm.instance_matrices))
+                for _k in range(len(mm.instance_matrices)):
+                    g[2].append(labels[_k] if _k < len(labels) else str(mm.name))
             elif mm.model_matrix is not None:
                 g[1].append(np.ascontiguousarray(mm.model_matrix, dtype=np.float32))
+                g[2].append(labels[0] if labels else str(mm.name))
             else:
                 g[1].append(np.eye(4, dtype=np.float32))
+                g[2].append(labels[0] if labels else str(mm.name))
         new_mounts: list = []
         for key in order:
-            rep, mats = groups[key]
+            rep, mats, labels = groups[key]
             n = len(mats)
             if n == 1:
                 # 单节点：无需实例化，保留原样（不额外复制）
                 if rep.instance_matrices and not rep.model_matrix:
                     rep.instance_matrices = mats
+                rep.instance_labels = labels
                 new_mounts.append(rep)
                 continue
             name = f"{getattr(rep, 'name', rep.model_folder)}+({n})"
@@ -1228,7 +1253,9 @@ class GeometryService:
                 bone_indices=rep.bone_indices, bone_weights=rep.bone_weights,
                 skin_bones=rep.skin_bones, skin_bind=rep.skin_bind,
                 shape_names=rep.shape_names, node_names=rep.node_names,
+                shape_spans=rep.shape_spans,
                 instance_matrices=mats,
+                instance_labels=labels,
             )
             new_mounts.append(inst)
         geom.mounts = new_mounts
@@ -1836,6 +1863,8 @@ class GeometryService:
                     bone_indices=hm.bone_indices, bone_weights=hm.bone_weights,
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                     shape_names=hm.shape_names, node_names=hm.node_names,
+                    shape_spans=hm.shape_spans,
+                    instance_labels=[mp_name],
                 )
                 geom.mounts.append(mm)
                 if mm.positions.size:
@@ -2083,29 +2112,35 @@ class GeometryService:
                     if not g.get('prims'):
                         continue
                     mfm = g.get('mfm') or ''
-                    hm = self._merge_hull(f"{folder}|{mat or 'default'}", g['prims'],
-                                          shape_names=g.get('shape_names', []),
-                                          node_names=g.get('node_names', []),
-                                          instance_matrices=g.get('instance_matrices') or [])
-                    hm.material = mat
-                    hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
-                    hm.is_crack = bool(g.get('damage'))
-                    hm.skinned_applied = bool(g.get('skinned_applied'))
-                    if mfm:
-                        # ★ 只认 mfm 声明的贴图属性（indexed→albedoArray，否则 diffuseMap）；
-                        #   未声明颜色贴图 → has_color=False（无色，不按名补全 diffuse）。
-                        #   INDEXED 数组不变，继续按老样子参与渲染。
-                        _bundle = self._resolve_material_full(mfm, extractor)
-                        self._apply_declared_color(hm, _bundle, extractor)
-                    else:
-                        # 无 mfm 的默认组：取模型自身 mfm 声明的 diffuseMap（只认声明）
-                        tex_path, tex_bytes = self._find_model_diffuse(
-                            first_geom_path, folder, extractor)
-                        hm.texture_path, hm.texture_dds = tex_path, tex_bytes
-                        hm.has_color = bool(tex_bytes)
-                    meshes.append(hm)
-                    if not main_tex[1] and hm.texture_dds:
-                        main_tex = (hm.texture_path, hm.texture_dds)
+                    # 同一材质的蒙皮分片可能用不同骨骼调色板 → 拆成多个网格，
+                    # 保证每个网格的顶点组索引只对应自己那份调色板。
+                    subs = self._palette_subgroups(g['prims'])
+                    for si, sub in enumerate(subs, 1):
+                        base = f"{folder}|{mat or 'default'}"
+                        hm = self._merge_hull(base if len(subs) == 1 else f"{base}#bones{si}",
+                                              sub,
+                                              shape_names=g.get('shape_names', []),
+                                              node_names=g.get('node_names', []),
+                                              instance_matrices=g.get('instance_matrices') or [])
+                        hm.material = mat
+                        hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
+                        hm.is_crack = bool(g.get('damage'))
+                        hm.skinned_applied = bool(g.get('skinned_applied'))
+                        if mfm:
+                            # ★ 只认 mfm 声明的贴图属性（indexed→albedoArray，否则 diffuseMap）；
+                            #   未声明颜色贴图 → has_color=False（无色，不按名补全 diffuse）。
+                            #   INDEXED 数组不变，继续按老样子参与渲染。
+                            _bundle = self._resolve_material_full(mfm, extractor)
+                            self._apply_declared_color(hm, _bundle, extractor)
+                        else:
+                            # 无 mfm 的默认组：取模型自身 mfm 声明的 diffuseMap（只认声明）
+                            tex_path, tex_bytes = self._find_model_diffuse(
+                                first_geom_path, folder, extractor)
+                            hm.texture_path, hm.texture_dds = tex_path, tex_bytes
+                            hm.has_color = bool(tex_bytes)
+                        meshes.append(hm)
+                        if not main_tex[1] and hm.texture_dds:
+                            main_tex = (hm.texture_path, hm.texture_dds)
 
         if not meshes and not all_armor:
             bus.log_message.emit(f"⚠️ 挂载模型 {folder}: 解析后无网格/装甲，该挂载不显示")
@@ -2295,6 +2330,21 @@ class GeometryService:
         # ★ 不再按文件名约定补全（_Hull_a.dd0/_Hull_camo 等）：只认 mfm 声明的 diffuseMap。
         return "", b""
 
+    @staticmethod
+    def _palette_subgroups(prims) -> list[list]:
+        """按蒙皮调色板把 primitive 再分组（保序）。
+
+        一个网格只能带**一份** `skin_bones/skin_bind`，而同一材质下常混有调色板
+        不同的 shape（如 `TurretShape` 4 骨骼 + `insideShape` 1 骨骼、`Dasha` 的
+        手臂/腿各一套骨骼）。合并后顶点组索引会按错误的调色板翻译 → 权重落到
+        别的骨骼上。故合并前按调色板名序列拆开，保证每个网格的调色板一致。
+        """
+        out: dict = {}
+        for p in prims:
+            key = tuple(getattr(p, "skin_bones", None) or ())
+            out.setdefault(key, []).append(p)
+        return list(out.values())
+
     def _split_primitives_by_material(self, primitives, global_rs: dict,
                                       sdict: dict | None = None,
                                       geom_path: str | None = None,
@@ -2335,6 +2385,22 @@ class GeometryService:
                 if rs is not None:
                     return rs
             return rs_by_mid.get(mid)
+
+        def _annotate(p) -> None:
+            """写入该 primitive 的 .visual 形状名与绑定节点名（GLB 导出命名用）。
+
+            只在这里做一次：后续所有分支（蒙皮/实例化/克隆）都直接读这两个字段。
+            """
+            if getattr(p, "shape_name", ""):
+                return
+            if sdict is not None:
+                p.shape_name = GeometryService._norm_shape_stem(
+                    sdict.get(p.mapping_id) or "")
+            rs = _rs_for(p.mapping_id) or {}
+            nodes = rs.get('nodes') or []
+            if nodes:
+                p.node_name = str(nodes[0])
+
         groups: dict = {}
 
         def _new_group(mat: str, mfm: str, damage: bool = False) -> dict:
@@ -2358,6 +2424,7 @@ class GeometryService:
                     g['node_names'].append(_nn)
 
         for p in primitives:
+            _annotate(p)
             if p.mapping_id in damage_mids:
                 # 损伤网格：DB 把 LOD 与真 crack 都标 damage=1，按 shape 名区分——
                 # `_lod` 低模跳过（非 crack）；保留真 crack（`_crack_`/Crack 名或
@@ -2638,10 +2705,12 @@ class GeometryService:
         return material_family(shader_id)
 
     def _resolve_material_full(self, mfm_path: str, extractor) -> dict:
-        """完整解析材质渲染信息（**只从 assets_data.db 读取**）：技术族 + 贴图集 + INDEXED 分块参数。
+        """完整解析材质渲染信息：技术族 + fx + 贴图集 + INDEXED 参数。
 
-        数据由「加载数据」时预提取入库（assets_cache_service.populate 的 material_full 表）。
-        - tech_family: indexed(0x0009) / pbs(0x0005) / other
+        - shader_id / material_hash / fx_path / textures / indexed：来自
+          assets_data.db 的 material_full 表（「加载数据」时预提取入库；fx_path
+          由 uncode_assets.mfm_fx 从 material_hash 解析）
+        - tech_family：由 fx_path 判定；fx_path 缺失时才退回 shader_id 高 16 位族
         - textures: {贴图键: (vfs_path, bytes)}（diffuseMap/albedoArray/materialIdMap/artMap/...）
         - indexed_params: {arrays: {名: (N,4)f32}, grid:(rows,cols), offset:(x,y)}
         """
@@ -2657,14 +2726,10 @@ class GeometryService:
             if info:
                 sid = info.get("shader_id") or "0x0"
                 mh = info.get("material_hash") or ""
-                family = info.get("family") or self._material_family(sid)
-                # fx 坐标映射（material_hash → fx 名 → 技术族）：识别精确到 fx
-                # 变体，替代 shader_id 族/mfm 名启发式。assets.bin 无 fx 名字符串，
-                # 但 material_hash 是 fx 变体稳定标识（grid_alpha=0x337D...、
-                # grid_alpha_skinned=0x4AF4...）；映射表 resources/fx_mapping_*.md
-                # 由人工填写，无合适映射时该列存 shader_id → 退回 shader_id 高 16 位族。
-                if mh:
-                    family = fx_tech_family(app_ctx.ctx.wows_type or "", sid, mh)
+                # fx 路径入库时由 uncode_assets.mfm_fx 解析（material_hash = fx 资源
+                # selfId），随客户端更新；不依赖任何固定映射表。
+                fx_path = info.get("fx_path") or ""
+                family = fx_tech_family(fx_path, sid)
                 # 贴图属性 → 实时从客户端 pkg 解包字节（.dds/.dd0 分级）
                 textures: dict = {}
                 for name, vp in (info.get("textures") or {}).items():
@@ -2675,7 +2740,8 @@ class GeometryService:
                     if td:
                         textures[name] = (tp, td)
                 result = {"tech_family": family, "shader_id": sid,
-                          "material_hash": mh, "textures": textures}
+                          "material_hash": mh, "fx_path": fx_path,
+                          "textures": textures}
                 # INDEXED 分块参数（material_full.indexed 已含 vec4 数组）
                 indexed = info.get("indexed") or {}
                 if indexed:
@@ -2732,7 +2798,7 @@ class GeometryService:
         独立模型文件查看器用：按需解码 MaterialPrototype → 贴图属性路径 →
         从 pkg 读贴图字节（.dd0/.dd1/.dd2/.dds 分级）。结果按 mfm 路径缓存。
 
-        返回 ``{tech_family, shader_id, material_hash,
+        返回 ``{tech_family, shader_id, material_hash, fx_path,
                 textures: {属性名: (vfs_path, bytes)},
                 indexed_params: {arrays, grid, offset},
                 emissive_power}``；无法解析返回 ``{}``。
@@ -2751,7 +2817,9 @@ class GeometryService:
             decoded = svc.decode_material_by_path(mfm_path)
             sid = decoded.get("shader_id") or "0x0"
             mh = decoded.get("material_hash") or ""
-            family = (fx_tech_family(app_ctx.ctx.wows_type or "", sid, mh)
+            from uncode_assets.mfm_fx import resolve_fx_path
+            fx_path = resolve_fx_path(getattr(svc, "db", None), mh)
+            family = (fx_tech_family(fx_path, sid)
                       if mh else self._material_family(sid))
             ext = extractor if extractor is not None else self._get_extractor()
             textures: dict = {}
@@ -2791,7 +2859,8 @@ class GeometryService:
                         a_arr[:, 0] = 0.0
                         vec4s["artStrengthMatIdArr"] = a_arr
             result = {"tech_family": family, "shader_id": sid,
-                      "material_hash": mh, "textures": textures}
+                      "material_hash": mh, "fx_path": fx_path,
+                      "textures": textures}
             if params is not None:
                 result["indexed_params"] = params
             if emissive is not None:
@@ -3001,6 +3070,8 @@ class GeometryService:
             bone_weights=None if p.bone_weights is None else p.bone_weights.copy(),
             skin_bones=list(p.skin_bones),
             skin_bind=list(p.skin_bind),
+            shape_name=getattr(p, "shape_name", ""),
+            node_name=getattr(p, "node_name", ""),
         )
 
     def _apply_rigid_multi(self, prim, rs: dict | None) -> list:
@@ -3107,7 +3178,11 @@ class GeometryService:
     def _merge_hull(part_name: str, primitives, shape_names: list | None = None,
                     node_names: list | None = None,
                     instance_matrices: list | None = None) -> HullMesh:
-        """把同一部件的所有 primitive 合并成单个网格。"""
+        """把同一部件的所有 primitive 合并成单个网格。
+
+        ⚠️ 调用方必须先用 `_palette_subgroups` 按蒙皮调色板分好组：本函数只保留
+        第一份非空调色板，混着不同调色板的顶点会被翻译成错误骨骼的权重。
+        """
         v_total = sum(p.positions.shape[0] for p in primitives)
         i_total = sum(0 if p.indices is None else p.indices.size for p in primitives)
         has_uv = any(p.uvs is not None for p in primitives)
@@ -3140,8 +3215,16 @@ class GeometryService:
 
         voff = 0
         ioff = 0
+        shape_spans: list = []
         for p in primitives:
             n = p.positions.shape[0]
+            i_start = ioff
+            i_count = 0 if p.indices is None else int(p.indices.size)
+            if n:
+                shape_spans.append((
+                    getattr(p, "shape_name", "") or "",
+                    getattr(p, "node_name", "") or "",
+                    voff, n, i_start, i_count))
             positions[voff:voff + n] = p.positions
             normals[voff:voff + n] = p.normals
             _copy_attr(uvs, p.uvs)
@@ -3184,6 +3267,7 @@ class GeometryService:
             shape_names=list(dict.fromkeys(shape_names or [])),
             node_names=list(dict.fromkeys(node_names or [])),
             instance_matrices=list(instance_matrices or []),
+            shape_spans=shape_spans,
         )
 
     @staticmethod

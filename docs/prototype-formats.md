@@ -54,8 +54,12 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | +0x60 | u64 | vec3 值数组指针 |
 | +0x68 | u64 | vec4 值数组指针 |
 | +0x70 | u64 | mat4 值数组指针 |
-| +0x78 | u64 | material_hash |
+| +0x78 | u64 | material_hash（= fx 资源在路径树中的 selfId）|
 
+- **material_hash 不是哈希值**：它是 assets.bin `pathsStorage` 的 selfId，
+  用 `PrototypeDatabase.resolve_self_path()` 可直接解析出 fx 完整路径
+  （如 `shaders/std_effects/PBS_ship.fx`）。Lesta 28,822 个材质 100% 可解析，
+  WG 布局中对应 +0x68。
 - **type_idx 编码**：低 4 位 = 类型，高 12 位 = 索引
   - 0=bool, 1=int32, 2=float_a, 3=float_b, 4=texture, 5=vec2, 6=vec3, 7=vec4, 8=matrix4x4
 - 值元素大小：bool 1B / int32 4B / float 4B / tex u64 hash / vec2 8B / vec3 12B / vec4 16B / mat4 64B

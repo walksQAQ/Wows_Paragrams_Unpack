@@ -251,6 +251,20 @@ class PrototypeDatabase:
         parts.reverse()
         return "/".join(p for p in parts if p)
 
+    def resolve_self_path(self, self_id: int) -> str:
+        """selfId → 完整路径；不是已知路径 ID 时返回空串。
+
+        用途：MaterialPrototype 的 ``material_hash`` 就是 fx 资源的 selfId
+        （如 ``shaders/std_effects/PBS_ship.fx``），可直接在路径树里解析。
+        """
+        if not self_id:
+            return ""
+        index = self.build_self_id_index()
+        entry_index = index.get(self_id)
+        if entry_index is None:
+            return ""
+        return self.reconstruct_path(entry_index, index)
+
     def find_path_by_suffix(self, path_suffix: str) -> Tuple[int, str]:
         """按后缀查找路径条目，返回 (entry_index, full_path)。"""
         suffix = path_suffix.strip().lstrip("/")

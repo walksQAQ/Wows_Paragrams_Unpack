@@ -47,6 +47,11 @@
 `i0↔w0`、`i1↔w1`，第三个顶点组权重 = `1-w0-w1`），`r`=EXTRA 4B，
 `pc`/`oi`=打包标记（0B）。末尾 `_encd` 仅标记 ENCD 压缩方式，不影响布局。
 
+⚠️ 索引是**渲染集调色板 slot × 3**（`slot = idx // 3`，与 BigWorld 插件
+`import_bw_primitives.py` 的 `iiiww[0]/3` 一致），slot 指向该 renderSet 的
+`<node>` 列表（assets.bin 里就是 `+0x0D nodes_count` / `+0x28` 的 u32 名 ID 数组）
+**按原始顺序**的第 slot 项。调色板顺序绝不能重排（排序后权重会绑到别的骨骼）。
+
 ## A.4 IndicesPrototype（0x10 字节）
 
 `i64 indicesDataPtr / u32 sizeInBytes / u16 保留 / u16 indexSize（2=u16, 4=u32）`

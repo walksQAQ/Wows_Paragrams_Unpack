@@ -13,7 +13,7 @@ assets.bin（约 217MB）每次启动 3D 查看器都要现场提取+解析，�
                    MP_ 为甲板设备挂点，v5 起纳入）
 - render_sets:     visual 渲染集 shape → 材质/mfm（按 geometry 路径）
 - mfm_textures:    材质 .mfm → diffuseMap 贴图基础名
-- material_full:   材质完整信息（shader/全部贴图路径/INDEXED vec4 数组）
+- material_full:   材质完整信息（shader/fx 路径/全部贴图路径/INDEXED vec4 数组）
 - meta_schema_version: schema 版本记录（同 database_new.sql 规则）
 """
 
@@ -40,13 +40,19 @@ from utils.path_utils import get_data_dir
 #:    供蒙皮网格按渲染集调色板施加 bind pose 混合（修复 PASA111 天线/索具
 #:    180° 朝向错误；Korabli 渲染集项 +0x0C skinned / +0x0D nodes_count /
 #:    +0x28 item-relative relptr → u32 名ID 数组）
-#: v8：material_full 新增 material_hash 列（fx 变体标识，识别材质技术族用）
+#: v8：material_full 新增 material_hash 列（= fx 资源 selfId，供 fx 识别）
 #: v10（2026-08-25）：render_sets 同一 (geom_path, shape) 可对应**多个节点**（如
 #:    BIA400_Motor_Cutter_25ftShape 同时在 _0/_1 两舷节点），此前 PK 折叠导致只渲染
 #:    一个；现改为汇总节点调色板（并集），供 geometry_service 按多节点实例化。
 #: v11（2026-08-25）：多节点并集**仅对刚性（skinned=0）件**生效；蒙皮 shape 的
 #:    nodes 是蒙皮骨骼调色板，并集会污染（如 TurretShape 的 4 骨骼）。保留首条。
-ASSETS_SCHEMA_VERSION = 16
+#: v17（2026-10-20）：render_sets.nodes 改为**保留 .visual 原始顺序**（此前
+#:    `sorted(set(...))` 会重排调色板）。顶点骨骼索引 = 调色板 slot × 3，
+#:    顺序错位会把权重绑到错误骨骼（如 Mk56Shape 的 Rotate_Y 权重落到 Root、
+#:    炮塔 Rotate_Y 的权重落到 Rotate_X）。
+#: v18（2026-10-20）：material_full 新增 fx_path 列（material_hash 即 fx 资源
+#:    selfId，入库时在 assets.bin 路径树里解析；不再依赖固定映射表）。
+ASSETS_SCHEMA_VERSION = 18
 
 # ── 分批落库阈值（模块级常量，便于测试时覆盖）────────────────
 # 背景：Lesta 有 39793 个骨架 / 119631 个 visual → 骨骼 100 万+ 行、渲染集 40 万行。
@@ -103,35 +109,37 @@ class AssetsCacheService:
         多条折叠成一条 → 丢失其余节点 → 只渲染一个实例。此处按 PK 合并，把节点并集
         写回单行 nodes 数组，供 geometry_service 逐节点实例化。
 
+        ★ 顺序必须保留 .visual 里的原始顺序：蒙皮网格的顶点骨骼索引 = 调色板
+          slot × 3，重排（原先的 `sorted`）会把权重绑到错误骨骼。故用「去重但保序」
+          的列表，绝不能排序。
+
         populate 现为**流式**调用本方法（内存有界）；_merge_render_set_rows 为批量包装。
         """
         key = (row[0], row[1], row[2])
         sk = int(row[6])
+        names: list[str] = []
+        if row[7]:
+            try:
+                names = [n for n in json.loads(row[7]) if n]
+            except Exception:  # noqa: BLE001
+                names = []
         m = merged.get(key)
         if m is None:
-            nodeset: set = set()
-            if row[7]:
-                try:
-                    nodeset.update(json.loads(row[7]))
-                except Exception:  # noqa: BLE001
-                    pass
             # 首条：无论刚性/蒙皮都用它的节点调色板（蒙皮 shape 的调色板 = 蒙皮骨骼）
-            merged[key] = [row[3], row[4], row[5], sk, nodeset]
+            merged[key] = [row[3], row[4], row[5], sk, names]
         else:
             m[3] = int(m[3]) or sk
             # ★ 仅**刚性（skinned=0）**项并入额外节点（多实例，如左右舷）；
             #   蒙皮项节点是蒙皮调色板，保留首条即可，并集会污染骨骼调色板。
-            if sk == 0 and row[7]:
-                try:
-                    m[4].update(json.loads(row[7]))
-                except Exception:  # noqa: BLE001
-                    pass
+            if sk == 0 and names:
+                known = set(m[4])
+                m[4].extend(n for n in names if n not in known)
 
     @staticmethod
     def _materialize_render_set(merged: dict) -> list[tuple]:
-        """汇总字典 → 待写库行（nodes 排序后 JSON）。"""
+        """汇总字典 → 待写库行（nodes 保序 JSON，不得排序）。"""
         return [(k[0], k[1], k[2], v[0], v[1], v[2], int(v[3]),
-                 json.dumps(sorted(v[4]))) for k, v in merged.items()]
+                 json.dumps(v[4])) for k, v in merged.items()]
 
     @staticmethod
     def _merge_render_set_rows(rows: list[tuple]) -> list[tuple]:
@@ -316,6 +324,7 @@ class AssetsCacheService:
             shader_id TEXT NOT NULL DEFAULT '0x0',
             family TEXT NOT NULL DEFAULT '',
             material_hash TEXT NOT NULL DEFAULT '',
+            fx_path TEXT NOT NULL DEFAULT '',
             textures TEXT NOT NULL DEFAULT '',
             indexed TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(bin_folder, mfm_path)
@@ -690,7 +699,7 @@ class AssetsCacheService:
                 buf: list[tuple] = []
                 for k, v in rs_merged.items():
                     buf.append((k[0], k[1], k[2], v[0], v[1], v[2], int(v[3]),
-                                json.dumps(sorted(v[4]))))
+                                json.dumps(v[4])))
                     if len(buf) >= RS_CHUNK:
                         self._conn.executemany(
                             "INSERT OR REPLACE INTO render_sets "
@@ -770,6 +779,7 @@ class AssetsCacheService:
             #    只存路径与参数，贴图字节渲染时实时从客户端 pkg 解包。
             from uncode_assets import binary as B
             from uncode_assets.decoders import _read_typed_value
+            from uncode_assets.mfm_fx import resolve_fx_path
             mfm_rows: list[tuple] = []
             mf_rows: list[tuple] = []
             mfm_failed: list[str] = []
@@ -794,7 +804,7 @@ class AssetsCacheService:
                     self._conn.executemany(
                         "INSERT OR REPLACE INTO material_full "
                         "(bin_folder, mfm_path, shader_id, family, material_hash, "
-                        "textures, indexed) VALUES (?,?,?,?,?,?,?)", mf_rows)
+                        "fx_path, textures, indexed) VALUES (?,?,?,?,?,?,?,?)", mf_rows)
                     tot_mf += len(mf_rows)
                     mf_rows.clear()
 
@@ -919,8 +929,13 @@ class AssetsCacheService:
                         if vals:
                             indexed[nm] = vals
                 family = self._material_family(f"0x{shader_id:08X}")
+                # fx 路径：material_hash（fx 资源 selfId）→ assets.bin 路径树。
+                # 解析逻辑独立在 uncode_assets.mfm_fx，浏览器/场景浏览器共用，
+                # 不依赖任何随源码打包的固定映射表。
+                fx_path = resolve_fx_path(db, f"0x{mat_hash:016X}")
                 mf_rows.append((bin_folder, self._norm_vfs_path(f.path), f"0x{shader_id:08X}", family,
-                                f"0x{mat_hash:016X}", json.dumps(textures), json.dumps(indexed)))
+                                f"0x{mat_hash:016X}", fx_path,
+                                json.dumps(textures), json.dumps(indexed)))
             if mfm_failed:
                 sample = ", ".join(mfm_failed[:5])
                 more = f" 等 {len(mfm_failed)} 个" if len(mfm_failed) > 5 else ""
@@ -1618,18 +1633,20 @@ class AssetsCacheService:
         return out
 
     def get_material_full(self, bin_folder: str, mfm_path: str) -> dict | None:
-        """材质完整信息：{shader_id, family, material_hash, textures, indexed}。"""
+        """材质完整信息：{shader_id, family, material_hash, fx_path, textures, indexed}。"""
         bin_folder = self._effective_bin_folder(bin_folder)
         try:
             row = self._conn.execute(
-                "SELECT shader_id, family, material_hash, textures, indexed FROM material_full "
-                "WHERE bin_folder=? AND mfm_path=?", (bin_folder, mfm_path)).fetchone()
+                "SELECT shader_id, family, material_hash, fx_path, textures, indexed "
+                "FROM material_full WHERE bin_folder=? AND mfm_path=?",
+                (bin_folder, mfm_path)).fetchone()
             if row is None:
                 return None
             return {
                 "shader_id": row["shader_id"],
                 "family": row["family"],
                 "material_hash": row["material_hash"],
+                "fx_path": row["fx_path"],
                 "textures": json.loads(row["textures"] or "{}"),
                 "indexed": json.loads(row["indexed"] or "{}"),
             }

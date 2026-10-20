@@ -8,7 +8,8 @@
 > - `todo_list/New_function_of_fix_indexed_render_and_export_glb.md`（INDEXED 渲染基线）
 > - `docs/shaders-format.md`（camo / INDEXED shader 纹理与公式）
 > - `docs/dds-format.md`（artMap BC7 512² 艺术涂装叠加层）
-> - `resources/fx_mapping_wargaming.md`（`ship_camo_preview_material.fx` 等 camo fx）
+> - fx 路径：由 MaterialPrototype 的 `material_hash`（fx 资源 selfId）在
+>   assets.bin 路径树中解析（运行时，无固定映射表）
 > - 反编译：`ship_material_indexed.fx` / `ship_camo_*`（艺术涂装叠加公式）
 > - wows-toolkit：`viewport_3d/renderer.rs`（camo 混合）、`types.rs`（LightingSettings）
 
@@ -182,7 +183,8 @@ geometry_service.list_camos(ship) -> list[CamoInfo]
 ## 八、参考
 
 - **反编译**：`ship_material_indexed.fx` 的 artMap/tint 官方公式（已对齐部分）；
-  `ship_camo_preview_material.fx`（camo 预览，来自 fx_mapping_wargaming.md）。
+  `ship_camo_preview_material.fx`（camo 预览；fx 路径由 material_hash 在
+  assets.bin 路径树中解析）。
 - **wows-toolkit**：`crates/wows-toolkit/src/viewport_3d/renderer.rs` 的 camo 混合；
   `types.rs` 的 LightingSettings（可参考其 camo/光照预设）。
-- **本地**：`docs/shaders-format.md`、`docs/dds-format.md`、`resources/fx_mapping_*.md`。
+- **本地**：`docs/shaders-format.md`、`docs/dds-format.md`。

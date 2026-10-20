@@ -120,6 +120,11 @@ class MeshPrimitive:
     #: 由 geometry_service._apply_skinning 应用成功后填充；供 GLB 导出 skin 用。
     skin_bones: list = field(default_factory=list)
     skin_bind: list = field(default_factory=list)
+    #: 该 primitive 在 .visual 里的形状名（`Bow_wireShape`，已去 `.vertices`）
+    #: 与绑定节点名（`Bow_wire`）。由 geometry_service 反查字符串表后写入，
+    #: GLB 导出按它命名网格/空物体（对齐 BigWorld 插件的导入样式）。
+    shape_name: str = ""
+    node_name: str = ""
 
 
 @dataclass
@@ -603,6 +608,10 @@ def _build_primitives(geom: ParsedGeometry, cancel_event=None):
         #   b5,b6  = 2 个权重（u8/255；b5+b6=255 占 99.2%，即其余骨骼权重为 0）
         #   b7     = 0（对齐填充）
         # 配对：i0↔w0(b5)、i1↔w1(b6)，第三个顶点组的权重 = 1-w0-w1（通常为 0）。
+        # 索引是**渲染集调色板 slot × 3**：slot 指向该 renderSet 的节点名数组
+        # （assets.bin：+0x0D count / +0x28 u32 名ID 数组）**按原始顺序**的第 slot 项
+        # —— 与 BigWorld 插件 import_bw_primitives.py 的 `iiiww[0]//3` 一致。
+        # ⚠️ 调色板顺序不得重排（排序后权重会绑到别的骨骼上）。
         # 实测分布：w1 恒非零（主顶点组=i1），w0 仅 1.6% 非零（双骨骼混合），
         # 1-w0-w1 仅 0.75% 非零（三骨骼混合）—— 与「最多 3 个顶点组」一致。
         bone_attr = next((a for a in parse_vertex_format(vb.format_name)

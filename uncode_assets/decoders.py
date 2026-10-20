@@ -253,6 +253,8 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     return {
         "_type": "MaterialPrototype",
         # 官方 ModsSDK 明文格式（<mfm><fx>/<collisionFlags>/<property>）
+        # 二进制里没有 fx 字符串：fx 路径由 uncode_assets.mfm_fx 从 material_hash
+        # （fx 资源 selfId）独立解析，本函数保持纯材质解码，不掺 fx 逻辑。
         "fx": f"0x{shader_id:08X}",
         "collisionFlags": flags,
         "property_count": property_count,
