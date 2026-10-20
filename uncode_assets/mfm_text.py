@@ -1,5 +1,9 @@
 """mfm_text.py —— 把解码后的 MaterialPrototype 还原为 Mod SDK 明文 `.mfm` 样式。
 
+⚠️ **实验性功能**：assets.bin 的记录布局与 Mod SDK 明文并非一一对应
+（`<parentMfm>` 继承链二进制里没有、`<collisionFlags>` 在 SDK 里恒为 0 等），
+转码结果可能存在与官方导出不一致之处，请以游戏内实际表现为准。
+
 明文语法（官方 Mod SDK 导出的 `.mfm`，文本元素，Tab 分隔）：
 
     <文件名.mfm>

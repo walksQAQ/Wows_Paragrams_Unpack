@@ -1,5 +1,8 @@
 """skel_ext_text.py —— 把解码后的 SkeletonExtenderPrototype 还原为 Mod SDK 明文 `.skel_ext`。
 
+⚠️ **实验性功能**：assets.bin 与 Mod SDK 明文字段并非一一对应，转码结果可能
+与官方导出存在差异，请以游戏内实际表现为准。
+
 官方明文样式（ModsSDK 原文实测，Tab 分隔，1 个 Tab 一级）：
 
     <AGS145_5in54.skel_ext>

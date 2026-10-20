@@ -1,5 +1,8 @@
 """model_text.py —— 把解码后的 ModelPrototype 还原为 Mod SDK 明文 `.model` 样式。
 
+⚠️ **实验性功能**：assets.bin 与 Mod SDK 明文字段并非一一对应，转码结果可能
+与官方导出存在差异，请以游戏内实际表现为准。
+
 明文语法（官方 Mod SDK 导出的 `.model`，Tab 分隔）：
 
     <文件名.model>

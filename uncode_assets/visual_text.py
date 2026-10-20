@@ -1,5 +1,9 @@
 """visual_text.py —— 把解码后的 VisualPrototype 还原为 Mod SDK 明文 `.visual` 样式。
 
+⚠️ **实验性功能**：assets.bin 与 Mod SDK 明文字段并非一一对应
+（节点旋转限制、部分 renderSet 标志等在二进制中缺失），转码结果可能与官方导出
+存在差异，请以游戏内实际表现为准。
+
 明文语法（官方 Mod SDK 导出的 `.visual`，Tab 分隔）：
 
     <文件名.visual>

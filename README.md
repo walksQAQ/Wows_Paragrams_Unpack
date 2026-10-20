@@ -31,6 +31,7 @@
 | ⚔️ **3D 可视化** | `.geometry` 模型解析 + 装甲厚度着色渲染（PyOpenGL） |
 | 🎯 **穿深 / 散布** | 基于游戏公式的穿深、纵向 / 横向散布计算 |
 | 🧊 **模型导出** | 导出 GLB / glTF 2.0（含装甲模型、PBR 通道贴图、挂点层级、顶点权重） |
+| 🧾 **明文转码**（实验性） | assets.bin 的 `.mfm` / `.visual` / `.model` / `.skel_ext` 转 Mod SDK 明文格式 |
 
 
 ### 使用流程
@@ -65,6 +66,23 @@
 ## 📸 程序主界面截图
 
 ![程序截图](FilesNotNeedInProgram/程序截图.png)
+
+
+## 🧪 实验性功能：assets.bin 明文转码
+
+assets.bin 浏览器里的「明文格式」/「导出明文」会把 `.mfm` / `.visual` / `.model` /
+`.skel_ext` 转成 Mod SDK 明文样式。**该功能为实验性，可能存在部分数据有误。**
+
+原因是 assets.bin 的记录布局与 Mod SDK 明文并非一一对应，已知差异包括：
+
+- `<parentMfm>` 继承链：明文里有，assets.bin 二进制里没有（因此不会输出）；
+- `<collisionFlags>`：SDK 导出恒为 0（Lesta 26.10 有 63.5% 的文件写、WG 15.9 全写），
+  而材质记录 `+0x02` 的 flags 常为非 0（Lesta 1/2/3，WG 0x101/0x102/0x300）；
+  本工具按 WG 口径统一写 `<collisionFlags> 0`，原始值另以 JSON 的 `flags` 显示；
+- 数组属性按「材质 ID 稀疏」写出，全零项省略，与 SDK 的实际写法可能存在出入；
+- `.visual` 的节点旋转限制、部分 renderSet 标志在二进制中缺失。
+
+请以**游戏内实际表现**为准；转码结果用于对照/排查，不建议直接当作官方 SDK 导出物使用。
 
 
 ## ⚠️ 免责声明

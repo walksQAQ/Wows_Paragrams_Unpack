@@ -11,6 +11,11 @@
   - 状态栏显示数据库概览
   - 关闭窗口时询问是否清理 .uncode_cache 索引缓存
 
+⚠️ **明文转码（.mfm / .visual / .model / .skel_ext）为实验性功能**：
+   assets.bin 与 Mod SDK 明文字段并非一一对应（如 `<collisionFlags>` 在 SDK 里
+   恒为 0、`<parentMfm>` 继承链二进制里没有），部分数据可能与官方 SDK 导出结果
+   存在差异，请以游戏内实际表现为准。
+
 独立运行：  python -m uncode_assets.gui [assets.bin 或 游戏目录]
 也可由主程序通过 AssetsBinViewer(source) 打开。
 """
@@ -225,16 +230,19 @@ class AssetsBinViewer(QMainWindow):
 
         toolbar.addSeparator()
 
-        self.btn_plain = QPushButton("明文格式")
+        self.btn_plain = QPushButton("明文格式（实验性）")
         self.btn_plain.setCheckable(True)
         self.btn_plain.setToolTip(
-            "以官方 Mod SDK 明文样式显示（材质 .mfm / 视觉 .visual / 模型 .model）")
+            "以官方 Mod SDK 明文样式显示（材质 .mfm / 视觉 .visual / 模型 .model）\n"
+            "⚠️ 实验性功能：assets.bin 与 SDK 明文字段并非一一对应，\n"
+            "部分数据可能与官方导出结果存在差异，请以游戏内实际表现为准。")
         self.btn_plain.toggled.connect(self._on_toggle_plain)
         toolbar.addWidget(self.btn_plain)
 
         self.btn_export_file = QPushButton("导出明文")
         self.btn_export_file.setToolTip(
-            "明文导出所选文件（可 Ctrl/Shift 多选，批量导出到文件夹）")
+            "明文导出所选文件（可 Ctrl/Shift 多选，批量导出到文件夹）\n"
+            "⚠️ 实验性功能：转码结果可能与官方 Mod SDK 导出存在差异。")
         self.btn_export_file.setEnabled(False)
         self.btn_export_file.clicked.connect(self._on_export_file)
         toolbar.addWidget(self.btn_export_file)
@@ -663,6 +671,10 @@ class AssetsBinViewer(QMainWindow):
                 or self._is_model(self._current_decoded)
                 or self._is_skel_ext(self._current_decoded)):
             self._render()
+            if checked:
+                self.status_label.setText(
+                    "⚠️ 明文格式为实验性功能：assets.bin 与 SDK 明文字段并非一一对应，"
+                    "部分数据可能与官方导出存在差异")
         elif checked:
             self.status_label.setText(
                 "当前文件没有明文格式（仅 .mfm / .visual / .model / .skel_ext），保持 JSON 显示")
@@ -765,7 +777,8 @@ class AssetsBinViewer(QMainWindow):
                 f"{f.filename} 暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
             return
         caption, filt, default, text = payload
-        out, _sel = QFileDialog.getSaveFileName(self, caption, default, filt)
+        out, _sel = QFileDialog.getSaveFileName(
+            self, f"{caption}（实验性转码）", default, filt)
         if not out:
             return
         try:
@@ -774,7 +787,8 @@ class AssetsBinViewer(QMainWindow):
             QMessageBox.warning(self, "导出失败", str(e))
             return
         note = self._visual_export_note(decoded) if self._is_visual(decoded) else ""
-        self.status_label.setText(f"已导出: {out}{note}")
+        self.status_label.setText(
+            f"已导出: {out}{note}（⚠️ 实验性转码，可能与官方 Mod SDK 导出存在差异）")
 
     def _export_many_files(self, files: list[VirtualFile]) -> None:
         """多文件导出：选目标文件夹，逐个写明文（同名自动加序号）。"""
@@ -789,7 +803,7 @@ class AssetsBinViewer(QMainWindow):
             if ret != QMessageBox.StandardButton.Yes:
                 return
         out_dir = QFileDialog.getExistingDirectory(
-            self, f"选择导出文件夹（{n} 个文件）", self._last_export_dir or "")
+            self, f"选择导出文件夹（{n} 个文件，实验性转码）", self._last_export_dir or "")
         if not out_dir:
             return
         self._last_export_dir = out_dir
@@ -823,7 +837,9 @@ class AssetsBinViewer(QMainWindow):
             msg += f"；失败: {', '.join(failed[:3])}{more}"
         self.status_label.setText(msg)
         (QMessageBox.information if not failed else QMessageBox.warning)(
-            self, "导出完成", msg)
+            self, "导出完成",
+            msg + "\n\n⚠️ 明文转码为实验性功能：assets.bin 与 Mod SDK 明文字段"
+                  "并非一一对应，部分数据可能与官方导出存在差异。")
 
     # ── 搜索 ────────────────────────────────────────────
 
