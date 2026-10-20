@@ -778,7 +778,11 @@ class AssetsCacheService:
             #    shader_id / 所有贴图原始路径 / INDEXED vec4 数组）。
             #    只存路径与参数，贴图字节渲染时实时从客户端 pkg 解包。
             from uncode_assets import binary as B
-            from uncode_assets.decoders import _read_typed_value
+            from uncode_assets.decoders import (
+                _read_typed_value,
+                material_array_lengths,
+                material_ool_end,
+            )
             from uncode_assets.mfm_fx import resolve_fx_path
             mfm_rows: list[tuple] = []
             mf_rows: list[tuple] = []
@@ -861,6 +865,9 @@ class AssetsCacheService:
                                  (tptr4, pc * 8), (vec4_ptr, 4096 * 16 + 64)):
                     if _plausible(_ptr, _n):
                         need = max(need, _ptr + _n)
+                # 至少读到下一条记录的头（数组长度推断要用后继记录的 OOL 起点界定
+                # 「最后一组」的结束；见 uncode_assets.decoders.material_array_lengths）
+                need = max(need, (0x78 if wg_mat else 0x88) + 0x90)
                 if need + 8 > size:
                     try:
                         data = svc.vfs.open_file_len(f.path, need + 8)
@@ -883,6 +890,11 @@ class AssetsCacheService:
                 textures: dict = {}
                 vec4s: list = []
                 diff_base = ""
+                # 每个属性的值数组元素数（最后一组按 OOL 边界界定，避免多读下一条
+                # 材质的 OOL 数据 → 出现 1e28 / 1e36 之类的假数值）
+                arr_lens = material_array_lengths(
+                    data, pc, type_idx, type_ptrs,
+                    material_ool_end(data, wg_mat), wg_mat)
                 for i in range(pc):
                     ti = type_idx[i] if i < len(type_idx) else 0
                     ptype = ti & 0xF
@@ -903,23 +915,17 @@ class AssetsCacheService:
                                     diff_base = vp
                                 textures[nm or f"tex_{i}"] = vp
                     elif ptype == 7 and nm:
-                        vec4s.append((raw_name, pidx))
+                        vec4s.append((i, raw_name, pidx))
                 if diff_base:
                     mfm_rows.append((bin_folder, self._norm_vfs_path(f.path), diff_base))
-                # INDEXED vec4 数组（每属性 196 项连续，pidx 间距推断长度）
+                # INDEXED vec4 数组（长度按 material_array_lengths 推断）
                 indexed: dict = {}
                 if vec4s and vec4_ptr:
-                    for j, (nid, pidx) in enumerate(vec4s):
+                    for j, (pi, nid, pidx) in enumerate(vec4s):
                         nm = (sdict.get(nid & 0xFFFFFFFF)
                               or db.strings.get_string_or_hex(nid)
                               or f"vec4_{j}")
-                        if j + 1 < len(vec4s):
-                            length = vec4s[j + 1][1] - pidx
-                        elif len(vec4s) > 1:
-                            length = vec4s[1][1] - vec4s[0][1]
-                        else:
-                            length = 1
-                        length = max(0, min(length, 4096))
+                        length = arr_lens.get(pi, 1)
                         off = vec4_ptr + pidx * 16
                         vals = []
                         for k in range(length):

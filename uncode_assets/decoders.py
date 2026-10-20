@@ -113,6 +113,102 @@ _MATERIAL_TYPE_NAMES = {
     5: "vec2", 6: "vec3", 7: "vec4", 8: "matrix4x4",
 }
 
+#: 值数组元素字节数（type_idx 低 4 位 → 元素大小）；未列出的类型不是数组
+MATERIAL_ELEM_SIZE = {1: 4, 2: 4, 3: 4, 5: 8, 6: 12, 7: 16, 8: 64}
+
+#: MaterialPrototype 记录布局（按服务器）：item 记录步长 / names、types、type_ptrs 偏移
+_MATERIAL_LAYOUT = {
+    False: {"item": 0x88, "names": 0x18, "types": 0x20, "tptr": 0x30},  # Korabli
+    True: {"item": 0x78, "names": 0x10, "types": 0x18, "tptr": 0x20},   # Wargaming
+}
+
+
+def _material_ool_start(data: bytes, off: int, wargaming: bool) -> int:
+    """记录 off 处的 OOL 区起点（最小非零指针）；无指针返回 0。"""
+    lay = _MATERIAL_LAYOUT[wargaming]
+    if off + lay["tptr"] + 9 * 8 + 8 > len(data):
+        return 0
+    cand = [B.read_u64(data, off + lay["names"]),
+            B.read_u64(data, off + lay["types"])]
+    cand += [B.read_u64(data, off + lay["tptr"] + t * 8) for t in range(9)]
+    cand = [p for p in cand if 0 < p < len(data)]
+    return min(cand) if cand else 0
+
+
+def material_ool_end(data: bytes, wargaming: bool = False,
+                     max_scan: int = 8) -> int | None:
+    """当前材质记录（``data[0]`` = 记录起始）的 OOL 区结束偏移（记录相对）。
+
+    OOL 区（属性名/类型索引/各类型值数组）在 blob 里按记录顺序**紧密排列**，
+    因此本记录的结束 = 后面第一条带 OOL 的记录的起点。扫描不到（blob 末尾）
+    返回 None（调用方退回间距推断）。
+    """
+    lay = _MATERIAL_LAYOUT[wargaming]
+    item = lay["item"]
+    for k in range(1, max_scan + 1):
+        off = k * item
+        start = _material_ool_start(data, off, wargaming)
+        if start:
+            return off + start
+    return None
+
+
+def material_array_lengths(data: bytes, property_count: int, type_idx: List[int],
+                           type_ptrs: Dict[int, int], ool_end: int | None,
+                           wargaming: bool = False) -> Dict[int, int]:
+    """每个属性（按属性下标）的值数组元素数。
+
+    同一类型的属性共享一段**连续**值数组：排序后相邻 pidx 间距即前一组长度。
+    最后一组没有“下一组”可参照，旧实现沿用前一组间距——对「6 个 196 项 INDEXED
+    数组 + 末尾单个 vec4（blendNoiseParams）」这类布局会多读 195 项，读进下一条
+    材质的 OOL 数据，于是出现 1e28 / 1e36 这类荒谬数值。
+
+    这里改用 OOL 边界：该类型值数组从 ``ptr + pidx*elem`` 一直延续到下一个 OOL
+    块起点（各类型值数组按类型索引升序紧密排列，最后一块到 ``ool_end``）。
+    ``ool_end`` 为 None（无法定位后继 OOL）时退回旧的间距推断。
+    """
+    by_type: Dict[int, List[Tuple[int, int]]] = {}
+    for i in range(property_count):
+        ti = type_idx[i] if i < len(type_idx) else 0
+        by_type.setdefault(ti & 0xF, []).append((ti >> 4, i))
+
+    # 所有 OOL 块起点（属性名数组 / 类型索引数组 / 各类型值数组），用于求块结束
+    lay = _MATERIAL_LAYOUT[wargaming]
+    starts = sorted({p for p in type_ptrs.values() if p})
+    for off_key in (lay["names"], lay["types"]):
+        try:
+            p = B.read_u64(data, off_key)
+        except Exception:  # noqa: BLE001
+            p = 0
+        if p:
+            starts.append(p)
+    starts = sorted(set(starts))
+
+    def _chunk_end(start: int) -> int:
+        for s in starts:
+            if s > start:
+                return s
+        return ool_end if ool_end is not None else len(data)
+
+    out: Dict[int, int] = {}
+    for ptype, items in by_type.items():
+        items.sort()
+        n = len(items)
+        elem = MATERIAL_ELEM_SIZE.get(ptype)
+        ptr = type_ptrs.get(ptype) or 0
+        for j, (pidx, i) in enumerate(items):
+            if j + 1 < n:
+                length = items[j + 1][0] - pidx
+            elif elem and ptr and ool_end is not None:
+                avail = _chunk_end(ptr) - (ptr + pidx * elem)
+                length = avail // elem if avail > 0 else 1
+            elif n > 1:
+                length = items[-1][0] - items[-2][0]  # 兜底：沿用前一组间距
+            else:
+                length = 1
+            out[i] = max(0, min(int(length), 4096))
+    return out
+
 
 def _read_typed_value(data: bytes, ptr: int, ptype: int, pidx: int):
     """读取某种属性类型第 pidx 个元素（ptr 为该类型值数组起始，相对记录）。"""
@@ -204,25 +300,12 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     type_idx = B.parse_u16_array(data, type_idx_ptr, property_count) if type_idx_ptr else []
 
     # 数组长度推断：同一 ptype 的属性共享同一值数组槽位区，按 pidx 排序后
-    # 相邻间距即数组长度（INDEXED 分块材质 offsetScaleMatIdArr/tileIdxMatIdArr
-    # 等 vec4 数组各 196 项，pidx 0/196/392/... 间距 196 → 完整展开；
-    # 普通材质间距通常为 1 → 长度 1，保持单值不展开）。
-    by_type: Dict[int, List[Tuple[int, int]]] = {}
-    for i in range(property_count):
-        ti = type_idx[i] if i < len(type_idx) else 0
-        by_type.setdefault(ti & 0xF, []).append((ti >> 4, i))
-    arr_lens: Dict[int, int] = {}
-    for ptype, items in by_type.items():
-        items.sort()
-        n = len(items)
-        for j, (pidx, i) in enumerate(items):
-            if j + 1 < n:
-                length = items[j + 1][0] - pidx
-            elif n > 1:
-                length = items[-1][0] - items[-2][0]  # 最后一组沿用前一组间距
-            else:
-                length = 1
-            arr_lens[i] = max(0, min(length, 4096))
+    # 相邻间距即数组长度（INDEXED 分块材质的 6 个 196 项数组 pidx 0/196/… 间距
+    # 196）；最后一组改用 OOL 区边界，避免把「末尾单个 vec4」误当成 196 项数组
+    # （见 material_array_lengths 的说明）。
+    arr_lens = material_array_lengths(
+        data, property_count, type_idx, type_ptrs,
+        material_ool_end(data, wg), wg)
 
     properties: List[dict] = []
     for i in range(property_count):

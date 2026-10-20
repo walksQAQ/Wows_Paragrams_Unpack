@@ -66,6 +66,19 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 - 属性名用 **MurmurHash3_x86_32** 哈希（name_ids 为哈希值，经 strings 段反查，找不到输出 `0xXXXXXXXX`）
 - 例：diffuseMap=2182021760, artMap=1835779052, materialIdMap=2195144431, normalMap=1213756509
 
+### 数组属性的长度（type_idx 高 12 位 = pidx）
+
+同一类型的属性共享一段**连续**值数组：把该类型的属性按 pidx 排序，**相邻 pidx 间距**就是前一组的元素数
+（INDEXED 的 6 个数组 pidx = 0/196/392/588/784/980，间距 196）。
+
+最后一组没有“下一组”可参照，必须用 **OOL 区边界**：
+`ptr + pidx*elem` 一直延续到下一个 OOL 块起点（属性名数组 → 类型索引数组 → 各类型值数组按类型升序紧密排列），
+最后一块到后继记录的 OOL 起点为止（`uncode_assets.decoders.material_array_lengths()`）。
+
+> 若沿用前一组间距，`RSD100_Shaumian_1942.mfm` 这类「6 个 196 项数组 + 末尾单个 vec4
+> `blendNoiseParams`」会多读 195 项，读进**下一条材质的 OOL 数据**，表现为
+> `blendNoiseParams` 出现 `1e28` / `1e36` 这类明显不合理的数值。
+
 ---
 
 ## VisualPrototype（0x480DC57B，item_size=0x80，blob 2）
