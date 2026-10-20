@@ -6,6 +6,7 @@ space_gui.py —— 港口/地图场景浏览器（PySide6）。
 右侧面板显示选中项的属性（模型包围盒 / 渲染集 / 材质路径等）。
 
 数据来源：data_extractor（.idx/.pkg）+ 可选 assets.bin（pathId → 路径反查）。
+窗口内另选游戏目录**只影响本窗口**，不写回主程序的 game_path 配置。
 启动方式：  python -m uncode_assets.space_gui [游戏目录]
 也可由主程序通过 SpaceBrowser(game_dir) 打开（见 ui/main_window.py 工具菜单）。
 """
@@ -566,20 +567,12 @@ class SpaceBrowser(QMainWindow):
     def _on_open_game_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择游戏目录（含 bin 与 res_packages）")
         if path:
-            self._save_inherited_dir(path)
             self._bin_folder = None
             self.load_source(path)
 
     def _on_refresh(self) -> None:
         if self._extractor is not None:
             self.load_source(str(self._extractor.game_dir))
-
-    def _save_inherited_dir(self, path: str) -> None:
-        try:
-            from app.application import app
-            app.config.game_path = path
-        except Exception:  # noqa: BLE001
-            pass
 
 
 def main(argv: Optional[list] = None) -> int:

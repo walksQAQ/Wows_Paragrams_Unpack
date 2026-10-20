@@ -2,6 +2,7 @@
 
 功能：
   - 打开已解压的 assets.bin 文件或直接选择游戏目录（自动用 data_extractor 提取）
+  - 选择游戏目录**只影响本窗口**：不写回主程序的 game_path / bin_folder 配置
   - 打开窗口时不自动载入数据，由用户手动选择数据源
   - 后台线程加载解析（避免卡 UI），左侧懒加载虚拟文件树
   - 点击文件在右侧显示解码 JSON（深色等宽主题）
@@ -1062,37 +1063,9 @@ class AssetsBinViewer(QMainWindow):
     def _on_open_game_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择游戏目录（含 bin 与 res_packages）")
         if path:
-            self._save_inherited_dir(path)
             self._bin_folder = None
             self._set_source_label(path)
             self.load_source(path)
-
-    # ── 主应用目录继承 ─────────────────────────────────
-
-    def _save_inherited_dir(self, path: str) -> None:
-        """把浏览器中选择的游戏目录写回主应用配置（**仅当服务器类型一致**）。
-
-        ⚠️ 主程序配置按当前 ``wows_type`` 分槽存路径（game_path_lesta /
-        game_path_wargaming）。若浏览器里打开了另一服的客户端（如主程序是
-        Lesta 却选了 WG 目录）直接写回，会把本服槽位指向另一服客户端，
-        下次启动就会「用 Lesta 身份读 WG 数据」。所以这里先探测类型再决定。
-        """
-        try:
-            from app.application import app
-            detected = self._detect_wows_type(path) or self._wows_type
-            current = getattr(app.config, "wows_type", "") or ""
-            if current in ("Lesta", "Wargaming") and detected in ("Lesta", "Wargaming") \
-                    and detected != current:
-                self.status_label.setText(
-                    f"该目录属于 {detected} 客户端，与主程序当前服务器（{current}）"
-                    f"不一致，未写入配置")
-                return
-            old = app.config.game_path
-            app.config.game_path = path
-            if old and str(old) != str(path) and hasattr(app.config, "bin_folder"):
-                app.config.bin_folder = ""  # 目录变了：版本号交给自动探测，避免旧 bin 号报「已不存在」
-        except Exception:  # noqa: BLE001
-            pass
 
     def _set_source_label(self, path: str) -> None:
         tag = "WG" if self._wows_type == "Wargaming" else "Lesta"

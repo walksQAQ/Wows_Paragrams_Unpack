@@ -51,12 +51,20 @@ class AppConfig:
             return self.game_path_lesta
         return self.game_path_wargaming
 
-    def set_server_path(self, server: str, value: str) -> None:
-        """写入指定服务器的游戏路径。"""
+    def set_server_path(self, server: str, value: str) -> bool:
+        """写入指定服务器的游戏路径；服务器不明确时不写入，返回是否写入。
+
+        只接受明确的 ``"Wargaming"`` / ``"Lesta"``：旧实现把其它取值（如
+        ``wows_type == "未选择"``）一律落到 ``game_path_lesta``，会把另一服
+        客户端的目录写进 Lesta 槽位。
+        """
         if server == "Wargaming":
             self.game_path_wargaming = value
-        else:
+            return True
+        if server == "Lesta":
             self.game_path_lesta = value
+            return True
+        return False
 
     @staticmethod
     def _path_valid(path: str) -> bool:
@@ -95,9 +103,9 @@ class ConfigManager:
 
     @game_path.setter
     def game_path(self, value: str) -> None:
-        # 写入当前选中服务器（wows_type）对应的专用路径字段
-        self._config.set_server_path(self._config.wows_type, value)
-        self.save()
+        # 写入当前选中服务器（wows_type）对应的专用路径字段；
+        # 未选择服务器时不写入（避免误写某一服的槽位）
+        self.set_server_path(self._config.wows_type, value)
 
     @property
     def game_path_lesta(self) -> str:
@@ -118,9 +126,9 @@ class ConfigManager:
         self.save()
 
     def set_server_path(self, server: str, value: str) -> None:
-        """为指定服务器设置游戏路径并保存。"""
-        self._config.set_server_path(server, value)
-        self.save()
+        """为指定服务器设置游戏路径并保存（服务器不明确时不写入、不落盘）。"""
+        if self._config.set_server_path(server, value):
+            self.save()
 
     @property
     def game_version(self) -> str:
