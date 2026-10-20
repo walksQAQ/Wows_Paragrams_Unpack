@@ -79,9 +79,8 @@ def format_mfm_text(
         fx: `.fx` 路径（已解析的完整路径）；为空则省略 `<fx>`。
         parent_mfms: `<parentMfm>` 列表（继承链）；二进制里没有，通常为空。
 
-    ⚠️ `<collisionFlags>` 的口径：官方 SDK 里该值**恒为 0**，但出现与否无规律
-    （同为 0、同样 header/fx 的文件，约 65% 写了这行、 35% 没写）——说明它来自
-    SDK 导出时的源数据而非 assets.bin。这里只在非 0 时写出，不凭空造零值。
+    `<collisionFlags>` 取自记录头 +0x02 的 flags，**为 0 也照实写出**（官方 SDK
+    导出时这一行时有时无，但二进制里该字段始终存在，明文转换不应丢弃）。
     """
     root = (name or "material.mfm").strip()
     lines: List[str] = [f"<{root}>"]
@@ -90,9 +89,11 @@ def format_mfm_text(
             lines.append(f"\t<parentMfm>\t{parent}\t</parentMfm>")
     if fx:
         lines.append(f"\t<fx>\t{fx}\t</fx>")
-    flags = decoded.get("collisionFlags")
-    if flags:  # 官方明文只在非 0 时写 <collisionFlags>
-        lines.append(f"\t<collisionFlags>\t{int(flags)}\t</collisionFlags>")
+    try:
+        flags = int(decoded.get("collisionFlags") or 0)
+    except (TypeError, ValueError):
+        flags = 0
+    lines.append(f"\t<collisionFlags>\t{flags}\t</collisionFlags>")
 
     for prop in decoded.get("properties") or []:
         pname = prop.get("name") or "?"
