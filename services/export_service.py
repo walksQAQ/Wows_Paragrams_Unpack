@@ -15,8 +15,11 @@ export_service.py —— 舰船 3D 模型导出（GLB / glTF 2.0 Binary）。
   - 渲染空间 = 右手系 Y 向上（Z 镜像 negz = diag(1,1,-1,1)），与 glTF 同构
   - 顶点/法线经 models.geometry_transform.prepare_render_mesh() 统一变换到
     渲染空间（与渲染器共用同一函数 → 「导出的 = 看到的」）
-  - 挂载几何保留本地坐标，model_matrix（渲染空间，行主序，world = m @ local）
-    写入 node.matrix（glTF 列主序存储 = m.T.flatten()），与渲染器一致
+  - 挂载/实例几何保留本地坐标，model_matrix（渲染空间，行主序，world = m @ local）
+    写入该网格的 node.matrix（glTF 列主序存储 = m.T.flatten()），与渲染器一致；
+    无节点的网格（舰体/装甲板块）用包围盒中心作为节点位置，顶点保持局部坐标
+    → 节点位置 = 模型位置（不再全部堆在原点），世界坐标仍与查看器完全一致
+  - 蒙皮网格例外：glTF skin 忽略网格节点自身变换，顶点与关节都必须烘焙到世界坐标
   - 装甲沿用 ArmorScene.world_positions（舰船空间）再 negz 镜像
   - 全部材质 doubleSided=True：绕序不统一也不致背面剔除/面消失
 
@@ -560,7 +563,7 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         "content": "render",
         "wows_export_version": 3,
     }
-    # ── 层级：空物体骨骼（identity）组织父子关系；网格各自独立、烘焙到最终世界坐标 ──
+    # ── 层级：空物体骨骼（identity）组织父子关系；非蒙皮网格把位置写在自身节点上 ──
     root_bone = builder.add_node(name=f"ship_{_sanitize(geometry.game_key)}")
     hull_bone = builder.add_node(name="Hull")
     mounts_bone = builder.add_node(name="Mounts")
@@ -572,7 +575,7 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
     fallback_tex = getattr(geometry, "texture_dds", None)
 
     def _add_solid(builder_, src, label, matrix=None, component="", parent_bone=None):
-        """单个网格：变换 → 烘焙到最终世界坐标 → 材质 → 网格(+skin) → Shape 节点。"""
+        """单个网格：变换 → 位置写到节点（蒙皮则烘焙到顶点）→ 材质 → 网格(+skin) → Shape 节点。"""
         nonlocal bmin, bmax, report
         if getattr(src, "is_wire", False):
             report.skipped_meshes += 1
@@ -593,17 +596,36 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         if p.shape[0] == 0 or idx.size == 0:
             report.skipped_meshes += 1
             return False, None
-        # 烘焙挂点矩阵到顶点 → 最终世界坐标（网格独立，空物体骨骼不再承担坐标变换）
-        if matrix is not None:
-            p = _apply_matrix(p, matrix).astype(np.float32)
-            n = _apply_matrix3(n, matrix).astype(np.float32)
-            ln = np.linalg.norm(n, axis=1, keepdims=True)
-            ln[ln < 1e-8] = 1.0
-            n = (n / ln).astype(np.float32)
-            if tan is not None:
-                tan = _apply_matrix3(np.asarray(tan, dtype=np.float32), matrix)
-            if bin_ is not None:
-                bin_ = _apply_matrix3(np.asarray(bin_, dtype=np.float32), matrix)
+
+        joints0, weights0, joints_mat = builder_._skin_data(src)
+        skinned = joints0 is not None
+        node_matrix = None
+        if skinned:
+            # 蒙皮网格：glTF 的 skin 会**忽略**网格节点自身变换（最终 =
+            # global(joint) × inverseBind × v），因此顶点必须保持在最终世界坐标，
+            # 关节用 pre_matrix 放到同一空间。
+            if matrix is not None:
+                p = _apply_matrix(p, matrix).astype(np.float32)
+                n = _apply_matrix3(n, matrix).astype(np.float32)
+                ln = np.linalg.norm(n, axis=1, keepdims=True)
+                ln[ln < 1e-8] = 1.0
+                n = (n / ln).astype(np.float32)
+                if tan is not None:
+                    tan = _apply_matrix3(np.asarray(tan, dtype=np.float32), matrix)
+                if bin_ is not None:
+                    bin_ = _apply_matrix3(np.asarray(bin_, dtype=np.float32), matrix)
+        else:
+            # 非蒙皮网格：把「模型位置」写到节点变换上，顶点保持局部坐标。
+            # 世界坐标与查看器完全一致，同时导出后在 DCC 里每个节点（模型）
+            # 都落在自己的实际位置，而不是全部堆在原点。
+            if matrix is not None:
+                node_matrix = np.asarray(matrix, dtype=np.float32).reshape(4, 4)
+            else:
+                center = (p.min(axis=0) + p.max(axis=0)) * 0.5
+                if np.isfinite(center).all() and not np.allclose(center, 0.0, atol=1e-6):
+                    node_matrix = np.eye(4, dtype=np.float32)
+                    node_matrix[:3, 3] = center.astype(np.float32)
+                    p = np.ascontiguousarray(p - center, dtype=np.float32)
         # TANGENT = xyz + w（由 normal×tangent 与 binormal 的朝向得到）
         tangent4 = None
         if tan is not None:
@@ -626,7 +648,6 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
             double_sided=options.double_sided,
             extras={"component": component,
                     "texture_path": getattr(src, "texture_path", "")})
-        joints0, weights0, joints_mat = builder_._skin_data(src)
         mesh_idx = builder_.add_mesh(f"{label}_Shape", p, n, idx, uvs, mat_idx,
                                      extras={"component": component},
                                      flip_winding=options.flip_winding,
@@ -635,10 +656,11 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
                                      extra=raw_extra)
         # 蒙皮：joint 放世界 bind（挂载乘矩阵），挂到所属空物体骨骼下
         skin_idx = None
-        if joints0 is not None:
+        if skinned:
             skin_idx = builder_.build_skin(label, joints_mat, pre_matrix=matrix,
                                            joint_parent=parent_bone)
-        node = builder_.add_node(f"{label}_Shape", mesh=mesh_idx, skin=skin_idx)
+        node = builder_.add_node(f"{label}_Shape", mesh=mesh_idx, skin=skin_idx,
+                                 matrix=node_matrix)
         if parent_bone is not None:
             builder_.add_children(parent_bone, [node])
         else:
@@ -646,9 +668,10 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
         report.meshes += 1
         report.triangles += int(idx.size) // 3
         report.vertices += int(p.shape[0])
-        bmin = np.minimum(bmin, p.min(axis=0))
-        bmax = np.maximum(bmax, p.max(axis=0))
-        return True, (p.min(axis=0), p.max(axis=0))
+        world_p = p if node_matrix is None else _apply_matrix(p, node_matrix)
+        bmin = np.minimum(bmin, world_p.min(axis=0))
+        bmax = np.maximum(bmax, world_p.max(axis=0))
+        return True, (world_p.min(axis=0), world_p.max(axis=0))
 
     # ── 舰体分段（Shape 直接挂 Hull 骨骼；crack 损伤网格挂 Crack 骨骼）──
     crack_bone = builder.add_node(name="Crack")
@@ -671,7 +694,7 @@ def export_render_glb(geometry, output_path: str, options: GlbRenderOptions | No
             _add_solid(builder, hm, f"hull_{_sanitize(hm.name)}", component="hull",
                        parent_bone=hull_bone)
 
-    # ── 挂载（每个挂载一个空物体骨骼，Shape 挂其下，矩阵烘焙进顶点；crack 挂 Crack 骨骼）──
+    # ── 挂载（每个挂载一个空物体骨骼，Shape 挂其下；非蒙皮网格节点携带位置，crack 挂 Crack 骨骼）──
     mounts = geometry.mounts if options.export_mounts else []
     n_mounts = len(mounts)
     for i, mm in enumerate(mounts):
@@ -786,11 +809,17 @@ def export_armor_glb(geometry, armor_scene, output_path: str,
                 mat_idx = builder.add_material(
                     plate_name, base_color=base_color, alpha_mode=alpha_mode,
                     double_sided=options.double_sided, extras=plate_extras)
+                # 节点位置 = 板块中心（顶点改为局部坐标，世界坐标不变）：
+                # 导出后每个板块节点落在自己的实际位置，而不是全部堆在原点。
+                center = (pos_r.min(axis=0) + pos_r.max(axis=0)) * 0.5
+                plate_m = np.eye(4, dtype=np.float32)
+                plate_m[:3, 3] = center
+                local_pos = np.ascontiguousarray(pos_r - center, dtype=np.float32)
                 mesh_idx = builder.add_mesh(
-                    plate_name, pos_r, nrm_r, idx, None, mat_idx,
+                    plate_name, local_pos, nrm_r, idx, None, mat_idx,
                     extras=dict(plate_extras, triangle_count=int(tri_list.size)),
                     flip_winding=options.flip_winding)
-                node = builder.add_node(plate_name, mesh=mesh_idx)
+                node = builder.add_node(plate_name, mesh=mesh_idx, matrix=plate_m)
                 scene_children.append(node)
                 bmin = np.minimum(bmin, pos_r.min(axis=0))
                 bmax = np.maximum(bmax, pos_r.max(axis=0))

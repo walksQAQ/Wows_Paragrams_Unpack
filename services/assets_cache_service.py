@@ -404,6 +404,27 @@ class AssetsCacheService:
                 pass
         conn.commit()
 
+    def _clear_all_rows(self) -> None:
+        """清空全部表的数据行（**不提交**，与写入共用事务，失败可回滚）。
+
+        与 `_drop_all_tables` 的区别：表结构保留、只 DELETE 行，因此
+        “导入→中途失败→回滚”能把旧缓存原样恢复（DROP 会即时提交、无法回滚）。
+        `meta_schema_version` 保留（记录已应用的 schema 版本）。
+        """
+        conn = self._conn
+        try:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        except sqlite3.OperationalError:
+            return
+        for tname in tables:
+            if tname == "meta_schema_version":
+                continue
+            try:
+                conn.execute(f'DELETE FROM "{tname}"')
+            except sqlite3.OperationalError:
+                pass
+
     def get_current_version(self) -> int:
         """当前已应用的 schema 版本（meta_schema_version 最高版本；无表/异常返回 0）。"""
         try:
@@ -451,12 +472,10 @@ class AssetsCacheService:
 
         self.initialize()
         # ── 全量重建（覆盖全部内容，无视 bin 版本号）─────────────
-        # 用户要求：每次加载数据都清空 assets_data.db 全部表并重新写入一次，
-        # 彻底避免跨客户端/旧版本数据残留（旧实现按 bin_folder 逐表 DELETE，
-        # 若中途失败会整事务回滚，留下旧数据未覆盖；且多客户端数据并存）。
-        # drop 全部表 → 幂等重建（assets_database.sql 优先 / inline 兜底）→ 记录 schema 版本。
-        self._drop_all_tables()
-        self.initialize()
+        # ⚠️ 用 DELETE FROM 在同一事务里清空（**不** DROP TABLE + commit）：
+        # 这样中途失败可 rollback，旧缓存原样恢复 —— 不会出现「导入失败 →
+        # 缓存库被清空 → 3D 查看器没骨架/没材质」的连带故障。
+        # 清空动作在下方的 try 内执行，与写入共用同一个事务。
         # 全内存路径：assets_bytes 直接解析（不落盘、不读既有文件）
         # wows_type 传入：WG 服用 10 类型表 + WG 布局（渲染集 0x70/材质 0x78）
         if assets_bytes is not None:
@@ -480,6 +499,8 @@ class AssetsCacheService:
                       "material_full": 0, "skeleton_bones": 0, "shape_names": 0,
                       "exteriors": 0, "camouflages": 0, "camouflage_color_schemes": 0,
                       "camo_ship_groups": 0}
+            # 清空旧行（同一事务；失败时和后续写入一起回滚，旧数据原样保留）
+            self._clear_all_rows()
             # 共用：字符串 dict + self_id 索引（渲染集/材质解析都要用）
             sdict = self._strings_dict(db)
             self_id_idx = db.build_self_id_index()
@@ -489,7 +510,7 @@ class AssetsCacheService:
                 "VALUES (?,?,?,datetime('now'))",
                 (bin_folder, game_version, wows_type))
 
-            _p("清空旧缓存并写入元信息，扫描 VFS 全树...")
+            _p("清空旧缓存（事务内，失败可回滚）并写入元信息，扫描 VFS 全树...")
 
             # 收集骨架/视觉/扩展/材质文件（一次遍历全树）：
             #   skel_files: Korabli SkeletonPrototype（HP_/MP_ 挂点 + 骨骼）
@@ -630,6 +651,7 @@ class AssetsCacheService:
                     svc, db, sdict, self_id_idx, bin_folder,
                     vis_files, ext_files, skel_rows, bone_rows, skel_failed,
                     flush_cb=_flush_skel,
+                    note_cb=_p,
                     log_cb=lambda i, n: _p(
                         f"WG 骨架解析 {i}/{n}"
                         f"（骨骼 {tot_bones + len(bone_rows):,} / "
@@ -701,64 +723,22 @@ class AssetsCacheService:
                                f"（已汇总 {len(rs_merged):,} 条，"
                                f"已用 {time.time() - _t_rs:.0f}s）...")
                         off = BLOB_HEADER_SIZE + ri * isize
-                        if wg:
-                            # WG VisualPrototype 0x70 布局（wows-toolkit visual.rs）：
-                            # 渲染集 relptr 在 +0x60，记录头字段与 Korabli 完全不同，
-                            # 走专用 WG 解析（每记录一 geometry → 渲染集 0x28 步长）
-                            self._render_sets_wg(data, off, db, self_id_idx, sdict,
-                                                 bin_folder, _add_rs)
-                            continue
-                        if off + 0x40 > len(data):
-                            break
-                        cnt = struct.unpack_from('<Q', data, off + 0x30)[0]
-                        rel = struct.unpack_from('<Q', data, off + 0x38)[0]
-                        if not rel or cnt <= 0:
-                            continue
-                        h = struct.unpack_from('<Q', data, off + 0x20)[0]
-                        gp = self._path_of(h, db, self_id_idx)
-                        if not (gp and gp.endswith(".geometry")):
-                            continue
-                        # 渲染集数组：+0x38 rel 为 **record-relative**（相对记录起始），
-                        # 数组从 rel 起、每项 0x50 步长；+0x30 count 为权威条数。
-                        # ⚠️ 2026-08-19 修正：VisualPrototype item_size=0x40（非 0x80）。
-                        # 每条记录唯一 geometry（+0x20）+ primitives（+0x28）。旧 0x80
-                        # 误把两条记录合并 → JGA180 误用 JGA181 的 TurretShapeff。
-                        # 无多 geometry 共用 → 无需广播归属，直接归本记录 geometry。
-                        base = off + rel
-                        if base + cnt * 0x50 > len(data):
-                            continue
-                        for k in range(cnt):
-                            o = base + k * 0x50
-                            shp = sdict.get(struct.unpack_from('<I', data, o)[0]) or ''
-                            if not shp.endswith('.vertices'):
+                        # ★ 逐条记录隔离异常：旧实现把整个循环包在同一个 try 里，
+                        #   任意一条坏记录都会让**全部**渲染集解析中断（入库 0 条）。
+                        try:
+                            if wg:
+                                # WG VisualPrototype 0x70 布局（wows-toolkit visual.rs）：
+                                # 渲染集 relptr 在 +0x60，记录头字段与 Korabli 完全不同，
+                                # 走专用 WG 解析（每记录一 geometry → 渲染集 0x28 步长）
+                                self._render_sets_wg(data, off, db, self_id_idx, sdict,
+                                                     bin_folder, _add_rs)
                                 continue
-                            mat = sdict.get(struct.unpack_from('<I', data, o + 8)[0]) or ''
-                            mfm_h = struct.unpack_from('<Q', data, o + 0x20)[0]
-                            mfm = self._path_of(mfm_h, db, self_id_idx)
-                            damage = int('_crack_' in shp or '_lod' in shp
-                                         or 'Crack' in mat)
-                            # 蒙皮标志 + 调色板节点名（Korabli 渲染集项布局）：
-                            #   +0x0C u8 skinned / +0x0D u8 nodes_count /
-                            #   +0x28 u64 node_name_ids relptr（**item-relative**）
-                            #   → u32 名ID 数组[nodes_count]
-                            skinned = data[o + 0x0C]
-                            ncnt = data[o + 0x0D]
-                            nodes: list[str] = []
-                            # ★ 所有条目都读 nodes（含 skinned=0 的刚性父子模型，如
-                            #   BIA454_Bollard_bigShape → ['BIA454_Bollard_big_7']），
-                            #   供 geometry_service 按父节点矩阵定位到舰船空间。
-                            if ncnt:
-                                nrel = struct.unpack_from('<Q', data, o + 0x28)[0]
-                                if nrel:
-                                    nabs = o + nrel
-                                    if nabs + ncnt * 4 <= len(data):
-                                        for j in range(ncnt):
-                                            nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
-                                            nm = sdict.get(nid) or ''
-                                            if nm:
-                                                nodes.append(nm)
-                            _add_rs((bin_folder, gp, shp, mat, mfm, damage,
-                                     int(skinned), json.dumps(nodes)))
+                            if off + 0x40 > len(data):
+                                break
+                            self._render_sets_lesta_one(data, off, db, self_id_idx,
+                                                        sdict, bin_folder, _add_rs)
+                        except Exception:  # noqa: BLE001
+                            continue
             except Exception:  # noqa: BLE001
                 pass
             _write_rs()
@@ -857,23 +837,39 @@ class AssetsCacheService:
                     type_ptrs = {t: B.read_u64(data, 0x30 + t * 8) for t in range(9)}
                 tptr4 = type_ptrs.get(4) or 0
                 vec4_ptr = type_ptrs.get(7) or 0
+                # ⚠️ 指针**先做合理性校验**再参与切片长度计算：个别材质记录的
+                #    OOL 指针是垃圾值（如 0x30000000E），旧实现直接拿去算 need →
+                #    随后的 parse_u32_array 抛 OutOfBounds，把整个 3D 缓存入库打断。
+                size = len(data)
+                _PTR_LIMIT = 64 * 1024 * 1024   # OOL 区上限（材质记录尾部远小于此）
+
+                def _plausible(p: int, n: int) -> bool:
+                    return 0 < p <= _PTR_LIMIT and p + n <= _PTR_LIMIT
+
                 need = 0x90
-                if names_ptr and pc:
-                    need = max(need, names_ptr + pc * 4)
-                if type_idx_ptr and pc:
-                    need = max(need, type_idx_ptr + pc * 2)
-                if tptr4 and pc:
-                    need = max(need, tptr4 + pc * 8)
-                if vec4_ptr and pc:
-                    # ⚠️ 覆盖全部 vec4 数组（pidx 最多 4096 槽位，非仅 pc*16：tileIdxMatIdArr 等 pidx 可达 980）
-                    need = max(need, vec4_ptr + 4096 * 16 + 64)
-                if need > 0x90:
+                for _ptr, _n in ((names_ptr, pc * 4), (type_idx_ptr, pc * 2),
+                                 (tptr4, pc * 8), (vec4_ptr, 4096 * 16 + 64)):
+                    if _plausible(_ptr, _n):
+                        need = max(need, _ptr + _n)
+                if need + 8 > size:
                     try:
                         data = svc.vfs.open_file_len(f.path, need + 8)
                     except Exception:  # noqa: BLE001
                         continue
-                names = B.parse_u32_array(data, names_ptr, pc) if (names_ptr and pc) else []
-                type_idx = B.parse_u16_array(data, type_idx_ptr, pc) if (type_idx_ptr and pc) else []
+                    size = len(data)
+
+                def _ok_ptr(p: int, n: int) -> bool:
+                    return 0 < p and p + n <= size
+
+                if not _ok_ptr(names_ptr, pc * 4) or not _ok_ptr(type_idx_ptr, pc * 2):
+                    mfm_failed.append(f"{f.path.rsplit('/', 1)[-1]}(属性表指针异常)")
+                    continue
+                names = B.parse_u32_array(data, names_ptr, pc)
+                type_idx = B.parse_u16_array(data, type_idx_ptr, pc)
+                if not _ok_ptr(tptr4, pc * 8):
+                    tptr4 = 0
+                if not _ok_ptr(vec4_ptr, 16):
+                    vec4_ptr = 0
                 textures: dict = {}
                 vec4s: list = []
                 diff_base = ""
@@ -1112,6 +1108,14 @@ class AssetsCacheService:
 
             self._conn.commit()
             return counts
+        except Exception:
+            # ★ 失败回滚：DELETE 与全部写入都在同一事务内，回滚后旧缓存完整保留，
+            #   不会把查看器的骨架/材质数据“清空且重建不出来”。
+            try:
+                self._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         finally:
             svc.close()
             # 关闭共享 pkg 提取器（释放 IDX/文件树内存）
@@ -1126,6 +1130,7 @@ class AssetsCacheService:
 
     def get_exteriors(self, bin_folder: str) -> list[dict]:
         """该版本全部外观/涂装（Exterior JSON 索引）：[{index,name,species,nation,icon_path,display_name,...}]。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: list[dict] = []
         try:
             rows = self._conn.execute(
@@ -1157,6 +1162,7 @@ class AssetsCacheService:
 
     def get_camouflage(self, bin_folder: str, name: str) -> dict | None:
         """按索引取一条 camo（camouflages.xml 条目）。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             row = self._conn.execute(
                 "SELECT name, realm, tiled, use_color_scheme, color_scheme, textures_json, "
@@ -1183,6 +1189,7 @@ class AssetsCacheService:
 
     def get_camouflage_color_scheme(self, bin_folder: str, name: str) -> dict | None:
         """取一条颜色方案（默认/若干 color0..3，各 4 float）。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             row = self._conn.execute(
                 "SELECT name, color0, color1, color2, color3 "
@@ -1203,6 +1210,7 @@ class AssetsCacheService:
 
     def get_all_camouflages(self, bin_folder: str) -> list[dict]:
         """该版本全部 camouflages.xml 条目。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: list[dict] = []
         try:
             rows = self._conn.execute(
@@ -1228,6 +1236,7 @@ class AssetsCacheService:
 
     def get_all_camo_color_schemes(self, bin_folder: str) -> dict[str, list]:
         """该版本全部颜色方案：{name: [color0..3] 各 4 float}。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict[str, list] = {}
         try:
             rows = self._conn.execute(
@@ -1249,6 +1258,7 @@ class AssetsCacheService:
 
     def get_all_camo_ship_groups(self, bin_folder: str) -> dict[str, set]:
         """该版本全部船组映射：{group_name: set(ship)}。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict[str, set] = {}
         try:
             rows = self._conn.execute(
@@ -1272,6 +1282,7 @@ class AssetsCacheService:
     def get_camo_thumb(self, bin_folder: str, camo_name: str,
                        texture_tag: str = "tile") -> str | None:
         """返回已缓存缩略图路径；未生成则 None（由调用方拆图后 put_camo_thumb 写回）。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             row = self._conn.execute(
                 "SELECT thumb_path FROM camo_thumbs "
@@ -1288,6 +1299,7 @@ class AssetsCacheService:
                        thumb_path: str, tex_path: str = "",
                        width: int = 0, height: int = 0) -> None:
         """记录已生成的涂装缩略图（文件已在 data/camo_thumbs，此处写索引）。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             self._conn.execute(
                 "INSERT OR REPLACE INTO camo_thumbs "
@@ -1476,6 +1488,7 @@ class AssetsCacheService:
     def get_skeleton_mounts(self, bin_folder: str, stem: str) -> dict:
         """某舰体骨架的 HP_ 挂点：{hp_name: (4,4) 行主序渲染空间矩阵（由解码值重建）}。"""
         import numpy as np
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict = {}
         try:
             rows = self._conn.execute(
@@ -1495,6 +1508,7 @@ class AssetsCacheService:
     def get_skeleton_bones(self, bin_folder: str, stem: str) -> dict:
         """某模型骨架的全部骨骼世界矩阵：{bone_name: (4,4)（由解码值重建）}。"""
         import numpy as np
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict = {}
         try:
             rows = self._conn.execute(
@@ -1518,6 +1532,7 @@ class AssetsCacheService:
         mat=(4,4) 世界矩阵（由解码值重建）。方便显示与其它功能直接使用坐标/方向。
         """
         import numpy as np
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict = {}
         try:
             rows = self._conn.execute(
@@ -1548,6 +1563,7 @@ class AssetsCacheService:
         out: list[dict] = []
         if not geom_paths:
             return out
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             ph = ",".join("?" * len(geom_paths))
             rows = self._conn.execute(
@@ -1575,6 +1591,7 @@ class AssetsCacheService:
 
     def get_shape_names(self, bin_folder: str) -> dict:
         """*.vertices 名字哈希 → 名字（LOD/crack 兜底跳过用；**只从 DB 读取**）。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict = {}
         try:
             rows = self._conn.execute(
@@ -1588,6 +1605,7 @@ class AssetsCacheService:
 
     def get_mfm_textures(self, bin_folder: str) -> dict:
         """全部材质贴图映射：{mfm_path: texture_path（原始路径，含扩展名）}。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         out: dict = {}
         try:
             rows = self._conn.execute(
@@ -1601,6 +1619,7 @@ class AssetsCacheService:
 
     def get_material_full(self, bin_folder: str, mfm_path: str) -> dict | None:
         """材质完整信息：{shader_id, family, material_hash, textures, indexed}。"""
+        bin_folder = self._effective_bin_folder(bin_folder)
         try:
             row = self._conn.execute(
                 "SELECT shader_id, family, material_hash, textures, indexed FROM material_full "
@@ -1618,6 +1637,44 @@ class AssetsCacheService:
             return None
 
     @staticmethod
+    def _name_of(sdict: dict, db, hid: int) -> str:
+        """哈希 → 名字：先查批量字典 sdict，缺失时回退完整字符串表。
+
+        sdict 是“全表扫描一次”的快速字典；若构建时被异常截断（部分条目缺失），
+        回落 db.strings 避免整套名字为空（否则骨骼/渲染集会被全部跳过 → 入库 0 条）。
+        """
+        nm = sdict.get(hid & 0xFFFFFFFF)
+        if nm:
+            return nm
+        try:
+            return db.strings.get_string_by_id(hid) or ''
+        except Exception:  # noqa: BLE001
+            return ''
+
+    def _effective_bin_folder(self, bin_folder: str) -> str:
+        """把传入的 bin_folder 校正为库里**实际存在数据**的版本号。
+
+        场景：切服 / 重新扫描后 `ctx.bin_folder` 可能为空或与库内版本号不同
+        （刚切回服务器、还没回填就打开 3D 查看器）→ 按 bin_folder 查询全部落空，
+        表现为「船体正常但贴图 0 张、挂载 0 个」。这里查不到时回退到 meta 里
+        最新写入的 bin_folder（库本身就是按它建的表）。
+        """
+        key = (bin_folder or "").strip()
+        try:
+            if key:
+                row = self._conn.execute(
+                    "SELECT 1 FROM meta WHERE bin_folder=? LIMIT 1", (key,)).fetchone()
+                if row is not None:
+                    return key
+            row = self._conn.execute(
+                "SELECT bin_folder FROM meta ORDER BY created_at DESC LIMIT 1").fetchone()
+            if row is not None and row["bin_folder"]:
+                return str(row["bin_folder"])
+        except sqlite3.OperationalError:
+            pass
+        return key
+
+    @staticmethod
     def _material_family(shader_id: str) -> str:
         """shader_id（0xHHHHLLLL）高 16 位 → 技术族（INDEXED/PBS/其他）。"""
         from utils.asset_utils import material_family
@@ -1633,6 +1690,61 @@ class AssetsCacheService:
         return p
 
     # ── 工具 ────────────────────────────────────────────────
+
+    def _render_sets_lesta_one(self, data, off, db, self_id_idx, sdict,
+                               bin_folder, add_row) -> None:
+        """Korabli VisualPrototype（0x40 布局）单条记录的渲染集解析。
+
+        独立成方法是为了让 populate 的渲染集循环能**逐条记录**捕获异常
+        （单条坏记录不应让整库渲染集为 0）。
+        """
+        cnt = struct.unpack_from('<Q', data, off + 0x30)[0]
+        rel = struct.unpack_from('<Q', data, off + 0x38)[0]
+        if not rel or cnt <= 0:
+            return
+        h = struct.unpack_from('<Q', data, off + 0x20)[0]
+        gp = self._path_of(h, db, self_id_idx)
+        if not (gp and gp.endswith(".geometry")):
+            return
+        # 渲染集数组：+0x38 rel 为 **record-relative**（相对记录起始），
+        # 数组从 rel 起、每项 0x50 步长；+0x30 count 为权威条数。
+        # ⚠️ 2026-08-19 修正：VisualPrototype item_size=0x40（非 0x80）。
+        # 每条记录唯一 geometry（+0x20）+ primitives（+0x28）。旧 0x80
+        # 误把两条记录合并 → JGA180 误用 JGA181 的 TurretShapeff。
+        # 无多 geometry 共用 → 无需广播归属，直接归本记录 geometry。
+        base = off + rel
+        if base + cnt * 0x50 > len(data):
+            return
+        for k in range(cnt):
+            o = base + k * 0x50
+            shp = self._name_of(sdict, db, struct.unpack_from('<I', data, o)[0])
+            if not shp.endswith('.vertices'):
+                continue
+            mat = self._name_of(sdict, db, struct.unpack_from('<I', data, o + 8)[0])
+            mfm_h = struct.unpack_from('<Q', data, o + 0x20)[0]
+            mfm = self._path_of(mfm_h, db, self_id_idx)
+            damage = int('_crack_' in shp or '_lod' in shp or 'Crack' in mat)
+            # 蒙皮标志 + 调色板节点名（Korabli 渲染集项布局）：
+            #   +0x0C u8 skinned / +0x0D u8 nodes_count /
+            #   +0x28 u64 node_name_ids relptr（**item-relative**）→ u32 名ID 数组
+            skinned = data[o + 0x0C]
+            ncnt = data[o + 0x0D]
+            nodes: list[str] = []
+            # ★ 所有条目都读 nodes（含 skinned=0 的刚性父子模型，如
+            #   BIA454_Bollard_bigShape → ['BIA454_Bollard_big_7']），
+            #   供 geometry_service 按父节点矩阵定位到舰船空间。
+            if ncnt:
+                nrel = struct.unpack_from('<Q', data, o + 0x28)[0]
+                if nrel:
+                    nabs = o + nrel
+                    if nabs + ncnt * 4 <= len(data):
+                        for j in range(ncnt):
+                            nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
+                            nm = self._name_of(sdict, db, nid)
+                            if nm:
+                                nodes.append(nm)
+            add_row((bin_folder, gp, shp, mat, mfm, damage,
+                     int(skinned), json.dumps(nodes)))
 
     def _render_sets_wg(self, data, off, db, self_id_idx, sdict,
                         bin_folder, add_row) -> None:
@@ -1666,14 +1778,14 @@ class AssetsCacheService:
             return
         for k in range(cnt):
             o = base + k * 0x28
-            shp = sdict.get(struct.unpack_from('<I', data, o)[0]) or ''
+            shp = self._name_of(sdict, db, struct.unpack_from('<I', data, o)[0])
             # WG 渲染集名是形状名（xxShape，无后缀）；对应 .vertices 名 = xxShape.vertices。
             # 与 Korabli 不同（Korabli 渲染集 +0x00 直接就是 .vertices 名）。
             if shp and not shp.endswith('.vertices'):
                 shp += '.vertices'
             if not shp.endswith('.vertices'):
                 continue
-            mat = sdict.get(struct.unpack_from('<I', data, o + 4)[0]) or ''
+            mat = self._name_of(sdict, db, struct.unpack_from('<I', data, o + 4)[0])
             mfm_h = struct.unpack_from('<Q', data, o + 0x10)[0]
             mfm = self._path_of(mfm_h, db, self_id_idx)
             damage = int('_crack_' in shp or '_lod' in shp or 'Crack' in mat)
@@ -1688,7 +1800,7 @@ class AssetsCacheService:
                     if nabs + ncnt * 4 <= len(data):
                         for j in range(ncnt):
                             nid = struct.unpack_from('<I', data, nabs + j * 4)[0]
-                            nm = sdict.get(nid) or ''
+                            nm = self._name_of(sdict, db, nid)
                             if nm:
                                 nodes.append(nm)
             add_row((bin_folder, gp, shp, mat, mfm, damage,
@@ -1696,7 +1808,8 @@ class AssetsCacheService:
 
     def _populate_wg_skeleton(self, svc, db, sdict, self_id_idx, bin_folder,
                               vis_files, ext_files, skel_rows, bone_rows,
-                              skel_failed, flush_cb=None, log_cb=None) -> None:
+                              skel_failed, flush_cb=None, log_cb=None,
+                              note_cb=None) -> None:
         """WG 骨架：VisualPrototype nodes（基础骨架，含 HP_ 挂点）+ SkeletonExtender（MP_/SP_/EP_）。
 
         数据来源（wows-toolkit）：
@@ -1709,9 +1822,11 @@ class AssetsCacheService:
         矩阵均为列主序 4x4 → 转行主序 → _decompose_mat（含反射 det=-1 处理）。
 
         flush_cb/log_cb：分批落库 + 进度回调（与 Korabli 分支同样的内存有界策略，
-        本服有 ~12 万 visual 文件，全攒在内存里同样会撑爆）。
+        本服有数万 visual/skel_ext 文件，全攒在内存里同样会撑爆）。
         """
         import numpy as np
+
+        stats: dict = {}
 
         def _tick(i: int, n: int, every: int = 2000) -> None:
             if i % every:
@@ -1728,7 +1843,7 @@ class AssetsCacheService:
             if not stem:
                 continue
             try:
-                names, mats, parents = self._wg_visual_nodes(svc, f, sdict)
+                names, mats, parents = self._wg_visual_nodes(svc, f, sdict, stats)
                 if not names or not mats:
                     continue
                 n = len(names)
@@ -1766,7 +1881,7 @@ class AssetsCacheService:
             if not stem:
                 continue
             try:
-                names, mats = self._wg_extender_nodes(svc, f, sdict)
+                names, mats = self._wg_extender_nodes(svc, f, sdict, stats)
                 for i, nm in enumerate(names):
                     if not nm or i >= len(mats):
                         continue
@@ -1784,60 +1899,109 @@ class AssetsCacheService:
             except Exception as exc:  # noqa: BLE001
                 skel_failed.append(f"{f.path.rsplit('/', 1)[-1]}({exc})")
 
-    def _wg_visual_nodes(self, svc, f, sdict):
-        """WG VisualPrototype nodes → (names, matrices, parents)。有界读取（不拷整段 blob）。"""
+        if note_cb is not None:
+            note_cb("WG 骨架节点统计：成功 "
+                    f"{stats.get('ok', 0)} / 无节点 {stats.get('no_nodes', 0)} / "
+                    f"指针异常 {stats.get('bad_ptr', 0)} / "
+                    f"计数异常 {stats.get('bad_count', 0)} / "
+                    f"头过短 {stats.get('short_header', 0)}")
+
+    def _wg_visual_nodes(self, svc, f, sdict, stats: dict | None = None):
+        """WG VisualPrototype nodes → (names, matrices, parents)。有界读取（不拷整段 blob）。
+
+        ⚠️ **指针校验**：个别 visual 记录的 OOL 指针不是合法的 record-relative 偏移
+        （LOD/特效类记录），旧实现直接拿去 unpack_from → 巨量偏移异常（整个骨架阶段
+        报 2 万个解码失败）。校验失败返回空，由调用方计为 skipped。
+        stats：可选，统计跳过原因（诊断日志用）。
+        """
         import struct
+
+        def _bump(k: str) -> None:
+            if stats is not None:
+                stats[k] = stats.get(k, 0) + 1
+
         hdr = svc.vfs.open_file_len(f.path, 0x30)
         if len(hdr) < 0x30:
+            _bump("short_header")
             return [], [], []
         ncnt = struct.unpack_from('<I', hdr, 0)[0]
-        if ncnt <= 0 or ncnt > 5000:
+        if ncnt <= 0:
+            _bump("no_nodes")
+            return [], [], []
+        if ncnt > 5000:
+            _bump("bad_count")
             return [], [], []
         nids_ptr = struct.unpack_from('<q', hdr, 0x18)[0]
         mats_ptr = struct.unpack_from('<q', hdr, 0x20)[0]
         pids_ptr = struct.unpack_from('<q', hdr, 0x28)[0]
         need = 0x30
-        if nids_ptr and ncnt:
-            need = max(need, nids_ptr + ncnt * 4)
-        if mats_ptr and ncnt:
-            need = max(need, mats_ptr + ncnt * 64)
-        if pids_ptr and ncnt:
-            need = max(need, pids_ptr + ncnt * 2)
+        for ptr, esize in ((nids_ptr, 4), (mats_ptr, 64), (pids_ptr, 2)):
+            if ptr > 0:
+                need = max(need, ptr + ncnt * esize)
         data = svc.vfs.open_file_len(f.path, need + 16)
+        size = len(data)
+
+        def _fits(ptr: int, esize: int) -> bool:
+            return 0 <= ptr and ptr + ncnt * esize <= size
+
+        if not _fits(nids_ptr, 4) or not _fits(mats_ptr, 64):
+            _bump("bad_ptr")
+            return [], [], []
         names = []
         for i in range(ncnt):
-            nm = sdict.get(struct.unpack_from('<I', data, nids_ptr + i * 4)[0]) or ''
-            names.append(nm)
-        mats = []
-        for i in range(ncnt):
-            mats.append(list(struct.unpack_from('<16f', data, mats_ptr + i * 64)))
-        parents = [struct.unpack_from('<H', data, pids_ptr + i * 2)[0] for i in range(ncnt)]
+            h = struct.unpack_from('<I', data, nids_ptr + i * 4)[0]
+            names.append(self._name_of(sdict, svc.db, h))
+        mats = [list(struct.unpack_from('<16f', data, mats_ptr + i * 64))
+                for i in range(ncnt)]
+        if _fits(pids_ptr, 2):
+            parents = [struct.unpack_from('<H', data, pids_ptr + i * 2)[0]
+                       for i in range(ncnt)]
+        else:
+            parents = [0xFFFF] * ncnt   # 父链缺失 → 全部当根，仍可导出骨骼
+        _bump("ok")
         return names, mats, parents
 
-    def _wg_extender_nodes(self, svc, f, sdict):
-        """WG SkeletonExtender → (names, matrices)。列主序矩阵，local 即船空间。"""
+    def _wg_extender_nodes(self, svc, f, sdict, stats: dict | None = None):
+        """WG SkeletonExtender → (names, matrices)。列主序矩阵，local 即船空间。
+
+        与 `_wg_visual_nodes` 同样做指针校验（坏记录直接跳过，不抛异常）。
+        """
         import struct
+
+        def _bump(k: str) -> None:
+            if stats is not None:
+                stats[k] = stats.get(k, 0) + 1
+
         hdr = svc.vfs.open_file_len(f.path, 0x20)
         if len(hdr) < 0x20:
+            _bump("short_header")
             return [], []
         ncnt = struct.unpack_from('<H', hdr, 0x02)[0]
-        if ncnt <= 0 or ncnt > 5000:
+        if ncnt <= 0:
+            _bump("no_nodes")
+            return [], []
+        if ncnt > 5000:
+            _bump("bad_count")
             return [], []
         nids_ptr = struct.unpack_from('<q', hdr, 0x08)[0]
         mats_ptr = struct.unpack_from('<q', hdr, 0x18)[0]
         need = 0x20
-        if nids_ptr and ncnt:
-            need = max(need, nids_ptr + ncnt * 4)
-        if mats_ptr and ncnt:
-            need = max(need, mats_ptr + ncnt * 64)
+        for ptr, esize in ((nids_ptr, 4), (mats_ptr, 64)):
+            if ptr > 0:
+                need = max(need, ptr + ncnt * esize)
         data = svc.vfs.open_file_len(f.path, need + 16)
+        size = len(data)
+        if not (0 <= nids_ptr and nids_ptr + ncnt * 4 <= size) \
+                or not (0 <= mats_ptr and mats_ptr + ncnt * 64 <= size):
+            _bump("bad_ptr")
+            return [], []
         names = []
         for i in range(ncnt):
-            nm = sdict.get(struct.unpack_from('<I', data, nids_ptr + i * 4)[0]) or ''
-            names.append(nm)
-        mats = []
-        for i in range(ncnt):
-            mats.append(list(struct.unpack_from('<16f', data, mats_ptr + i * 64)))
+            h = struct.unpack_from('<I', data, nids_ptr + i * 4)[0]
+            names.append(self._name_of(sdict, svc.db, h))
+        mats = [list(struct.unpack_from('<16f', data, mats_ptr + i * 64))
+                for i in range(ncnt)]
+        _bump("ok")
         return names, mats
 
     @staticmethod

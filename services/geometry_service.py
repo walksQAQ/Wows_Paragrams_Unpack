@@ -498,6 +498,17 @@ class GeometryService:
         self._live_skel_index: dict | None = None
         #: 实时骨架缓存 {stem: {bone_name: (4,4)}}（assets.bin bind pose 世界矩阵）
         self._live_skel_cache: dict = {}
+        #: 实时材质缓存 {mfm_path: bundle}（独立模型查看器用，**不随 load_ship 清理**）
+        self._live_material_cache: dict = {}
+        #: 实时贴图字节缓存 {base路径: bytes}（跨模型复用共享图集，带总量上限）
+        self._live_texture_cache: dict = {}
+        self._live_texture_bytes_total = 0
+
+    #: 实时贴图缓存总量上限（512 MB；超出按插入顺序淘汰，避免看多个模型把内存吃满）。
+    #: INDEXED 图集（albedoArray 20MB + normalArray 41MB…）一套材质约 140MB，
+    #: 上限太小会导致来回切换模型时反复解压（单次数十秒）。
+    _LIVE_TEXTURE_CACHE_LIMIT = 512 * 1024 * 1024
+
     @classmethod
     def instance(cls) -> "GeometryService":
         with cls._lock:
@@ -2690,6 +2701,127 @@ class GeometryService:
             bus.log_message.emit(f"⚠️ 材质数据读取失败({mfm_path}): {exc}")
         self._material_full_cache[mfm_path] = result
         return result
+
+    # ── 实时材质（assets.bin，独立模型文件查看器）──────────
+
+    def _load_texture_tier_live(self, base: str, extractor) -> tuple[str, bytes]:
+        """按 .dd0/.dd1/.dd2/.dds 分级读取贴图，**跨模型复用**缓存。
+
+        与 `_load_texture_tier` 的区别：后者只在单次 load_ship 内有效
+        （`_clear_per_load_caches` 会清空）；独立模型查看器连续切换模型时，
+        共享图集（CIT000_1k_ship_tiles_* 等 20MB+）需要跨次复用，否则每次
+        重新解压（数十秒）。总量超过 `_LIVE_TEXTURE_CACHE_LIMIT` 时按插入
+        顺序淘汰最早的贴图。
+        """
+        if base in self._live_texture_cache:
+            return base + ".dds", self._live_texture_cache[base]
+        path, data = self._load_texture_tier(base, extractor)
+        if data:
+            self._live_texture_cache[base] = data
+            self._live_texture_bytes_total += len(data)
+            while (self._live_texture_bytes_total > self._LIVE_TEXTURE_CACHE_LIMIT
+                   and len(self._live_texture_cache) > 1):
+                old_key = next(iter(self._live_texture_cache))
+                old = self._live_texture_cache.pop(old_key)
+                self._live_texture_bytes_total -= len(old)
+        return path, data
+
+    def resolve_material_live(self, mfm_path: str, extractor=None) -> dict:
+        """实时从客户端 assets.bin 解析 .mfm 材质（**不读 assets_data.db**）。
+
+        独立模型文件查看器用：按需解码 MaterialPrototype → 贴图属性路径 →
+        从 pkg 读贴图字节（.dd0/.dd1/.dd2/.dds 分级）。结果按 mfm 路径缓存。
+
+        返回 ``{tech_family, shader_id, material_hash,
+                textures: {属性名: (vfs_path, bytes)},
+                indexed_params: {arrays, grid, offset},
+                emissive_power}``；无法解析返回 ``{}``。
+        """
+        if not mfm_path or not mfm_path.endswith(".mfm"):
+            return {}
+        cached = self._live_material_cache.get(mfm_path)
+        if cached is not None:
+            return cached
+        result: dict = {}
+        try:
+            svc = self._get_assets_service()
+            if svc is None:
+                self._live_material_cache[mfm_path] = result
+                return result
+            decoded = svc.decode_material_by_path(mfm_path)
+            sid = decoded.get("shader_id") or "0x0"
+            mh = decoded.get("material_hash") or ""
+            family = (fx_tech_family(app_ctx.ctx.wows_type or "", sid, mh)
+                      if mh else self._material_family(sid))
+            ext = extractor if extractor is not None else self._get_extractor()
+            textures: dict = {}
+            vec4s: dict = {}
+            emissive = None
+            for prop in decoded.get("properties") or []:
+                name = prop.get("name") or ""
+                if prop.get("type") == "texture":
+                    vp = prop.get("value_path") or ""
+                    # 反查失败会返回 "0x...." 占位 → 跳过（绝不按名补全）
+                    if not vp or vp.startswith("0x"):
+                        continue
+                    base = vp[:-4] if vp.endswith(".dds") else vp
+                    tp, td = self._load_texture_tier_live(base, ext)
+                    if td:
+                        textures[name] = (tp, td)
+                elif name == "emissivePower":
+                    val = prop.get("value")
+                    if isinstance(val, (int, float)):
+                        emissive = float(val)
+                arr = prop.get("array")
+                if arr and prop.get("type") == "vec4":
+                    vec4s[name] = np.asarray(arr, dtype=np.float32)
+            params: dict | None = None
+            if vec4s:
+                params = {"arrays": vec4s}
+                off = vec4s.get("offsetScaleMatIdArr")
+                if off is not None and off.ndim == 2 and off.shape[1] >= 4:
+                    params["offset"] = (float(off[0, 0]), float(off[0, 1]))
+                    params["grid"] = (int(round(off[0, 2])), int(round(off[0, 3])))
+                # 洋红占位 artMap = 缺失/无 camo：BaseStrength 置 0（与入库路径一致）
+                art_tx = textures.get("artMap")
+                if art_tx and _is_magenta_placeholder(art_tx[1]):
+                    a_arr = vec4s.get("artStrengthMatIdArr")
+                    if a_arr is not None and a_arr.ndim == 2 and a_arr.shape[1] >= 1:
+                        a_arr = a_arr.copy()
+                        a_arr[:, 0] = 0.0
+                        vec4s["artStrengthMatIdArr"] = a_arr
+            result = {"tech_family": family, "shader_id": sid,
+                      "material_hash": mh, "textures": textures}
+            if params is not None:
+                result["indexed_params"] = params
+            if emissive is not None:
+                result["emissive_power"] = emissive
+        except Exception as exc:  # noqa: BLE001
+            result = {}
+            bus.log_message.emit(f"⚠️ 实时材质解析失败({mfm_path}): {exc}")
+        self._live_material_cache[mfm_path] = result
+        return result
+
+    def apply_live_material(self, hm, mfm_path: str, extractor=None) -> bool:
+        """把实时解析的材质装配到一个 HullMesh（独立模型查看器用）。
+
+        返回该网格是否有颜色贴图（False = 只有法线/参数，按叠加层处理）。
+        """
+        bundle = self.resolve_material_live(mfm_path, extractor)
+        if not bundle:
+            return False
+        ext = extractor if extractor is not None else self._get_extractor()
+        self._apply_declared_color(hm, bundle, ext)
+        if bundle.get("emissive_power") is not None:
+            hm.emissive_power = float(bundle["emissive_power"])
+        return bool(hm.has_color)
+
+    def release_live_material_caches(self) -> None:
+        """释放实时骨架/材质/贴图缓存（独立模型查看器关闭时调用）。"""
+        self._live_material_cache.clear()
+        self._live_texture_cache.clear()
+        self._live_texture_bytes_total = 0
+        self._live_skel_cache.clear()
 
     def _skeleton_bones(self, stem: str) -> dict:
         """某模型骨架全部骨骼世界矩阵 {bone_name: (4,4)}（DB 读取，跨船缓存）。"""

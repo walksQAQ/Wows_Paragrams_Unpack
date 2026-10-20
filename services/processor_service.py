@@ -135,12 +135,21 @@ def run_process() -> "_AppTask":
         try:
             from utils.threading_utils import run_async
 
+            # ★ 在**启动后台任务前**固定当前客户端信息：导入过程中用户可能切服，
+            #   若任务里再读 app_ctx 就会拿新服务器的类型表去解旧客户端的 assets.bin
+            #   （实测：WG 12 万 visual 全部解析失败 → 3D 缓存空库）。
+            _job_bin = app_ctx.ctx.bin_folder
+            _job_ver = app_ctx.ctx.game_version
+            _job_type = app_ctx.ctx.wows_type
+            _job_game = app_ctx.ctx.game_path
+
             def _assets_cache_job():
                 try:
                     assets_ok[0] = _populate_assets_cache(
-                        bin_folder=app_ctx.ctx.bin_folder,
-                        game_version=app_ctx.ctx.game_version,
-                        wows_type=app_ctx.ctx.wows_type)
+                        bin_folder=_job_bin,
+                        game_version=_job_ver,
+                        wows_type=_job_type,
+                        game_path=_job_game)
                 except Exception as e:  # noqa: BLE001
                     bus.log_message.emit(f"❌ assets_data.db 写入失败: {e}")
                     assets_ok[0] = False
@@ -350,17 +359,25 @@ def run_process() -> "_AppTask":
     return run_async(_process, on_finished=_ok, on_error=_err)
 
 
-def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -> bool:
+def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str,
+                           game_path: str = "") -> bool:
     """把当前客户端 assets.bin 的 3D 查看器数据预提取到 assets_data.db。
+
+    game_path/bin_folder/wows_type 均由调用方在**开始前**固定：不能在中途
+    重新读上下文（用户切服会让类型表与客户端错配）。
 
     返回是否成功写入；过程中分阶段打日志（骨架/渲染集/材质）。
     """
     try:
         from services.assets_cache_service import AssetsCacheService
-        from services.geometry_service import GeometryService
-        gsvc = GeometryService.instance()
-        # 全内存：现场从当前客户端 .pkg 读 assets.bin 字节，直接交给缓存写入，不落盘
-        data = gsvc.load_assets_bytes()
+        # 全内存：现场从**指定**客户端 .pkg 读 assets.bin 字节，不落盘、
+        # 不用共享 extractor（共享缓存可能还绑在上一个客户端上）。
+        if game_path:
+            from uncode_assets.service import read_assets_bin_bytes
+            data = read_assets_bin_bytes(game_path, bin_folder=bin_folder or None)
+        else:
+            from services.geometry_service import GeometryService
+            data = GeometryService.instance().load_assets_bytes()
         if not data:
             bus.log_message.emit("⚠️ assets.bin 不可用，跳过 3D 数据缓存（3D 查看器将现场解析）")
             return False
@@ -370,13 +387,17 @@ def _populate_assets_cache(bin_folder: str, game_version: str, wows_type: str) -
             assets_bytes=data, bin_folder=bin_folder or "",
             game_version=game_version or "",
             wows_type=wows_type or "",
-            game_dir=app_ctx.ctx.game_path or None,
+            game_dir=(game_path or None),
             progress_cb=lambda msg: bus.log_message.emit(f"⏳ 3D 缓存: {msg}"))
         del data    # 解析完即释放（3D 查看器后续只读 assets_data.db）
         bus.log_message.emit(
             f"📦 assets.bin 数据已缓存（骨架挂点 {counts['skeleton']} / "
             f"骨骼 {counts['skeleton_bones']} / 渲染集 {counts['render_sets']} / "
             f"材质 {counts['mfm_textures']} / 完整材质 {counts['material_full']}）")
+        if not counts.get("skeleton") and not counts.get("render_sets"):
+            bus.log_message.emit(
+                "⚠️ 3D 缓存内容为空（骨架 0 / 渲染集 0）：该客户端 assets.bin 布局"
+                "可能尚未适配，3D 查看器将缺少骨架/材质数据（船体仍可显示）")
         return True
     except Exception as e:  # noqa: BLE001
         bus.log_message.emit(f"❌ assets.bin 缓存写入失败: {e}")

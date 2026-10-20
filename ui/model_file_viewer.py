@@ -1,17 +1,22 @@
 """
-model_file_viewer.py —— 独立几何模型文件查看器（只做几何，不加载材质）。
+model_file_viewer.py —— 独立几何模型文件查看器（几何 + 可选实时材质）。
 
 与舰船 3D 查看器（``ui/geometry_viewer.py``）解耦：本工具不依赖 GameParams /
-数据库 / 材质系统，直接加载任意 ``.geometry`` 文件的网格并渲染，用于快速
-检查模型本身是否正确。
+数据库，直接加载任意 ``.geometry`` 文件的网格并渲染，用于快速检查模型本身
+是否正确。
 
 两种来源：
 
 - **本地磁盘**：选择任意 ``.geometry`` 文件；
 - **游戏客户端**：枚举客户端 VFS 中的 ``.geometry`` 文件，搜索后直接读取。
 
-本期只做几何渲染：不解析 mfm / 贴图 / 装甲厚度，模型以默认白模（光照实体）
-显示；蒙皮网格按文件内 bind pose 的原始顶点显示。
+渲染内容：
+
+- 几何：始终加载（顶点/法线/UV/索引）；蒙皮网格按 bind pose 的原始顶点显示；
+- 材质：**仅客户端来源**、且勾选「加载材质效果」时，按渲染集实时解析
+  ``assets.bin`` 的 MaterialPrototype（mfm）并从 pkg 读取贴图，交由渲染器
+  按 shader 技术族（PBS / INDEXED 分块 / 贴花 / 透明…）绘制；
+  本地文件模式无法定位渲染集与材质，只能显示白模。
 """
 
 from __future__ import annotations
@@ -135,26 +140,43 @@ def _attach_assets_live(parsed, geom_path: str, cancel_event=None) -> tuple[dict
 
 
 def geometry_from_parsed(name: str, parsed, file_path: str = "",
-                         cancel_event=None, source: str = "client") -> ShipGeometry:
+                         cancel_event=None, source: str = "client",
+                         load_materials: bool = True) -> ShipGeometry:
     """把 parse_geometry 的结果包装成视口可直接渲染的 ShipGeometry。
 
-    只使用网格数据：不设置贴图 / 材质，``has_color=True`` 让渲染器走
-    普通光照实体分支（无贴图 ⇒ 白色基础色），避免被当作法线叠加层。
+    未加载到材质的网格保持 ``has_color=True`` + 无贴图 → 渲染器走普通光照
+    实体分支（白模），不会被误当成法线叠加层。
 
     source：
       - ``"client"``：模型来自游戏客户端。实时解析 assets.bin 获取
         渲染集（材质/mfm/蒙皮调色板）与骨架，保留顶点组/权重并施加 bind pose。
       - ``"local"``：直接读取本地文件。**不含顶点组/权重与材质数据**
         （无法可靠定位客户端资产），并在 stats 中给出提示。
+
+    load_materials：仅对 ``"client"`` 有效。为 True 时按渲染集的 mfm 实时
+    解析材质（贴图 / INDEXED 分块参数 / 技术族）；为 False 则只显示白模。
     """
     if source == "client":
         rs_by_mid, sk_info = _attach_assets_live(parsed, file_path, cancel_event)
         drop_skin = False
+        sk_info["textured"] = 0
+        sk_info["materialized"] = 0
     else:
         rs_by_mid = {}
         sk_info = {"source": "local", "materials": 0, "bones": 0,
-                   "skinned": 0, "applied": 0}
+                   "skinned": 0, "applied": 0, "textured": 0,
+                   "materialized": 0}
         drop_skin = True
+    svc = None
+    extractor = None
+    if source == "client" and load_materials:
+        try:
+            from services.geometry_service import GeometryService
+            svc = GeometryService.instance()
+            extractor = svc.get_extractor()
+        except Exception as exc:  # noqa: BLE001
+            svc = None
+            bus.log_message.emit(f"⚠️ 模型文件查看器：材质加载不可用: {exc}")
     geom = ShipGeometry(game_key=name, display_name=name, model_folder="")
     skipped = 0
     for i, prim in enumerate(parsed.primitives):
@@ -165,7 +187,7 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
             continue
         normals = _ensure_normals(positions, prim.normals, indices)
         entry = rs_by_mid.get(prim.mapping_id)
-        geom.hull_meshes.append(HullMesh(
+        hm = HullMesh(
             name=f"{name}#{i}",
             positions=positions,
             normals=normals,
@@ -187,7 +209,8 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
             vertex_count=int(positions.shape[0]),
             has_color=True,
             tech_family="pbs",
-            # 材质元数据（来自 assets.bin 渲染集；本期只记录不加载贴图）
+            # 渲染集元数据（assets.bin 实时）；有材质时下方 apply_live_material
+            # 会覆盖 texture_path / tech_family / has_color 并填好贴图与分块参数
             material=((entry or {}).get("material") or None),
             texture_path=((entry or {}).get("mfm") or ""),
             # 客户端模式：完整保留顶点组/权重 + skin；
@@ -200,17 +223,31 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
                         else list(getattr(prim, "skin_bones", []) or [])),
             skin_bind=([] if drop_skin
                        else list(getattr(prim, "skin_bind", []) or [])),
-        ))
+        )
+        if svc is not None and entry is not None and entry.get("mfm"):
+            try:
+                if svc.apply_live_material(hm, entry.get("mfm") or "", extractor):
+                    sk_info["textured"] += 1
+                sk_info["materialized"] += 1
+            except Exception as exc:  # noqa: BLE001
+                bus.log_message.emit(
+                    f"⚠️ 模型文件查看器：材质装配失败({entry.get('mfm')}): {exc}")
+        geom.hull_meshes.append(hm)
     if not geom.hull_meshes:
         raise ValueError("文件中没有可渲染的三角形网格")
     mins = np.min([h.positions.min(axis=0) for h in geom.hull_meshes], axis=0)
     maxs = np.max([h.positions.max(axis=0) for h in geom.hull_meshes], axis=0)
     geom.bounds_min = mins.astype(np.float32)
     geom.bounds_max = maxs.astype(np.float32)
+    note = ""
+    if drop_skin:
+        note = "本地文件模式：无法加载顶点组/权重与材质数据"
+    elif not load_materials:
+        note = "已关闭材质加载（白模显示）"
     geom.stats = {"file_path": file_path, "skipped_primitives": skipped,
                   "skeleton": sk_info, "source": source,
-                  "note": ("本地文件模式：无法加载顶点组/权重与材质数据"
-                           if drop_skin else "")}
+                  "load_materials": bool(load_materials and not drop_skin),
+                  "note": note}
     return geom
 
 
@@ -350,7 +387,7 @@ class GeometryFilePicker(QDialog):
 
 
 class ModelFileViewerDialog(QDialog):
-    """独立几何模型查看器（无材质）。"""
+    """独立几何模型查看器（客户端来源可加载实时材质）。"""
 
     #: 后台加载进度提示（文本；空串 = 结束）
     busy_changed = Signal(str)
@@ -359,7 +396,7 @@ class ModelFileViewerDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("模型文件查看器（无材质）")
+        self.setWindowTitle("模型文件查看器")
         self.resize(1240, 820)
         self.setMinimumSize(760, 520)
 
@@ -375,6 +412,9 @@ class ModelFileViewerDialog(QDialog):
         self.export_progress_changed.connect(self._on_export_progress)
         self._vfs_entries: list[VfsGeometryEntry] | None = None
         self._current_geom: ShipGeometry | None = None
+        #: 当前模型的来源（client/local）与 VFS 路径（材质开关切换时重载用）
+        self._current_source = ""
+        self._current_vfs_path = ""
 
         self._build_ui()
         theme.bind(self, "QDialog { background: @panel_bg@; }")
@@ -449,7 +489,7 @@ class ModelFileViewerDialog(QDialog):
                    " background:transparent; border:none;")
         pl.addWidget(title)
 
-        hint = QLabel("独立加载任意 .geometry 模型，只显示几何、不加载材质。")
+        hint = QLabel("独立加载任意 .geometry 模型；从客户端选择时可实时加载材质与骨架。")
         hint.setWordWrap(True)
         theme.bind(hint,
                    "color:@text_muted@; font-size:11px; background:transparent; border:none;")
@@ -481,6 +521,19 @@ class ModelFileViewerDialog(QDialog):
         theme.bind(self.cb_wire,
                    "QCheckBox { color:@text@; font-size:12px; spacing:6px; }")
         pl.addWidget(self.cb_wire)
+
+        self.cb_material = QCheckBox("加载材质效果")
+        self.cb_material.setChecked(
+            str(self._settings.value("model_file_viewer_load_materials", "true"))
+            .lower() not in ("false", "0"))
+        self.cb_material.setToolTip(
+            "仅对『从游戏客户端选择』加载的模型生效（实时解析 assets.bin 材质 +\n"
+            "从 pkg 读取贴图）；本地文件无法定位材质，始终为白模。\n"
+            "当前是客户端模型时会立即重新加载。")
+        theme.bind(self.cb_material,
+                   "QCheckBox { color:@text@; font-size:12px; spacing:6px; }")
+        self.cb_material.toggled.connect(self._on_material_toggled)
+        pl.addWidget(self.cb_material)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -531,6 +584,15 @@ class ModelFileViewerDialog(QDialog):
         label = QLabel(text)
         theme.bind(label, style)
         layout.addWidget(label)
+
+    def _on_material_toggled(self, checked: bool) -> None:
+        """材质开关：记住设置；当前是客户端模型则立即按新开关重新加载。"""
+        self._settings.setValue("model_file_viewer_load_materials",
+                                "true" if checked else "false")
+        if self._closed:
+            return
+        if self._current_source == "client" and self._current_vfs_path:
+            self._load_vfs_path(self._current_vfs_path)
 
     # ── 加载遮罩 ──────────────────────────────────────────
 
@@ -671,6 +733,7 @@ class ModelFileViewerDialog(QDialog):
 
     def _load_vfs_path(self, path: str) -> None:
         label = path.rsplit("/", 1)[-1]
+        load_materials = self.cb_material.isChecked()
 
         def work(cancel_event):
             self._set_busy("正在实时解析客户端 assets.bin（首次可能较慢）...")
@@ -685,9 +748,12 @@ class ModelFileViewerDialog(QDialog):
                 parsed = parse_geometry(data, file_path=path, cancel_event=cancel_event)
             finally:
                 del data
+            if load_materials:
+                self._set_busy("正在加载材质贴图...")
             return geometry_from_parsed(os.path.splitext(label)[0], parsed, path,
                                         cancel_event=cancel_event,
-                                        source="client")
+                                        source="client",
+                                        load_materials=load_materials)
 
         self._start_load(path, work)
 
@@ -700,6 +766,8 @@ class ModelFileViewerDialog(QDialog):
         gen = self._load_gen
         self.viewport.clear_scene()
         self._current_geom = None
+        self._current_source = ""
+        self._current_vfs_path = ""
         self.info_label.setText(f"正在加载 {label}...")
         self._set_busy(f"正在解析 {label}...")
         self._load_task = run_async(
@@ -716,6 +784,9 @@ class ModelFileViewerDialog(QDialog):
         self._current_geom = geom
         path0 = (geom.stats or {}).get("file_path", "")
         self._current_name = os.path.splitext(os.path.basename(path0))[0] or "model"
+        _src = (geom.stats or {}).get("source", "client")
+        self._current_source = _src
+        self._current_vfs_path = path0 if _src == "client" else ""
         try:
             self.viewport.set_scene(geom, show_hull=True, show_armor=False,
                                     armor_scene=None)
@@ -741,6 +812,11 @@ class ModelFileViewerDialog(QDialog):
         if src == "client":
             src_line = (f"数据源：客户端 assets.bin（实时）"
                         f"（渲染集 {sk.get('materials', 0)}）")
+            if stats.get("load_materials"):
+                mat_line = (f"材质：{sk.get('materialized', 0)} 个网格已装配，"
+                            f"{sk.get('textured', 0)} 个带颜色贴图")
+            else:
+                mat_line = "材质：未加载（白模显示）"
             if sk.get("bones"):
                 sk_line = (f"骨架：{_model_stem(path)}（{sk['bones']} 骨骼 / "
                            f"bind pose 混合 {sk.get('applied', 0)}/"
@@ -749,6 +825,7 @@ class ModelFileViewerDialog(QDialog):
                 sk_line = "骨架：未找到（静态显示）"
         else:
             src_line = "数据源：本地文件（不含顶点组/权重与材质）"
+            mat_line = "材质：本地文件模式不可用（白模显示）"
             sk_line = stats.get("note") or "提示：从游戏客户端选择可加载骨架/材质数据"
         self.info_label.setText(
             f"文件：{os.path.basename(path)}\n"
@@ -756,6 +833,7 @@ class ModelFileViewerDialog(QDialog):
             f"网格：{len(geom.hull_meshes)} 个（{verts:,} 顶点 / {tris:,} 三角形）\n"
             f"包围盒：{size[0]:.2f} × {size[1]:.2f} × {size[2]:.2f}\n"
             f"{src_line}\n"
+            f"{mat_line}\n"
             f"{sk_line}")
         self.info_label.setToolTip(path)
         bus.log_message.emit(
@@ -874,6 +952,12 @@ class ModelFileViewerDialog(QDialog):
         self._vfs_entries = None
         self._set_busy("")
         self.viewport.clear_scene()
+        # 释放实时材质/贴图/骨架缓存（共享图集可达 20MB+）
+        try:
+            from services.geometry_service import GeometryService
+            GeometryService.instance().release_live_material_caches()
+        except Exception:  # noqa: BLE001
+            pass
         self._save_geometry()
         super().closeEvent(event)
 
