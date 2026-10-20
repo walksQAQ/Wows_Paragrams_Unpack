@@ -684,7 +684,9 @@ class AssetsBinViewer(QMainWindow):
         """解码结果 → 官方 Mod SDK 明文 `.mfm` 文本。"""
         from .mfm_text import format_mfm_text
         name = (path or "").rsplit("/", 1)[-1] or "material.mfm"
-        return format_mfm_text(decoded, name=name, fx=self._material_fx_path(decoded))
+        return format_mfm_text(decoded, name=name,
+                               fx=self._material_fx_path(decoded),
+                               wows_type=self._wows_type)
 
     def _visual_text(self, path: str, decoded) -> str:
         """解码结果 → 官方 Mod SDK 明文 `.visual` 文本（寄服/莱服两套格式）。"""

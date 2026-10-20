@@ -76,6 +76,7 @@ def format_mfm_text(
     name: str = "",
     fx: str = "",
     parent_mfms: Optional[List[str]] = None,
+    wows_type: Optional[str] = None,
 ) -> str:
     """MaterialPrototype 解码结果 → 明文 `.mfm` 文本。
 
@@ -84,6 +85,8 @@ def format_mfm_text(
         name: 根元素名（通常为文件名，如 `ABS077_Iowa_Azurlane.mfm`）。
         fx: `.fx` 路径（已解析的完整路径）；为空则省略 `<fx>`。
         parent_mfms: `<parentMfm>` 列表（继承链）；二进制里没有，通常为空。
+        wows_type: 服务器名（`Wargaming` / `Lesta`）；None → 用线程上下文
+            :func:`uncode_assets.types.get_wows_type`。
 
     `<collisionFlags>` 取自材质记录 WG `+0x70`（碰撞面标记，位定义见
     ``decoders.COLLISION_FLAG_BITS``）。WoWS 内容从不设置该字段，实测 31,534 个 WG
@@ -102,7 +105,7 @@ def format_mfm_text(
             lines.append(f"\t<parentMfm>\t{parent}\t</parentMfm>")
     if fx:
         lines.append(f"\t<fx>\t{fx}\t</fx>")
-    if get_wows_type() != "Lesta":
+    if (wows_type or get_wows_type()) != "Lesta":
         try:
             flags = int(decoded.get("collisionFlags") or 0) & 0xFF
         except (TypeError, ValueError):
