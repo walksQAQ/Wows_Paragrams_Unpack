@@ -34,3 +34,13 @@ _archive/compile/
 _archive/shaders.py
 *.glb
 *.zip
+# ---- 本地逆向 / 临时产物（绝不入库）----
+/_*.py
+/_dec_*.c
+/_gproj*/
+/_ghidra*/
+/_ghidra_*.txt
+/_dump.txt
+/_newsec.md
+/_bw*/
+/bw_src*/
