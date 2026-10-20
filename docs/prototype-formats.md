@@ -217,8 +217,12 @@ return param_1;              /* 之后不再注册任何字段 → +0x84 是填�
 
 **Mod SDK 明文口径**（实测 Lesta 26.10 / WG 15.9）：`<collisionFlags>` 一律写 `0`
 （13,068 / 29,184 处，等于真实值）；`<sortOrder>` **完全不导出**（0 处命中）。
-本工具因此也始终写 `<collisionFlags>0</collisionFlags>`（与 SDK 一致），
-`sortOrder` 只在 JSON 里保留、不写明文（二进制里有但 SDK 不导出，写了不是"官方口径"）。
+本工具的处理：
+
+- **WG**：始终写 `<collisionFlags>0</collisionFlags>`（与 SDK 一致）；
+- **Lesta**：**不写这一行** —— Korabli 的二进制原型没有该字段（上文 Ghidra 反编译），
+  客户端也不解析这个标签，写出来只会是"看起来像数据、其实没人读"的噪音；
+- `sortOrder`：两服都只在 JSON 里保留，不写明文（二进制里有但 SDK 不导出，写了不算官方口径）。
 
 ---
 

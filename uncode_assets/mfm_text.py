@@ -33,6 +33,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional
 
+from .types import get_wows_type
+
 #: 属性类型（MaterialPrototype type_raw）→ 明文值元素名
 TYPE_TAGS = {
     0: "Bool",
@@ -85,7 +87,10 @@ def format_mfm_text(
 
     `<collisionFlags>` 取自材质记录 WG `+0x70`（碰撞面标记，位定义见
     ``decoders.COLLISION_FLAG_BITS``）。WoWS 内容从不设置该字段，实测 31,534 个 WG
-    材质全为 0 —— 与 Mod SDK 明文恒写 0 完全吻合；Korabli 记录里没有该字段，也写 0。
+    材质全为 0 —— 与 Mod SDK 明文恒写 0 完全吻合。
+    **Korabli 侧不输出该行**：Korabli 的二进制原型里没有这个字段（Ghidra 反编译
+    `FUN_140643320` 确认字段表止于 `sortOrder@+0x80`），`Korabli64.exe` 里也没有该
+    字符串 —— 明文里的 `<collisionFlags>` 只是 SDK 导出器的残留标签，客户端不解析。
     `sortOrder`（WG `+0x74` / Korabli `+0x80`）只在 16 个 mesh_decal 上非默认，Mod SDK
     明文从不导出它，因此这里也不写（只在 JSON 里保留）。
     写法口径按 WG 15.9：始终写 `<collisionFlags>`（Lesta 26.10 只写了 63.5%）。
@@ -97,11 +102,12 @@ def format_mfm_text(
             lines.append(f"\t<parentMfm>\t{parent}\t</parentMfm>")
     if fx:
         lines.append(f"\t<fx>\t{fx}\t</fx>")
-    try:
-        flags = int(decoded.get("collisionFlags") or 0) & 0xFF
-    except (TypeError, ValueError):
-        flags = 0
-    lines.append(f"\t<collisionFlags>\t{flags}\t</collisionFlags>")
+    if get_wows_type() != "Lesta":
+        try:
+            flags = int(decoded.get("collisionFlags") or 0) & 0xFF
+        except (TypeError, ValueError):
+            flags = 0
+        lines.append(f"\t<collisionFlags>\t{flags}\t</collisionFlags>")
 
     for prop in decoded.get("properties") or []:
         pname = prop.get("name") or "?"
