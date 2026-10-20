@@ -116,10 +116,25 @@ _MATERIAL_TYPE_NAMES = {
 #: 值数组元素字节数（type_idx 低 4 位 → 元素大小）；未列出的类型不是数组
 MATERIAL_ELEM_SIZE = {1: 4, 2: 4, 3: 4, 5: 8, 6: 12, 7: 16, 8: 64}
 
-#: MaterialPrototype 记录布局（按服务器）：item 记录步长 / names、types、type_ptrs 偏移
+#: MaterialPrototype 记录布局（按服务器）：item 记录步长 / names、types、type_ptrs 偏移 /
+#: kind（materialKind u32，-1 = 未设置）偏移
 _MATERIAL_LAYOUT = {
-    False: {"item": 0x88, "names": 0x18, "types": 0x20, "tptr": 0x30},  # Korabli
-    True: {"item": 0x78, "names": 0x10, "types": 0x18, "tptr": 0x20},   # Wargaming
+    False: {"item": 0x88, "names": 0x18, "types": 0x20, "tptr": 0x30,
+            "kind": 0x80},  # Korabli
+    True: {"item": 0x78, "names": 0x10, "types": 0x18, "tptr": 0x20,
+           "kind": 0x74},   # Wargaming
+}
+
+#: ``collisionFlags`` 位定义（BigWorld `physics2/worldtri.hpp`，写入碰撞三角 flags 低字节）
+COLLISION_FLAG_BITS = {
+    0x01: "CAMERANOCOLLIDE",      # 相机可穿透（螺旋桨 / gizmo / 装饰薄片）
+    0x02: "TRANSPARENT",          # 镂空/alphaTest 面：不算实体、不投影
+    0x04: "BLENDED",              # 混合队列
+    0x08: "TERRAIN",              # 地形
+    0x10: "NOCOLLIDE",            # 角色不碰撞（相机仍碰撞）
+    0x20: "DOUBLESIDED",          # 双面
+    0x40: "WATER",                # 水面
+    0x80: "PROJECTILENOCOLLIDE",  # 弹道不碰撞
 }
 
 
@@ -275,16 +290,24 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     WG 布局（wows-toolkit material.rs）：
       +0x00 u16 property_count, +0x02 u16 flags, +0x04 u32 shader_id,
       +0x08 u64 reserved, +0x10 names_ptr, +0x18 type_idx_ptr,
-      +0x20..+0x60 type_ptrs[9], +0x68 material_hash, +0x70 pad
+      +0x20..+0x60 type_ptrs[9], +0x68 material_hash,
+      +0x70 u32 sort_order, +0x74 u32 material_kind(-1 = 未设置)
+
+    Korabli 末尾：+0x80 u32 material_kind(-1 = 未设置)
+
+    ``+0x02`` 的**低字节**就是 SDK 明文里的 ``<collisionFlags>``（BigWorld
+    ``Material::collisionFlags_`` 的低 8 位，写进碰撞三角 flags 低字节）；
+    高字节在 WG 侧另有含义（与 alphaTest/双面等材质变体对应，Lesta 恒 0）。
 
     指针为 u64，基准 = 记录起始。
     """
     wg = get_wows_type() == "Wargaming"
-    need = 0x78 if wg else 0x88
+    lay = _MATERIAL_LAYOUT[wg]
+    need = lay["item"]
     shader_off = 0x04 if wg else 0x08
-    names_off = 0x10 if wg else 0x18
-    type_idx_off = 0x18 if wg else 0x20
-    type_ptrs_base = 0x20 if wg else 0x30
+    names_off = lay["names"]
+    type_idx_off = lay["types"]
+    type_ptrs_base = lay["tptr"]
     mat_hash_off = 0x68 if wg else 0x78
     if len(data) < need:
         raise ParseError(f"MaterialPrototype 数据过短: {len(data)}")
@@ -295,6 +318,10 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     type_idx_ptr = B.read_u64(data, type_idx_off)
     type_ptrs = {t: B.read_u64(data, type_ptrs_base + t * 8) for t in range(9)}
     material_hash = B.read_u64(data, mat_hash_off)
+    collision_flags = flags & 0xFF
+    # materialKind：独立的 u32 字段，-1（0xFFFFFFFF）= 未设置（BigWorld 语义）
+    kind_raw = B.read_u32(data, lay["kind"]) if len(data) >= lay["kind"] + 4 else 0
+    material_kind = 0 if kind_raw in (0xFFFFFFFF, -1) else kind_raw
 
     names = B.parse_u32_array(data, names_ptr, property_count) if names_ptr else []
     type_idx = B.parse_u16_array(data, type_idx_ptr, property_count) if type_idx_ptr else []
@@ -335,18 +362,22 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 
     return {
         "_type": "MaterialPrototype",
-        # 官方 ModsSDK 明文格式（<mfm><fx>/<collisionFlags>/<property>）
+        # 官方 ModsSDK 明文格式（<mfm><fx>/<materialKind>/<collisionFlags>/<property>）
         # 二进制里没有 fx 字符串：fx 路径由 uncode_assets.mfm_fx 从 material_hash
         # （fx 资源 selfId）独立解析，本函数保持纯材质解码，不掺 fx 逻辑。
         "fx": f"0x{shader_id:08X}",
-        # ⚠️ +0x02 是材质记录自身的 flags（wows-toolkit 记为 unknown，疑为层/混合标记），
-        # 与 SDK 明文的 <collisionFlags> **不是同一字段**：实测 Lesta 26.10 SDK
-        # （13,068 处）与 WG 15.9 SDK（29,184 个 .mfm）该行取值恒为 0，而同名材质在
-        # assets.bin 里的 flags 大量为 1/2/3（Lesta）或 0x101/0x102/0x300（WG）。
-        # 故明文侧 collisionFlags 固定 0，原始 flags 单独以 "flags" 输出。
-        "collisionFlags": 0,
-        "property_count": property_count,
+        # collisionFlags = +0x02 低字节：碰撞面标记（写进碰撞三角 flags 低字节）。
+        # bit0 = 相机可穿透、bit1 = 镂空/透明（详见 COLLISION_FLAG_BITS）。
+        # 注意：Mod SDK 明文导出时该值恒写 0，与 assets.bin 里的真实值无关。
+        "collisionFlags": collision_flags,
+        # +0x02 高字节（WG 侧与 alphaTest/双面等材质变体对应，Lesta 恒 0）
+        "flags_high": flags >> 8,
+        # 原始 u16（= flags_high << 8 | collisionFlags），保留供排查
         "flags": flags,
+        # materialKind：BigWorld 的「表面类型」，用于贴花/碰撞材质选择
+        # （实测仅 mesh_decal 材质非 0：grass=1 / road=2 / sand=3）
+        "materialKind": material_kind,
+        "property_count": property_count,
         "shader_id": f"0x{shader_id:08X}",
         "material_hash": f"0x{material_hash:016X}",
         "properties": properties,

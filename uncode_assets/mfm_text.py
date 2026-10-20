@@ -83,12 +83,12 @@ def format_mfm_text(
         fx: `.fx` 路径（已解析的完整路径）；为空则省略 `<fx>`。
         parent_mfms: `<parentMfm>` 列表（继承链）；二进制里没有，通常为空。
 
-    `<collisionFlags>` 是 Mod SDK 明文里的独立字段，**取值恒为 0**、与材质记录
-    +0x02 的 flags 无关（实测：Lesta 26.10 SDK 13,068 处、WG 15.9 SDK 全部
-    29,184 个 .mfm 都是 0；二进制 flags 却常见 1/2/3 或 0x300 等）。
-    两服的**写法**不同：WG 15.9 每个 .mfm 都写这一行；Lesta 26.10 只写了 63.5%
-    （glass / grid / mesh_decal / indexed 系列几乎不写，ship PBS 系列 50~92%）。
-    本函数统一按 WG 口径**始终写出**（值为 SDK 的 0），信息更完整且两服都合法。
+    `<collisionFlags>` 取自材质记录 +0x02 的**低字节**（碰撞面标记，见
+    ``decoders.COLLISION_FLAG_BITS``）；Mod SDK 明文导出时该值恒写 0，
+    与 assets.bin 里的真实值无关（实测 Lesta 13,068 处、WG 29,184 个 .mfm 全为 0）。
+    这里写**真实值**，使导出的 .mfm 作 Mod 覆盖时行为与客户端一致。
+    `<materialKind>` 只在非 0 时写出（实测仅 mesh_decal：grass=1 / road=2 / sand=3）。
+    写法口径按 WG 15.9：始终写 `<collisionFlags>`（Lesta 26.10 只写了 63.5%）。
     """
     root = (name or "material.mfm").strip()
     lines: List[str] = [f"<{root}>"]
@@ -98,7 +98,13 @@ def format_mfm_text(
     if fx:
         lines.append(f"\t<fx>\t{fx}\t</fx>")
     try:
-        flags = int(decoded.get("collisionFlags") or 0)
+        kind = int(decoded.get("materialKind") or 0)
+    except (TypeError, ValueError):
+        kind = 0
+    if kind:
+        lines.append(f"\t<materialKind>\t{kind}\t</materialKind>")
+    try:
+        flags = int(decoded.get("collisionFlags") or 0) & 0xFF
     except (TypeError, ValueError):
         flags = 0
     lines.append(f"\t<collisionFlags>\t{flags}\t</collisionFlags>")

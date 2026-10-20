@@ -76,9 +76,11 @@ assets.bin 浏览器里的「明文格式」/「导出明文」会把 `.mfm` / `
 原因是 assets.bin 的记录布局与 Mod SDK 明文并非一一对应，已知差异包括：
 
 - `<parentMfm>` 继承链：明文里有，assets.bin 二进制里没有（因此不会输出）；
-- `<collisionFlags>`：SDK 导出恒为 0（Lesta 26.10 有 63.5% 的文件写、WG 15.9 全写），
-  而材质记录 `+0x02` 的 flags 常为非 0（Lesta 1/2/3，WG 0x101/0x102/0x300）；
-  本工具按 WG 口径统一写 `<collisionFlags> 0`，原始值另以 JSON 的 `flags` 显示；
+- `<collisionFlags>`：SDK 导出器**一律写 0**（Lesta 26.10 共 13,068 处、WG 15.9 全部
+  29,184 个文件都是 0），而 assets.bin 里该字段的真实值大量为 1/2/3
+  （碰撞面标记：`0x01` = 相机可穿透、`0x02` = 镂空/alphaTest 面）。
+  本工具写**真实值**，`<materialKind>` 仅非 0 时写出（仅 mesh_decal 地表类型）。
+  两者语义详见 [docs/prototype-formats.md](./docs/prototype-formats.md)；
 - 数组属性按「材质 ID 稀疏」写出，全零项省略，与 SDK 的实际写法可能存在出入；
 - `.visual` 的节点旋转限制、部分 renderSet 标志在二进制中缺失。
 
