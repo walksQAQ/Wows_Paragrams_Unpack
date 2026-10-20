@@ -1,7 +1,7 @@
 """mfm_text.py —— 把解码后的 MaterialPrototype 还原为 Mod SDK 明文 `.mfm` 样式。
 
 ⚠️ **实验性功能**：assets.bin 的记录布局与 Mod SDK 明文并非一一对应
-（`<parentMfm>` 继承链二进制里没有、`<collisionFlags>` 在 SDK 里恒为 0 等），
+（`<parentMfm>` 继承链二进制里没有、`sortOrder` 二进制里有但 SDK 不导出等），
 转码结果可能存在与官方导出不一致之处，请以游戏内实际表现为准。
 
 明文语法（官方 Mod SDK 导出的 `.mfm`，文本元素，Tab 分隔）：
@@ -83,11 +83,11 @@ def format_mfm_text(
         fx: `.fx` 路径（已解析的完整路径）；为空则省略 `<fx>`。
         parent_mfms: `<parentMfm>` 列表（继承链）；二进制里没有，通常为空。
 
-    `<collisionFlags>` 取自材质记录 +0x02 的**低字节**（碰撞面标记，见
-    ``decoders.COLLISION_FLAG_BITS``）；Mod SDK 明文导出时该值恒写 0，
-    与 assets.bin 里的真实值无关（实测 Lesta 13,068 处、WG 29,184 个 .mfm 全为 0）。
-    这里写**真实值**，使导出的 .mfm 作 Mod 覆盖时行为与客户端一致。
-    `<materialKind>` 只在非 0 时写出（实测仅 mesh_decal：grass=1 / road=2 / sand=3）。
+    `<collisionFlags>` 取自材质记录 WG `+0x70`（碰撞面标记，位定义见
+    ``decoders.COLLISION_FLAG_BITS``）。WoWS 内容从不设置该字段，实测 31,534 个 WG
+    材质全为 0 —— 与 Mod SDK 明文恒写 0 完全吻合；Korabli 记录里没有该字段，也写 0。
+    `sortOrder`（WG `+0x74` / Korabli `+0x80`）只在 16 个 mesh_decal 上非默认，Mod SDK
+    明文从不导出它，因此这里也不写（只在 JSON 里保留）。
     写法口径按 WG 15.9：始终写 `<collisionFlags>`（Lesta 26.10 只写了 63.5%）。
     """
     root = (name or "material.mfm").strip()
@@ -97,12 +97,6 @@ def format_mfm_text(
             lines.append(f"\t<parentMfm>\t{parent}\t</parentMfm>")
     if fx:
         lines.append(f"\t<fx>\t{fx}\t</fx>")
-    try:
-        kind = int(decoded.get("materialKind") or 0)
-    except (TypeError, ValueError):
-        kind = 0
-    if kind:
-        lines.append(f"\t<materialKind>\t{kind}\t</materialKind>")
     try:
         flags = int(decoded.get("collisionFlags") or 0) & 0xFF
     except (TypeError, ValueError):

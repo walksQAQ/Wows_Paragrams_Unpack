@@ -40,7 +40,7 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | 偏移 | 类型 | 说明 |
 |------|------|------|
 | +0x00 | u16 | property_count |
-| +0x02 | u8+u8 | 低字节 = collisionFlags（见下文位表）；高字节 = WG 独有的材质变体号（Lesta 恒 0）|
+| +0x02 | u16 | **含义未定**的打包字段（低字节 0..3 / 高字节仅 WG 非 0），原样输出 `flags` |
 | +0x08 | u32 | shader_id |
 | +0x18 | u64 | names_ptr（属性名哈希 u32 数组）|
 | +0x20 | u64 | type_idx_ptr（u16 数组）|
@@ -54,8 +54,10 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | +0x60 | u64 | vec3 值数组指针 |
 | +0x68 | u64 | vec4 值数组指针 |
 | +0x70 | u64 | mat4 值数组指针 |
-| +0x78 | u64 | material_hash（= fx 资源在路径树中的 selfId）|
-| +0x80 | u32 | materialKind（-1 = 未设置；仅 mesh_decal 非 0）|
+| +0x78 | u64 | fxPathId（= fx 资源在路径树中的 selfId）|
+| +0x80 | u32 | sortOrder（-1 = 未设置；仅少数 mesh_decal 为 1..4）|
+
+> Korabli 记录里**没有** `collisionFlags` 字段（`Korabli64.exe` 里连这个字符串都不存在）。
 
 - **material_hash 不是哈希值**：它是 assets.bin `pathsStorage` 的 selfId，
   用 `PrototypeDatabase.resolve_self_path()` 可直接解析出 fx 完整路径
@@ -80,11 +82,35 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 > `blendNoiseParams`」会多读 195 项，读进**下一条材质的 OOL 数据**，表现为
 > `blendNoiseParams` 出现 `1e28` / `1e36` 这类明显不合理的数值。
 
-### `collisionFlags` / `materialKind`：字段语义（引擎源码 + 数据实测）
+### `collisionFlags` / `sortOrder`：字段语义（exe 反汇编 + 引擎源码 + 数据实测）
 
-两者都来自 BigWorld 引擎的材质/碰撞系统（源码：`lib/moo/material.{hpp,ipp,cpp}`、
-`lib/physics2/worldtri.hpp`；WoWS 的 `WorldOfWarships64.exe` 里 MaterialPrototype
-反射字段表也确实含 `fxPathId` / `sortOrder` / `collisionFlags`）。
+**落位（反汇编核对，不是猜的）**：WoWS 客户端在启动时注册 `MaterialPrototype` 类型
+（类型名字符串 + 记录步长 `0x78` + murmur3 类型哈希），字段注册表按名给出 record 偏移
+（`WorldOfWarships64.exe` 里形如 `lea r8, "collisionFlags"` 后紧跟
+`mov dword ptr [rsp+0x28], 0x70` 再调用注册函数）：
+
+| 字段 | WG（item 0x78） | Korabli（item 0x88） |
+|---|---|---|
+| `fxPathId` | `+0x68` u64 | `+0x78` u64 |
+| `collisionFlags` | `+0x70` u32（`-1` = 未设置） | **记录里没有这个字段** |
+| `sortOrder` | `+0x74` u32（`-1` = 未设置） | `+0x80` u32（`-1` = 未设置） |
+
+旁证：`Korabli64.exe` 里 `collisionFlags` / `materialKind` 字符串各 **0 处**，只有
+`fxPathId` / `sortOrder` 各 1 处；而 `WorldOfWarships64.exe` 里三者齐备。
+
+**实测取值**：
+
+| 字段 | WG（31,534 个材质） | Lesta（29,377 个） |
+|---|---|---|
+| `collisionFlags` | **全部 0** | 无字段 → 固定 0 |
+| `sortOrder` | 31,518 个 `-1`；16 个 `mesh_decal` 为 1..4 | 29,376 个 `-1`；1 个为 2 |
+
+- WG 那 16 个非默认值全在 `mesh_decal.fx`，且与贴花层级一一对应：
+  `..._grass`=1、`..._road`=2、`..._sand3`=3、`..._grass2`=4
+  （`pillar_Meshdecal2..5` 同样 1..4）—— 即**贴花叠放顺序**。
+- `collisionFlags` 全 0，恰好解释了 Mod SDK 明文里 `<collisionFlags>` 恒为 `0`
+  （Lesta 26.10：13,068 处、WG 15.9：29,184 处）：不是导出器"丢弃真实值"，而是
+  **内容从来没人设置过这个字段**。
 
 **位定义**（`WorldTriangle::flags_` 低字节，`uncode_assets.decoders.COLLISION_FLAG_BITS`）：
 
@@ -99,7 +125,7 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | 0x40 | `WATER` | 水面 |
 | 0x80 | `PROJECTILENOCOLLIDE` | 弹道不碰撞（0xff 整体 = 不进 BSP） |
 
-**怎么填这个值**：它是一个 **8 位 bitmask**，任意组合按位或。引擎读法
+**怎么填这个值**：8 位 bitmask，任意组合按位或。引擎读法
 （`lib/moo/material.cpp::readCollisionFlags`）是 `asInt()` 后**只取低 8 位**
 （`packed.bytes.low_low = (uint8)cflags`），`-1` = 不设置（保持默认/继承）。
 
@@ -118,7 +144,7 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 
 | 组合 | 值 | 十进制 |
 |---|---|---|
-| 相机可穿透 + 镂空 | `0x03` | 3（WoWS 现有数据的最大值） |
+| 相机可穿透 + 镂空 | `0x03` | 3 |
 | 镂空 + 双面 | `0x22` | 34 |
 | 相机可穿透 + 镂空 + 双面 | `0x23` | 35 |
 | 角色不碰撞 + 双面 | `0x30` | 48 |
@@ -131,94 +157,49 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 > （`BSPTree::canCollide()` 也靠它判断整个模型还有没有可碰撞三角形）。
 > 所以"能开的都开"要写 `0x7F`(127) 或 `0xFE`(254)，**别写 255**。
 
-另外两点：
+补充：
 - `TERRAIN`(0x08) / `WATER`(0x40) 由地形/水面系统给三角形打，写在**模型材质**上语义无意义。
-- `<materialKind>` 与 `collisionFlags` 共用同一个 u32 的不同字节（kind 占 bit8..15，
-  `readMaterialKind` 写 `packed.bytes.low_high`），所以两者互不干扰，`collisionFlags`
-  正常写 0..254 即可。
+- 引擎里**没有**「材质属性 → 这些位」的自动换算：`calculateMaterialFlags()`
+  （`lib/chunk/server_super_model.cpp`）里 `Alpha_test → TRANSPARENT`、
+  `Alpha_blended → BLENDED`、`Double_sided → DOUBLESIDED` 那段是**整段注释掉的**，
+  实际生效的只有 `packFlags(collisionFlags, materialKind)`（原样打包）；
+  运行时 `Moo::EffectMaterial::getFlags()` 同样只做打包。所以想要这些碰撞行为，
+  **必须在 `<collisionFlags>` 里显式写位**。
+- 那些位在引擎里通常由别处写入：`TRIANGLE_TERRAIN` ← 地形块；`TRIANGLE_WATER` ← 水面
+  (`server_chunk_water.cpp`)；`TRIANGLE_NOCOLLIDE` / `TRIANGLE_DOUBLESIDED` ← 编辑器与
+  贴花/植被的 BSP 重映射；`TRIANGLE_PROJECTILENOCOLLIDE` ← SpeedTree（树干/树叶）；
+  `TRIANGLE_BLENDED` 全仓库没有赋值点，只在相机碰撞里被读
+  (`base_camera.cpp`: `ignoreFlags(TRANSPARENT|BLENDED|CAMERANOCOLLIDE)`)。
 
+### 记录 `+0x02` u16：含义未定的打包字段（旧版本文档曾误标为 `collisionFlags`）
 
-**落位与取值**：
+旧版本把这个 u16 的**低字节**当成 `collisionFlags`——**已证伪**：真正的 `collisionFlags`
+在 `+0x70` 且全为 0。`+0x02` 是另一个字段，工具原样输出为 `flags` / `flags_high`：
 
-- 记录 `+0x02` u16 的**低字节** = `collisionFlags`（高字节另作它用，见下）。
-  - Lesta 26.10 全量实测（29,377 个材质）：0×27,919 / 1×861 / 2×595 / 3×2
-  - WG 全量实测（31,534 个材质）：0×30,012 / 1×944 / 2×573 / 3×5
-  - 只用到 bit0 / bit1；两个服分布几乎一致（螺旋桨 ≈ 87% 是 1）。
-  - 与材质属性高度相关：flags=2 的材质 **90% 有 `alphaTestEnable`、96% 有 `doubleSided`**；
-    flags=1 的 34% / 50%。即 bit1 ≈ 镂空面，bit0 ≈ 相机可穿透的装饰件。
+- 低字节实测 `0..3`（WG 0×30,012 / 1×944 / 2×573 / 3×5；Lesta 0×27,919 / 1×861 /
+  2×595 / 3×2），与碰撞相关属性高度相关：低字节=2 的材质 90% 有 `alphaTestEnable`、
+  96% 有 `doubleSided`；=1 的 34% / 50%（螺旋桨 87% 落在 1）。
+- 高字节仅 WG 非 0，且**完全由属性集决定**（31,534 个材质归成 686 种属性名签名，
+  每个签名对应的高字节唯一，0 个歧义）：
 
-**其余 6 个 bit（`BLENDED` / `TERRAIN` / `NOCOLLIDE` / `DOUBLESIDED` / `WATER` /
-`PROJECTILENOCOLLIDE`）：WoWS 材质数据里一次都没出现过**，而且**不是**由其他材质属性
-换算出来的：
-
-- 数据：两服合计 60,911 个材质，`collisionFlags` 取值集合都只有 `{0,1,2,3}`，
-  bit2..bit7 全为 0。
-- 引擎里确实**存在过**「属性 → 位」的推导，但**整段被注释掉、不生效**
-  （`lib/chunk/server_super_model.cpp::calculateMaterialFlags()`，且同一处注释指出
-  `Visual::Geometry::populateWorldTriangles()` 里的等价代码也被注释）：
-  ```cpp
-  flags = WorldTriangle::packFlags(
-      pMaterial->readInt( "collisionFlags", 0 ),
-      pMaterial->readInt( "materialKind", 0 ) );   // ← 实际生效的只有这一句（原样打包）
-  /* 以下全部被注释：
-  if (Sorted || Alpha_test)            flags |= TRIANGLE_TRANSPARENT;
-  if (Alpha_blended && Src==SRC_ALPHA && Dest==INV_SRC_ALPHA)
-                                       flags |= TRIANGLE_BLENDED;
-  if (Double_sided)                    flags |= TRIANGLE_DOUBLESIDED;
-  */
-  ```
-  运行时的模型路径同理：`Moo::EffectMaterial::getFlags()` 只做
-  `packFlags(collisionFlags_, materialKind_)`，不做任何推导。
-- 反证：若有推导，`doubleSided` 材质必然带 `DOUBLESIDED`(bit5) —— 实测 WG 1,145 个
-  `doubleSided` 材质里 **0 个**带 bit5；`alphaTestEnable` 的 820 个材质全部 `!= 0`，
-  但只有 63% 带 bit1（Lesta 811 个 / 67%）——说明是**内容作者按语义手勾**，不是程序算的。
-- 那这 6 位在引擎里由**别的系统**在运行时打，与 mfm 无关：
-  `TRIANGLE_TERRAIN` ← 地形块；`TRIANGLE_WATER` ← 水面 (`lib/chunk/server_chunk_water.cpp`)；
-  `TRIANGLE_NOCOLLIDE` / `TRIANGLE_DOUBLESIDED` ← 编辑器与贴花/植被的 BSP 重映射
-  (`chunk_model_obstacle.cpp`、`sticker_decal.cpp`、`forward_decal.cpp`)；
-  `TRIANGLE_PROJECTILENOCOLLIDE` ← 植被 SpeedTree（树干 solid / 树叶 leaves）；
-  `TRIANGLE_BLENDED` 全仓库**没有赋值点**，只在相机碰撞里被读
-  (`lib/camera/base_camera.cpp`: `ignoreFlags(TRANSPARENT|BLENDED|CAMERANOCOLLIDE)`)
-  → 只能由 mfm 里显式写位带进来，而 WoWS 内容没人用过。
-
-> 实用含义：Mod 里想让某个面不参与碰撞/投影，**必须自己在 `<collisionFlags>` 里写对应位**
-> （引擎原样认），不要指望改 `doubleSided`/混合模式之类的属性会自动换算 —— 那段代码是死的。
-
-- `+0x02` 的**高字节**（`flags_high`）= **WG 独有的材质变体号**（着色器变体 /
-  technique 选择位），与碰撞、与 Lesta 都无关：
-
-  | 值 | 占比 | 特征（WG 31,534 个材质实测） |
-  |----|------|------------------------------|
+  | 值 | 占比 | 特征 |
+  |----|------|------|
   | 0 | 29,667（94.1%） | 普通材质，无 alphaTest / 无动画 |
-  | 1 | 748（2.4%） | alphaTest 变体：90.4% 有 `alphaTestEnable`、91.7% `alphaReference`、57.5% `doubleSided`、常带 `detailMap`/`g_detailFadeDistance` |
-  | 2 | 199（0.6%） | 动态自发光/UV 动画：98.0% `animMap`、99.5% 有 emissive 参数、83.4% `emissivePower`、`emissionAnimationMode`/`maskSpeed` |
-  | 3 | 838（2.7%） | 纹理动画：98.1% 有 `g_texanimFrameNum`（`g_texanimBox*`/`g_texanimWidth`…） |
+  | 1 | 748（2.4%） | alphaTest 变体：90.4% `alphaTestEnable`、91.7% `alphaReference`、57.5% `doubleSided`、常带 `detailMap` |
+  | 2 | 199（0.6%） | 动态自发光/UV 动画：98.0% `animMap`、99.5% 有 emissive 参数 |
+  | 3 | 838（2.7%） | 纹理动画：98.1% `g_texanimFrameNum` |
   | 4 | 82（0.3%） | 纹理动画 + alphaTest：100% `g_texanimFrameNum`、96.3% `alphaTestEnable` |
 
-  - **完全由属性集决定**：31,534 个材质归成 686 种属性名签名，每个签名对应的高字节
-    **唯一**（0 个歧义）——即它是引擎/导出器从材质属性推出来的变体号，不是手写字段。
-  - **跨服证据**（19,156 个同名材质逐条对比）：低字节只有 53 个不同（0.28%，属版本改动），
-    高字节则有 653 个不同，且**全部是"WG 非 0 / Lesta 为 0"**——Lesta 的这个字节是
-    未使用（padding / 无此字段），WG 才把它用起来。
-  - 官方字段名无法确定：`WorldOfWarships64.exe` 里 MaterialPrototype 的 DataSection
-    反射名只有 3 个标量 `fxPathId` / `sortOrder` / `collisionFlags`（分别对应
-    `+0x68` u64、`+0x70` u32 恒 0、`+0x74` u32），本字节是**和 collisionFlags 打包在
-    同一个 u16 里的紧凑字段**，不在那张表里。因此本工具只按数据特征称其为"变体号"，
-    以 `flags_high` 原样输出，不做 `<...>` 明文回写（Mod SDK 也不导出它）。
-- `materialKind` 是**独立 u32 字段**（Lesta `+0x80` / WG `+0x74`，`-1` = 未设置，
-  对应引擎里 `collisionFlags_ == -1` 的哨兵）：
-  - 引擎侧印证：`calculateMaterialFlags()` 明确 `readInt("materialKind", 0)` 再和
-    `collisionFlags` 一起 `packFlags()`，所以它是材质字段，**不是**碰撞位的一部分。
-  - WG 仅 **16** 个材质非 0，全是 `mesh_decal.fx`：`..._grass`=1、`..._road`=2、
-    `..._sand3`=3、`..._grass2`=4 —— 即**贴花/碰撞用的地表类型**（引擎
-    `MaterialKinds` 由贴图名查 kind，供动态贴花与 `MATKIND_DESTRUCTIBLE_*` 使用）。
-  - Lesta 只有 3 个 `mesh_decal` 材质非 0（其中 2 个是 `-1` 未设置）。
+- 跨服 19,156 个同名材质对比：低字节只差 53 个（0.28%），高字节差 653 个且**全是
+  「WG 非 0 / Lesta 为 0」**（Lesta 未使用该字节）。
+- 它不出现在 `MaterialPrototype` 的字段注册表里（`fxPathId` / `collisionFlags` /
+  `sortOrder` 才是），所以拿不到官方字段名；按数据特征看像是**打包的（变体号<<8 | 渲染相关位）**，
+  目前只输出不解释，明文也不回写。
 
 **Mod SDK 明文口径**（实测 Lesta 26.10 / WG 15.9）：`<collisionFlags>` 一律写 `0`
-（13,068 / 29,184 处全是 0），`<materialKind>` 只有 11 个文件写、值也是 `0` ——
-即 SDK 导出器不导出这两个字段的真实值。本工具改为写**真实值**
-（`mfm_text.format_mfm_text`），这样导出的 `.mfm` 作 Mod 覆盖时行为与客户端一致；
-`<materialKind>` 仅在非 0 时写出。
+（13,068 / 29,184 处，等于真实值）；`<sortOrder>` **完全不导出**（0 处命中）。
+本工具因此也始终写 `<collisionFlags>0</collisionFlags>`（与 SDK 一致），
+`sortOrder` 只在 JSON 里保留、不写明文（二进制里有但 SDK 不导出，写了不是"官方口径"）。
 
 ---
 

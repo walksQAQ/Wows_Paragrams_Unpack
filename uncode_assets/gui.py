@@ -13,8 +13,8 @@
   - 关闭窗口时询问是否清理 .uncode_cache 索引缓存
 
 ⚠️ **明文转码（.mfm / .visual / .model / .skel_ext）为实验性功能**：
-   assets.bin 与 Mod SDK 明文字段并非一一对应（如 `<collisionFlags>` 在 SDK 里
-   恒为 0、`<parentMfm>` 继承链二进制里没有），部分数据可能与官方 SDK 导出结果
+   assets.bin 与 Mod SDK 明文字段并非一一对应（如 `sortOrder` 二进制里有但 SDK
+   不导出、`<parentMfm>` 继承链二进制里没有），部分数据可能与官方 SDK 导出结果
    存在差异，请以游戏内实际表现为准。
 
 独立运行：  python -m uncode_assets.gui [assets.bin 或 游戏目录]

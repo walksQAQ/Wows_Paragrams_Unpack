@@ -77,12 +77,15 @@ assets.bin 浏览器里的「明文格式」/「导出明文」会把 `.mfm` / `
 
 - `<parentMfm>` 继承链：明文里有，assets.bin 二进制里没有（因此不会输出）；
 - `<collisionFlags>`：SDK 导出器**一律写 0**（Lesta 26.10 共 13,068 处、WG 15.9 全部
-  29,184 个文件都是 0），而 assets.bin 里该字段的真实值大量为 1/2/3
-  （碰撞面标记：`0x01` = 相机可穿透、`0x02` = 镂空/alphaTest 面）。
-  本工具写**真实值**，`<materialKind>` 仅非 0 时写出（仅 mesh_decal 地表类型）。
-  两者语义详见 [docs/prototype-formats.md](./docs/prototype-formats.md)；
+  29,184 个文件都是 0）。经 exe 反汇编核对，该字段在 WG 记录 `+0x70`、且 31,534 个材质
+  **实测全为 0**（内容从未设置过），Korabli 记录里干脆没有这个字段 —— 所以本工具也写 0，
+  与 SDK 一致；
+- `sortOrder`（WG `+0x74` / Korabli `+0x80`）：二进制里有（16 个 `mesh_decal` 为 1..4，
+  是贴花叠放顺序），但 **SDK 明文完全不导出**，因此本工具只在 JSON 里显示、不写明文；
 - 数组属性按「材质 ID 稀疏」写出，全零项省略，与 SDK 的实际写法可能存在出入；
 - `.visual` 的节点旋转限制、部分 renderSet 标志在二进制中缺失。
+
+`collisionFlags` 位定义与取值表详见 [docs/prototype-formats.md](./docs/prototype-formats.md)。
 
 请以**游戏内实际表现**为准；转码结果用于对照/排查，不建议直接当作官方 SDK 导出物使用。
 
