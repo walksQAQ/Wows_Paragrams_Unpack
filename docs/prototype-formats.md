@@ -84,10 +84,24 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 
 ### `collisionFlags` / `sortOrder`：字段语义（exe 反汇编 + 引擎源码 + 数据实测）
 
-**落位（反汇编核对，不是猜的）**：WoWS 客户端在启动时注册 `MaterialPrototype` 类型
-（类型名字符串 + 记录步长 `0x78` + murmur3 类型哈希），字段注册表按名给出 record 偏移
-（`WorldOfWarships64.exe` 里形如 `lea r8, "collisionFlags"` 后紧跟
-`mov dword ptr [rsp+0x28], 0x70` 再调用注册函数）：
+**落位（Ghidra 反编译核对，不是猜的）**：WoWS 客户端在启动时注册 `MaterialPrototype` 类型
+（类型名字符串 + 记录步长 `0x78` + murmur3 类型哈希），字段注册表按名给出 record 偏移。
+
+**WG 侧**（`WorldOfWarships64.exe` 全量分析后反编译 `FUN_14046ae80` 的尾部，字段名与偏移成对出现）：
+
+```c
+plVar4[lVar8*3 + 2] = "fxPathId";        /* 前一行 param_1[1] = lVar7 + 0x68 → +0x68 */
+...
+local_30 = 0x70;
+local_38 = "collisionFlags";
+FUN_14046d210(param_1, &local_38);       /* → collisionFlags @ +0x70 */
+local_30 = 0x74;
+local_38 = "sortOrder";
+FUN_14046d210(param_1, &local_38);       /* → sortOrder @ +0x74 */
+return param_1;                          /* 表到此结束 → 记录步长 0x78 */
+```
+
+同一函数里还能看到 `matrixValues @ +0x60`、`vector4Values @ +0x58`（与 `type_ptrs[8]` 布局吻合）。
 
 | 字段 | WG（item 0x78） | Korabli（item 0x88） |
 |---|---|---|
@@ -95,8 +109,9 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | `collisionFlags` | `+0x70` u32（`-1` = 未设置） | **记录里没有这个字段** |
 | `sortOrder` | `+0x74` u32（`-1` = 未设置） | `+0x80` u32（`-1` = 未设置） |
 
-旁证：`Korabli64.exe` 里 `collisionFlags` / `materialKind` 字符串各 **0 处**，只有
-`fxPathId` / `sortOrder` 各 1 处；而 `WorldOfWarships64.exe` 里三者齐备。
+旁证（Ghidra `search_strings` 全量）：`WorldOfWarships64.exe` 有 `collisionFlags` / `sortOrder` /
+`fxPathId` 各 1 处，**`CollisionFlags`（首字母大写）与 `materialKind` 均为 0 处**；
+`Korabli64.exe` 只有 `fxPathId` / `sortOrder` 各 1 处，`collisionFlags` / `materialKind` 为 0 处。
 
 Lesta 侧用 **Ghidra 反编译**（`Korabli64.exe -26.10ST2`，71,730 个函数）核对过字段注册函数
 `FUN_140643320` 的尾部，字段表到 `sortOrder` 就结束了：
