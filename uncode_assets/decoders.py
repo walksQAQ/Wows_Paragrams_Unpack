@@ -297,7 +297,8 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
 
     ``+0x02`` 的**低字节**就是 SDK 明文里的 ``<collisionFlags>``（BigWorld
     ``Material::collisionFlags_`` 的低 8 位，写进碰撞三角 flags 低字节）；
-    高字节在 WG 侧另有含义（与 alphaTest/双面等材质变体对应，Lesta 恒 0）。
+    **高字节**是 WG 独有的材质变体号（0 普通 / 1 alphaTest / 2 自发光动画 /
+    3 纹理动画 / 4 纹理动画+alphaTest），Lesta 该字节未使用（恒 0）。
 
     指针为 u64，基准 = 记录起始。
     """
@@ -370,7 +371,12 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
         # bit0 = 相机可穿透、bit1 = 镂空/透明（详见 COLLISION_FLAG_BITS）。
         # 注意：Mod SDK 明文导出时该值恒写 0，与 assets.bin 里的真实值无关。
         "collisionFlags": collision_flags,
-        # +0x02 高字节（WG 侧与 alphaTest/双面等材质变体对应，Lesta 恒 0）
+        # +0x02 高字节（flags_high）= WG 独有的材质变体号（着色器变体 / technique
+        # 选择位），不是碰撞标记：0 = 普通、1 = alphaTest、2 = 动态自发光/UV 动画、
+        # 3 = 纹理动画、4 = 纹理动画 + alphaTest。
+        # 证据：31,534 个 WG 材质按属性签名分组后该值**唯一**（完全由属性集决定）；
+        # 跨服 19,156 个同名材质里低字节只差 53 个、高字节差 653 个且全是
+        # 「WG 非 0 / Lesta 为 0」（Lesta 该字节未使用）。Mod SDK 明文也不导出它。
         "flags_high": flags >> 8,
         # 原始 u16（= flags_high << 8 | collisionFlags），保留供排查
         "flags": flags,

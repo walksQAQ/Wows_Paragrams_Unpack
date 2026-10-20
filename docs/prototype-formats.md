@@ -40,7 +40,7 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | 偏移 | 类型 | 说明 |
 |------|------|------|
 | +0x00 | u16 | property_count |
-| +0x02 | u16 | collisionFlags（低字节，见下文位表）+ 高字节（WG 侧的材质变体号）|
+| +0x02 | u8+u8 | 低字节 = collisionFlags（见下文位表）；高字节 = WG 独有的材质变体号（Lesta 恒 0）|
 | +0x08 | u32 | shader_id |
 | +0x18 | u64 | names_ptr（属性名哈希 u32 数组）|
 | +0x20 | u64 | type_idx_ptr（u16 数组）|
@@ -107,9 +107,27 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
   - 只用到 bit0 / bit1；两个服分布几乎一致（螺旋桨 ≈ 87% 是 1）。
   - 与材质属性高度相关：flags=2 的材质 **90% 有 `alphaTestEnable`、96% 有 `doubleSided`**；
     flags=1 的 34% / 50%。即 bit1 ≈ 镂空面，bit0 ≈ 相机可穿透的装饰件。
-- `+0x02` 的**高字节**（仅 WG 非 0，Lesta 恒 0）与材质变体相关：
-  `ship_material` 的 `*_alpha` 变体 = 1、`base_emissive_*` = 1/2/3、
-  `*_texanim` 双面 = 3 / alphaTest = 4。本工具以 `flags_high` 原样输出。
+- `+0x02` 的**高字节**（`flags_high`）= **WG 独有的材质变体号**（着色器变体 /
+  technique 选择位），与碰撞、与 Lesta 都无关：
+
+  | 值 | 占比 | 特征（WG 31,534 个材质实测） |
+  |----|------|------------------------------|
+  | 0 | 29,667（94.1%） | 普通材质，无 alphaTest / 无动画 |
+  | 1 | 748（2.4%） | alphaTest 变体：90.4% 有 `alphaTestEnable`、91.7% `alphaReference`、57.5% `doubleSided`、常带 `detailMap`/`g_detailFadeDistance` |
+  | 2 | 199（0.6%） | 动态自发光/UV 动画：98.0% `animMap`、99.5% 有 emissive 参数、83.4% `emissivePower`、`emissionAnimationMode`/`maskSpeed` |
+  | 3 | 838（2.7%） | 纹理动画：98.1% 有 `g_texanimFrameNum`（`g_texanimBox*`/`g_texanimWidth`…） |
+  | 4 | 82（0.3%） | 纹理动画 + alphaTest：100% `g_texanimFrameNum`、96.3% `alphaTestEnable` |
+
+  - **完全由属性集决定**：31,534 个材质归成 686 种属性名签名，每个签名对应的高字节
+    **唯一**（0 个歧义）——即它是引擎/导出器从材质属性推出来的变体号，不是手写字段。
+  - **跨服证据**（19,156 个同名材质逐条对比）：低字节只有 53 个不同（0.28%，属版本改动），
+    高字节则有 653 个不同，且**全部是"WG 非 0 / Lesta 为 0"**——Lesta 的这个字节是
+    未使用（padding / 无此字段），WG 才把它用起来。
+  - 官方字段名无法确定：`WorldOfWarships64.exe` 里 MaterialPrototype 的 DataSection
+    反射名只有 3 个标量 `fxPathId` / `sortOrder` / `collisionFlags`（分别对应
+    `+0x68` u64、`+0x70` u32 恒 0、`+0x74` u32），本字节是**和 collisionFlags 打包在
+    同一个 u16 里的紧凑字段**，不在那张表里。因此本工具只按数据特征称其为"变体号"，
+    以 `flags_high` 原样输出，不做 `<...>` 明文回写（Mod SDK 也不导出它）。
 - `materialKind` 是**独立 u32 字段**（Lesta `+0x80` / WG `+0x74`，`-1` = 未设置，
   对应引擎里 `collisionFlags_ == -1` 的哨兵）：
   - WG 仅 **16** 个材质非 0，全是 `mesh_decal.fx`：`..._grass`=1、`..._road`=2、
