@@ -40,7 +40,7 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 | 偏移 | 类型 | 说明 |
 |------|------|------|
 | +0x00 | u16 | property_count |
-| +0x02 | u16 | flags |
+| +0x02 | u16 | flags（材质自身标记；**不是** SDK 明文的 `<collisionFlags>`，见下）|
 | +0x08 | u32 | shader_id |
 | +0x18 | u64 | names_ptr（属性名哈希 u32 数组）|
 | +0x20 | u64 | type_idx_ptr（u16 数组）|
@@ -78,6 +78,20 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 > 若沿用前一组间距，`RSD100_Shaumian_1942.mfm` 这类「6 个 196 项数组 + 末尾单个 vec4
 > `blendNoiseParams`」会多读 195 项，读进**下一条材质的 OOL 数据**，表现为
 > `blendNoiseParams` 出现 `1e28` / `1e36` 这类明显不合理的数值。
+
+### `<collisionFlags>` 口径（Lesta 26.10 vs WG 15.9 SDK 实测）
+
+- **与 +0x02 的 flags 无关**：两个 SDK 里该行取值**恒为 0**
+  （Lesta 26.10 共 13,068 处、WG 15.9 全部 29,184 个 `.mfm`），
+  而同名材质在 assets.bin 里的 flags 常见 1/2/3（Lesta）或 0x101/0x102/0x300（WG）。
+  wows-toolkit 也把 +0x02 记为 `unknown (layer count?)`。
+- **两服写法不同**：
+  - WG 15.9：**每个** `.mfm` 都写 `<collisionFlags> 0`（含 `grid_alpha` / `glass` 等）。
+  - Lesta 26.10：只有 63.5% 写（13,068 / 20,591），且按 fx 家族区分：
+    `glass_material` / `ship_mesh_decal` / indexed 系列 ≈ 0%，`grid_alpha` 0.4%、
+    `grid_alpha_skinned` 4.9%，而 `ship_material` 75.8%、`PBS_ship_skinned` 91.6%。
+- 本工具统一按 **WG 口径**：明文里始终写 `<collisionFlags> 0`（`mfm_text.format_mfm_text`），
+  JSON 另以 `flags` 保留二进制原始值。
 
 ---
 

@@ -79,8 +79,12 @@ def format_mfm_text(
         fx: `.fx` 路径（已解析的完整路径）；为空则省略 `<fx>`。
         parent_mfms: `<parentMfm>` 列表（继承链）；二进制里没有，通常为空。
 
-    `<collisionFlags>` 取自记录头 +0x02 的 flags，**为 0 也照实写出**（官方 SDK
-    导出时这一行时有时无，但二进制里该字段始终存在，明文转换不应丢弃）。
+    `<collisionFlags>` 是 Mod SDK 明文里的独立字段，**取值恒为 0**、与材质记录
+    +0x02 的 flags 无关（实测：Lesta 26.10 SDK 13,068 处、WG 15.9 SDK 全部
+    29,184 个 .mfm 都是 0；二进制 flags 却常见 1/2/3 或 0x300 等）。
+    两服的**写法**不同：WG 15.9 每个 .mfm 都写这一行；Lesta 26.10 只写了 63.5%
+    （glass / grid / mesh_decal / indexed 系列几乎不写，ship PBS 系列 50~92%）。
+    本函数统一按 WG 口径**始终写出**（值为 SDK 的 0），信息更完整且两服都合法。
     """
     root = (name or "material.mfm").strip()
     lines: List[str] = [f"<{root}>"]

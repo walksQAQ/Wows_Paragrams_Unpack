@@ -339,7 +339,12 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
         # 二进制里没有 fx 字符串：fx 路径由 uncode_assets.mfm_fx 从 material_hash
         # （fx 资源 selfId）独立解析，本函数保持纯材质解码，不掺 fx 逻辑。
         "fx": f"0x{shader_id:08X}",
-        "collisionFlags": flags,
+        # ⚠️ +0x02 是材质记录自身的 flags（wows-toolkit 记为 unknown，疑为层/混合标记），
+        # 与 SDK 明文的 <collisionFlags> **不是同一字段**：实测 Lesta 26.10 SDK
+        # （13,068 处）与 WG 15.9 SDK（29,184 个 .mfm）该行取值恒为 0，而同名材质在
+        # assets.bin 里的 flags 大量为 1/2/3（Lesta）或 0x101/0x102/0x300（WG）。
+        # 故明文侧 collisionFlags 固定 0，原始 flags 单独以 "flags" 输出。
+        "collisionFlags": 0,
         "property_count": property_count,
         "flags": flags,
         "shader_id": f"0x{shader_id:08X}",
