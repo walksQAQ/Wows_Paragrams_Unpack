@@ -102,11 +102,49 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 **落位与取值**：
 
 - 记录 `+0x02` u16 的**低字节** = `collisionFlags`（高字节另作它用，见下）。
-  - Lesta 26.10 实测：0×27,386 / 1×847 / 2×587 / 3×2
-  - WG 实测：0×30,012 / 1×944 / 2×573 / 3×5
+  - Lesta 26.10 全量实测（29,377 个材质）：0×27,919 / 1×861 / 2×595 / 3×2
+  - WG 全量实测（31,534 个材质）：0×30,012 / 1×944 / 2×573 / 3×5
   - 只用到 bit0 / bit1；两个服分布几乎一致（螺旋桨 ≈ 87% 是 1）。
   - 与材质属性高度相关：flags=2 的材质 **90% 有 `alphaTestEnable`、96% 有 `doubleSided`**；
     flags=1 的 34% / 50%。即 bit1 ≈ 镂空面，bit0 ≈ 相机可穿透的装饰件。
+
+**其余 6 个 bit（`BLENDED` / `TERRAIN` / `NOCOLLIDE` / `DOUBLESIDED` / `WATER` /
+`PROJECTILENOCOLLIDE`）：WoWS 材质数据里一次都没出现过**，而且**不是**由其他材质属性
+换算出来的：
+
+- 数据：两服合计 60,911 个材质，`collisionFlags` 取值集合都只有 `{0,1,2,3}`，
+  bit2..bit7 全为 0。
+- 引擎里确实**存在过**「属性 → 位」的推导，但**整段被注释掉、不生效**
+  （`lib/chunk/server_super_model.cpp::calculateMaterialFlags()`，且同一处注释指出
+  `Visual::Geometry::populateWorldTriangles()` 里的等价代码也被注释）：
+  ```cpp
+  flags = WorldTriangle::packFlags(
+      pMaterial->readInt( "collisionFlags", 0 ),
+      pMaterial->readInt( "materialKind", 0 ) );   // ← 实际生效的只有这一句（原样打包）
+  /* 以下全部被注释：
+  if (Sorted || Alpha_test)            flags |= TRIANGLE_TRANSPARENT;
+  if (Alpha_blended && Src==SRC_ALPHA && Dest==INV_SRC_ALPHA)
+                                       flags |= TRIANGLE_BLENDED;
+  if (Double_sided)                    flags |= TRIANGLE_DOUBLESIDED;
+  */
+  ```
+  运行时的模型路径同理：`Moo::EffectMaterial::getFlags()` 只做
+  `packFlags(collisionFlags_, materialKind_)`，不做任何推导。
+- 反证：若有推导，`doubleSided` 材质必然带 `DOUBLESIDED`(bit5) —— 实测 WG 1,145 个
+  `doubleSided` 材质里 **0 个**带 bit5；`alphaTestEnable` 的 820 个材质全部 `!= 0`，
+  但只有 63% 带 bit1（Lesta 811 个 / 67%）——说明是**内容作者按语义手勾**，不是程序算的。
+- 那这 6 位在引擎里由**别的系统**在运行时打，与 mfm 无关：
+  `TRIANGLE_TERRAIN` ← 地形块；`TRIANGLE_WATER` ← 水面 (`lib/chunk/server_chunk_water.cpp`)；
+  `TRIANGLE_NOCOLLIDE` / `TRIANGLE_DOUBLESIDED` ← 编辑器与贴花/植被的 BSP 重映射
+  (`chunk_model_obstacle.cpp`、`sticker_decal.cpp`、`forward_decal.cpp`)；
+  `TRIANGLE_PROJECTILENOCOLLIDE` ← 植被 SpeedTree（树干 solid / 树叶 leaves）；
+  `TRIANGLE_BLENDED` 全仓库**没有赋值点**，只在相机碰撞里被读
+  (`lib/camera/base_camera.cpp`: `ignoreFlags(TRANSPARENT|BLENDED|CAMERANOCOLLIDE)`)
+  → 只能由 mfm 里显式写位带进来，而 WoWS 内容没人用过。
+
+> 实用含义：Mod 里想让某个面不参与碰撞/投影，**必须自己在 `<collisionFlags>` 里写对应位**
+> （引擎原样认），不要指望改 `doubleSided`/混合模式之类的属性会自动换算 —— 那段代码是死的。
+
 - `+0x02` 的**高字节**（`flags_high`）= **WG 独有的材质变体号**（着色器变体 /
   technique 选择位），与碰撞、与 Lesta 都无关：
 
@@ -130,6 +168,8 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
     以 `flags_high` 原样输出，不做 `<...>` 明文回写（Mod SDK 也不导出它）。
 - `materialKind` 是**独立 u32 字段**（Lesta `+0x80` / WG `+0x74`，`-1` = 未设置，
   对应引擎里 `collisionFlags_ == -1` 的哨兵）：
+  - 引擎侧印证：`calculateMaterialFlags()` 明确 `readInt("materialKind", 0)` 再和
+    `collisionFlags` 一起 `packFlags()`，所以它是材质字段，**不是**碰撞位的一部分。
   - WG 仅 **16** 个材质非 0，全是 `mesh_decal.fx`：`..._grass`=1、`..._road`=2、
     `..._sand3`=3、`..._grass2`=4 —— 即**贴花/碰撞用的地表类型**（引擎
     `MaterialKinds` 由贴图名查 kind，供动态贴花与 `MATKIND_DESTRUCTIBLE_*` 使用）。

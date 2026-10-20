@@ -125,7 +125,10 @@ _MATERIAL_LAYOUT = {
            "kind": 0x74},   # Wargaming
 }
 
-#: ``collisionFlags`` 位定义（BigWorld `physics2/worldtri.hpp`，写入碰撞三角 flags 低字节）
+#: ``collisionFlags`` 位定义（BigWorld `physics2/worldtri.hpp`，写入碰撞三角 flags 低字节）。
+#: 注：WoWS 材质数据（两服合计 60,911 个）只用到 bit0 / bit1，bit2..bit7 从未出现；
+#: 引擎里也没有「材质属性（alphaTest/doubleSided/blend）→ 这些位」的换算 ——
+#: 那段推导代码在 server_super_model.cpp 里是注释掉的，详见 docs/prototype-formats.md。
 COLLISION_FLAG_BITS = {
     0x01: "CAMERANOCOLLIDE",      # 相机可穿透（螺旋桨 / gizmo / 装饰薄片）
     0x02: "TRANSPARENT",          # 镂空/alphaTest 面：不算实体、不投影
