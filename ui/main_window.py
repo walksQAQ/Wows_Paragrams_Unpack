@@ -96,9 +96,11 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.detail_frame, stretch=1)
 
         # 角色主题的立绘预留位：只占位置、不画内容，其它主题宽度为零不参与布局
+        # 先挂进布局再决定显隐——父控件为空时 setVisible(True) 会让它先成为一个
+        # 独立的顶层小窗口（启动瞬间闪一下），挂进布局后才不会有这个副作用。
         self.art_slot = SkinArtSlot()
-        self.art_slot.setVisible(art_slot_visible(self.width()))
         content_layout.addWidget(self.art_slot)
+        self.art_slot.setVisible(art_slot_visible(self.width()))
 
         main_layout.addWidget(self.middle, stretch=1)
 

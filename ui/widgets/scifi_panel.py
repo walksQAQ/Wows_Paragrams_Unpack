@@ -714,7 +714,11 @@ class SparkDot(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         _LIVE.add(self)
         _hook_bus()
-        self.setVisible(theme.holo_enabled)
+        # 构造时通常还没挂到父控件上；此时 setVisible(True) 会让它先成为一个
+        # 独立的 12×12 顶层窗口（启动瞬间在屏幕角落闪一下小窗），所以只在
+        # 需要隐藏时才改可见性——挂进布局后由 Qt 自动显示。
+        if not theme.holo_enabled:
+            self.setVisible(False)
 
     def _on_style_changed(self) -> None:
         self.setVisible(theme.holo_enabled)
