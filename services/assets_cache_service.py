@@ -27,7 +27,7 @@ import threading
 import time
 from pathlib import Path
 
-from utils.path_utils import get_data_dir
+from utils.path_utils import get_data_dir, safe_join
 
 #: assets_data.db schema 版本（与 database_new.sql 的 DB_SCHEMA_VERSION 规则一致：
 #: 库内 meta_schema_version 记录已应用版本，低于本值则 initialize 重建全表）
@@ -1473,7 +1473,7 @@ class AssetsCacheService:
             rel_sub = self._gui_ext_rel(icon_src)
             if not rel_sub:
                 return ""
-            dest = get_data_dir() / "camo_thumbs" / rel_sub
+            dest = safe_join(get_data_dir() / "camo_thumbs", rel_sub)
             dest.parent.mkdir(parents=True, exist_ok=True)
             src = Path(icon_src)
             if src.is_absolute():

@@ -51,6 +51,16 @@ def _log_error(message: str) -> None:
         print(message, file=sys.stderr)
 
 
+def _safe_out(output_dir: Path, rel_path: Path | str) -> Path:
+    """校验由 `.idx` 条目名推导出的输出路径仍落在 ``output_dir`` 内。
+
+    恶意打包文件可用 ``../``、反斜杠或盘符前缀逃逸输出目录（任意文件写入）。
+    """
+    from utils.path_utils import safe_join
+
+    return safe_join(output_dir, rel_path)
+
+
 # 每个 worker 进程内复用的 PkgReader 缓存 (pkgs_dir -> reader)
 # 进程池每 worker 一个进程, 各自持有独立缓存, 无跨进程共享
 _PKG_READER_CACHE: dict[str, PkgReader] = {}
@@ -302,7 +312,11 @@ class GameExtractor:
             for match in matches:
                 if match.is_directory:
                     continue
-                out_path = output_dir / match.output_path
+                try:
+                    out_path = _safe_out(output_dir, match.output_path)
+                except ValueError as exc:
+                    print(f"[DRY RUN] {match.vfs_path} → 跳过: {exc}")
+                    continue
                 print(f"[DRY RUN] {match.vfs_path} → {out_path}")
                 extracted.append(out_path)
             return extracted
@@ -317,7 +331,11 @@ class GameExtractor:
             if match.is_directory:
                 continue
 
-            out_path = output_dir / match.output_path
+            try:
+                out_path = _safe_out(output_dir, match.output_path)
+            except ValueError as exc:
+                _log_error(f"⚠️ 跳过非法输出路径 {match.vfs_path}: {exc}")
+                continue
 
             # 确保父目录存在
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -368,7 +386,11 @@ class GameExtractor:
 
         tasks: list[tuple] = []
         for match in file_matches:
-            out_path = output_dir / match.output_path
+            try:
+                out_path = _safe_out(output_dir, match.output_path)
+            except ValueError as exc:
+                _log_error(f"⚠️ 跳过非法输出路径 {match.vfs_path}: {exc}")
+                continue
             out_path.parent.mkdir(parents=True, exist_ok=True)
             tasks.append((
                 str(self._pkgs_dir),
