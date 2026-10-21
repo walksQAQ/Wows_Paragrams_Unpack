@@ -1,49 +1,95 @@
 /* ==========================================================
-   Wows Paragrams Unpack — 全局样式表（Modern App Style）
+   Wows Paragrams Unpack — 全局样式表（全息指挥台 · Holo Command Deck）
    ==========================================================
-   说明：本文件使用 @颜色名@ 占位符（如 @panel_bg@、@text@），
-   由 utils/theme.py 在加载时替换为当前主题（浅色/深色）对应颜色。
+   · 使用 @token@ 占位符，由 utils/theme.py 按当前主题替换。
+   · 交互/选中唯一信号色：@accent@；@holo_ice@/@holo_glow@ 只做装饰，不表示交互态。
+   · 切角、HUD 角线、外辉光等 QSS 无法表达的效果由 ui/widgets/scifi_panel.py 绘制。
+   · 仅使用 Qt 支持的 QSS 属性（无 box-shadow / transition / transform 等）。
    ========================================================== */
 
-/* ── 主窗口 ───────────────────────────────────────────── */
+/* 主窗口底色（网格背景由 HoloBackdrop 绘制于其上） */
 QMainWindow {
     background-color: @window_bg@;
 }
 
-/* ── 通用控件默认颜色与圆角（内联样式优先级更高，不会被覆盖）── */
+/* 所有子窗口（QDialog）统一底色与前景，保证与主窗口同一视觉语言。
+   个别对话框若在代码里 theme.bind 了 QDialog 规则，那条会覆盖本规则。 */
+QDialog {
+    background-color: @window_bg@;
+    color: @text@;
+}
+
+/* 普通文字：默认墨色 */
 QLabel {
     color: @text@;
 }
+
+/* 分组框：精密仪器式细线框（低圆角），标题压在线上 */
 QGroupBox {
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 6px;
-    margin-top: 10px;
-    padding-top: 8px;
+    border-radius: 0px;
+    margin-top: 12px;
+    padding-top: 9px;
 }
+
+/* 分组框标题：压在结构线上，像仪器刻印 */
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 4px;
+    left: 8px;
+    padding: 0 6px;
+    color: @text_muted@;
+    background-color: @panel_bg@;
 }
+
+/* 文本输入类：凹陷槽底 + 细线框 */
 QLineEdit, QPlainTextEdit, QTextEdit {
-    background-color: @input_bg@;
+    background-color: @inset@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 4px;
-    selection-background-color: @selected_bg@;
-    selection-color: @selected_fg@;
-}
-/* 下拉框：老版本基准样式（圆角3px、细边框）+ 主题色 + 可见圆角下拉箭头 */
-QComboBox {
-    background-color: @input_bg@;
-    color: @text@;
-    border: 1px solid @border@;
-    border-radius: 3px;
+    border-radius: 0px;
     padding: 3px 6px;
-    selection-background-color: @selected_bg@;
-    selection-color: @selected_fg@;
+    selection-background-color: @accent@;
+    selection-color: @on_accent@;
 }
+
+/* 输入类悬停：描边加强 */
+QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover {
+    border-color: @border_soft@;
+}
+
+/* 输入类聚焦：信号色描边 */
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: @accent@;
+}
+
+/* 输入类禁用：提示墨色 */
+QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
+    color: @text_hint@;
+}
+
+/* 下拉框：凹陷槽 + 细线框 */
+QComboBox {
+    background-color: @inset@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 0px;
+    padding: 3px 6px;
+    selection-background-color: @accent@;
+    selection-color: @on_accent@;
+}
+
+/* 下拉框悬停 / 展开：信号色描边 */
+QComboBox:hover, QComboBox:on {
+    border-color: @accent@;
+}
+
+/* 下拉框禁用：提示墨色 */
+QComboBox:disabled {
+    color: @text_hint@;
+}
+
+/* 下拉按钮区：右侧分隔线 + 次级面板底 */
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
@@ -51,220 +97,445 @@ QComboBox::drop-down {
     border-left: 1px solid @border@;
     border-top-right-radius: 3px;
     border-bottom-right-radius: 3px;
-    background: @panel_alt@;
+    background: @surface_2@;
 }
+
+/* 下拉箭头图标 */
 QComboBox::down-arrow {
     image: url(:/resources/pictures/ui/combo_arrow.png);
     width: 10px;
     height: 10px;
 }
+
+/* 下拉弹出列表：面板底 + 强描边 */
 QComboBox QAbstractItemView {
     background-color: @panel_bg@;
     color: @text@;
-    border: 1px solid @border@;
-    selection-background-color: @selected_bg@;
-    selection-color: @selected_fg@;
+    border: 1px solid @line_strong@;
+    outline: 0;
+    selection-background-color: @accent@;
+    selection-color: @on_accent@;
 }
+
+/* 通用按钮：银色金属薄片（上下明暗渐变 + 金属描边，硬朗方角） */
 QPushButton {
-    background-color: @panel_alt@;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 @metal_sheen_a@, stop:0.55 @metal_sheen_b@,
+                stop:1 @metal_sheen_a@);
     color: @text@;
-    border: 1px solid @border@;
-    border-radius: 4px;
+    border: 1px solid @metal_edge@;
+    border-radius: 0px;
     padding: 4px 12px;
 }
+
+/* 通用按钮悬停：金属提亮 + 蓝色光线描边 */
 QPushButton:hover {
-    background-color: @hover_bg@;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 @metal_sheen_a@, stop:0.55 @metal_glow@,
+                stop:1 @metal_sheen_a@);
+    border-color: @accent@;
 }
+
+/* 通用按钮按下：信号色填充 */
+QPushButton:pressed {
+    background-color: @accent@;
+    color: @on_accent@;
+    border-color: @accent@;
+}
+
+/* 可勾选按钮选中态：信号色填充 */
+QPushButton:checked {
+    background-color: @accent@;
+    color: @on_accent@;
+    border-color: @accent@;
+}
+
+/* 默认按钮（对话框“确定”）：信号色描边强调 */
+QPushButton:default {
+    border-color: @accent@;
+}
+
+/* 通用按钮禁用：退回暗金属，文字降级 */
 QPushButton:disabled {
     color: @text_hint@;
     background-color: @panel_bg@;
+    border-color: @border@;
 }
-/* 复选框/单选按钮：自定义指示器 —— 选中态使用主题高亮底色 + 白色勾/圆点 PNG，
-   勾色锁定为白色，深浅色下均清晰可读；未选中态跟随主题的描边/底色。 */
+
+/* 工具按钮：透明底，悬停时显示淡信号底 */
+QToolButton {
+    background: transparent;
+    color: @text@;
+    border: 1px solid transparent;
+    border-radius: 0px;
+    padding: 3px;
+}
+
+/* 工具按钮悬停：淡信号底 + 信号描边 */
+QToolButton:hover {
+    background-color: @hover_bg@;
+    border-color: @accent@;
+}
+
+/* 复选框 / 单选按钮文字 */
 QCheckBox, QRadioButton {
     color: @text@;
+    spacing: 6px;
 }
-/* 复选框：自定义指示器，勾锁定白色；单选按钮：保持原生圆框圆点渲染 */
+
+/* 复选框 / 单选按钮禁用文字 */
+QCheckBox:disabled, QRadioButton:disabled {
+    color: @text_hint@;
+}
+
+/* 复选框指示器：凹陷方块（单选按钮保持 Qt 原生圆点） */
 QCheckBox::indicator {
     width: 13px;
     height: 13px;
-    border: 1px solid @border@;
-    background-color: @input_bg@;
-    border-radius: 3px;
+    border: 1px solid @border_soft@;
+    background-color: @inset@;
+    border-radius: 0px;
     image: none;
 }
+
+/* 复选框指示器悬停：信号色描边 */
 QCheckBox::indicator:hover {
-    border-color: #0078d4;
+    border-color: @accent@;
 }
+
+/* 复选框选中：信号色底 + 勾 */
 QCheckBox::indicator:checked {
-    background-color: @selected_bg@;
-    border-color: @selected_bg@;
+    background-color: @accent@;
+    border-color: @accent@;
     image: url(:/resources/pictures/ui/check_checked.png);
 }
+
+/* 复选框半选：信号色底 + 横杠 */
 QCheckBox::indicator:indeterminate {
-    background-color: @selected_bg@;
-    border-color: @selected_bg@;
+    background-color: @accent@;
+    border-color: @accent@;
     image: url(:/resources/pictures/ui/check_indeterminate.png);
 }
-QTextEdit,
-QPlainTextEdit,
-QTextBrowser {
-    selection-background-color: @selected_bg@;
-    selection-color: @selected_fg@;
+
+/* 富文本 / 只读文本区：选区统一信号色 */
+QTextEdit, QPlainTextEdit, QTextBrowser {
+    selection-background-color: @accent@;
+    selection-color: @on_accent@;
 }
+
+/* 菜单栏：与工具栏同底，底部细线分隔 */
 QMenuBar {
-    background-color: @panel_bg@;
-    color: @text@;
+    background: transparent;
+    color: @text_muted@;
+    border-bottom: 1px solid @metal_edge@;
+    font-size: 12px;
+    letter-spacing: 1px;
+    padding-left: 6px;
 }
+
+/* 菜单栏项：透明底胶囊 */
 QMenuBar::item {
-    background: @panel_alt@;
-    color: @text@;
+    background: transparent;
+    color: @text_muted@;
     padding: 4px 12px;
     margin: 3px 2px;
-    border-radius: 6px;
+    border-radius: 0px;
 }
+
+/* 菜单栏项悬停 / 选中：左侧光线标记 + 提亮文字 */
 QMenuBar::item:selected {
-    background-color: @selected_bg@;
-    color: @selected_fg@;
-    border-radius: 6px;
+    background-color: @hover_bg@;
+    color: @accent@;
 }
+
+/* 菜单栏项按下（菜单展开）：信号色填充 */
 QMenuBar::item:pressed {
-    background-color: @selected_bg@;
-    color: @selected_fg@;
-    border-radius: 6px;
+    background-color: @accent@;
+    color: @on_accent@;
 }
+
+/* 下拉菜单：面板底 + 强描边 */
 QMenu {
     background-color: @panel_bg@;
     color: @text@;
-    border: 1px solid @border@;
-    border-radius: 4px;
+    border: 1px solid @line_strong@;
+    border-radius: 0px;
+    padding: 4px 0;
 }
+
+/* 下拉菜单项：左侧留出信号条位置 */
+QMenu::item {
+    padding: 5px 20px 5px 16px;
+    border-left: 2px solid transparent;
+}
+
+/* 下拉菜单项选中：淡信号底 + 左侧信号条 */
 QMenu::item:selected {
-    background-color: @selected_bg@;
-    color: @selected_fg@;
+    background-color: @hover_bg@;
+    color: @text@;
+    border-left: 2px solid @accent@;
 }
+
+/* 下拉菜单项禁用 */
+QMenu::item:disabled {
+    color: @text_hint@;
+}
+
+/* 下拉菜单分隔线 */
+QMenu::separator {
+    height: 1px;
+    background: @border@;
+    margin: 4px 8px;
+}
+
+/* 状态栏：银色金属带，顶缘一道蓝色光线 */
 QStatusBar {
-    background-color: @panel_bg@;
-    color: @text@;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 @metal_sheen_b@, stop:1 @metal_sheen_a@);
+    color: @text_muted@;
+    border-top: 2px solid @metal_mid@;
+    min-height: 26px;
+    max-height: 32px;
 }
-QTableWidget, QTreeWidget, QListView, QListWidget {
-    background-color: @panel_bg@;
+
+/* 状态栏内文字：次级墨色 */
+QStatusBar QLabel {
+    color: @text_muted@;
+    padding: 0 6px;
+}
+
+/* 表格 / 树 / 列表：透明底，让面板的半透明全息层与网格透上来 */
+QTableWidget, QTreeWidget, QListView, QListWidget, QTableView, QTreeView {
+    background-color: transparent;
+    alternate-background-color: @surface_2@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 4px;
+    border-radius: 0px;
+    gridline-color: @border@;
+    outline: 0;
+    /* 选中态：淡信号底 + 左侧信号条（见 ::item:selected），
+       不用整块 accent 填充——accent 只做信号，不做大面积底色 */
+    selection-background-color: @hover_bg@;
+    selection-color: @text@;
 }
+
+/* 表头分段：次级面板底，底部强线 */
 QHeaderView::section {
-    background-color: @panel_alt@;
-    color: @text@;
-    border: 1px solid @border@;
-    padding: 4px;
+    background-color: @surface_2@;
+    color: @text_muted@;
+    border: none;
+    border-right: 1px solid @border@;
+    border-bottom: 1px solid @line_strong@;
+    padding: 4px 6px;
 }
+
+/* 表格左上角按钮：与表头同底 */
+QTableCornerButton::section {
+    background-color: @surface_2@;
+    border: none;
+    border-bottom: 1px solid @line_strong@;
+}
+
+/* 选项卡内容区：面板底 + 细线框 */
 QTabWidget::pane {
     border: 1px solid @border@;
-    border-radius: 4px;
+    border-radius: 0px;
     background: @panel_bg@;
+    top: -1px;
 }
+
+/* 选项卡标签：透明底，底部留出信号条位置 */
 QTabBar::tab {
-    background: @panel_alt@;
+    background: transparent;
+    color: @text_muted@;
+    padding: 6px 14px;
+    border: 1px solid transparent;
+    border-bottom: 2px solid transparent;
+}
+
+/* 选项卡悬停：墨色文字 + 淡信号底 */
+QTabBar::tab:hover {
     color: @text@;
-    padding: 5px 12px;
-    border: 1px solid @border@;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
+    background: @hover_bg@;
 }
+
+/* 选项卡选中：面板底 + 底部信号条 */
 QTabBar::tab:selected {
-    background: @selected_bg@;
-    color: @selected_fg@;
+    background: @panel_bg@;
+    color: @text@;
+    border-color: @border@;
+    border-bottom: 2px solid @accent@;
 }
+
+/* 分割条：细线色 */
 QSplitter::handle {
     background: @border@;
 }
 
-/* ── Tooltip 毛玻璃风格 ───────────────────────────────── */
+/* 分割条悬停：信号色 */
+QSplitter::handle:hover {
+    background: @accent@;
+}
+
+/* 进度条：凹陷槽 + 细线框，文字居中 */
+QProgressBar {
+    background: @inset@;
+    color: @text@;
+    border: 1px solid @border_soft@;
+    border-radius: 0px;
+    text-align: center;
+    font-size: 11px;
+}
+
+/* 进度条填充：信号色 → 高亮信号色 */
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 @accent@, stop:1 @accent_hi@);
+    border-radius: 1px;
+}
+
+/* 数字框：凹陷槽 + 细线框 */
+QSpinBox, QDoubleSpinBox {
+    background-color: @inset@;
+    color: @text@;
+    border: 1px solid @border@;
+    border-radius: 0px;
+    padding: 2px 4px;
+}
+
+/* 数字框聚焦：信号色描边 */
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: @accent@;
+}
+
+/* 滑块槽：细线 */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: @inset@;
+    border: 1px solid @border@;
+    border-radius: 0px;
+}
+
+/* 滑块已填充段：信号色 */
+QSlider::sub-page:horizontal {
+    background: @accent@;
+    border-radius: 0px;
+}
+
+/* 滑块把手：面板底 + 信号描边 */
+QSlider::handle:horizontal {
+    width: 12px;
+    margin: -5px 0;
+    background: @panel_bg@;
+    border: 1px solid @accent@;
+    border-radius: 0px;
+}
+
+/* 悬浮提示：深玻璃底 + 冰蓝细框（全息铭牌） */
 QToolTip {
-    background: rgba(30, 30, 30, 0.92);
-    color: #e8e8e8;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 6px;
+    background-color: @panel_bg@;
+    color: @text@;
+    border: 1px solid @line_strong@;
+    border-top: 1px solid @info@;
+    border-radius: 0px;
     padding: 6px 10px;
     font-size: 11px;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 }
 
-/* ── 日志文本框 ───────────────────────────────────────── */
-QTextEdit#LogArea {
-    background-color: #1e1e1e;
-    color: #e0e0e0;
-    font-family: "Consolas", "Courier New", monospace;
+/* 日志文本框（旧 objectName 兼容）：凹陷槽 + 等宽字体 */
+QTextEdit#LogArea, QTextBrowser#LogArea {
+    background-color: @inset@;
+    color: @text_muted@;
+    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
     font-size: 11px;
-    border: 1px solid #3c3c3c;
-    border-radius: 6px;
-    padding: 4px;
+    border: none;
+    border-top: 1px solid @border@;
+    border-radius: 0;
+    padding: 4px 10px;
 }
 
-/* ── QListWidget (浏览器面板) ────────────────────────── */
-QListWidget {
-    background-color: @panel_bg@;
-    border: 1px solid @border@;
-    border-radius: 6px;
-    font-size: 12px;
-    color: @text@;
-}
-
+/* 列表通用条目：留出左侧信号条位置 */
 QListWidget::item {
     padding: 4px 8px;
     color: @text@;
+    border-left: 2px solid transparent;
 }
 
+/* 列表条目选中：淡信号底 + 左侧信号条 */
 QListWidget::item:selected {
-    background-color: @selected_bg@;
-    color: @selected_fg@;
+    background-color: @hover_bg@;
+    color: @text@;
+    border-left: 2px solid @accent@;
 }
 
+/* 列表条目悬停：淡信号底 */
 QListWidget::item:hover {
     background-color: @hover_bg@;
     color: @text@;
 }
 
-/* ── QScrollArea ─────────────────────────────────────── */
+/* 滚动区：透明，不画边框（让下层网格 / 面板底透出） */
 QScrollArea {
     border: none;
     background: transparent;
 }
 
-/* ── QScrollBar ──────────────────────────────────────── */
+/* 垂直滚动条槽：完全透明，不打断全息面 */
 QScrollBar:vertical {
-    background: @scroll_bg@;
-    width: 8px;
-    border-radius: 4px;
+    background: transparent;
+    width: 9px;
+    border: none;
     margin: 0;
 }
+
+/* 垂直滚动条滑块：细光线条 + 左侧金属边 */
 QScrollBar::handle:vertical {
     background: @scroll_handle@;
-    border-radius: 4px;
-    min-height: 30px;
+    border-left: 1px solid @metal_edge@;
+    min-height: 28px;
 }
+
+/* 垂直滚动条滑块悬停：信号色 */
 QScrollBar::handle:vertical:hover {
-    background: @scroll_handle_hover@;
+    background: @accent@;
 }
+
+/* 垂直滚动条两端箭头：隐藏 */
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 
+/* 垂直滚动条空白区：透明 */
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+/* 水平滚动条槽：完全透明 */
 QScrollBar:horizontal {
-    background: @scroll_bg@;
-    height: 8px;
-    border-radius: 4px;
+    background: transparent;
+    height: 9px;
+    border: none;
     margin: 0;
 }
+
+/* 水平滚动条滑块：细光线条 + 上侧金属边 */
 QScrollBar::handle:horizontal {
     background: @scroll_handle@;
-    border-radius: 4px;
-    min-width: 30px;
+    border-top: 1px solid @metal_edge@;
+    min-width: 28px;
 }
+
+/* 水平滚动条滑块悬停：信号色 */
 QScrollBar::handle:horizontal:hover {
-    background: @scroll_handle_hover@;
+    background: @accent@;
 }
+
+/* 水平滚动条两端箭头：隐藏 */
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
+}
+
+/* 水平滚动条空白区：透明 */
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: transparent;
 }

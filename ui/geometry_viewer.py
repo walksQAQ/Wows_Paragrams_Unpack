@@ -32,6 +32,8 @@ from utils.path_utils import get_data_dir, is_debug_build
 from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 #: 舰船下拉里徽章图标边长（px）
 SHIP_BADGE_SIZE = 18
@@ -77,10 +79,10 @@ def resolve_viewport_backend() -> tuple[str, str]:
 class _Spinner(QWidget):
     """转圈加载指示器：paintEvent 画旋转弧线 + QTimer 驱动（不依赖 QProgressBar 动画）。"""
 
-    def __init__(self, parent=None, size: int = 56, color=QColor("#0078d4")):
+    def __init__(self, parent=None, size: int = 56, color=None):
         super().__init__(parent)
         self._angle = 0
-        self._color = QColor(color)
+        self._color = QColor(color) if color is not None else theme.qcolor("accent")
         self.setFixedSize(size, size)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._step)
@@ -133,7 +135,7 @@ class _ArmorLegend(QWidget):
         p.end()
 
 
-class GeometryViewerDialog(QDialog):
+class GeometryViewerDialog(HoloDialog):
     """舰船 3D 模型 / 装甲查看器。"""
 
     #: 记录加载状态供外部查询
@@ -175,7 +177,7 @@ class GeometryViewerDialog(QDialog):
         self._export_task = None      # 导出任务句柄（可取消）
 
         self._build_ui()
-        theme.bind(self, "QDialog { background: @panel_bg@; }")
+        theme.bind(self, "QDialog { background: @window_bg@; color: @text@; }")
         bus.log_message.connect(self._on_log)
         self._report_backend()
         # 分阶段交付：船体/装甲先到就先显示（挂载/装甲继续后台解析）
@@ -224,8 +226,9 @@ class GeometryViewerDialog(QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        # 留出 12px，让 HoloDialog 的 6px 光学结构边框不被内容覆盖
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         body = QHBoxLayout()
         body.setSpacing(8)
@@ -244,7 +247,9 @@ class GeometryViewerDialog(QDialog):
             from ui.geometry_renderer import GeometryViewport
 
             self.viewport = GeometryViewport()
-        theme.bind(self.viewport, "QOpenGLWidget { background:#16181d; border:1px solid @border@; border-radius:6px; }")
+        theme.bind(self.viewport,
+                   "QOpenGLWidget { background:#0A1524; border:1px solid @line_structure@;"
+                   " border-radius:2px; }")
         self.view_container = QWidget()
         _vc = QGridLayout(self.view_container)
         _vc.setContentsMargins(0, 0, 0, 0)
@@ -276,9 +281,12 @@ class GeometryViewerDialog(QDialog):
         # ── 右侧：控制面板 ──
         panel = QWidget()
         panel.setFixedWidth(330)
-        theme.bind(panel, "QWidget { background: @panel_bg@; }")
+        panel.setObjectName("HoloSide")
+        # 透明底 + 左侧结构线，让对话框的光学边框与网格继续透上来
+        theme.bind(panel, "#HoloSide { background: transparent;"
+                          " border-left: 1px solid @line_structure@; }")
         pl = QVBoxLayout(panel)
-        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setContentsMargins(14, 2, 2, 2)
         pl.setSpacing(6)
 
         title = QLabel("3D 模型查看器")
@@ -318,8 +326,8 @@ class GeometryViewerDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         self.progress.setFixedHeight(16)
-        theme.bind(self.progress, "QProgressBar { border:1px solid #0078d4; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
-                    "QProgressBar::chunk { background:#0078d4; }")
+        theme.bind(self.progress, "QProgressBar { border:1px solid @accent@; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
+                    "QProgressBar::chunk { background:@accent@; }")
         pl.addWidget(self.progress)
         # 后台线程经信号投递进度 → 主线程更新进度条
         self.progress_changed.connect(self._on_progress_changed)
@@ -498,8 +506,8 @@ class GeometryViewerDialog(QDialog):
         self.export_progress = QProgressBar()
         self.export_progress.setVisible(False)
         self.export_progress.setFixedHeight(14)
-        theme.bind(self.export_progress, "QProgressBar { border:1px solid #0078d4; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
-                    "QProgressBar::chunk { background:#0078d4; }")
+        theme.bind(self.export_progress, "QProgressBar { border:1px solid @accent@; border-radius:4px; background:@input_bg@; text-align:center; color:@text@; }"
+                    "QProgressBar::chunk { background:@accent@; }")
         pl.addWidget(self.export_progress)
         self.export_status = QLabel(
             "渲染模型：舰体 + 挂载（含 PBR 通道贴图 / 挂点层级 / 顶点权重）；"

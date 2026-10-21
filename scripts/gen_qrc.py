@@ -13,12 +13,17 @@ OUTPUT_QRC = Path(__file__).resolve().parent.parent / "resources.qrc"
 # 不需要打包进 QRC 的文件（用户数据，运行时需要读写）
 EXCLUDE = {"epic_skill_config.json"}
 
+# 目录级排除：解释器缓存不能进资源包
+_EXCLUDE_DIRS = {"__pycache__", ".mypy_cache", ".pytest_cache"}
+
 
 def _scan_files(base: Path) -> list[str]:
     """扫描 resources/ 下所有文件，返回相对于项目根目录的路径列表"""
     files = []
     root = RESOURCES_DIR.parent
     for p in sorted(RESOURCES_DIR.rglob("*")):
+        if any(part in _EXCLUDE_DIRS for part in p.parts):
+            continue
         if p.is_file() and p.name not in EXCLUDE:
             rel = p.relative_to(root).as_posix()
             files.append(rel)

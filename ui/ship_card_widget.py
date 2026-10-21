@@ -281,7 +281,7 @@ class ShipCardWidget(QGroupBox):
                 border: 1px solid @border@; border-radius: 4px;
                 padding: 4px 10px; font-size: 12px;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
         """))
         data = action.get("data")
         btn.clicked.connect(lambda _=False: self.action_clicked.emit(data))
@@ -317,7 +317,7 @@ class ShipCardWidget(QGroupBox):
                 border: 1px solid @border@; border-radius: 4px;
                 padding: 4px 8px; font-size: 12px; text-align: center;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
         """))
         btn.clicked.connect(lambda _=False: self.firing_arc_clicked.emit(fa))
         self._table.setCellWidget(row, 1, btn)
@@ -531,7 +531,7 @@ class ShipCardWidget(QGroupBox):
                     }
                     QPushButton:hover { background: @hover_bg@; border-color: #aaa; }
                     QPushButton:checked {
-                        background: #0078d4; color: #fff; border-color: #0078d4;
+                        background: @accent@; color: #fff; border-color: @accent@;
                     }
                 """))
                 group.addButton(btn, v)

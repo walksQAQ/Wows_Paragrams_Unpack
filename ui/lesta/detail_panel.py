@@ -319,8 +319,8 @@ class LestaDetailPanel(DetailPanel):
                 color: @text@;
                 border: 1px solid @border@;
                 border-radius: 3px;
-                selection-background-color: @selected_bg@;
-                selection-color: @selected_fg@;
+                selection-background-color: @hover_bg@;
+                selection-color: @accent@;
             }
             QComboBox::drop-down {
                 subcontrol-origin: padding;
@@ -340,8 +340,8 @@ class LestaDetailPanel(DetailPanel):
                 min-width: 200px;
                 background: @panel_bg@;
                 color: @text@;
-                selection-background-color: @selected_bg@;
-                selection-color: @selected_fg@;
+                selection-background-color: @hover_bg@;
+                selection-color: @accent@;
                 border: 1px solid @border@;
                 outline: none;
                 padding: 2px;
@@ -379,11 +379,11 @@ class LestaDetailPanel(DetailPanel):
         self._crew_customize_btn.setToolTip("自定义舰长技能/天赋")
         # 老版本(v3.2.2-test1)样式：固定深色底+黄色文字
         self._crew_customize_btn.setStyleSheet("""
-            QPushButton { background:#3a3a3a; border:1px solid #ffc107; border-radius:3px;
+            QPushButton { background:@panel_alt@; border:1px solid #ffc107; border-radius:3px;
                           min-width:24px; max-width:24px; min-height:24px; max-height:24px;
                           font-size:13px; color:#ffc107; padding:0px; }
             QPushButton:hover { background:#4a4a4a; border-color:#ffd54f; }
-            QPushButton:disabled { background:#2a2a2a; border-color:#555; color:#555; }
+            QPushButton:disabled { background:@inset@; border-color:@border@; color:#555; }
         """)
         self._crew_customize_btn.setEnabled(False)
 
@@ -536,11 +536,11 @@ class LestaDetailPanel(DetailPanel):
 
         # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
         SKILL_BTN = """
-            QPushButton { background:#2a2a2a; border:1px solid #444; border-radius:4px;
+            QPushButton { background:@inset@; border:1px solid @border@; border-radius:4px;
                           min-width:32px; min-height:32px; max-width:32px; max-height:32px;
                           font-size:9px; color:#ccc; padding:0px; }
-            QPushButton:hover { background:#3a3a3a; border-color:#1a73e8; }
-            QPushButton:checked { background:#1a73e8; color:#fff; border-color:#1a73e8; }
+            QPushButton:hover { background:@panel_alt@; border-color:@accent@; }
+            QPushButton:checked { background:@accent@; color:#fff; border-color:@accent@; }
         """
 
         from models.name_mapping import Mapping as _NM
@@ -1171,7 +1171,7 @@ class LestaDetailPanel(DetailPanel):
                                           border-radius:6px; min-width:52px; min-height:52px;
                                           max-width:52px; max-height:52px;
                                           font-size:9px; color:#ffc107; padding:0px; }
-                            QPushButton:hover { background:#2a2a2a; border-color:#ffd54f; }
+                            QPushButton:hover { background:@inset@; border-color:#ffd54f; }
                         """
                         for sk in skills:
                             skey = sk['skill_key']
@@ -1402,8 +1402,8 @@ class LestaDetailPanel(DetailPanel):
         SIG_BTN = """
             QPushButton { background: #3a3a3a; border: 1px solid #555;
             border-radius: 4px; padding: 0; }
-            QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-            QPushButton:checked { background: #4a4a4a; border: 2px solid #1a73e8; }
+            QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
+            QPushButton:checked { background:@panel_alt@; border: 2px solid @accent@; }
         """
         from models.name_mapping import Mapping as _NM
 
@@ -1477,8 +1477,8 @@ class LestaDetailPanel(DetailPanel):
             QPushButton { background: #3a3a3a; border: none;
             border-radius: 3px; padding: 1px 4px; text-align: left;
             font-size: 10px; color: #ddd; min-height: 18px; }
-            QPushButton:hover { background: #4a4a4a; }
-            QPushButton:checked { background: #1a73e8; }
+            QPushButton:hover { background:@panel_alt@; }
+            QPushButton:checked { background: @accent@; }
         """
         from models.name_mapping import Mapping as _NM
 

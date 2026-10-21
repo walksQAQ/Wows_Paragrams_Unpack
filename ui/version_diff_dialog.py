@@ -24,6 +24,8 @@ from utils.threading_utils import run_async
 from services.diff_service import _fmt_value, KIND_LABELS
 from utils.theme import theme
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 # ── 三色高亮（与实体列表一致）──────────────────────────────
 _COLOR_ADDED = QColor("#1e7d32")      # 绿
@@ -51,7 +53,7 @@ class _DiffSignals(QObject):
     failed = Signal(str)
 
 
-class VersionDiffDialog(QDialog):
+class VersionDiffDialog(HoloDialog):
     """版本数据比对对话框。"""
 
     def __init__(self, parent=None):

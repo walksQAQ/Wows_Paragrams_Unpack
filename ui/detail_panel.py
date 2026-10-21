@@ -49,7 +49,7 @@ class DetailPanel(QWidget):
     def _text_style() -> str:
         return theme.qss("""
             QTextEdit {
-                background-color: @panel_bg@;
+                background-color: transparent;
                 color: @text@;
                 border: none;
                 padding: 12px;
@@ -460,10 +460,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; color: @selected_fg@; border-color: @selected_bg@;
+                background: @hover_bg@; color: @accent@; border-color: @accent@;
             }
         """)
         # 缺少图片时：缩小字号、弱化文字（主题化）
@@ -478,10 +478,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; color: @selected_fg@; border-color: @selected_bg@;
+                background: @hover_bg@; color: @accent@; border-color: @accent@;
             }
         """)
 
@@ -637,8 +637,8 @@ class DetailPanel(QWidget):
                         background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
                         padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                    QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
+                    QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
+                    QPushButton:checked { background: @accent@; border-color: @accent@; }
                 """
                 SLOT_STYLE_TXT = """
                     QPushButton {
@@ -646,8 +646,8 @@ class DetailPanel(QWidget):
                         padding: 2px; font-size: 8px; color: #bbb;
                         min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                    QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
+                    QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
+                    QPushButton:checked { background: @accent@; border-color: @accent@; }
                 """
                 for i in range(max_slots):  # 根据等级限制槽位数量
                     slot_mods = mods_by_slot.get(i, [])
@@ -682,7 +682,7 @@ class DetailPanel(QWidget):
                             mod_dict = mod.get("modifiers", {})
                             if mod_dict:
                                 from models.name_mapping import Mapping as NMM
-                                tt_parts.append('<hr style="border-color:#555;">')
+                                tt_parts.append('<hr style="border-color:@border@;">')
                                 for mk, mv in sorted(mod_dict.items()):
                                     label = NMM.MODIFIER_MAP.get(mk, mk)
                                     if isinstance(mv, dict):
@@ -1063,7 +1063,7 @@ class DetailPanel(QWidget):
                             for ai in ga:
                                 an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
-                                btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;border:1px solid @border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@hover_bg@;border-color:@selected_bg@;}QPushButton:checked{background:@selected_bg@;border-color:@selected_bg@;}"))
+                                btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;border:1px solid @border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@hover_bg@;border-color:@accent@;}QPushButton:checked{background:@hover_bg@;border-color:@accent@;}"))
                                 btn.setToolTip(an)
                                 cand = self._ammo_icon_candidates(at, sp, ai, bool(ai.get("switchable")))
                                 ip = next((p for c in cand if not (p:=QPixmap(pic_path(f"ammo_types/{c}"))).isNull()), None)
@@ -1145,10 +1145,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
+                background: @hover_bg@; border-color: @accent@;
             }
         """)
 
@@ -1278,10 +1278,10 @@ class DetailPanel(QWidget):
                         }
                         QPushButton:hover {
                             background: @hover_bg@;
-                            border-color: @selected_bg@;
+                            border-color: @accent@;
                         }
                         QPushButton:checked {
-                            background: @selected_bg@; border-color: @selected_bg@;
+                            background: @hover_bg@; border-color: @accent@;
                         }
                     """)
                     con_btn_row = QWidget()
@@ -1437,8 +1437,8 @@ class DetailPanel(QWidget):
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
-            QPushButton:checked { background: @selected_bg@; border-color: @selected_bg@; }
+            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
+            QPushButton:checked { background: @hover_bg@; border-color: @accent@; }
         """)
 
         ammo_idx = 0
@@ -1548,10 +1548,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
+                background: @hover_bg@; border-color: @accent@;
             }
         """)
 
@@ -1699,10 +1699,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
+                background: @hover_bg@; border-color: @accent@;
             }
         """)
         btn.setStyleSheet(BTN_STYLE)
@@ -2014,10 +2014,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: @selected_bg@;
+                border-color: @accent@;
             }
             QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
+                background: @hover_bg@; border-color: @accent@;
             }
         """)
 
@@ -2173,7 +2173,7 @@ class DetailPanel(QWidget):
                     border: 1px solid @border@; border-radius: 4px;
                     padding: 4px 10px; font-size: 12px; text-align: center;
                 }
-                QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+                QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
             """))
             btn.clicked.connect(lambda _=False, f=fa: self._open_firing_arc(f))
             hb.addWidget(lbl)
@@ -2958,7 +2958,7 @@ class DetailPanel(QWidget):
             btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;color:@text@;border:1px solid @border@;"
                               "border-radius:4px;padding:4px 10px;font-size:11px;}"
                               "QPushButton:hover{background:@hover_bg@;color:@text@;}"
-                              "QPushButton:checked{background:@selected_bg@;color:@selected_fg@;}"))
+                              "QPushButton:checked{background:@hover_bg@;color:@accent@;}"))
             btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
             blay.addWidget(btn)
             cbtns.append(btn)

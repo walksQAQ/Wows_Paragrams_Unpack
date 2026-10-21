@@ -23,6 +23,8 @@ from utils import ship_badge
 from utils.path_utils import is_debug_build
 from utils.image_paths import pic_dir, pic_path, pic_path_ci
 
+from ui.widgets.dialog_style import HoloDialog
+
 #: 舰船下拉里徽章图标边长（px）
 SHIP_BADGE_SIZE = 18
 
@@ -233,7 +235,7 @@ def _first_existing_icon(candidates: list[str]) -> str:
     return pic_path(candidates[0]) if candidates else ""
 
 
-class CustomWeaponDialog(QDialog):
+class CustomWeaponDialog(HoloDialog):
     """自定义炮弹输入对话框：所有计算值均允许手动填写。
 
     get_data() 返回 {"label", "ammo": {...}, "gun": {...}}，字段与数据库
@@ -401,7 +403,7 @@ class SideAmmoLabel(QWidget):
         super().mouseReleaseEvent(ev)
 
 
-class PenetrationCalculatorDialog(QDialog):
+class PenetrationCalculatorDialog(HoloDialog):
     """穿深/散布计算器对话框。"""
 
     NATION_MAP = {
@@ -430,11 +432,17 @@ class PenetrationCalculatorDialog(QDialog):
         "AUXILIARY": "其他类型",
     }
 
-    # 主弹药使用池[0]（蓝色），对比系列从池[1]起按序分配颜色
-    COLOR_POOL = [
-        "#0078d4", "#ff7a45", "#3fa34d", "#9a4dff", "#d4a000",
+    # 主弹药使用池[0]（取当前主题的信号色，见 COLOR_POOL 属性），
+    # 对比系列从池[1]起按序分配固定区分色
+    _SERIES_COLORS = [
+        "#ff7a45", "#3fa34d", "#9a4dff", "#d4a000",
         "#00a6a6", "#e91e63", "#8d6e63", "#5c6bc0", "#26a69a",
     ]
+
+    @property
+    def COLOR_POOL(self) -> list:
+        """系列配色池：池[0] 跟随主题信号色，其余为固定区分色。"""
+        return [theme.qcolor("accent").name()] + self._SERIES_COLORS
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -525,8 +533,8 @@ class PenetrationCalculatorDialog(QDialog):
                 background: @panel_bg@;
                 color: @text@;
                 border: 1px solid @border@;
-                selection-background-color: @selected_bg@;
-                selection-color: @selected_fg@;
+                selection-background-color: @hover_bg@;
+                selection-color: @accent@;
             }
             QPushButton {
                 background: @panel_alt@;
@@ -538,10 +546,10 @@ class PenetrationCalculatorDialog(QDialog):
             }
             QPushButton:hover {
                 background: @hover_bg@;
-                border-color: #0078d4;
+                border-color: @accent@;
             }
             QPushButton:pressed {
-                background: @selected_bg@;
+                background: @hover_bg@;
             }
             QPushButton:disabled {
                 background: @panel_bg@;
@@ -569,7 +577,7 @@ class PenetrationCalculatorDialog(QDialog):
                 padding: 4px;
             }
             QTableWidget::item:selected {
-                background: #0078d4;
+                background: @accent@;
                 color: #ffffff;
             }
             QWidget {
@@ -781,8 +789,8 @@ class PenetrationCalculatorDialog(QDialog):
             "QPushButton { background:@panel_alt@; color:@text@; border:1px solid @border@;"
             " border-radius:2px; padding:0px; font-size:9px;"
             " min-height:0px; max-height:14px; }"
-            "QPushButton:hover { background:@hover_bg@; border-color:#0078d4; }"
-            "QPushButton:pressed { background:@selected_bg@; }"
+            "QPushButton:hover { background:@hover_bg@; border-color:@accent@; }"
+            "QPushButton:pressed { background:@hover_bg@; }"
         )
         self.scatter_btn_up = QPushButton("▲", self)
         self.scatter_btn_down = QPushButton("▼", self)
@@ -1736,8 +1744,8 @@ class PenetrationCalculatorDialog(QDialog):
                 background:@panel_alt@; border:1px solid @border@; border-radius:4px;
                 padding:4px 7px; font-size:12px; color:@text@;
             }
-            QPushButton:hover { background:@hover_bg@; border-color:#0078d4; }
-            QPushButton:checked { background:@selected_bg@; border-color:#0078d4; color:#ffffff; }
+            QPushButton:hover { background:@hover_bg@; border-color:@accent@; }
+            QPushButton:checked { background:@hover_bg@; border-color:@accent@; color:#ffffff; }
         """)
 
     def _load_mod_bonuses(self):
@@ -2587,14 +2595,9 @@ class PenetrationCalculatorDialog(QDialog):
         """根据当前主题设置 matplotlib 图表背景/文字颜色。"""
         try:
             dark = theme.dark
-            if dark:
-                bg = "#1e1e1e"
-                fg = "#d4d4d4"
-                grid = "#3c3c3c"
-            else:
-                bg = "#ffffff"
-                fg = "#222222"
-                grid = "#d0d0d0"
+            bg = theme["window_bg"] if dark else "#ffffff"
+            fg = theme["text"] if dark else "#222222"
+            grid = theme["border"] if dark else "#d0d0d0"
             figure.patch.set_facecolor(bg)
             ax.set_facecolor(bg)
             ax.tick_params(colors=fg)

@@ -80,10 +80,10 @@ class WargamingDetailPanel(DetailPanel):
             except Exception:
                 _crew_list, _def_crew = [], ""
         WG_SKILL_BTN = """
-            QPushButton { background:#2a2a2a; border:1px solid #444; border-radius:4px;
+            QPushButton { background:@inset@; border:1px solid @border@; border-radius:4px;
                           min-width:30px; min-height:30px; max-width:30px; max-height:30px;
                           font-size:8px; color:#ccc; padding:0px; }
-            QPushButton:hover { background:#3a3a3a; border-color:#1a73e8; }
+            QPushButton:hover { background:@panel_alt@; border-color:@accent@; }
         """
         wg_grid = QWidget()
         wgl = QGridLayout(wg_grid)
@@ -120,7 +120,7 @@ class WargamingDetailPanel(DetailPanel):
                           border-radius:6px; min-width:52px; min-height:52px;
                           max-width:52px; max-height:52px;
                           font-size:9px; color:#ffc107; padding:0px; }
-            QPushButton:hover { background:#2a2a2a; border-color:#ffd54f; }
+            QPushButton:hover { background:@inset@; border-color:#ffd54f; }
         """
 
         def _wg_rebuild(crew_id: str):
@@ -357,8 +357,8 @@ class WargamingDetailPanel(DetailPanel):
             WG_SIG_BTN = """
                 QPushButton { background: #3a3a3a; border: 1px solid #555;
                 border-radius: 4px; padding: 0; }
-                QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
+                QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
+                QPushButton:checked { background: @accent@; border-color: @accent@; }
             """
             def _fmt_wg(mk, mv):
                 cn = _NM_WG.MODIFIER_MAP.get(mk, mk)
@@ -396,7 +396,7 @@ class WargamingDetailPanel(DetailPanel):
                     if s:
                         mod_lines.append(f"<div style='white-space:nowrap;'>{s}</div>")
                 if mod_lines:
-                    lines.append('<hr style="border-color:#555;">')
+                    lines.append('<hr style="border-color:@border@;">')
                     lines.extend(mod_lines)
                 b.setToolTip(_NM_WG.rich_tooltip("".join(lines)))
                 b.clicked.connect(lambda checked=False, bb=b, ff=f, st=_st3:

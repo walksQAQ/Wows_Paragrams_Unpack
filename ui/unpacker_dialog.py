@@ -37,6 +37,8 @@ from utils.theme import theme
 from utils.path_utils import get_app_dir
 from utils.threading_utils import run_async
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 def _fmt_size(n: int) -> str:
     """字节 → 人类可读。"""
@@ -47,7 +49,7 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f} GB"
 
 
-class UnpackerDialog(QDialog):
+class UnpackerDialog(HoloDialog):
     """资源解包器：浏览 VFS → 加入队列 / glob 批量 → 解包到目录。"""
 
     #: 后台线程 → 主线程：进度(0..100) + 状态文本
@@ -72,7 +74,7 @@ class UnpackerDialog(QDialog):
 
         self._build_ui()
         theme.bind(self, """
-            QDialog { background: @panel_bg@; }
+            QDialog { background: @window_bg@; color: @text@; }
             QLabel { color: @text@; font-size: 11px; background: transparent; }
         """)
         self.progress_sig.connect(self._on_progress)
@@ -89,12 +91,12 @@ class UnpackerDialog(QDialog):
         _edit_qss = """
             QLineEdit { padding: 4px 6px; border: 1px solid @border@; border-radius: 3px;
                         background: @input_bg@; color: @text@; font-size: 11px; }
-            QLineEdit:focus { border-color: #0078d4; }
+            QLineEdit:focus { border-color: @accent@; }
         """
         _btn_qss = """
             QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
                           padding: 4px 10px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: #0078d4; }
+            QPushButton:hover { border-color: @accent@; }
             QPushButton:disabled { color: @text_hint@; }
         """
         _combo_qss = ("QComboBox { padding: 3px 6px; border: 1px solid @border@; border-radius: 3px;"
@@ -103,7 +105,7 @@ class UnpackerDialog(QDialog):
             QListWidget { background: @panel_bg@; border: 1px solid @border@;
                           border-radius: 4px; color: @text@; font-size: 12px; }
             QListWidget::item { padding: 2px 6px; }
-            QListWidget::item:selected { background: @selected_bg@; color: @selected_fg@; }
+            QListWidget::item:selected { background: @hover_bg@; color: @accent@; }
             QListWidget::item:hover { background: @hover_bg@; color: @text@; }
         """
 
@@ -232,7 +234,7 @@ class UnpackerDialog(QDialog):
         row3.addStretch()
         self.btn_start = QPushButton("开始解包")
         theme.bind(self.btn_start, """
-            QPushButton { background: #0078d4; color: #ffffff; border: 1px solid #0078d4;
+            QPushButton { background: @accent@; color: #ffffff; border: 1px solid @accent@;
                           border-radius: 3px; padding: 5px 14px; font-size: 12px; font-weight: bold; }
             QPushButton:hover { background: #1a88e0; }
             QPushButton:disabled { background: @panel_alt@; color: @text_hint@; border-color: @border@; }
@@ -248,9 +250,9 @@ class UnpackerDialog(QDialog):
         self.progress.setVisible(False)
         self.progress.setFixedHeight(16)
         theme.bind(self.progress, """
-            QProgressBar { border: 1px solid #0078d4; border-radius: 4px; background: @input_bg@;
+            QProgressBar { border: 1px solid @accent@; border-radius: 4px; background: @input_bg@;
                            color: @text@; font-size: 11px; text-align: center; }
-            QProgressBar::chunk { background: #0078d4; }
+            QProgressBar::chunk { background: @accent@; }
         """)
         root.addWidget(self.progress)
 

@@ -20,6 +20,8 @@ from PySide6.QtGui import QIcon, QPixmap, QFont
 from utils.theme import theme
 from utils.image_paths import pic_path
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 # 「每失去1%生命值」类词条：单一键对应多项属性，需按技能面板 tooltip 的口径展开显示
 _EXPAND_MOD_KEYS = frozenset({"lastChanceReloadCoefficient"})
@@ -52,7 +54,7 @@ def _format_expanded_compare(key: str, v_reg, v_epic, ship_type_en: str, hint_co
     return out
 
 
-class CrewCustomizeDialog(QDialog):
+class CrewCustomizeDialog(HoloDialog):
     """自定义舰长配置对话框"""
 
     def __init__(self, crew_data: dict, db_nation: str, parent=None,
@@ -116,7 +118,7 @@ class CrewCustomizeDialog(QDialog):
         btn_row.addStretch()
         save_btn = QPushButton("保存配置")
         save_btn.setStyleSheet("""
-            QPushButton { background:#1a73e8; border:1px solid #1a73e8; border-radius:3px;
+            QPushButton { background:@accent@; border:1px solid @accent@; border-radius:3px;
                           padding:6px 20px; color:#fff; font-size:12px; font-weight:bold; }
             QPushButton:hover { background:#1565c0; }
         """)

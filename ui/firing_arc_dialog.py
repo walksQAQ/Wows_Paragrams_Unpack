@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
 from services.database_service import get_db
 from utils.theme import theme
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 # ── 颜色 ─────────────────────────────────────────────────
 
@@ -449,7 +451,7 @@ class FiringArcCanvas(QWidget):
 
 # ── 弹窗 ────────────────────────────────────────────────
 
-class FiringArcDialog(QDialog):
+class FiringArcDialog(HoloDialog):
     """炮塔射界查看器（独立弹窗，懒创建单实例）。"""
 
     def __init__(self, parent=None):
@@ -472,7 +474,7 @@ class FiringArcDialog(QDialog):
                 border: 1px solid @border@; border-radius: 3px;
                 padding: 4px 14px; min-height: 26px;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
         """)
 
         root = QVBoxLayout(self)

@@ -26,7 +26,8 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-from PySide6.QtCore import Qt, QSettings, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QSettings, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
@@ -34,10 +35,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.signals import bus
-from models.geometry_parser import parse_geometry
 from services.geometry_service import HullMesh, ShipGeometry
+from services.tool_tasks import parse_geometry_bytes, parse_geometry_file
 from ui.geometry_viewer import _Spinner, resolve_viewport_backend
+from ui.widgets.dialog_style import HoloDialog
+from ui.widgets.scifi_panel import SciFiPanel, _LIVE as _LIVE_WIDGETS, _with_alpha
 from utils.threading_utils import run_async
+from utils.tool_process import run_in_tool_process
 from utils.theme import theme
 from utils.window_utils import center_on_screen
 
@@ -296,7 +300,145 @@ def _human_size(n: int) -> str:
     return f"{value:.1f} GB"
 
 
-class GeometryFilePicker(QDialog):
+class _HairLine(QWidget):
+    """金属/全息质感的分隔细线（1px，左亮右隐）。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedHeight(1)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        grad = QLinearGradient(QPointF(0, 0), QPointF(self.width(), 0))
+        head = QColor(theme.qcolor("light_core"))
+        head.setAlphaF(0.55)
+        tail = QColor(theme.qcolor("metal_edge"))
+        tail.setAlphaF(0.10)
+        grad.setColorAt(0.0, head)
+        grad.setColorAt(0.55, tail)
+        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(QPen(QBrush(grad), 1))
+        p.drawLine(0, 0, self.width(), 0)
+
+
+class _SectionHeader(QWidget):
+    """分区标题：左侧信号色定位光条 + 文字 + 右侧渐隐结构线。"""
+
+    HEIGHT = 24
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self._text = text
+        self.setFixedHeight(self.HEIGHT)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        _LIVE_WIDGETS.add(self)
+
+    def _on_style_changed(self) -> None:
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        y_mid = self.HEIGHT / 2.0
+
+        # 左侧定位光条（2px 竖条 + 短横划）
+        bar = QColor(theme.qcolor("accent"))
+        bar.setAlphaF(0.90)
+        p.setPen(QPen(bar, 2))
+        p.drawLine(QPointF(1, y_mid - 5), QPointF(1, y_mid + 5))
+
+        f = self.font()
+        f.setBold(True)
+        f.setPointSize(9)
+        p.setFont(f)
+        p.setPen(QColor(theme["text_muted"]))
+        text_x = 8.0
+        p.drawText(QPointF(text_x, y_mid + 4), self._text)
+
+        # 右侧渐隐结构线
+        adv = p.fontMetrics().horizontalAdvance(self._text)
+        x0 = text_x + adv + 8
+        if self.width() - x0 > 12:
+            line = QLinearGradient(QPointF(x0, y_mid), QPointF(self.width() - 2, y_mid))
+            head = QColor(theme.qcolor("metal_edge"))
+            head.setAlphaF(0.45)
+            line.setColorAt(0.0, head)
+            line.setColorAt(1.0, QColor(0, 0, 0, 0))
+            p.setPen(QPen(QBrush(line), 1))
+            p.drawLine(QPointF(x0, y_mid + 0.5), QPointF(self.width() - 2, y_mid + 0.5))
+
+
+class _HoloOverlay(QWidget):
+    """加载遮罩：半透明全息面 + 断续光学边框 + 横向扫描光带。
+
+    只在可见时驱动定时器，隐藏即停止（PRISM CORE §9.5 不产生持续占用）。
+    """
+
+    SCAN_MS = 26
+    BAND_H = 46
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._scan = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(self.SCAN_MS)
+        self._timer.timeout.connect(self._tick)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        _LIVE_WIDGETS.add(self)
+
+    def _on_style_changed(self) -> None:
+        self.update()
+
+    def setVisible(self, visible: bool) -> None:  # noqa: N802
+        super().setVisible(visible)
+        if visible:
+            self._scan = 0.0
+            if theme.holo_enabled:
+                self._timer.start()
+        else:
+            self._timer.stop()
+
+    def _tick(self) -> None:
+        self._scan += 0.028
+        if self._scan > 1.35:
+            self._scan = -0.35
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+
+        # 半透明全息面（不是纯黑遮罩，下面的模型仍隐约可见）
+        veil = QColor(theme["window_bg"])
+        veil.setAlphaF(0.62 if theme.dark else 0.55)
+        p.fillRect(r, veil)
+
+        # 横向扫描光带
+        if theme.holo_enabled:
+            band_top = (self._scan * self.height()) - self.BAND_H
+            band = QLinearGradient(QPointF(0, band_top), QPointF(0, band_top + self.BAND_H))
+            clear = QColor(theme.qcolor("accent"))
+            clear.setAlpha(0)
+            core = QColor(theme.qcolor("accent"))
+            core.setAlphaF(0.22)
+            band.setColorAt(0.0, clear)
+            band.setColorAt(0.5, core)
+            band.setColorAt(1.0, clear)
+            p.fillRect(QRectF(0, band_top, r.width(), self.BAND_H), QBrush(band))
+
+            # 断续光学边框
+            path = QPainterPath()
+            path.addRect(r.adjusted(3.5, 3.5, -3.5, -3.5))
+            pen = QPen(_with_alpha(theme.qcolor("light_core"), 0.55), 1, Qt.PenStyle.DashLine)
+            pen.setDashPattern([16.0, 9.0])
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
+
+class GeometryFilePicker(HoloDialog):
     """客户端 VFS 几何文件选择框（搜索 + 列表）。"""
 
     def __init__(self, entries: list[VfsGeometryEntry], parent=None):
@@ -306,7 +448,7 @@ class GeometryFilePicker(QDialog):
         self._entries = entries
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
         row = QHBoxLayout()
@@ -316,31 +458,45 @@ class GeometryFilePicker(QDialog):
         row.addWidget(self.search, 1)
         root.addLayout(row)
 
+        # 列表：与主界面的文件列表同一套全息语言（透明底 + 左侧定位条选中）
+        self.list_frame = SciFiPanel(chamfer=12, accent="holo_ice", hud_corners=False)
+        lf = QVBoxLayout(self.list_frame)
+        lf.setContentsMargins(*self.list_frame.content_margins())
+        lf.setSpacing(0)
+
         self.list = QListWidget()
-        self.list.setAlternatingRowColors(True)
+        self.list.setAlternatingRowColors(False)
         self.list.setUniformItemSizes(True)
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.setWordWrap(False)
         theme.bind(self.list,
-                   "QListWidget { background:@input_bg@; color:@text@;"
-                   " border:1px solid @border@; border-radius:4px; font-size:12px; }")
-        root.addWidget(self.list, stretch=1)
+                   "QListWidget { background: transparent; color:@text@;"
+                   " border:none; font-size:12px; }"
+                   "QListWidget::item { padding:3px 6px;"
+                   " border-left:2px solid transparent; }"
+                   "QListWidget::item:hover { background:@hover_bg@; }"
+                   "QListWidget::item:selected { background:@hover_bg@; color:@text@;"
+                   " border-left:2px solid @accent@; }")
+        lf.addWidget(_SectionHeader("客户端模型文件"))
+        lf.addWidget(self.list)
+        root.addWidget(self.list_frame, stretch=1)
 
         self.count_label = QLabel()
         theme.bind(self.count_label,
-                   "color:@text_muted@; font-size:11px; background:transparent; border:none;")
+                   "color:@text_muted@; font-size:11px; background:transparent; border:none;"
+                   " padding-left:2px;")
         root.addWidget(self.count_label)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self.btn_cancel = QPushButton("取消")
         self.btn_ok = QPushButton("加载")
-        theme.bind(self.btn_cancel,
-                   "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@;"
-                   " border:1px solid @toolbar_btn_border@; border-radius:4px; padding:5px 14px; }")
+        # 「加载」是主要操作：信号色描边 + 淡信号底，与「取消」明确区分
         theme.bind(self.btn_ok,
-                   "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@;"
-                   " border:1px solid @toolbar_btn_border@; border-radius:4px; padding:5px 14px; }")
+                   "QPushButton { border:1px solid @accent@; color:@accent@;"
+                   " background:@hover_bg@; font-weight:bold; }"
+                   "QPushButton:hover { background:@accent@; color:@on_accent@; }"
+                   "QPushButton:pressed { background:@accent_hi@; color:@on_accent@; }")
         btn_row.addWidget(self.btn_cancel)
         btn_row.addWidget(self.btn_ok)
         root.addLayout(btn_row)
@@ -405,7 +561,7 @@ class GeometryFilePicker(QDialog):
         return item.data(Qt.UserRole) or ""
 
 
-class ModelFileViewerDialog(QDialog):
+class ModelFileViewerDialog(HoloDialog):
     """独立几何模型查看器（客户端来源可加载实时材质）。"""
 
     #: 后台加载进度提示（文本；空串 = 结束）
@@ -423,6 +579,7 @@ class ModelFileViewerDialog(QDialog):
         self._closed = False
         self._load_gen = 0
         self._load_task = None
+        self._parse_task = None
         self._vfs_task = None
         self._current_name = "model"
         #: 导出状态（后台只读几何，不触碰 Qt/OpenGL）
@@ -436,7 +593,7 @@ class ModelFileViewerDialog(QDialog):
         self._current_vfs_path = ""
 
         self._build_ui()
-        theme.bind(self, "QDialog { background: @panel_bg@; }")
+        theme.bind(self, "QDialog { background: @window_bg@; color: @text@; }")
         self._restore_geometry()
 
         # 后台任务经信号回到主线程更新遮罩
@@ -449,14 +606,15 @@ class ModelFileViewerDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        # 留出 12px，让 HoloDialog 的光学结构边框不被内容覆盖
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
 
         body = QHBoxLayout()
         body.setSpacing(8)
         root.addLayout(body, stretch=1)
 
-        # 左侧：3D 视口 + 加载遮罩
+        # ── 左侧：3D 视口（金属全息框 + 晶体切面）──
         self._backend, self._backend_note = resolve_viewport_backend()
         if self._backend == "d3d":
             from renderer.qt_viewport import D3DViewportAdapter
@@ -464,9 +622,15 @@ class ModelFileViewerDialog(QDialog):
         else:
             from ui.geometry_renderer import GeometryViewport
             self.viewport = GeometryViewport()
+        # OpenGL/D3D 视口不透出父层绘制，需要自己的暗色"显示器"底
         theme.bind(self.viewport,
-                   "QOpenGLWidget { background:#16181d; border:1px solid @border@;"
-                   " border-radius:6px; }")
+                   "QOpenGLWidget { background: @input_bg@; border: none; }")
+
+        self.viewport_frame = SciFiPanel(chamfer=14, accent="holo_ice",
+                                        crystal=True, spark="pearl")
+        vf_layout = QVBoxLayout(self.viewport_frame)
+        vf_layout.setContentsMargins(*self.viewport_frame.content_margins())
+        vf_layout.setSpacing(0)
 
         self.view_container = QWidget()
         grid = QGridLayout(self.view_container)
@@ -474,11 +638,7 @@ class ModelFileViewerDialog(QDialog):
         grid.setSpacing(0)
         grid.addWidget(self.viewport, 0, 0)
 
-        self.loading_overlay = QWidget(self.view_container)
-        self.loading_overlay.setObjectName("loadingOverlay")
-        self.loading_overlay.setVisible(False)
-        self.loading_overlay.setStyleSheet(
-            "QWidget#loadingOverlay { background: rgba(10,12,16,196); border-radius:6px; }")
+        self.loading_overlay = _HoloOverlay(self.view_container)
         overlay_layout = QVBoxLayout(self.loading_overlay)
         overlay_layout.setAlignment(Qt.AlignCenter)
         overlay_layout.setSpacing(16)
@@ -487,19 +647,20 @@ class ModelFileViewerDialog(QDialog):
         self.loading_label = QLabel("正在加载模型...")
         self.loading_label.setAlignment(Qt.AlignCenter)
         self.loading_label.setWordWrap(True)
-        self.loading_label.setStyleSheet(
-            "color:#f2f5f9; font-size:13px; font-weight:600; background:rgba(0,0,0,120);"
-            "border-radius:6px; padding:5px 12px;")
+        theme.bind(self.loading_label,
+                   "color:@metal_hi@; font-size:13px; font-weight:600;"
+                   " background:transparent; border:none;")
         overlay_layout.addWidget(self.loading_label, 0, Qt.AlignCenter)
+        self.loading_overlay.setVisible(False)
         grid.addWidget(self.loading_overlay, 0, 0)
-        body.addWidget(self.view_container, stretch=1)
+        vf_layout.addWidget(self.view_container)
+        body.addWidget(self.viewport_frame, stretch=1)
 
-        # 右侧控制面板
-        panel = QWidget()
-        panel.setFixedWidth(320)
-        theme.bind(panel, "QWidget { background: @panel_bg@; }")
-        pl = QVBoxLayout(panel)
-        pl.setContentsMargins(0, 0, 0, 0)
+        # ── 右侧控制面板（独立全息金属框）──
+        self.side_frame = SciFiPanel(chamfer=12, accent="holo_ice", hud_corners=False)
+        self.side_frame.setFixedWidth(330)
+        pl = QVBoxLayout(self.side_frame)
+        pl.setContentsMargins(*self.side_frame.content_margins())
         pl.setSpacing(6)
 
         title = QLabel("模型文件查看器")
@@ -507,6 +668,7 @@ class ModelFileViewerDialog(QDialog):
                    "font-size:15px; font-weight:bold; color:@text@;"
                    " background:transparent; border:none;")
         pl.addWidget(title)
+        pl.addWidget(_HairLine())
 
         hint = QLabel("独立加载任意 .geometry 模型；从客户端选择时可实时加载材质与骨架。")
         hint.setWordWrap(True)
@@ -514,19 +676,12 @@ class ModelFileViewerDialog(QDialog):
                    "color:@text_muted@; font-size:11px; background:transparent; border:none;")
         pl.addWidget(hint)
 
-        btn_style = ("QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@;"
-                     " border:1px solid @toolbar_btn_border@; border-radius:4px;"
-                     " padding:6px 10px; font-size:12px; }")
-
         self.btn_local = QPushButton("打开本地模型文件...")
         self.btn_game = QPushButton("从游戏客户端选择...")
         for b in (self.btn_local, self.btn_game):
-            theme.bind(b, btn_style)
             pl.addWidget(b)
 
-        sec_style = ("color:@text_muted@; font-size:11px; font-weight:bold;"
-                     " background:transparent; border:none; padding-top:6px;")
-        self._add_section_title(pl, "当前模型", sec_style)
+        self._add_section_title(pl, "当前模型")
         self.info_label = QLabel("未加载模型")
         self.info_label.setWordWrap(True)
         self.info_label.setAlignment(Qt.AlignTop)
@@ -534,11 +689,9 @@ class ModelFileViewerDialog(QDialog):
                    "color:@text@; font-size:11px; background:transparent; border:none;")
         pl.addWidget(self.info_label)
 
-        self._add_section_title(pl, "显示", sec_style)
+        self._add_section_title(pl, "显示")
         self.cb_wire = QCheckBox("线框叠加")
         self.cb_wire.setChecked(False)
-        theme.bind(self.cb_wire,
-                   "QCheckBox { color:@text@; font-size:12px; spacing:6px; }")
         pl.addWidget(self.cb_wire)
 
         self.cb_material = QCheckBox("加载材质效果")
@@ -549,32 +702,21 @@ class ModelFileViewerDialog(QDialog):
             "仅对『从游戏客户端选择』加载的模型生效（实时解析 assets.bin 材质 +\n"
             "从 pkg 读取贴图）；本地文件无法定位材质，始终为白模。\n"
             "当前是客户端模型时会立即重新加载。")
-        theme.bind(self.cb_material,
-                   "QCheckBox { color:@text@; font-size:12px; spacing:6px; }")
         self.cb_material.toggled.connect(self._on_material_toggled)
         pl.addWidget(self.cb_material)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         self.progress.setFixedHeight(14)
-        theme.bind(self.progress,
-                   "QProgressBar { border:1px solid #0078d4; border-radius:4px;"
-                   " background:@input_bg@; text-align:center; color:@text@; }"
-                   "QProgressBar::chunk { background:#0078d4; }")
         pl.addWidget(self.progress)
 
         # ── 导出（纯几何 GLB：保留 UV，不含材质/贴图）──
-        self._add_section_title(pl, "导出", sec_style)
+        self._add_section_title(pl, "导出")
         self.btn_export = QPushButton("导出 GLB...")
-        theme.bind(self.btn_export, btn_style)
         pl.addWidget(self.btn_export)
         self.export_progress = QProgressBar()
         self.export_progress.setVisible(False)
         self.export_progress.setFixedHeight(14)
-        theme.bind(self.export_progress,
-                   "QProgressBar { border:1px solid #0078d4; border-radius:4px;"
-                   " background:@input_bg@; text-align:center; color:@text@; }"
-                   "QProgressBar::chunk { background:#0078d4; }")
         pl.addWidget(self.export_progress)
         self.export_status = QLabel("导出为 glTF 2.0 Binary（含 UV，不含材质/贴图）")
         self.export_status.setWordWrap(True)
@@ -590,7 +732,7 @@ class ModelFileViewerDialog(QDialog):
                    "color:@text_hint@; font-size:11px; background:transparent; border:none;")
         pl.addWidget(op_hint)
 
-        body.addWidget(panel)
+        body.addWidget(self.side_frame)
 
         self.btn_local.clicked.connect(self._open_local)
         self.btn_game.clicked.connect(self._pick_from_game)
@@ -599,10 +741,8 @@ class ModelFileViewerDialog(QDialog):
             lambda v: self.viewport.set_view_options(wireframe=v))
 
     @staticmethod
-    def _add_section_title(layout, text: str, style: str) -> None:
-        label = QLabel(text)
-        theme.bind(label, style)
-        layout.addWidget(label)
+    def _add_section_title(layout, text: str) -> None:
+        layout.addWidget(_SectionHeader(text))
 
     def _on_material_toggled(self, checked: bool) -> None:
         """材质开关：记住设置；当前是客户端模型则立即按新开关重新加载。"""
@@ -648,18 +788,14 @@ class ModelFileViewerDialog(QDialog):
         self._settings.setValue("model_file_viewer_last_dir", os.path.dirname(path))
         label = os.path.basename(path)
 
-        def work(cancel_event):
-            with open(path, "rb") as f:
-                data = f.read()
-            try:
-                parsed = parse_geometry(data, file_path=path, cancel_event=cancel_event)
-            finally:
-                del data
-            return geometry_from_parsed(os.path.splitext(label)[0], parsed, path,
-                                        cancel_event=cancel_event,
-                                        source="local")
-
-        self._start_load(label, work)
+        # 读文件 + 解析都在工具子进程里完成：主程序不参与 CPU 解析
+        self._start_load(
+            label,
+            proc=(parse_geometry_file, (path,)),
+            finish=lambda parsed, ce: geometry_from_parsed(
+                os.path.splitext(label)[0], parsed, path,
+                cancel_event=ce, source="local"),
+        )
 
     # ── 游戏客户端 ────────────────────────────────────────
 
@@ -754,19 +890,41 @@ class ModelFileViewerDialog(QDialog):
         label = path.rsplit("/", 1)[-1]
         load_materials = self.cb_material.isChecked()
 
-        def work(cancel_event):
-            self._set_busy("正在实时解析客户端 assets.bin（首次可能较慢）...")
+        # 三段式：① 线程读 pkg（I/O + C 层解压）→ ② 子进程解析（CPU 密集）
+        #        → ③ 线程装配材质（需父进程的 pkg 提取器）
+        def read_work(cancel_event):
+            self._set_busy("正在读取客户端模型数据...")
             from services.geometry_service import GeometryService
             extractor = GeometryService.instance().get_extractor()
             entry = extractor.file_tree.get(path)
             if entry is None or entry.file_info is None or entry.volume is None:
                 raise ValueError(f"客户端中找不到文件: {path}")
-            data = extractor.pkg_reader.read_file(
+            return extractor.pkg_reader.read_file(
                 entry.volume.filename, entry.file_info)
-            try:
-                parsed = parse_geometry(data, file_path=path, cancel_event=cancel_event)
-            finally:
-                del data
+
+        def read_done(data):
+            if self._closed:
+                return
+            gen = self._load_gen
+            self._set_busy("正在解析模型（工具进程）...")
+            self._parse_task = run_in_tool_process(
+                parse_geometry_bytes, data, path,
+                on_finished=lambda parsed: self._parse_done(
+                    parsed, gen, label, path, load_materials),
+                on_error=lambda err: self._on_load_error(err, gen),
+            )
+
+        self._start_load(path, read_work, on_work_done=read_done)
+
+    def _parse_done(self, parsed, gen: int, label: str, path: str,
+                    load_materials: bool) -> None:
+        """子进程解析完成：回到后台线程装配材质，避免阻塞界面。"""
+        if self._closed or gen != self._load_gen:
+            return
+        self._parse_task = None
+        gen = self._load_gen
+
+        def assemble_work(cancel_event):
             if load_materials:
                 self._set_busy("正在加载材质贴图...")
             return geometry_from_parsed(os.path.splitext(label)[0], parsed, path,
@@ -774,13 +932,29 @@ class ModelFileViewerDialog(QDialog):
                                         source="client",
                                         load_materials=load_materials)
 
-        self._start_load(path, work)
+        self._load_task = run_async(
+            assemble_work,
+            on_finished=lambda geom: self._on_loaded(geom, gen),
+            on_error=lambda err: self._on_load_error(err, gen),
+            cancel_event=threading.Event(),
+        )
 
     # ── 通用加载流程 ──────────────────────────────────────
 
-    def _start_load(self, label: str, work) -> None:
+    def _start_load(self, label: str, work=None, proc=None, finish=None,
+                    on_work_done=None) -> None:
+        """启动一次加载。
+
+        work          在线程里执行的工作函数（可选）
+        proc          (模块级函数, 参数元组)：在**工具子进程**里执行
+        finish        主线程把子进程结果装配成 ShipGeometry
+        on_work_done  线程工作函数的结果回到主线程后的二次分发
+        """
         if self._load_task is not None:
             self._load_task.cancel()
+        if self._parse_task is not None:
+            self._parse_task.cancel()
+            self._parse_task = None
         self._load_gen += 1
         gen = self._load_gen
         self.viewport.clear_scene()
@@ -789,12 +963,49 @@ class ModelFileViewerDialog(QDialog):
         self._current_vfs_path = ""
         self.info_label.setText(f"正在加载 {label}...")
         self._set_busy(f"正在解析 {label}...")
+
+        if proc is not None:
+            fn, args = proc
+            self._parse_task = run_in_tool_process(
+                fn, *args,
+                on_finished=lambda parsed: self._on_proc_parsed(
+                    parsed, gen, finish),
+                on_error=lambda err: self._on_load_error(err, gen),
+            )
+            return
+
+        if on_work_done is not None:
+            def _relay_work(result, _gen=gen):
+                if self._closed or _gen != self._load_gen:
+                    return
+                on_work_done(result)
+
+            self._load_task = run_async(
+                work,
+                on_finished=_relay_work,
+                on_error=lambda err: self._on_load_error(err, gen),
+                cancel_event=threading.Event(),
+            )
+            return
+
         self._load_task = run_async(
             work,
             on_finished=lambda geom: self._on_loaded(geom, gen),
             on_error=lambda err: self._on_load_error(err, gen),
             cancel_event=threading.Event(),
         )
+
+    def _on_proc_parsed(self, parsed, gen: int, finish) -> None:
+        """子进程解析结果回到主线程：装配成 ShipGeometry 后走同一条 _on_loaded。"""
+        if self._closed or gen != self._load_gen:
+            return
+        self._parse_task = None
+        try:
+            geom = finish(parsed, threading.Event())
+        except Exception as exc:  # noqa: BLE001
+            self._on_load_error(str(exc), gen)
+            return
+        self._on_loaded(geom, gen)
 
     def _on_loaded(self, geom, gen: int) -> None:
         if self._closed or gen != self._load_gen:
@@ -863,6 +1074,7 @@ class ModelFileViewerDialog(QDialog):
         if self._closed or gen != self._load_gen:
             return
         self._load_task = None
+        self._parse_task = None
         self._set_busy("")
         self.info_label.setText("未加载模型")
         bus.log_message.emit(f"❌ 模型文件查看器：加载失败: {err}")
@@ -960,6 +1172,9 @@ class ModelFileViewerDialog(QDialog):
         if self._load_task is not None:
             self._load_task.kill(timeout=1.0)
             self._load_task = None
+        if self._parse_task is not None:
+            self._parse_task.cancel()
+            self._parse_task = None
         if self._vfs_task is not None:
             self._vfs_task.kill(timeout=1.0)
             self._vfs_task = None

@@ -33,6 +33,17 @@
   @scroll_bg@   滚动条轨道
   @scroll_handle@ 滚动条滑块
   @scroll_handle_hover@ 滚动条滑块悬停
+
+科幻重设计新增（全息指挥台风格）：
+  @accent@ @accent_hi@ @on_accent@   交互 / 选中信号色（lime），唯一交互色
+  @warn@ @danger@ @info@             警示 / 错误 / 信息
+  @surface_2@ @inset@ @line_strong@  三级色阶与强描边
+  @hud@                              面板四角 HUD 短线
+  @holo_ice@ @holo_glow@             全息顶部高光 / 聚焦外辉光（不得表示交互态）
+  @spark_pearl@ @spark_violet@       昔涟点缀（仅 5 处固定位置）
+  @holo_panel@                       全息面板半透明底
+注：旧 token 一律为不透明 hex（会被 QColor / matplotlib 直接解析）；
+    新 token 可能是 rgba()，在 Python 里请用 theme.qcolor(key)。
 """
 
 from __future__ import annotations
@@ -43,57 +54,134 @@ import sys
 # ── 深浅两套颜色定义 ──────────────────────────────────────
 
 _LIGHT = {
-    "window_bg":   "#f5f5f5",
-    "panel_bg":    "#ffffff",
-    "panel_alt":   "#f0f0f0",
-    "input_bg":    "#ffffff",
-    "text":        "#1a1a1a",
-    "text_muted":  "#555555",
-    "text_hint":   "#888888",
-    "border":      "#d0d0d0",
-    "border_soft": "#e0e0e0",
-    "hover_bg":    "#e5f1fb",
-    "selected_bg": "#0078d4",
-    "selected_fg": "#ffffff",
-    "scroll_bg":   "rgba(0, 0, 0, 0.05)",
-    "scroll_handle": "rgba(0, 0, 0, 0.15)",
-    "scroll_handle_hover": "rgba(0, 0, 0, 0.25)",
-    # 工具栏（浅色主题 = 浅色工具栏 + 深色文字）
-    "toolbar_bg":        "#f0f0f0",
-    "toolbar_btn_bg":    "#ffffff",
-    "toolbar_btn_hover": "#e5f1fb",
-    "toolbar_btn_border": "#d0d0d0",
-    "toolbar_btn_text":  "#1a1a1a",
-    "toolbar_btn_disabled": "#e8e8e8",
-    "toolbar_text":      "#333333",
-    "toolbar_text_muted": "#888888",
+    # ── PRISM CORE · 亮色版（规范只给了深色，这边按同色相提亮推导）──
+    "window_bg":   "#F2F6FA",                 # bg-primary
+    "panel_bg":    "#FFFFFF",                 # bg-surface
+    "panel_alt":   "#E8EFF6",                 # bg-secondary
+    "input_bg":    "#F7FAFD",                 # inset
+    "text":        "#0D1B26",                 # text-primary
+    "text_muted":  "#4A5F73",                 # text-secondary
+    "text_hint":   "#7C8FA0",                 # text-muted
+    "border":      "#C9D8E4",                 # line-subtle
+    "border_soft": "#A8C2D6",                 # line-structure
+    "hover_bg":    "#E8F4F8",                 # photon-cyan 8% 预混
+    "selected_bg": "#0E7C93",                 # photon-cyan（亮色需压深保对比）
+    "selected_fg": "#FFFFFF",                 # on_accent
+    "scroll_bg":   "rgba(0, 0, 0, 0.04)",
+    "scroll_handle": "rgba(14, 124, 147, 0.22)",
+    "scroll_handle_hover": "rgba(14, 124, 147, 0.38)",
+    # 工具栏
+    "toolbar_bg":        "#E8EFF6",
+    "toolbar_btn_bg":    "#FFFFFF",
+    "toolbar_btn_hover": "#E8F4F8",
+    "toolbar_btn_border": "#C9D8E4",
+    "toolbar_btn_text":  "#0D1B26",
+    "toolbar_btn_disabled": "#EEF3F8",
+    "toolbar_text":      "#0D1B26",
+    "toolbar_text_muted": "#7C8FA0",
+    # ── 语义色 ──
+    "accent":       "#0E7C93",                # photon-cyan：焦点 / 主交互
+    "accent_hi":    "#0A6273",
+    "on_accent":    "#FFFFFF",
+    "warn":         "#A35A00",                # state-warning
+    "danger":       "#B3243C",                # state-error
+    "info":         "#2F6FD0",                # photon-blue / state-info
+    "success":      "#0E7A5A",                # state-success
+    "warning":      "#A35A00",
+    "error":        "#B3243C",
+    "photon_blue":  "#2F6FD0",
+    "photon_violet": "#6B5BB5",
+    "crystal":      "#6B5BB5",
+    "crystal_edge": "#2F6FD0",
+    "surface_2":    "#F7FAFD",                # bg-elevated
+    "elevated":     "#F7FAFD",
+    "inset":        "#F7FAFD",
+    "line_strong":  "#A8C2D6",                # line-structure
+    "line_structure": "#8FB0CC",
+    "hud":          "rgba(14, 124, 147, 0.50)",
+    "holo_ice":     "rgba(14, 124, 147, 0.16)",
+    "holo_glow":    "rgba(14, 124, 147, 0.22)",
+    "spark_pearl":  "#0D1B26",
+    "spark_violet": "#6B5BB5",
+    "holo_panel":   "rgba(248, 251, 254, 0.55)",
+    "grid":         "rgba(14, 124, 147, 0.16)",
+    # ── 银色金属 + 蓝色光线（浅色）──
+    "metal_hi":     "#FFFFFF",
+    "metal_mid":    "#C7D3DE",
+    "metal_lo":     "#8FA0B0",
+    "metal_edge":   "rgba(120, 145, 170, 0.55)",
+    "metal_glow":   "rgba(90, 150, 200, 0.10)",
+    "metal_sheen_a": "rgba(255, 255, 255, 0.85)",
+    "metal_sheen_b": "rgba(170, 190, 210, 0.30)",
+    "metal_brush":  "rgba(110, 140, 170, 0.08)",
+    "light_core":   "rgba(20, 130, 170, 0.92)",
+    "light_halo":   "rgba(30, 150, 200, 0.22)",
 }
 
 _DARK = {
-    "window_bg":   "#1e1e1e",
-    "panel_bg":    "#252526",
-    "panel_alt":   "#2d2d2d",
-    "input_bg":    "#2d2d2d",
-    "text":        "#e0e0e0",
-    "text_muted":  "#9a9a9a",
-    "text_hint":   "#777777",
-    "border":      "#3c3c3c",
-    "border_soft": "#333333",
-    "scroll_bg":   "rgba(255, 255, 255, 0.06)",
-    "scroll_handle": "rgba(255, 255, 255, 0.18)",
-    "scroll_handle_hover": "rgba(255, 255, 255, 0.30)",
-    "hover_bg":    "#094771",
-    "selected_bg": "#0078d4",
-    "selected_fg": "#ffffff",
-    # 工具栏（深色主题 = 深色工具栏 + 浅色文字）
-    "toolbar_bg":        "#2b2b2b",
-    "toolbar_btn_bg":    "#3a3a3a",
-    "toolbar_btn_hover": "#4a4a4a",
-    "toolbar_btn_border": "#555555",
-    "toolbar_btn_text":  "#ffffff",
-    "toolbar_btn_disabled": "#2a2a2a",
-    "toolbar_text":      "#e0e0e0",
-    "toolbar_text_muted": "#8a8a8a",
+    # ── PRISM CORE · 深色（规范主色板）──
+    "window_bg":   "#070A12",                 # bg-primary
+    "panel_bg":    "#101A2B",                 # bg-surface
+    "panel_alt":   "#0B1120",                 # bg-secondary
+    "input_bg":    "#0A1524",                 # inset
+    "text":        "#EAF6FF",                 # text-primary
+    "text_muted":  "#9BAFC5",                 # text-secondary
+    "text_hint":   "#62758B",                 # text-muted
+    "border":      "#26384D",                 # line-subtle
+    "border_soft": "#3C6480",                 # line-structure
+    "hover_bg":    "#172B3C",                 # photon-cyan 8% 预混
+    "selected_bg": "#6CEBFF",                 # photon-cyan
+    "selected_fg": "#06131A",                 # on_accent
+    "scroll_bg":   "rgba(255, 255, 255, 0.04)",
+    "scroll_handle": "rgba(108, 235, 255, 0.18)",
+    "scroll_handle_hover": "rgba(108, 235, 255, 0.34)",
+    # 工具栏
+    "toolbar_bg":        "#0B1120",
+    "toolbar_btn_bg":    "#0B1120",
+    "toolbar_btn_hover": "#172B3C",
+    "toolbar_btn_border": "#26384D",
+    "toolbar_btn_text":  "#EAF6FF",
+    "toolbar_btn_disabled": "#0A1524",
+    "toolbar_text":      "#EAF6FF",
+    "toolbar_text_muted": "#62758B",
+    # ── 语义色 ──
+    "accent":       "#6CEBFF",                # photon-cyan：焦点 / 主交互
+    "accent_hi":    "#9AF3FF",
+    "on_accent":    "#06131A",
+    "warn":         "#FFC978",                # state-warning
+    "danger":       "#FF718D",                # state-error
+    "info":         "#6C9DFF",                # photon-blue
+    "success":      "#72F5C5",                # state-success
+    "warning":      "#FFC978",
+    "error":        "#FF718D",
+    "photon_blue":  "#6C9DFF",
+    "photon_violet": "#B9A6FF",
+    "crystal":      "#B9A6FF",                # 晶体折射色
+    "crystal_edge": "#6CEBFF",
+    "surface_2":    "#152238",                # bg-elevated
+    "elevated":     "#152238",
+    "inset":        "#0A1524",
+    "line_strong":  "#3C6480",                # line-structure
+    "line_structure": "#3E76B0",
+    "hud":          "rgba(108, 235, 255, 0.45)",
+    "holo_ice":     "rgba(108, 235, 255, 0.20)",
+    "holo_glow":    "rgba(108, 235, 255, 0.26)",
+    "spark_pearl":  "#EAF6FF",
+    "spark_violet": "#B9A6FF",
+    "holo_panel":   "rgba(14, 24, 40, 0.42)",
+    "grid":         "rgba(108, 235, 255, 0.10)",
+    # ── 银色金属 + 蓝色光线（深色）──
+    # 金属在深底上要"银"：高明度低饱和，靠 alpha 压到不刺眼
+    "metal_hi":     "#DCE7F2",
+    "metal_mid":    "#9DAFC2",
+    "metal_lo":     "#46586C",
+    "metal_edge":   "rgba(206, 222, 238, 0.42)",
+    "metal_glow":   "rgba(150, 200, 240, 0.16)",
+    "metal_sheen_a": "rgba(214, 230, 245, 0.13)",
+    "metal_sheen_b": "rgba(120, 145, 172, 0.02)",
+    "metal_brush":  "rgba(220, 235, 250, 0.045)",
+    "light_core":   "rgba(140, 245, 255, 0.95)",
+    "light_halo":   "rgba(80, 200, 255, 0.28)",
 }
 
 
@@ -225,6 +313,23 @@ class _Theme:
     # 便捷访问单个颜色
     def __getitem__(self, key: str) -> str:
         return self.colors[key]
+
+    def qcolor(self, key: str):
+        """返回 token 对应的 QColor（支持 rgba(r, g, b, a) 写法，a 为 0–1 浮点）。"""
+        from PySide6.QtGui import QColor
+        val = self.colors.get(key, key).strip()
+        if val.startswith("rgba(") and val.endswith(")"):
+            parts = [p.strip() for p in val[5:-1].split(",")]
+            r, g, b = (int(float(x)) for x in parts[:3])
+            a = float(parts[3]) if len(parts) > 3 else 1.0
+            return QColor(r, g, b, max(0, min(255, round(a * 255))))
+        return QColor(val)
+
+    # ── 全息效果总开关（网格 / 辉光 / 呼吸 / 扫描 / 昔涟点缀）──
+    holo_enabled: bool = True
+
+    def set_holo(self, enabled: bool) -> None:
+        self.holo_enabled = bool(enabled)
 
 
 # 全局单例 —— 各 UI 文件统一从 utils.theme 导入

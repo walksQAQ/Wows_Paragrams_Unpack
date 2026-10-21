@@ -29,6 +29,8 @@ from services import acceleration_service as accel
 from utils.path_utils import is_debug_build
 from utils.theme import theme
 
+from ui.widgets.dialog_style import HoloDialog
+
 #: 仅调试模式（源码启动）显示的指标：模型内部量，普通使用无需知道
 DEBUG_METRIC_KEYS: tuple[str, ...] = ("power", "drag", "forsage")
 
@@ -75,7 +77,7 @@ def _eq_speed(m: dict | None) -> float:
         return 0.0
 
 
-class AccelerationDialog(QDialog):
+class AccelerationDialog(HoloDialog):
     """加速曲线弹窗（懒创建单实例）。"""
 
     def __init__(self, parent=None):
@@ -114,7 +116,7 @@ class AccelerationDialog(QDialog):
                 border: 1px solid @border@; border-radius: 3px;
                 padding: 4px 14px; min-height: 26px;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
+            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
         """)
 
         root = QVBoxLayout(self)

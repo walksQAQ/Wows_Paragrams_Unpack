@@ -27,6 +27,9 @@ from pathlib import Path
 # N34: 与 scripts/gen_qrc.py 共享排除清单；变更时需同步 gen_qrc.py 的 EXCLUDE
 _EXCLUDE = {"epic_skill_config.json"}
 
+# 目录级排除：__pycache__ 下的 .pyc 属于解释器缓存，绝不能被收进资源包
+_EXCLUDE_DIRS = {"__pycache__", ".mypy_cache", ".pytest_cache"}
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _RESOURCES_DIR = _PROJECT_ROOT / "resources"
 _QRC_PATH = _PROJECT_ROOT / "resources.qrc"
@@ -84,6 +87,8 @@ def _qrc_stale() -> bool:
     qrc_mtime = _QRC_PATH.stat().st_mtime
     try:
         for p in _RESOURCES_DIR.rglob("*"):
+            if any(part in _EXCLUDE_DIRS for part in p.parts):
+                continue
             if p.is_file() and p.name not in _EXCLUDE and p.stat().st_mtime > qrc_mtime:
                 return True
     except OSError:
