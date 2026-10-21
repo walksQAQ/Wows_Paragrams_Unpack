@@ -591,11 +591,9 @@ class _Theme:
             return QColor(r, g, b, max(0, min(255, round(a * 255))))
         return QColor(val)
 
-    # ── 全息效果总开关（网格 / 辉光 / 呼吸 / 扫描 / 昔涟点缀）──
+    # ── 全息效果（网格 / 辉光 / 呼吸 / 扫描 / 点缀）：恒为开启 ──
+    # 不提供关闭入口，界面外观因此不随配置分叉。
     holo_enabled: bool = True
-
-    def set_holo(self, enabled: bool) -> None:
-        self.holo_enabled = bool(enabled)
 
 
 # 全局单例 —— 各 UI 文件统一从 utils.theme 导入

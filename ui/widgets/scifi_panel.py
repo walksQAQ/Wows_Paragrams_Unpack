@@ -2,7 +2,7 @@
 SciFiPanel / HoloBackdrop / SparkDot —— 全息指挥台风格的纯绘制控件。
 
 只负责外观：不持有业务状态、不发业务信号。所有颜色来自 utils.theme token，
-主题切换（bus.theme_changed）与全息开关（apply_holo_enabled）时自动重绘。
+主题切换（bus.theme_changed）时自动重绘；全息效果恒为开启。
 
 最小用法::
 
@@ -65,12 +65,6 @@ def _refresh_all() -> None:
             w._on_style_changed()  # type: ignore[attr-defined]
         except RuntimeError:
             pass
-
-
-def apply_holo_enabled(enabled: bool) -> None:
-    """全局开关：关闭后网格、辉光、呼吸、点缀全部停用，面板回退为普通圆角面板。"""
-    theme.set_holo(enabled)
-    _refresh_all()
 
 
 def _with_alpha(c: QColor, factor: float) -> QColor:
@@ -731,8 +725,7 @@ class SparkDot(QWidget):
         _draw_spark(p, QPointF(6, 6), 5.0, theme.qcolor(key))
 
 
-__all__ = ["SciFiPanel", "HoloBackdrop", "SparkDot", "CrystalMark", "ScanStrip",
-           "apply_holo_enabled"]
+__all__ = ["SciFiPanel", "HoloBackdrop", "SparkDot", "CrystalMark", "ScanStrip"]
 
 
 class ScanStrip(QWidget):

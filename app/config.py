@@ -30,7 +30,6 @@ class AppConfig:
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 <bin目录名>）
     theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
-    holo_effects: bool = True  # 全息视觉效果（网格背景 / 辉光 / 呼吸 / 点缀），仅影响外观
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
@@ -186,15 +185,6 @@ class ConfigManager:
         if value not in ("auto", "light", "dark") and value not in skin_ids():
             value = "auto"
         self._config.theme_mode = value
-        self.save()
-
-    @property
-    def holo_effects(self) -> bool:
-        return self._config.holo_effects
-
-    @holo_effects.setter
-    def holo_effects(self, value: bool) -> None:
-        self._config.holo_effects = bool(value)
         self.save()
 
     @property

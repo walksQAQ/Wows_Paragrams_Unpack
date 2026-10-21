@@ -88,17 +88,7 @@ class AdvancedSettingsDialog(HoloDialog):
         tlay.addLayout(trow)
 
         # 皮肤只改配色，立绘/纹样已移除
-        self._holo_cb = QCheckBox("启用全息视觉效果（网格底 / 面板半透明 / 辉光 / 点缀）")
-        tlay.addWidget(self._holo_cb)
-        tlay.addWidget(QLabel("半透明只作用于背景层，正文、数值与控件始终保持不透明。",
-                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
-        tlay.addWidget(QLabel("关闭后界面退化为不透明的暗色面板，功能不受影响。",
-                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
-                              styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
-        tlay.addWidget(QLabel("「角色皮肤」只是一整套替换配色（如昔涟：白 + 粉），"
-                              "不含任何额外纹样；仅在源码运行时可选，发布版不提供。",
-                              wordWrap=True,
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)
 
@@ -198,8 +188,6 @@ class AdvancedSettingsDialog(HoloDialog):
         _mode = app_ctx.config.theme_mode or "auto"
         _idx = self._theme_combo.findData(_mode)
         self._theme_combo.setCurrentIndex(_idx if _idx >= 0 else 0)
-        # 全息效果开关
-        self._holo_cb.setChecked(bool(getattr(app_ctx.config, "holo_effects", True)))
         # 版本检测
         self._auto_check_cb.setChecked(app_ctx.config.auto_check_update)
         self._include_pre_cb.setChecked(app_ctx.config.include_prerelease)
@@ -272,12 +260,6 @@ class AdvancedSettingsDialog(HoloDialog):
         _new_mode = self._theme_combo.currentData() or "auto"
         if _new_mode != (app_ctx.config.theme_mode or "auto"):
             app_ctx.set_theme_mode(_new_mode)
-        # 全息效果开关（立即生效，无需重启）
-        _holo = self._holo_cb.isChecked()
-        if _holo != bool(getattr(app_ctx.config, "holo_effects", True)):
-            app_ctx.config.holo_effects = _holo
-            from ui.widgets import apply_holo_enabled
-            apply_holo_enabled(_holo)
         # 版本检测
         app_ctx.config.auto_check_update = self._auto_check_cb.isChecked()
         app_ctx.config.include_prerelease = self._include_pre_cb.isChecked()

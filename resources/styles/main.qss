@@ -437,11 +437,11 @@ QSlider::handle:horizontal {
     border-radius: 6px;
 }
 
-/* 悬浮提示：深玻璃底 + 冰蓝细框（全息铭牌） */
+/* 悬浮提示：跟随主题的淡色玻璃底（浅色主题是浅蓝，深色主题是深蓝） */
 QToolTip {
-    background-color: @panel_bg@;
+    background-color: @hover_bg@;
     color: @text@;
-    border: 1px solid @line_strong@;
+    border: 1px solid @border_soft@;
     border-top: 1px solid @info@;
     border-radius: 6px;
     padding: 6px 10px;

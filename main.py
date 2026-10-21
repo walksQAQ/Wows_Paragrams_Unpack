@@ -54,9 +54,10 @@ def _apply_palette(app: QApplication, theme) -> None:
     # 不做整块填充——否则列表选中行会变成一大片荧光色，既刺眼又伤可读性。
     pal.setColor(QPalette.ColorRole.Highlight, QColor(theme["hover_bg"]))
     pal.setColor(QPalette.ColorRole.HighlightedText, text)
+    # 悬浮提示：与 QSS 的 QToolTip 底色一致，圆角外的窗口底色才不会露出另一种颜色
+    pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(theme["hover_bg"]))
+    pal.setColor(QPalette.ColorRole.ToolTipText, text)
     if theme.dark:
-        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#2d2d2d"))
-        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#e8e8e8"))
         pal.setColor(QPalette.ColorRole.Link, QColor("#4da3ff"))
         for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
             pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
@@ -244,9 +245,6 @@ def main() -> None:
     bus.log_message.connect(log_writer.write)
 
     # 2. 加载样式（按配置的主题模式：auto/light/dark）
-    # 先同步全息开关，再应用主题，保证首帧就是正确外观
-    from utils.theme import theme as _theme_init
-    _theme_init.set_holo(bool(getattr(app_ctx.config, "holo_effects", True)))
     theme_mode = app_ctx.config.theme_mode
     apply_theme(app, theme_mode)
 
