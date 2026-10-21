@@ -55,9 +55,11 @@ def format_model_text(decoded: dict, name: str = "", wows_type: str = "") -> str
     lines: List[str] = [f"<{root}>"]
 
     casts = decoded.get("castsShadow")
-    if casts is None:  # 兼容旧解码结果：用 count 的 bit1 兜底
+    if casts is None and decoded.get("count") is not None:
+        # 兼容旧解码结果：用 count 的 bit1 兜底
         casts = bool((decoded.get("count") or 0) & 0x02)
-    lines.append(f"\t<castsShadow>\t{'true' if casts else 'false'}\t</castsShadow>")
+    if casts is not None:
+        lines.append(f"\t<castsShadow>\t{'true' if casts else 'false'}\t</castsShadow>")
 
     parent = _strip_ext(decoded.get("parent") or "")
     if parent:

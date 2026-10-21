@@ -18,7 +18,8 @@ from . import binary as B
 from .decoders import decode_by_type, decode_skeleton, decode_visual
 from .errors import AssetsBinError
 from .parser import BLOB_HEADER_SIZE, PrototypeDatabase, PrototypeLocation
-from .types import PrototypeType, get_wows_type, set_wows_type, type_from_magic
+from .types import (PrototypeType, get_wows_type, set_model_meta, set_wows_type,
+                    type_from_magic)
 
 #: VFS 索引缓存版本号：目录树/索引构建逻辑变更时 +1，使旧缓存自动失效
 # 2026-09-05：Visual 记录纠偏仅限 Lesta（WG 跳过）+ 解码服务器上下文恢复 → +1
@@ -67,13 +68,16 @@ class AssetsBinVfs:
     )
 
     def __init__(self, db: PrototypeDatabase, wows_type: str = "",
-                 pkg_paths: Optional[set] = None):
+                 pkg_paths: Optional[set] = None, model_meta: str = ""):
         """
         pkg_paths: 当前客户端 PKG 文件树的路径集合（可选）。传入后，资源节点会带
             `in_pkg` 标记（精确区分「PKG 中确有该文件」与「仅是路径表残留」）。
+        model_meta: 旧布局模式的 `<metaData>` 常量（空串 = 新布局）。记录布局同 Lesta，
+            该常量只影响没有二进制来源的展示字段。
         """
         self._db = db
-        self._wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
+        self._wows_type = (wows_type if wows_type in ("Wargaming", "Legacy") else "Lesta")
+        self._model_meta = str(model_meta or "")
         self._pkg_paths = pkg_paths
         self._files: Dict[str, VirtualFile] = {}
         self._dirs: Dict[str, List[str]] = {}
@@ -126,7 +130,7 @@ class AssetsBinVfs:
         # 无偏移的正式服 assets.bin 自校验通过，record_index 原样返回。
         # ⚠️ 仅对 Lesta/Korabli 生效：WG VisualPrototype 为 0x70 布局且
         #   geometry@+0x30，此处硬编码 +0x40/+0x20 会读错字段，故 WG 跳过。
-        is_lesta = self._wows_type != "Wargaming"
+        is_lesta = self._wows_type == "Lesta"
         vis_blob: Optional[object] = None
         vis_geom_to_rec: Dict[int, int] = {}
         dir_geos: Dict[str, Dict[str, int]] = {}
@@ -185,7 +189,7 @@ class AssetsBinVfs:
                     raw_path, record_index, vis_blob, vis_geom_to_rec,
                     dir_geos, self_id_index, full_paths)
             full_path = "/" + raw_path
-            record_offset = BLOB_HEADER_SIZE + record_index * item_size
+            record_offset = proto_type.header_size + record_index * item_size
             byte_length = len(db_entry.data) - record_offset
             if byte_length <= 0:
                 continue
@@ -369,6 +373,7 @@ class AssetsBinVfs:
         }
         tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
         with open(tmp, "wb") as fh:
+            # 不存 legacy：它由解析规则决定（from_index 时由调用方传入），与目录索引无关
             pickle.dump({"version": CACHE_VERSION,
                          "wows_type": self._wows_type,
                          "files": files_index, "dirs": self._dirs},
@@ -377,14 +382,15 @@ class AssetsBinVfs:
 
     @classmethod
     def from_index(cls, db: PrototypeDatabase, files_index: dict, dirs_index: dict,
-                   wows_type: str = "") -> "AssetsBinVfs":
+                   wows_type: str = "", model_meta: str = "") -> "AssetsBinVfs":
         """从缓存索引恢复 VFS（跳过耗时的路径重建/目录构建）。
 
         调用方需先校验 idx["version"] == CACHE_VERSION。
         """
         vfs = cls.__new__(cls)
         vfs._db = db
-        vfs._wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
+        vfs._wows_type = (wows_type if wows_type in ("Wargaming", "Legacy") else "Lesta")
+        vfs._model_meta = str(model_meta or "")
         vfs._pkg_paths = None
         vfs._dirs = dirs_index
         vfs._files = {}
@@ -508,6 +514,12 @@ class AssetsBinVfs:
         return self._db.get_prototype_data_len(loc, f.item_size, length)
 
     def decode_file(self, path: str) -> dict:
+        """解码虚拟文件为结构化 dict（退出时恢复线程的服务器类型上下文）。"""
+        from .types import wows_type_context
+        with wows_type_context(self._wows_type, model_meta=self._model_meta):
+            return self._decode_file_impl(path)
+
+    def _decode_file_impl(self, path: str) -> dict:
         """解码虚拟文件为结构化 dict。
 
         ⚠️ 2026-08-19：.visual 记录**骨架在 blob1(Skeleton)、视觉在 blob2(Visual)、
@@ -518,6 +530,7 @@ class AssetsBinVfs:
         布局解析（geometry/primitives/渲染集全部错位）。
         """
         set_wows_type(self._wows_type)
+        set_model_meta(self._model_meta)
         f = self.get_file(path)
         if f is None:
             raise KeyError(f"虚拟文件不存在: {path}")
@@ -525,7 +538,7 @@ class AssetsBinVfs:
             raise AssetsBinError(
                 f"{path} 不是 assets.bin 的 prototype 记录（原始文件在 PKG 中，请解包查看）")
         data = self.open_file(path)
-        record_base = 16 + f.record_index * f.item_size
+        record_base = f.prototype_type.header_size + f.record_index * f.item_size
         result = decode_by_type(data, self._db, f.prototype_type, record_base)
         # 合并 Skeleton(blob1) + Visual(blob2)，同 rec 索引
         if f.prototype_type is not None:

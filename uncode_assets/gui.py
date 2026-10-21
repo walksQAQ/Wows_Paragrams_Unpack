@@ -2,6 +2,11 @@
 
 功能：
   - 打开已解压的 assets.bin 文件或直接选择游戏目录（自动用 data_extractor 提取）
+  - **解析规则**：直接打开 assets.bin 文件时由用户在工具栏下拉框选择
+    （Lesta / Wargaming / 远古版本）；选择游戏目录时按客户端自动识别
+    （game_info.xml 版本早于 2023-08 → 远古版本模式，目前按 Lesta 解析；
+    没有 game_info.xml 的 Steam/depot 老客户端改按库内原型类型判断，
+    Skeleton 且无 ModelFbx/MiscSettings/Trail/VfxMaterial 即判为远古版本）
   - 选择游戏目录**只影响本窗口**：不写回主程序的 game_path / bin_folder 配置
   - 打开窗口时不自动载入数据，由用户手动选择数据源
   - 后台线程加载解析（避免卡 UI），左侧懒加载虚拟文件树
@@ -29,15 +34,20 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
     QPushButton, QLabel, QFileDialog, QLineEdit, QStatusBar, QToolBar,
-    QHeaderView, QAbstractItemView, QMessageBox, QComboBox, QApplication,
+    QHeaderView, QAbstractItemView, QMessageBox, QComboBox, QApplication, QSizePolicy,
+    QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout,
 )
 
 from .errors import AssetsBinError
+from .parse_rules import (RULE_AUTO, RULE_LABELS, RULE_LESTA, RULE_LEGACY,
+                          RULE_SHORT_LABELS, RULE_WARGAMING, RULE_WG_OLD,
+                          detect_rule, layout_for_rule, model_meta_for_rule,
+                          version_text)
 from .service import AssetsBinService
 from .vfs import VirtualFile
 
@@ -58,8 +68,54 @@ QComboBox { background-color: #333; color: #d4d4d4; border: 1px solid #555; bord
 QComboBox QAbstractItemView { background-color: #252526; color: #d4d4d4; selection-background-color: #094771; }
 QStatusBar { background-color: #252526; color: #9cdcfe; }
 QLabel#info { color: #9cdcfe; padding: 0 8px; }
-QLabel#source { color: #7f7f7f; padding: 0 8px; font-size: 11px; }
+QLabel#source { color: #e0e0e0; padding: 0 10px; font-size: 12px; }
 """
+
+
+class _SourceLabel(QLabel):
+    """工具栏「来源」标签：路径按可用宽度中间省略，结论（规则/版本）永远完整。
+
+    路径可能很长（``...\\res_unpack\\content\\assets.bin``），但工具栏不能因此把窗口撑宽，
+    所以 sizeHint 固定为一个中等宽度、文本按实际宽度省略；完整路径与判定依据放 tooltip。
+    最小尺寸给得很小，空间不足时只缩短文字，而不是被收进工具栏的「»」溢出菜单。
+    标签占满工具栏剩余宽度并右对齐，文字贴着右边缘显示。
+    """
+
+    #: 期望宽度（决定工具栏分给它的空间；不影响窗口最小宽度）
+    PREFERRED_WIDTH = 360
+    #: 最小宽度（再窄就整段省略，只留规则结论）
+    MIN_WIDTH = 110
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 右对齐：标签撑满工具栏剩余空间，文字紧贴右边缘
+        self.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._path = ""
+        self._suffix = ""
+
+    def sizeHint(self):  # noqa: N802 (Qt 命名)
+        return QSize(self.PREFERRED_WIDTH, super().sizeHint().height())
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt 命名)
+        return QSize(self.MIN_WIDTH, super().minimumSizeHint().height())
+
+    def set_source(self, path_text: str, suffix: str) -> None:
+        self._path, self._suffix = path_text, suffix
+        self._refresh()
+
+    def _refresh(self) -> None:
+        fm = self.fontMetrics()
+        # 左右各 10px padding（见 _STYLE 的 QLabel#source）+ 余量
+        avail = self.width() - fm.horizontalAdvance(self._suffix) - 24
+        if avail < 60:
+            super().setText(self._suffix.strip())
+            return
+        shown = fm.elidedText(self._path, Qt.TextElideMode.ElideMiddle, avail)
+        super().setText(f"{shown}{self._suffix}")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        super().resizeEvent(event)
+        self._refresh()
 
 
 def _insert_after(data: dict, anchor: str, key: str, value) -> dict:
@@ -105,8 +161,9 @@ class _FxIndexWorker(QThread):
             # **不是** assets_data.db：浏览器始终直接读当前 assets.bin。
             db = svc.db
             wg = (self._wows_type or "").lower() == "wargaming"
-            # 只取记录头部：材质记录 0x88（WG 0x78），避免整 blob 尾部拷贝
-            need = 0x78 if wg else 0x88
+            legacy = (self._wows_type or "").lower() == "legacy"
+            # 只取记录头部：材质记录 0x58（远古）/0x78（WG）/0x88（莱服），避免整 blob 尾部拷贝
+            need = 0x58 if legacy else (0x78 if wg else 0x88)
             files = [f.path for f in svc.vfs.all_files()
                      if f.prototype_type is not None
                      and f.path.lower().endswith(".mfm")]
@@ -142,25 +199,105 @@ class _LoadWorker(QThread):
     def __init__(self, game_dir: Optional[str] = None,
                  assets_path: Optional[str] = None,
                  bin_folder: Optional[str] = None,
-                 wows_type: str = "", parent=None):
+                 wows_type: str = "", model_meta: str = "", parent=None):
         super().__init__(parent)
         self._game_dir = game_dir
         self._assets_path = assets_path
         self._bin_folder = bin_folder
         self._wows_type = wows_type
+        self._model_meta = str(model_meta or "")
 
     def run(self) -> None:
         try:
             if self._game_dir:
                 # 传空 set 启用 PKG 文件树收集：资源节点据此标记「PKG 中确有该文件」
                 svc = AssetsBinService(game_dir=self._game_dir, bin_folder=self._bin_folder,
-                                       wows_type=self._wows_type, pkg_paths=set())
+                                       wows_type=self._wows_type, pkg_paths=set(),
+                                       model_meta=self._model_meta)
             else:
                 svc = AssetsBinService(assets_path=self._assets_path,
-                                       wows_type=self._wows_type)
+                                       wows_type=self._wows_type,
+                                       model_meta=self._model_meta)
             self.loaded.emit(svc)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+
+class _OpenAssetsDialog(QDialog):
+    """「打开 assets.bin」对话框：选文件 + 选解析规则。
+
+    裸 assets.bin 没有客户端信息可探测，规则必须在这里指定（浏览器界面里不再放规则选项）；
+    选择游戏目录时仍由 :func:`uncode_assets.parse_rules.detect_rule` 自动识别。
+    """
+
+    def __init__(self, parent=None, path: str = "", rule: str = RULE_AUTO):
+        super().__init__(parent)
+        self.setWindowTitle("打开 assets.bin")
+        self.setMinimumWidth(560)
+        self.setStyleSheet(_STYLE)
+
+        self.path_edit = QLineEdit(path)
+        self.path_edit.setPlaceholderText("assets.bin 路径")
+        btn_browse = QPushButton("浏览...")
+        btn_browse.clicked.connect(self._on_browse)
+
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(btn_browse)
+
+        self.rule_combo = QComboBox()
+        for key, text in RULE_LABELS.items():
+            self.rule_combo.addItem(text, key)
+        idx = self.rule_combo.findData(rule)
+        if idx >= 0:
+            self.rule_combo.setCurrentIndex(idx)
+
+        hint = QLabel(
+            "解析规则决定用哪套记录布局解码：\n"
+            "• 自动 → 按 assets.bin 里的原型类型自动判断（推荐）\n"
+            "• Lesta（莱服）→ 适配Lesta现版本客户端（26.10）\n"
+            "• Wargaming（寄服）→ 适配寄服 14.1 及以后（15.9）的新记录布局\n"
+            "• 寄服旧布局（14.0 及更早）→ 13.x / 14.0 的寄服客户端，记录布局同 Lesta\n"
+            "• 远古版本 → 2023-08（12.7）之前的老客户端（未分家，只有一个客户端）")
+        hint.setWordWrap(True)
+        hint.setObjectName("info")
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("assets.bin 文件"))
+        layout.addLayout(path_row)
+        layout.addSpacing(8)
+        layout.addWidget(QLabel("解析 / 明文规则"))
+        layout.addWidget(self.rule_combo)
+        layout.addSpacing(8)
+        layout.addWidget(hint)
+        layout.addSpacing(8)
+        layout.addWidget(buttons)
+
+    def _on_browse(self) -> None:
+        start = self.path_edit.text().strip()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 assets.bin", str(Path(start).parent) if start else "",
+            "assets.bin (*.bin);;所有文件 (*)")
+        if path:
+            self.path_edit.setText(path)
+
+    def _on_accept(self) -> None:
+        path = self.path_edit.text().strip()
+        if not path:
+            QMessageBox.information(self, "打开 assets.bin", "请先选择 assets.bin 文件")
+            return
+        self.accept()
+
+    def selected_path(self) -> str:
+        return self.path_edit.text().strip()
+
+    def selected_rule(self) -> str:
+        return self.rule_combo.currentData() or RULE_AUTO
 
 
 class AssetsBinViewer(QMainWindow):
@@ -170,6 +307,9 @@ class AssetsBinViewer(QMainWindow):
     MAX_FILES_PER_DIR = 1000
     #: 搜索结果最多列出的条目数
     MAX_SEARCH_RESULTS = 2000
+    #: 初始窗口尺寸下限 / 上限（树 + JSON 并排，太窄看不全路径）
+    PREFERRED_MIN_SIZE = (1440, 900)
+    PREFERRED_MAX_SIZE = (1920, 1200)
 
     def __init__(self, source: Optional[str] = None, parent=None):
         super().__init__(parent)
@@ -194,15 +334,24 @@ class AssetsBinViewer(QMainWindow):
         self._last_export_dir: str = ""
         #: 是否以 Mod SDK 明文 .mfm 样式显示材质
         self._mfm_plain = False
-        # 服务器类型表：继承主应用设置（WG→10 类型表，Lesta→12 类型表）
-        self._wows_type = ""
-        try:
-            from app.application import app as app_ctx
-            self._wows_type = getattr(app_ctx.ctx, "wows_type", "") or ""
-        except Exception:  # noqa: BLE001
-            self._wows_type = ""
+        # 服务器类型表：本窗口独立判定，不继承主应用设置
+        # （载入时由 parse_rules 自动识别或按对话框所选规则决定）
+        self._wows_type = "Lesta"
+        #: 解析/明文规则（auto / Lesta / Wargaming / legacy）——窗口级，不写回配置
+        self._rule = RULE_AUTO
+        #: 「自动」判定的依据说明（由服务回填，仅用于状态显示）
+        self._auto_reason = ""
+        #: 「自动」判定的规则（由服务回填：Lesta / Wargaming / legacy；未判定为空串）
+        self._auto_rule = ""
+        #: 「自动」没能判定（库里只有两服共有类型），服务已退回默认 Lesta
+        self._auto_undetermined = False
+        #: 上一次加载的来源（切换规则时重载用）
+        self._last_source = ""
+        self._source_is_dir = False
+        #: 从 game_info.xml 读到的客户端版本（仅目录载入时可用）
+        self._client_version = None
         self.setWindowTitle("assets.bin 浏览器")
-        self.resize(1280, 820)
+        self._apply_preferred_size()
         self.setStyleSheet(_STYLE)
         self._build_ui()
         # 打开窗口时不自动载入数据：由用户手动选择 assets.bin 文件或游戏目录，
@@ -265,8 +414,22 @@ class AssetsBinViewer(QMainWindow):
             "     assets.bin 路径树中解析；也可输入 shader_id/material_hash）")
         toolbar.addWidget(self.search_mode)
 
-        # ⚠️ 计数/来源不再放在工具栏：QToolBar 宽度不足时会把后续原部件收进「»」
-        # 溢出菜单（不换行、不滚动），看起来像「加载后消失了」。改放状态栏。
+        # 「来源」放回工具栏右侧：_SourceLabel 的 sizeHint/minimumSizeHint 都很小，
+        # 可用宽度不足时只会把路径中间省略（tooltip 里始终有完整路径与判定依据）。
+        self.source_label = _SourceLabel()
+        self.source_label.setObjectName("source")
+        self.source_label.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                        QSizePolicy.Policy.Preferred)
+        self.source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._source_tip = (
+            "当前数据来源与解析规则\n"
+            "本窗口独立判定：载入时按客户端类型 / 库内原型类型自动识别，\n"
+            "或按「打开 assets.bin」对话框里选的规则；\n"
+            "不继承、也不影响主应用的服务器设置")
+        self.source_label.setToolTip(self._source_tip)
+        toolbar.addWidget(self.source_label)
+
+        # 计数（概览）留在状态栏：内容会随加载变长，放工具栏容易被挤进「»」溢出菜单
         self.info_label = QLabel("未加载")
         self.info_label.setObjectName("info")
         self.info_label.setToolTip("assets.bin 概览")
@@ -299,18 +462,27 @@ class AssetsBinViewer(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        # 状态栏：左侧概览（信息），右侧来源 + 当前状态
+        # 状态栏：左侧概览（信息），右侧当前状态
         status = QStatusBar()
         self.setStatusBar(status)
         status.addWidget(self.info_label)
-        self.source_label = QLabel("")
-        self.source_label.setObjectName("source")
-        self.source_label.setToolTip("数据来源（继承主应用设置）")
-        status.addPermanentWidget(self.source_label)
         self.status_label = QLabel("就绪")
         status.addPermanentWidget(self.status_label)
 
     # ── 窗口定位 ────────────────────────────────────────
+
+    def _apply_preferred_size(self) -> None:
+        """按可用屏幕放大初始窗口：默认铺满约 95% 可用区域，并夹在 min/max 之间。"""
+        min_w, min_h = self.PREFERRED_MIN_SIZE
+        max_w, max_h = self.PREFERRED_MAX_SIZE
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(min_w, min_h)
+            return
+        avail = screen.availableGeometry()
+        w = max(min_w, int(avail.width() * 0.95))
+        h = max(min_h, int(avail.height() * 0.95))
+        self.resize(min(w, max_w, avail.width()), min(h, max_h, avail.height()))
 
     def center_on_screen(self, relative_to: Optional[QWidget] = None) -> None:
         """把窗口居中到指定窗口（默认主屏）。"""
@@ -338,30 +510,72 @@ class AssetsBinViewer(QMainWindow):
         self._searching = False
         self._reset_search_nav()
         self._update_export_state()
-        self.status_label.setText("正在加载/解析 assets.bin...（Kraken 解压可能较慢）")
+        self._last_source = str(p)
+        self._source_is_dir = p.is_dir()
         self.info_label.setText("加载中...")
-        if p.is_dir():
-            detected = self._detect_wows_type(str(p))
-            if detected and detected != self._wows_type:
-                self._wows_type = detected
-                self._set_source_label(str(p))
+        # 上一次加载的自动判定结果作废，避免加载期间显示旧依据
+        self._auto_reason = ""
+        self._auto_rule = ""
+        self._auto_undetermined = False
+        if self._source_is_dir:
+            # 客户端目录：按客户端版本判定（<12.7 → 远古版本；寄服 <14.1 → 旧布局）；
+            # 没有可执行文件（只有 .pkg）→ auto，交给库内原型类型判定
+            rule, version = detect_rule(str(p))
+            self._rule = rule
+            self._client_version = version
+            # auto 时交给服务按库内原型判定
+            self._wows_type = ("auto" if rule == RULE_AUTO
+                               else layout_for_rule(rule))
+            self._set_source_label(str(p))
             self._worker = _LoadWorker(game_dir=str(p), bin_folder=self._bin_folder,
-                                       wows_type=self._wows_type, parent=self)
+                                       wows_type=self._wows_type,
+                                       model_meta=model_meta_for_rule(rule, version),
+                                       parent=self)
         else:
+            # 裸 assets.bin：规则在「打开 assets.bin」对话框里选。
+            # 选「自动」时交给服务按库内原型魔数判定（不是回退主程序设置）。
+            self._client_version = None
+            self._wows_type = "auto" if self._rule == RULE_AUTO else layout_for_rule(self._rule)
+            self._set_source_label(str(p))
             self._worker = _LoadWorker(assets_path=str(p),
-                                       wows_type=self._wows_type, parent=self)
+                                       wows_type=self._wows_type,
+                                       model_meta=model_meta_for_rule(self._rule),
+                                       parent=self)
+        # Kraken 容器解压只有现代莱服 .pkg 才有（寄服 / 远古版本都是 raw-deflate，很快）；
+        # 裸 assets.bin 直接读文件，同样不涉及解压。
+        if not self._source_is_dir:
+            self.status_label.setText("正在加载/解析 assets.bin...")
+        elif self._rule == RULE_LESTA:
+            self.status_label.setText(
+                "正在从游戏 .pkg 解压并解析 assets.bin...（莱服 Kraken 解压可能较慢）")
+        elif self._rule == RULE_WARGAMING:
+            self.status_label.setText("正在从游戏 .pkg 解压并解析 assets.bin...（raw-deflate 解压）")
+        else:
+            # 远古版本 / 无 game_info.xml（待判定）：不预先断言解压方式
+            self.status_label.setText("正在从游戏 .pkg 解压并解析 assets.bin...")
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_load_failed)
         self._worker.start()
 
-    @staticmethod
-    def _detect_wows_type(game_dir: str) -> str:
-        """按游戏目录内容探测服务器类型（Korabli→Lesta，WoWS→Wargaming）。"""
-        from utils.path_utils import detect_wows_type
-        return detect_wows_type(game_dir)
-
     def _on_loaded(self, svc: AssetsBinService) -> None:
         self._svc = svc
+        # 「自动」规则由服务按原型魔数判定，这里同步结果用于显示
+        pending_auto = self._wows_type == "auto"
+        resolved = getattr(svc, "wows_type", "") or ""
+        if resolved in ("Lesta", "Wargaming"):
+            self._wows_type = resolved
+        self._auto_reason = getattr(svc, "auto_rule_reason", "") or ""
+        self._auto_rule = getattr(svc, "auto_rule", "") or ""
+        # 旧布局（远古版本 / 寄服旧布局）：服务按库内原型判定出来时同步，
+        # 用于 .model 的 metaData 等展示常量
+        if getattr(svc, "legacy", False):
+            self._rule = (RULE_LEGACY if self._auto_rule == RULE_LEGACY
+                          else RULE_WG_OLD)
+            self._wows_type = layout_for_rule(self._rule)
+        self._auto_undetermined = bool(pending_auto
+                                       and not getattr(svc, "auto_rule", ""))
+        if self._last_source:
+            self._set_source_label(self._last_source)
         # 数据源已切换：fx 索引与搜索状态失效
         self._fx_index = None
         self._pending_fx_query = ""
@@ -1056,22 +1270,64 @@ class AssetsBinViewer(QMainWindow):
     # ── 打开 ────────────────────────────────────────────
 
     def _on_open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择 assets.bin", "", "assets.bin (*.bin);;所有文件 (*)")
-        if path:
-            self._set_source_label(path)
-            self.load_source(path)
+        """打开 assets.bin：文件与解析规则在同一个对话框里选。
+
+        裸 assets.bin 没有客户端信息可探测，规则必须此时指定（浏览器界面里不再放规则选项）。
+        """
+        start = "" if self._source_is_dir else (self._last_source or "")
+        dlg = _OpenAssetsDialog(self, path=start, rule=self._rule)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        path = dlg.selected_path()
+        if not path:
+            return
+        self._rule = dlg.selected_rule()
+        self._client_version = None
+        self._source_is_dir = False
+        self._set_source_label(path)
+        self.load_source(path)
 
     def _on_open_game_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择游戏目录（含 bin 与 res_packages）")
         if path:
             self._bin_folder = None
+            self._source_is_dir = True
             self._set_source_label(path)
             self.load_source(path)
 
     def _set_source_label(self, path: str) -> None:
-        tag = "WG" if self._wows_type == "Wargaming" else "Lesta"
-        self.source_label.setText(f"来源: {Path(path).name}  [{tag}] 类型表")
+        ver = version_text(getattr(self, "_client_version", None))
+        extra = f"，客户端 {ver}" if ver else ""
+        if self._wows_type == "auto":
+            # 「自动」尚未判定完：还没有结论，不显示任何服务器/类型表
+            rule_label = "自动（识别中…）"
+        elif self._rule == RULE_AUTO:
+            resolved = getattr(self, "_auto_rule", "")
+            if self._wows_type == "Wargaming":
+                tag = "Wargaming"
+            elif self._wows_type == "Legacy":
+                tag = "远古布局"
+            else:
+                tag = "Lesta"
+            if self._auto_undetermined or not resolved:
+                rule_label = f"自动（未判定，按 {tag} 解析）"
+            else:
+                rule_label = f"自动（识别为 {RULE_SHORT_LABELS.get(resolved, resolved)}）"
+        else:
+            rule_label = RULE_LABELS.get(self._rule, self._rule)
+        hint = ""
+        if self._rule == RULE_AUTO:
+            reason = getattr(self, "_auto_reason", "")
+            hint = f"（{reason}）" if reason else ""
+        # 裸 assets.bin 同名文件遍地都是，标出完整路径才知道加载的是哪一份
+        full = str(path)
+        shown = full if not self._source_is_dir else Path(full).name
+        self.source_label.set_source(f"来源: {shown}", f"  [{rule_label}{extra}]")
+        tip = [self._source_tip, f"路径: {full}"]
+        if hint:
+            tip.append(f"判定依据: {hint.strip('（）')}")
+        self.source_label.setToolTip("\n".join(tip))
+        self.setWindowTitle(f"assets.bin 浏览器 — {shown}")
 
     # ── 关闭与索引缓存清理 ─────────────────────────────
 

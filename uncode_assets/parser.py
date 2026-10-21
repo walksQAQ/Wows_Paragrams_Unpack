@@ -22,7 +22,7 @@ from .errors import (
     PrototypeOutOfRangeError,
     UnsupportedVersionError,
 )
-from .types import item_size_for_blob, type_from_magic, type_from_blob_index
+from .types import PrototypeType, item_size_for_blob, type_from_magic, type_from_blob_index
 
 BWDB_MAGIC: int = 0x42574442
 BWDB_VERSION: int = 0x01010000
@@ -121,13 +121,28 @@ class DatabaseEntry:
     data: bytes            # 整个 blob（含 16B 头）
     record_count: int
     blob_index: int = -1   # 在数据库数组中的序号
+    #: 解析时锁定的类型条目（:meth:`PrototypeDatabase.resolve_layout` 写入）。
+    #: 为 None 时按当前线程的布局表即时查表（极少走到：直接调 parse_assets_bin 的场景）。
+    prototype_type: Optional[PrototypeType] = None
 
     @property
     def item_size(self) -> int:
+        if self.prototype_type is not None:
+            return self.prototype_type.item_size
         return item_size_for_blob(self.blob_index, self.prototype_magic)
 
     @property
+    def header_size(self) -> int:
+        """记录区起始偏移（远古版本材质为 0x20，其余 16）。"""
+        if self.prototype_type is not None:
+            return self.prototype_type.header_size
+        t = type_from_magic(self.prototype_magic)
+        return t.header_size if t is not None else BLOB_HEADER_SIZE
+
+    @property
     def prototype_name(self) -> str:
+        if self.prototype_type is not None:
+            return self.prototype_type.name
         t = type_from_magic(self.prototype_magic)
         return t.name if t else f"0x{self.prototype_magic:08X}"
 
@@ -149,6 +164,18 @@ class PrototypeDatabase:
     data: bytes = field(default=b"", repr=False)
     #: selfId→pathsStorage 下标索引缓存（惰性构建，避免每次调用重建 O(N)）
     _self_id_index: Optional[Dict[int, int]] = field(default=None, repr=False)
+
+    # ── 类型布局 ─────────────────────────────────────────
+
+    def resolve_layout(self, wows_type: Optional[str] = None) -> None:
+        """按给定布局表锁定各 blob 的类型条目（步长 / 记录区偏移 / 名称）。
+
+        必须在「布局确定之后」调用一次：类型表是线程上下文，若各属性留到
+        调用方线程即时查表，跨线程（GUI 主线程 / 工作线程）或上下文已恢复时
+        会拿到别的服务器的步长（例如远古版本回落成莱服 0x88 / 0x20）。
+        """
+        for entry in self.databases:
+            entry.prototype_type = type_from_magic(entry.prototype_magic, wows_type)
 
     # ── r2p 查找 ─────────────────────────────────────────
 
@@ -197,7 +224,7 @@ class PrototypeDatabase:
         db = self.databases[location.blob_index]
         if location.record_index >= db.record_count:
             raise PrototypeOutOfRangeError(location.record_index, location.blob_index, db.record_count)
-        record_offset = BLOB_HEADER_SIZE + location.record_index * item_size
+        record_offset = db.header_size + location.record_index * item_size
         if record_offset + item_size > len(db.data):
             raise OutOfBoundsError(record_offset, item_size, len(db.data), "record")
         return db.data[record_offset:]
@@ -213,7 +240,7 @@ class PrototypeDatabase:
         db = self.databases[location.blob_index]
         if location.record_index >= db.record_count:
             raise PrototypeOutOfRangeError(location.record_index, location.blob_index, db.record_count)
-        record_offset = BLOB_HEADER_SIZE + location.record_index * item_size
+        record_offset = db.header_size + location.record_index * item_size
         if record_offset >= len(db.data):
             return memoryview(b"")
         end = record_offset + length

@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 from . import binary as B
 from .errors import ParseError
 from .parser import PrototypeDatabase, PrototypeLocation
-from .types import PrototypeType, get_wows_type, type_from_magic
+from .types import PrototypeType, get_wows_type, model_meta, type_from_magic
 
 
 # ── 工具 ──────────────────────────────────────────────────────────────────
@@ -51,6 +51,18 @@ def read_material_header(data: bytes, wargaming: Optional[bool] = None) -> dict:
         wargaming: 是否 WG 0x78 布局；None → 按当前线程服务器判定。
     """
     wg = get_wows_type() == "Wargaming" if wargaming is None else bool(wargaming)
+    if len(data) < _LEGACY_MATERIAL_ITEM:
+        return {"shader_id": "", "material_hash": "", "collisionFlags": 0, "sortOrder": 0}
+    if get_wows_type() == "Legacy":
+        # 远古版本没有 shader_id 字段（+0x08 是 collisionFlags），fx 即 +0x00 的 selfId
+        cflags_raw = B.read_u32(data, 0x08)
+        sort_raw = B.read_u32(data, 0x0C)
+        return {
+            "shader_id": "",
+            "material_hash": f"0x{B.read_u64(data, 0x00):016X}",
+            "collisionFlags": 0 if cflags_raw in (0, 0xFFFFFFFF) else cflags_raw & 0xFF,
+            "sortOrder": 0 if sort_raw == 0xFFFFFFFF else sort_raw,
+        }
     shader_off = 0x04 if wg else 0x08
     mat_hash_off = 0x68 if wg else 0x78
     if len(data) < mat_hash_off + 8:
@@ -128,6 +140,44 @@ _MATERIAL_LAYOUT = {
             "cflags": None, "sort": 0x80},  # Korabli
     True: {"item": 0x78, "names": 0x10, "types": 0x18, "tptr": 0x20,
            "cflags": 0x70, "sort": 0x74},   # Wargaming
+}
+
+# ── 远古版本（未分家时期）MaterialPrototype 布局 ──────────────────────────
+# 0x58B/条，blob 头仍是 16 字节（Ghidra：FUN_140439c10 里记录基址 = idx*0x58+0x10）。
+# 结构（v20210216 全库 14,606 条记录验证，0 失败）：
+#   +0x00 u64 fxPathId           fx 资源 selfId（反查即 .fx 路径）
+#   +0x08 u32 collisionFlags     实测全 0，仅 1 条为 0x10(NOCOLLIDE)
+#   +0x0C u32 sortOrder          实测全 0
+#   +0x10 u8  propertiesCount
+#   +0x11 u8  （恒 0，用途未定）
+#   +0x12 u8  boolValuesCount     ┐
+#   +0x13 u8  intValuesCount      │ 6 类值数组各自的元素数，
+#   +0x14 u8  floatValuesCount    │ 值数组按类型分组连续存放
+#   +0x15 u8  textureValueIdsCount│
+#   +0x16 u8  vectorValuesCount   │
+#   +0x17 u8  matrixValuesCount   ┘
+#   +0x18 u64 names ptr          u32[propertiesCount]（字符串表 id）
+#   +0x20 u64 types ptr          u8[propertiesCount] = 类型码 | (元素下标 << 3)
+#   +0x28 u64 boolValues ptr     u8  × count
+#   +0x30 u64 intValues ptr      i32 × count
+#   +0x38 u64 floatValues ptr    f32 × count
+#   +0x40 u64 textureValueIds    u64 × count（资源 selfId）
+#   +0x48 u64 vectorValues       vec4 × count（16B）
+#   +0x50 u64 matrixValues       mat4 × count（64B）
+# 指针基准 = 记录起始（与 Korabli/WG 的 relptr 一致）。
+_LEGACY_MATERIAL_COUNT_OFFSETS = (0x12, 0x13, 0x14, 0x15, 0x16, 0x17)
+_LEGACY_MATERIAL_VALUE_OFFSETS = (0x28, 0x30, 0x38, 0x40, 0x48, 0x50)
+#: 远古版本材质记录步长
+_LEGACY_MATERIAL_ITEM = 0x58
+#: 远古类型码 → (现代 type_raw, 说明)。现代表：0 bool / 1 int32 / 2 float_a /
+#: 4 texture / 7 vec4 / 8 mat4 —— 映射后 mfm_text 等下游无需特判。
+_LEGACY_MATERIAL_TYPES = {
+    0: (0, "bool"),
+    1: (1, "int32"),
+    2: (2, "float"),
+    3: (4, "texture"),
+    4: (7, "vec4"),
+    5: (8, "matrix4x4"),
 }
 
 #: ``collisionFlags`` 位定义（BigWorld `physics2/worldtri.hpp`，写入碰撞三角 flags 低字节）。
@@ -283,6 +333,71 @@ def _read_typed_array(data: bytes, ptr: int, ptype: int, pidx: int, length: int)
     return out or None
 
 
+def _decode_material_legacy(data: bytes, db: PrototypeDatabase) -> dict:
+    """解码远古版本（未分家时期，0x58B/条）的 MaterialPrototype。
+
+    布局见 ``_LEGACY_MATERIAL_*`` 常量（来自 Ghidra 反编译
+    ``FUN_140439c10``/``FUN_14043b510`` + v20210216 全库记录自校验）。
+
+    与现代布局的本质区别：属性值**按值类型分组**存放在 6 个独立数组里，
+    每条属性携带一个 u8「类型码 | 元素下标<<3」而不是现代那种
+    "统一值槽位 + pidx 推断数组长度"。
+    """
+    if len(data) < _LEGACY_MATERIAL_ITEM:
+        raise ParseError(f"MaterialPrototype(Legacy) 数据过短: {len(data)}")
+    fx_id = B.read_u64(data, 0x00)
+    cflags_raw = B.read_u32(data, 0x08)
+    sort_raw = B.read_u32(data, 0x0C)
+    property_count = data[0x10]
+    types_ptr = B.read_u64(data, 0x20)
+    names_ptr = B.read_u64(data, 0x18)
+    value_ptrs = [B.read_u64(data, off) for off in _LEGACY_MATERIAL_VALUE_OFFSETS]
+    counts = [data[off] for off in _LEGACY_MATERIAL_COUNT_OFFSETS]
+
+    properties: List[dict] = []
+    for i in range(property_count):
+        if types_ptr <= 0 or types_ptr + i >= len(data):
+            break
+        code = data[types_ptr + i]
+        tcode, pidx = code & 0x07, code >> 3
+        raw_name = (B.read_u32(data, names_ptr + i * 4)
+                    if names_ptr > 0 and names_ptr + i * 4 + 4 <= len(data) else 0)
+        modern_type, type_name = _LEGACY_MATERIAL_TYPES.get(tcode, (None, f"type_{tcode}"))
+        prop = {
+            "name": db.strings.get_string_or_hex(raw_name),
+            "name_hash": raw_name,
+            "type": type_name,
+            "type_raw": modern_type,
+        }
+        if modern_type is not None:
+            value = _read_typed_value(data, value_ptrs[tcode], modern_type, pidx)
+            if modern_type == 4 and isinstance(value, int):
+                prop["value"] = f"0x{value:016X}"
+                prop["value_path"] = _resolve_path_id(db, value)
+            else:
+                prop["value"] = value
+        else:
+            prop["value"] = None
+        properties.append(prop)
+
+    return {
+        "_type": "MaterialPrototype",
+        # 远古版本没有 shader_id；fx 由 +0x00 的 selfId 反查（mfm_fx.resolve_fx_path）
+        "fx": f"0x{fx_id:016X}",
+        "collisionFlags": 0 if cflags_raw in (0, 0xFFFFFFFF) else cflags_raw & 0xFF,
+        "sortOrder": 0 if sort_raw == 0xFFFFFFFF else sort_raw,
+        "flags_high": 0,
+        "flags": 0,
+        "property_count": property_count,
+        "shader_id": "",
+        "material_hash": f"0x{fx_id:016X}",
+        # 6 类值数组的元素数（bool/int/float/texture/vector/matrix）
+        "value_counts": dict(zip(
+            ("bool", "int32", "float", "texture", "vec4", "matrix4x4"), counts)),
+        "properties": properties,
+    }
+
+
 def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     """解码 MaterialPrototype（Korabli 0x88B / WG 0x78B，按服务器布局自适应）。
 
@@ -315,6 +430,8 @@ def decode_material(data: bytes, db: PrototypeDatabase) -> dict:
     指针为 u64，基准 = 记录起始。
     """
     wg = get_wows_type() == "Wargaming"
+    if get_wows_type() == "Legacy":
+        return _decode_material_legacy(data, db)
     lay = _MATERIAL_LAYOUT[wg]
     need = lay["item"]
     shader_off = 0x04 if wg else 0x08
@@ -420,6 +537,11 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
     if len(data) < 0x40:
         raise ParseError(f"VisualPrototype 数据过短: {len(data)}")
 
+    # 远古版本（未分家时期）：0x40 结构相同，但 geometry / primitives **互换**
+    # （实测 v20210216：+0x20 = .primitives、+0x28 = .geometry；莱服反之）
+    legacy = get_wows_type() == "Legacy"
+    geom_off, prim_off = (0x28, 0x20) if legacy else (0x20, 0x28)
+
     index = db.build_self_id_index()
 
     def path_of(h: int) -> str:
@@ -440,10 +562,10 @@ def decode_visual(data: bytes, db: PrototypeDatabase, record_base: int = 0) -> d
             "max": _arr(B.parse_vec3(data, 0x10)),
         },
         "geometry": {
-            "path": path_of(B.read_u64(data, 0x20)),
-            "id": f"0x{B.read_u64(data, 0x20):016X}",
-            "primitives": path_of(B.read_u64(data, 0x28)),
-            "primitives_id": f"0x{B.read_u64(data, 0x28):016X}",
+            "path": path_of(B.read_u64(data, geom_off)),
+            "id": f"0x{B.read_u64(data, geom_off):016X}",
+            "primitives": path_of(B.read_u64(data, prim_off)),
+            "primitives_id": f"0x{B.read_u64(data, prim_off):016X}",
         },
         "render_sets_count": render_sets_count,
     }
@@ -690,9 +812,16 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
       +0x10 2×f32  距离/尺寸参数（3/8/10/16/400/50000…）
       +0x18 u32    count（位标志：bit1 = castsShadow；实测 8/9→false，10/11→true）
       +0x1C u32    tail（通常 0）
+
+    记录里**没有字符串字段**，明文的 ``<metaData>`` 是 SDK/本工具补的常量：
+    莱服 ``Lesta Studio``；未分家时期 ``Wargaming | Lesta Studio``；
+    寄服旧布局（13.2+）``Wargaming.net``（见 ``types.model_meta()``）。
     """
     if len(data) < 0x20:
         raise ParseError(f"ModelPrototype 数据过短: {len(data)}")
+
+    if get_wows_type() == "Legacy":
+        return _decode_model_legacy(data, db)
 
     model_id = B.read_u64(data, 0x00)
     visual_id = B.read_u64(data, 0x08)
@@ -715,10 +844,56 @@ def decode_model(data: bytes, db: PrototypeDatabase) -> dict:
             "distance_b": _f(B.read_f32(data, 0x14)),
         },
         "castsShadow": bool(count & 0x02),
-        "metaData": "Lesta Studio",
+        "metaData": model_meta() or "Lesta Studio",
         "count": count,
         "tail": B.read_u32(data, 0x1C),
         "raw_hex": data[:0x20].hex(),
+    }
+
+
+def _decode_model_legacy(data: bytes, db: PrototypeDatabase) -> dict:
+    """解码远古版本（未分家时期，0x40B/条）的 ModelPrototype。
+
+    实测（v20210216 全库抽样验证，parent/visual 100% 与舰船目录一致）：
+      +0x00 u64 parent（上一级 .model 资源 selfId，可为 0）
+      +0x08 u64 visual 资源 selfId
+      +0x10 f32 extent（距离参数）
+      +0x14 u16 flags（实测取值 0 / 1 / 0x200 / 0x201；语义待反编译确认）
+      +0x16 u16 （小计数，0..3）
+      +0x18 ┐
+      +0x20 │ 5 个记录相对指针（actions/animations/dyes 等 OOL 数组）
+      +0x28 │
+      +0x30 │
+      +0x38 ┘
+
+    `castsShadow` 的落位在 0.10.x 客户端里没有可靠证据（``+0x14`` bit0 只是候选），
+    因此返回 ``None``——明文导出会省略该行，等反编译确认后再补。
+    Blob 头恒为 16 字节，记录步长 0x40（Ghidra：``FUN_1403eefa0`` 记录基址
+    = idx*0x40+0x10）。
+    """
+    if len(data) < 0x40:
+        raise ParseError(f"ModelPrototype(Legacy) 数据过短: {len(data)}")
+
+    index = db.build_self_id_index()
+
+    def path_of(self_id: int) -> str:
+        if self_id == 0:
+            return ""
+        idx = index.get(self_id)
+        return db.reconstruct_path(idx, index) if idx is not None else f"0x{self_id:016X}"
+
+    return {
+        "_type": "ModelPrototype",
+        "parent": path_of(B.read_u64(data, 0x00)),
+        "nodefullVisual": path_of(B.read_u64(data, 0x08)),
+        "extent": {
+            "distance_a": _f(B.read_f32(data, 0x10)),
+            "distance_b": None,
+        },
+        "castsShadow": None,
+        "flags": B.read_u16(data, 0x14),
+        "metaData": model_meta() or "Wargaming | Lesta Studio",
+        "raw_hex": data[:0x40].hex(),
     }
 
 
@@ -805,6 +980,8 @@ def decode_model_wg(data: bytes, db: PrototypeDatabase) -> dict:
         "_type": "ModelPrototype",
         "visualResourceId": f"0x{visual_id:016X}",
         "visual": path_of(visual_id),            # 该模型引用的 .visual（独立展示）
+        # 记录里没有字符串字段：明文 <metaData> 是 SDK 补的常量，寄服恒为 Wargaming.net
+        "metaData": "Wargaming.net",
         "skelExtResIdCount": skel_ext_count,
         "skelExtResIds": [path_of(i) for i in skel_ext_ids],
         "miscType": misc_type,

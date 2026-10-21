@@ -115,6 +115,10 @@ def detect_wows_type(game_dir) -> str:
     找不到返回空串。用途：防止把一服的客户端目录写进另一服的配置槽位
     （config 的 game_path_lesta / game_path_wargaming 按当前 wows_type 分槽），
     否则主程序会「用 Lesta 身份去读 WG 客户端」，表现就是读到另一服的数据。
+
+    ⚠️ 分家前（2022 及更早）的客户端**还没有莱服 / 寄服之分**，主程序同样叫
+    ``WorldOfWarships64.exe``，所以这个结果**不能用来判断远古版本**；那种情况
+    按版本号统一识别为「远古版本」即可（见 ``uncode_assets.parse_rules``）。
     """
     import os
 
@@ -144,3 +148,91 @@ def detect_wows_type(game_dir) -> str:
         except OSError:
             pass
     return ""
+
+
+#: 客户端主程序名（bin64 / bin32 内）。根目录的 WorldOfWarships.exe 是启动器，
+#: 版本恒为 1.0.0.0，不能用于判断客户端版本。
+CLIENT_EXE_NAMES: tuple[str, ...] = (
+    "Korabli64.exe", "Korabli32.exe",
+    "WorldOfWarships64.exe", "WorldOfWarships32.exe",
+)
+
+
+def read_exe_version(exe_path) -> tuple[int, ...] | None:
+    """读取 exe 的 FileVersion（PE 版本资源的 VS_FIXEDFILEINFO）为元组。
+
+    读的是 ``VS_FIXEDFILEINFO.dwFileVersion*``（与资源语言无关），
+    如 ``(0, 10, 0, 0)`` / ``(26, 10, 0, 0)``；读不到返回 None。
+    """
+    import ctypes
+    import os
+
+    path = str(exe_path or "")
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        ver = ctypes.windll.version  # noqa: E1101 (仅 Windows)
+        size = ver.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(path, None, size, buf):
+            return None
+        ptr = ctypes.c_void_p()
+        length = ctypes.c_uint()
+        if not ver.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)):
+            return None
+        if not ptr.value or length.value < 52:
+            return None
+        # VS_FIXEDFILEINFO: dwSignature, dwStrucVersion, dwFileVersionMS, dwFileVersionLS, ...
+        fields = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint32))
+        ms = fields[2]
+        ls = fields[3]
+        if ms == 0 and ls == 0:
+            return None
+        return (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def read_client_version_from_exe(game_dir, bin_folder: str | None = None) -> tuple[int, ...] | None:
+    """从 ``bin/<构建号>/bin64|bin32`` 的客户端主程序读取版本号。
+
+    ``game_info.xml`` 在 Steam / depot 下载的老客户端里并不存在，但主程序的
+    版本资源里始终带着客户端版本（如 ``v20210216`` → ``0,10,0,0``）。
+    按「指定 bin_folder → 最新 bin 目录 → 其余 bin 目录 → 根目录」的顺序探测，
+    返回其中最高的版本；找不到返回 None。
+    """
+    import os
+
+    root = str(game_dir or "")
+    if not root or not os.path.isdir(root):
+        return None
+
+    bases: list[str] = []
+    if bin_folder:
+        bases.append(os.path.join(root, "bin", str(bin_folder)))
+    bin_dir = os.path.join(root, "bin")
+    if os.path.isdir(bin_dir):
+        try:
+            subs = [f for f in os.listdir(bin_dir)
+                    if os.path.isdir(os.path.join(bin_dir, f))]
+            subs.sort(key=lambda f: (f.isdigit(), int(f) if f.isdigit() else 0),
+                      reverse=True)
+        except OSError:
+            subs = []
+        bases.extend(os.path.join(bin_dir, sub) for sub in subs)
+    bases.extend([root, os.path.join(root, "bin")])
+
+    best: tuple[int, ...] | None = None
+    for base in bases:
+        for arch in ("bin64", "bin32", ""):
+            folder = os.path.join(base, arch) if arch else base
+            for name in CLIENT_EXE_NAMES:
+                exe = os.path.join(folder, name)
+                if not os.path.isfile(exe):
+                    continue
+                version = read_exe_version(exe)
+                if version and (best is None or version > best):
+                    best = version
+    return best

@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QMessageBox,
 )
 
+from .parse_rules import (RULE_AUTO, RULE_LEGACY, RULE_WG_OLD, detect_rule,
+                          layout_for_rule, model_meta_for_rule)
 from .space import (
     SceneResolver, SpaceScene, parse_space_bin, parse_geometry_header, scan_scenes,
 )
@@ -50,33 +52,9 @@ _ROLE_KIND = Qt.ItemDataRole.UserRole + 1
 _ROLE_EXTRA = Qt.ItemDataRole.UserRole + 2
 
 
-def detect_wows_type(game_dir: str) -> str:
-    """按游戏目录内容探测服务器类型（Korabli→Lesta，WoWS→Wargaming）。"""
-    g = Path(game_dir)
-    bin_dir = g / "bin"
-    if bin_dir.is_dir():
-        try:
-            subs = sorted(bin_dir.iterdir(), key=lambda x: str(x), reverse=True)
-        except Exception:  # noqa: BLE001
-            subs = []
-        for bd in subs:
-            if not bd.is_dir():
-                continue
-            bin64 = bd / "bin64"
-            if (bin64 / "Korabli64.exe").exists():
-                return "Lesta"
-            if (bin64 / "WorldOfWarships64.exe").exists() \
-                    or (bin64 / "WorldOfWarships.exe").exists():
-                return "Wargaming"
-    if (g / "Korabli64.exe").exists():
-        return "Lesta"
-    if (g / "WorldOfWarships.exe").exists():
-        return "Wargaming"
-    return ""
-
-
 def build_resolver(game_dir: str, wows_type: str,
-                   bin_folder: Optional[str] = None) -> SceneResolver:
+                   bin_folder: Optional[str] = None,
+                   model_meta: str = "") -> SceneResolver:
     """构建 pathId → 路径解析器。
 
     解析依赖 assets.bin 的路径表/字符串表。**不使用任何落盘缓存**：每次都在内存里
@@ -87,7 +65,7 @@ def build_resolver(game_dir: str, wows_type: str,
     try:
         from .service import AssetsBinService
         svc = AssetsBinService(game_dir=game_dir, bin_folder=bin_folder,
-                               wows_type=wows_type)
+                               wows_type=wows_type, model_meta=model_meta)
         return SceneResolver(svc.db)
     except Exception:  # noqa: BLE001
         return SceneResolver(None)
@@ -100,10 +78,11 @@ class _ScanWorker(QThread):
     failed = Signal(str)
 
     def __init__(self, game_dir: str, wows_type: str = "",
-                 bin_folder: Optional[str] = None, parent=None):
+                 bin_folder: Optional[str] = None, model_meta: str = "", parent=None):
         super().__init__(parent)
         self._game_dir = game_dir
         self._wows_type = wows_type
+        self._model_meta = str(model_meta or "")
         self._bin_folder = bin_folder
 
     def run(self) -> None:
@@ -111,7 +90,8 @@ class _ScanWorker(QThread):
             from data_extractor import GameExtractor
             extractor = GameExtractor(self._game_dir, bin_folder=self._bin_folder)
             resolver = build_resolver(self._game_dir, self._wows_type,
-                                      bin_folder=self._bin_folder)
+                                      bin_folder=self._bin_folder,
+                                      model_meta=self._model_meta)
             scenes = scan_scenes(extractor, resolver)
             self.loaded.emit((extractor, resolver, scenes))
         except Exception as e:  # noqa: BLE001
@@ -129,6 +109,10 @@ class SpaceBrowser(QMainWindow):
         self._worker: Optional[_ScanWorker] = None
         self._bin_folder: Optional[str] = None
         self._wows_type = ""
+        #: 本窗口判定的解析规则（auto / Lesta / Wargaming / wargaming_old / legacy）
+        self._rule = RULE_AUTO
+        #: 客户端版本（判定规则用；读不到为 None）
+        self._version = None
         # 继承主应用设置；未显式传目录时回退到当前配置的游戏路径
         try:
             from app.application import app as app_ctx
@@ -138,9 +122,7 @@ class SpaceBrowser(QMainWindow):
         except Exception:  # noqa: BLE001
             self._wows_type = ""
         if game_dir:
-            w = detect_wows_type(game_dir)
-            if w:
-                self._wows_type = w
+            self._apply_detected_rule(game_dir)
         self.setWindowTitle("港口 / 地图场景浏览器")
         self.resize(1280, 820)
         self.setStyleSheet(_STYLE)
@@ -209,20 +191,31 @@ class SpaceBrowser(QMainWindow):
 
     # ── 加载 ────────────────────────────────────────────
 
+    def _apply_detected_rule(self, game_dir: str) -> None:
+        """按目录判定本窗口的解析规则（版本 → 库内原型），并同步到服务器类型表。
+
+        远古版本（2023-08 之前）与寄服旧布局（14.0 及更早）共用第三张表
+        （``Legacy``），现代莱服/寄服各用自己的表。
+        """
+        rule, version = detect_rule(game_dir)
+        self._rule = rule
+        self._version = version
+        self._wows_type = "auto" if rule == RULE_AUTO else layout_for_rule(rule)
+
     def load_source(self, game_dir: str) -> None:
         if self._worker and self._worker.isRunning():
             return
         self.tree.clear()
         self.detail.clear()
         self._scenes = []
-        w = detect_wows_type(game_dir)
-        if w and w != self._wows_type:
-            self._wows_type = w
+        self._apply_detected_rule(game_dir)
         self._set_source_label(game_dir)
         self.status_label.setText("正在扫描港口 / 地图场景...")
         self.info_label.setText("扫描中...")
         self._worker = _ScanWorker(game_dir, wows_type=self._wows_type,
-                                   bin_folder=self._bin_folder, parent=self)
+                                   bin_folder=self._bin_folder,
+                                   model_meta=model_meta_for_rule(self._rule, self._version),
+                                   parent=self)
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
@@ -248,7 +241,12 @@ class SpaceBrowser(QMainWindow):
         self.detail.setPlainText(f"加载失败:\n{message}")
 
     def _set_source_label(self, path: str) -> None:
-        tag = "WG" if self._wows_type == "Wargaming" else "Lesta"
+        if self._rule in (RULE_LEGACY, RULE_WG_OLD):
+            tag = "远古版本" if self._rule == RULE_LEGACY else "寄服旧布局"
+        elif self._wows_type == "auto":
+            tag = "自动"
+        else:
+            tag = "WG" if self._wows_type == "Wargaming" else "Lesta"
         self.source_label.setText(f"来源: {Path(path).name}  [{tag}]")
 
     # ── 树构建 ──────────────────────────────────────────

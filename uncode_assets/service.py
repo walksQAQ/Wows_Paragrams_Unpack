@@ -1,7 +1,8 @@
 """AssetsBinService —— assets.bin 高层服务。
 
 按规划文档的流程整合：
-  步骤 1: 用 data_extractor 从游戏 .pkg 中提取 content/assets.bin 原始字节（Kraken 解压）
+  步骤 1: 用 data_extractor 从游戏 .pkg 中提取 content/assets.bin 原始字节
+          （莱服 Kraken 容器 / 寄服 raw-deflate 解压）
   步骤 2: 解析 PrototypeDatabase
   步骤 3: 构建 AssetsBinVfs（按路径浏览）
   步骤 4: 解码各 prototype 类型 → JSON
@@ -27,7 +28,8 @@ from .decoders import (
 )
 from .errors import AssetsBinError
 from .parser import PrototypeDatabase, parse_assets_bin
-from .types import PrototypeType, set_wows_type, type_from_magic
+from .types import (PrototypeType, get_wows_type, model_meta as current_model_meta,
+                    set_model_meta, set_wows_type, type_from_magic)
 from .vfs import AssetsBinVfs, VirtualFile
 
 ASSETS_BIN_PATH = "content/assets.bin"
@@ -39,7 +41,8 @@ def read_assets_bin_bytes(game_dir: str | Path, bin_folder: Optional[str] = None
 
     这是 assets.bin 的唯一提取入口：不读任何既有解包产物、也不写临时文件，
     因此绝不会读到别的客户端/旧版本的残留。失败抛 :class:`AssetsBinError`。
-    注意 assets.bin 为 Kraken container，解压 220MB+ 较慢（纯 Python 解码）。
+    注意莱服 assets.bin 为 Kraken container，纯 Python 解码 220MB+ 较慢；
+    寄服为 raw-deflate（zlib 解压），快得多。
 
     ‼ 传入 `pkg_paths`（一个 set）时，用同一个文件树填充 **PKG 内全部文件路径**，
     供 VFS 标记「无 prototype 的路径条目是否真存在于 PKG」（几万个字符串，约几十 MB）。
@@ -75,6 +78,7 @@ class AssetsBinService:
         bin_folder: Optional[str] = None,
         wows_type: str = "",
         pkg_paths: Optional[set] = None,
+        model_meta: str = "",
     ):
         """
         参数:
@@ -88,26 +92,44 @@ class AssetsBinService:
             pkg_paths: 可选的 PKG 文件路径集合（调用方传入空 set 即启用收集）。
                       传入后 VFS 会为「无 prototype 的路径条目」标记 `in_pkg`，
                       用于区分「PKG 中确有该文件」与「仅是 assets.bin 路径残留」。
+            model_meta: `.model` 明文 `<metaData>` 的覆盖值（空串 = 用解码器默认常量）。
+                      该字段不在二进制里，随 SDK 版本变化，由
+                      :func:`uncode_assets.parse_rules.model_meta_for_rule` 按规则+版本给出；
+                      ``wows_type='auto'`` 时由库内原型判定结果自动置位。
         """
-        self._wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
+        self._wows_type = (wows_type if wows_type in ("Wargaming", "Legacy") else "Lesta")
+        #: `.model` metaData 覆盖值（空串 = 用默认）；auto 判定后自动置位
+        self._model_meta = str(model_meta or "")
+        #: 请求「自动」时，解析完 DB 后按原型魔数判定（见 load_bytes）
+        self._wows_type_auto = (wows_type == "auto")
+        #: 自动判定的规则（``Lesta`` / ``Wargaming`` / ``legacy``；判不出来为空串）
+        self._auto_rule = ""
+        # 构造期临时切换类型上下文，结束恢复：浏览器里选寄服/莱服不得污染主程序
+        _prev_type = get_wows_type()
+        _prev_meta = current_model_meta()
         set_wows_type(self._wows_type)
-        self._db: Optional[PrototypeDatabase] = None
-        self._vfs: Optional[AssetsBinVfs] = None
-        self._game_dir: Optional[Path] = None
-        self._bin_folder: Optional[str] = bin_folder
-        self._from_cache: bool = False
-        self._cache_path: Optional[Path] = None
-        #: PKG 文件树路径集合（None = 未收集，资源节点不带 in_pkg 标记）
-        self._pkg_paths: Optional[set] = pkg_paths
+        set_model_meta(self._model_meta)
+        try:
+            self._db: Optional[PrototypeDatabase] = None
+            self._vfs: Optional[AssetsBinVfs] = None
+            self._game_dir: Optional[Path] = None
+            self._bin_folder: Optional[str] = bin_folder
+            self._from_cache: bool = False
+            self._cache_path: Optional[Path] = None
+            #: PKG 文件树路径集合（None = 未收集，资源节点不带 in_pkg 标记）
+            self._pkg_paths: Optional[set] = pkg_paths
 
-        if assets_bytes is not None:
-            self.load_bytes(assets_bytes)
-        elif assets_path is not None:
-            self.load_file(assets_path)
-        elif game_dir is not None:
-            self.load_from_game(game_dir)
-        else:
-            raise ValueError("必须提供 game_dir / assets_path / assets_bytes 之一")
+            if assets_bytes is not None:
+                self.load_bytes(assets_bytes)
+            elif assets_path is not None:
+                self.load_file(assets_path)
+            elif game_dir is not None:
+                self.load_from_game(game_dir)
+            else:
+                raise ValueError("必须提供 game_dir / assets_path / assets_bytes 之一")
+        finally:
+            set_wows_type(_prev_type)
+            set_model_meta(_prev_meta)
 
     # ── 加载 ─────────────────────────────────────────────
 
@@ -148,36 +170,58 @@ class AssetsBinService:
 
         cache_path 存在且有效时，用缓存索引快速恢复 VFS（跳过耗时的
         路径重建与目录构建）；否则正常构建并写缓存。
+
+        ``wows_type='auto'`` 时先解析 DB，再按「原型魔数」判断该库属于现代 Lesta、
+        Wargaming 还是分家前的老客户端（``legacy``，见
+        :func:`uncode_assets.parse_rules.detect_rule_from_db`），判不出来才退回默认 Lesta。
         """
+        from .parse_rules import (detect_rule_from_db, layout_for_rule,
+                                  model_meta_for_rule)
+        from .types import wows_type_context
+
         self._cache_path = Path(cache_path) if cache_path is not None else None
         self._db = parse_assets_bin(data)
-        if cache_path is not None and Path(cache_path).exists():
-            try:
-                import pickle
-                from .types import get_wows_type
-                from .vfs import CACHE_VERSION
-                with open(cache_path, "rb") as fh:
-                    idx = pickle.load(fh)
-                if idx.get("version") != CACHE_VERSION:
-                    raise ValueError("缓存版本过旧，需重建")
-                # 缓存按服务器隔离：item_size 依赖服务器类型表（WG 0x78 vs Korabli 0x88），
-                # 混用会错位（Material/Visual/Model 记录偏移全错）。不匹配则重建。
-                if idx.get("wows_type") != get_wows_type():
-                    raise ValueError("缓存服务器与当前不符，需重建")
-                self._vfs = AssetsBinVfs.from_index(
-                    self._db, idx["files"], idx["dirs"], wows_type=self._wows_type)
-                self._from_cache = True
-                return
-            except Exception:  # noqa: BLE001
-                pass
-        self._vfs = AssetsBinVfs(self._db, wows_type=self._wows_type,
-                                 pkg_paths=self._pkg_paths)
-        self._from_cache = False
-        if cache_path is not None:
-            try:
-                self._vfs.save_index(cache_path)
-            except Exception:  # noqa: BLE001
-                pass
+        if getattr(self, "_wows_type_auto", False):
+            rule, reason = detect_rule_from_db(self._db)
+            self._auto_rule = rule
+            self._auto_rule_reason = reason
+            if rule:
+                self._wows_type = layout_for_rule(rule)
+                self._model_meta = model_meta_for_rule(rule)
+
+        with wows_type_context(self._wows_type, model_meta=self._model_meta):
+            # 布局已最终确定（含 auto 判定结果）：把步长/记录区偏移锁定到 DB 条目上，
+            # 之后在主线程/GUI 读 database_stats、resolve 时不会退回默认表。
+            self._db.resolve_layout(self._wows_type)
+            if cache_path is not None and Path(cache_path).exists():
+                try:
+                    import pickle
+                    from .types import get_wows_type
+                    from .vfs import CACHE_VERSION
+                    with open(cache_path, "rb") as fh:
+                        idx = pickle.load(fh)
+                    if idx.get("version") != CACHE_VERSION:
+                        raise ValueError("缓存版本过旧，需重建")
+                    # 缓存按服务器隔离：item_size 依赖服务器类型表（WG 0x78 vs Korabli 0x88），
+                    # 混用会错位（Material/Visual/Model 记录偏移全错）。不匹配则重建。
+                    if idx.get("wows_type") != get_wows_type():
+                        raise ValueError("缓存服务器与当前不符，需重建")
+                    self._vfs = AssetsBinVfs.from_index(
+                        self._db, idx["files"], idx["dirs"], wows_type=self._wows_type,
+                        model_meta=self._model_meta)
+                    self._from_cache = True
+                    return
+                except Exception:  # noqa: BLE001
+                    pass
+            self._vfs = AssetsBinVfs(self._db, wows_type=self._wows_type,
+                                     pkg_paths=self._pkg_paths,
+                                     model_meta=self._model_meta)
+            self._from_cache = False
+            if cache_path is not None:
+                try:
+                    self._vfs.save_index(cache_path)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ── 属性 ─────────────────────────────────────────────
 
@@ -197,6 +241,38 @@ class AssetsBinService:
     def cache_path(self) -> Optional[Path]:
         """本次加载使用（或将写入）的 .uncode_cache 索引缓存路径；无缓存为 None。"""
         return self._cache_path
+
+    @property
+    def wows_type(self) -> str:
+        """本服务实际使用的服务器类型（``Lesta`` / ``Wargaming``）。
+
+        构造时传 ``wows_type='auto'`` 的话，这里是按库内原型魔数自动判定的结果。
+        """
+        return self._wows_type
+
+    @property
+    def legacy(self) -> bool:
+        """``wows_type='auto'`` 判定出的规则是否属于旧布局（远古版本 / 寄服旧布局）。"""
+        from .parse_rules import RULE_LEGACY, RULE_WG_OLD
+        return getattr(self, "_auto_rule", "") in (RULE_LEGACY, RULE_WG_OLD)
+
+    @property
+    def wows_type_auto(self) -> bool:
+        """构造时是否请求了「自动」判定。"""
+        return getattr(self, "_wows_type_auto", False)
+
+    @property
+    def auto_rule(self) -> str:
+        """``wows_type='auto'`` 自动判定出的规则（``Lesta`` / ``Wargaming`` / ``legacy``）。
+
+        判不出来时为空串 —— 此时 :attr:`wows_type` 仍是退回的默认 Lesta。
+        """
+        return getattr(self, "_auto_rule", "")
+
+    @property
+    def auto_rule_reason(self) -> str:
+        """``wows_type='auto'`` 时的判定依据说明（未自动判定为空串）。"""
+        return getattr(self, "_auto_rule_reason", "")
 
     @property
     def game_dir(self) -> Optional[Path]:
@@ -269,9 +345,10 @@ class AssetsBinService:
         }, full_path
 
     def decode_path(self, path: str) -> dict:
-        """解码指定路径的 prototype 记录。"""
-        set_wows_type(self._wows_type)
-        return self.vfs.decode_file(path)
+        """解码指定路径的 prototype 记录（解码后恢复线程类型上下文）。"""
+        from .types import wows_type_context
+        with wows_type_context(self._wows_type):
+            return self.vfs.decode_file(path)
 
     def decode_skeleton_path(self, path: str) -> dict:
         """快速解码骨架：只读取记录头 + 所需 OOL 区，避免复制整段 blob 尾部。
@@ -314,25 +391,28 @@ class AssetsBinService:
             return self.decode_path(path)
 
     def decode_path_json(self, path: str) -> str:
-        """解码指定路径为 JSON 字符串。"""
-        set_wows_type(self._wows_type)
-        f = self.vfs.get_file(path)
-        if f is None:
-            raise AssetsBinError(f"虚拟文件不存在: {path}")
-        if f.prototype_type is None:
-            raise AssetsBinError(f"未知 prototype 类型: {path}")
-        data = self.vfs.open_file(path)
-        return decode_prototype_to_json(data, self.db, f.prototype_type)
+        """解码指定路径为 JSON 字符串（解码后恢复线程类型上下文）。"""
+        from .types import wows_type_context
+        with wows_type_context(self._wows_type):
+            f = self.vfs.get_file(path)
+            if f is None:
+                raise AssetsBinError(f"虚拟文件不存在: {path}")
+            if f.prototype_type is None:
+                raise AssetsBinError(f"未知 prototype 类型: {path}")
+            data = self.vfs.open_file(path)
+            return decode_prototype_to_json(data, self.db, f.prototype_type)
 
     def decode_material_by_path(self, path: str) -> dict:
         """按路径解码 MFM 材质（对齐 wows-toolkit `--parse-material` / `parse_mfm_from_db`）。"""
-        f = self.vfs.get_file(path)
-        if f is None:
-            raise AssetsBinError(f"虚拟文件不存在: {path}")
-        if f.prototype_type is None or f.prototype_type.name != "MaterialPrototype":
-            raise AssetsBinError(f"路径不是 MaterialPrototype: {path} ({f.prototype_type})")
-        data = self.vfs.open_file(path)
-        return decode_material(data, self.db)
+        from .types import wows_type_context
+        with wows_type_context(self._wows_type):
+            f = self.vfs.get_file(path)
+            if f is None:
+                raise AssetsBinError(f"虚拟文件不存在: {path}")
+            if f.prototype_type is None or f.prototype_type.name != "MaterialPrototype":
+                raise AssetsBinError(f"路径不是 MaterialPrototype: {path} ({f.prototype_type})")
+            data = self.vfs.open_file(path)
+            return decode_material(data, self.db)
 
     def decode_mfm_by_self_id(self, self_id: int) -> Optional[dict]:
         """按 selfId 反查并解码 MFM 材质（对齐 wows-toolkit `parse_mfm_from_db`）。"""

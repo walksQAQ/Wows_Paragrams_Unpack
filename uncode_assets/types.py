@@ -20,16 +20,19 @@ type_from_magic / item_size_for_blob 等自动按当前服务器查表；未设�
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
 
 class PrototypeType:
     """一种 prototype 类型（按 magic 唯一标识）。"""
 
-    __slots__ = ("name", "magic", "item_size", "blob_index", "description", "extensions")
+    __slots__ = ("name", "magic", "item_size", "blob_index", "description",
+                 "extensions", "header_size")
 
     def __init__(self, name: str, magic: int, item_size: int, blob_index: int,
-                 description: str = "", extensions: Tuple[str, ...] = ()):
+                 description: str = "", extensions: Tuple[str, ...] = (),
+                 header_size: int = 16):
         self.name = name
         self.magic = magic
         self.item_size = item_size
@@ -37,9 +40,12 @@ class PrototypeType:
         self.description = description
         #: 该类型虚拟文件的典型扩展名（2026-08-03 实测；可为空）
         self.extensions = extensions
+        #: blob 内记录区起始偏移（远古版本的材质是 0x20，其余 16）
+        self.header_size = header_size
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<PrototypeType {self.name} magic=0x{self.magic:08X} item=0x{self.item_size:X}>"
+        return (f"<PrototypeType {self.name} magic=0x{self.magic:08X} "
+                f"item=0x{self.item_size:X} hdr=0x{self.header_size:X}>")
 
 
 # ── Korabli 实测类型表（12 个，blob index 顺序为 Korabli 实测）──────────────
@@ -83,29 +89,96 @@ WG_TYPES: Tuple[PrototypeType, ...] = (
     PrototypeType("AtlasContourProto", 0xF64359AA, 0x10, 9, "图集轮廓", (".contours",)),
 )
 
+# ── 远古版本（2021 前后、未分家时期）类型表 ────────────────────────────────
+# 步长来自 `WorldOfWarships64.exe`（0.10.1.0）的类型注册代码（Ghidra 反编译）：
+#   FUN_140088010 MaterialPrototype → 0x58
+#   FUN_140088110 SkeletonPrototype → 0x40
+#   FUN_140088210 VisualPrototype   → 0x40
+#   FUN_140083560 ModelPrototype    → 0x40
+# 另实测（v20210216）：
+#   Model  parent@+0x00 / visual@+0x08 / extent@+0x10；
+#   Visual geometry 与 primitives 互换（+0x20 = .primitives，+0x28 = .geometry）；
+#   Material 0x58：fxPathId@+0x00、collisionFlags@+0x08、sortOrder@+0x0C、
+#   属性数/6 类计数按 u8 排在 +0x10..+0x17，8 个记录相对指针自 +0x18 起
+#   （详见 decoders._decode_material_legacy）。blob 头仍是 16 字节。
+LEGACY_TYPES: Tuple[PrototypeType, ...] = (
+    PrototypeType("MaterialPrototype", 0x5069C471, 0x58, 0,
+                  "材质属性表（远古版本 0x58；按值类型分组 + u8 类型索引）",
+                  (".mfm",)),
+    PrototypeType("SkeletonPrototype", 0xD9BB9F4A, 0x40, 1, "骨架系统（远古版本）", (".visual",)),
+    PrototypeType("VisualPrototype", 0x480DC57B, 0x40, 2,
+                  "渲染集合（远古版本 0x40；geometry@+0x28 / primitives@+0x20）", (".visual",)),
+    PrototypeType("ModelPrototype", 0xA9576F28, 0x40, 3,
+                  "模型引用（远古版本 0x40；parent@+0x00/visual@+0x08/extent@+0x10）", (".model",)),
+    PrototypeType("PointLightPrototype", 0x0D3665A4, 0x70, 4,
+                  "点光源（远古版本也存在；步长未验证）", (".point_light",)),
+    PrototypeType("EffectPrototype", 0xEB23E0AF, 0x10, 5, "粒子效果"),
+    PrototypeType("VelocityFieldPrototype", 0xAFD4A63F, 0x18, 6,
+                  "速度场（远古版本也存在；步长未验证）", (".velocity_field",)),
+    PrototypeType("EffectPresetPrototype", 0x42E15336, 0x10, 7, "粒子预设", (".effect_preset", ".xml")),
+)
+
 # ── 服务器上下文（thread-local；AssetsBinService 构造时 set_wows_type）─────
 _DEFAULT_WOWS_TYPE = "Lesta"
 _local = threading.local()
 
-#: 类型表缓存（按服务器名）
+#: 类型表缓存（按布局名）
 _TABLE_CACHE: Dict[str, Tuple[PrototypeType, ...]] = {
     "Lesta": KORABLI_TYPES,
     "Wargaming": WG_TYPES,
+    "Legacy": LEGACY_TYPES,
 }
 _MAGIC_CACHE: Dict[str, Dict[int, PrototypeType]] = {}
 _NAME_CACHE: Dict[str, Dict[str, PrototypeType]] = {}
 
 
 def set_wows_type(wows_type: str) -> None:
-    """设置当前线程的服务器类型表（'Wargaming'→WG_TYPES，其余→KORABLI_TYPES）。
+    """设置当前线程的布局（'Wargaming'→WG_TYPES，'Legacy'→LEGACY_TYPES，其余→KORABLI_TYPES）。
 
     ⚠️ 必须在解析 assets.bin / 查表**之前**调用（AssetsBinService 构造时自动设置）。
     """
-    _local.wows_type = "Wargaming" if wows_type == "Wargaming" else "Lesta"
+    _local.wows_type = (wows_type if wows_type in ("Wargaming", "Legacy")
+                        else "Lesta")
 
 
 def get_wows_type() -> str:
     return getattr(_local, "wows_type", _DEFAULT_WOWS_TYPE)
+
+
+def set_model_meta(meta: str) -> None:
+    """设置当前线程 `.model` 明文 ``<metaData>`` 的覆盖值（空串 = 用默认常量）。
+
+    该字段**不在二进制记录里**，是 SDK 导出器补的常量，且随版本变化：
+    未分家时期官方写 ``Wargaming | Lesta Studio``，之后寄服写 ``Wargaming.net``、
+    莱服写 ``Lesta Studio``（见 ``uncode_assets.parse_rules.model_meta_for_rule``）。
+    """
+    _local.model_meta = str(meta or "")
+
+
+def model_meta() -> str:
+    """当前线程的 ``<metaData>`` 覆盖值（空串 = 用解码器默认常量）。"""
+    return getattr(_local, "model_meta", "")
+
+
+@contextmanager
+def wows_type_context(wows_type: Optional[str] = None,
+                      model_meta: Optional[str] = None):
+    """临时切换当前线程的服务器类型（可选切 `model_meta`），退出后**恢复原值**。
+
+    用途：服务对象按自己的 ``wows_type`` 解码时，不应把调用方（可能是主程序 GUI
+    线程）的类型上下文改掉 —— 否则「assets.bin 浏览器里选了莱服/寄服」会污染
+    主程序的 ``get_wows_type()``。
+    """
+    prev = getattr(_local, "wows_type", _DEFAULT_WOWS_TYPE)
+    prev_meta = getattr(_local, "model_meta", "")
+    set_wows_type(wows_type or prev)
+    if model_meta is not None:
+        _local.model_meta = str(model_meta or "")
+    try:
+        yield
+    finally:
+        _local.wows_type = prev
+        _local.model_meta = prev_meta
 
 
 def _type_table(wows_type: Optional[str] = None) -> Tuple[PrototypeType, ...]:
