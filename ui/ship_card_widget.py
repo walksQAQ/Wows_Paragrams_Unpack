@@ -1,15 +1,16 @@
 """
 ShipCardWidget —— 卡片式舰船数据展示组件。
 
-仿照 iwarship.net 的卡片+表格设计：
-  ┌─────────────────────────────┐
-  │  存活性                     │  ← QGroupBox 标题
-  ├─────────────────────────────┤
-  │  血量                15,900 │  ← QTableWidget 键值行
-  │  鱼雷防护               1%  │
-  │  吨位              2,629吨  │
-  │  DOT数量      0 1 2 3 4 5 6│  ← 按钮组行
-  └─────────────────────────────┘
+卡片 = 圆角卡面 + 卡内「水晶棱角」标题框（标题不再挂在卡片外）：
+
+  ╭─────────────────────────────╮
+  │ 📋 基础属性                  ╲│  ← 标题框：底边细线 + 45° 斜切接回顶边
+  │──────────────────────────────│
+  │ 血量                15,900   │  ← QTableWidget 键值行
+  │ 鱼雷防护                1%   │
+  │ 吨位               2,629吨   │
+  │ DOT数量     0 1 2 3 4 5 6    │  ← 按钮组行
+  ╰─────────────────────────────╯
 
 支持响应式网格排列。
 """
@@ -22,8 +23,10 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QLabel, QButtonGroup,
     QSizePolicy, QScrollArea, QApplication, QToolTip, QFrame,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QColor, QCursor, QFontMetrics
+from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QRectF
+from PySide6.QtGui import (
+    QFont, QColor, QCursor, QFontMetrics, QPainter, QPen, QPolygonF, QPainterPath,
+)
 
 from app.signals import bus
 from utils.theme import theme
@@ -31,47 +34,58 @@ from utils.theme import theme
 
 # ── 样式常量（动态求值，主题切换后生效） ─────────────────
 
+#: 卡片圆角半径
+CARD_RADIUS = 8
+#: 卡片顶边框的 y（= QSS margin-top）：标题框横跨在这条线上
+CARD_EDGE_Y = 14
+#: 棱角标题框：左端起始 x / 顶边 y / 底边 y / 右下 45° 切角长度
+CARD_PLATE_LEFT = 14
+CARD_PLATE_TOP = 3
+CARD_PLATE_BOTTOM = 25
+CARD_PLATE_CHAMFER = 9
+#: 标题文字左边距（QSS ::title 的 left）
+CARD_TITLE_LEFT = 20
+
+
 def card_style() -> str:
-    # 选择器必须写 `QGroupBox`（类型选择器含子类）而不是 `ShipCardWidget QGroupBox`：
-    # 后者要求祖先链上有 ShipCardWidget，卡片自身反而命中不了，卡片底色/圆角失效。
-    #
-    # 标题画在卡片**内部**（subcontrol-origin: padding），靠 padding-top 给它让出位置：
-    #   · 标题落在卡面上，同色不冲突，不需要给标题单独铺底（铺了就是一块白框）
-    #   · 不会压在边框线上，顶边线完整
-    #   · 卡片外不再有悬空的标题带，卡片=一个完整的圆角面板
-    return theme.qss("""
-        QGroupBox {
-            background: @card_bg@;
-            border: 1px solid @border@;
-            border-radius: 8px;
-            margin-top: 0px;
-            padding: 32px 12px 6px 12px;
-            font-size: 12px;
+    # 卡面与边框全部由 CardFrame.paintEvent 自绘，这里只留排版内边距：
+    #   · 标题框要「跨」在卡片顶边框上，并把那一段边框线遮掉——QSS 画不出缺口
+    #   · 标题文字仍由 QSS 的 ::title 绘制（字体/度量交给 Qt），背景透明
+    #   · margin-top 让出边框上方的标题框上半截，padding-top 让出下半截给内容
+    return theme.qss(f"""
+        QGroupBox {{
+            background: transparent;
+            border: none;
+            margin-top: {CARD_EDGE_Y}px;
+            padding: {(CARD_PLATE_BOTTOM - CARD_EDGE_Y) + 5}px 12px 6px 12px;
+            font-size: 11px;
             font-weight: bold;
             color: @text@;
-        }
-        QGroupBox::title {
-            subcontrol-origin: padding;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 13px;
-            padding: 10px 0px 6px 0px;
+            left: {CARD_TITLE_LEFT}px;
+            padding: 6px 0px 0px 0px;
             background: transparent;
             color: @text@;
-        }
-        /* 无标题卡片（作为父卡片的续行容器）：不画标题带与边框，
-           否则父卡片内部会多出一条空底条和第二重边框 */
-        QGroupBox[untitled="true"] {
+        }}
+        /* 无标题卡片（作为父卡片的续行容器）：不画卡面、不占标题位 */
+        QGroupBox[untitled="true"] {{
             background: transparent;
             border: none;
             margin-top: 0px;
             padding: 6px 0px 4px 0px;
-        }
+        }}
     """)
 
 
 CARD_STYLE = card_style()
 
-TABLE_STYLE = """
+
+def table_style() -> str:
+    """卡片内键值表格样式（每次求值，主题切换后重新应用）。"""
+    return theme.qss("""
     QTableWidget {
         border: none;
         background: transparent;
@@ -82,7 +96,7 @@ TABLE_STYLE = """
         selection-background-color: transparent;
     }
     QTableWidget::item {
-        padding: 2px 12px;
+        padding: 2px 0px;
         border-bottom: 1px solid @border@;
         min-height: 18px;
     }
@@ -93,7 +107,8 @@ TABLE_STYLE = """
     QTableWidget::item:selected {
         background: transparent;
     }
-"""
+    """)
+
 
 # 右列数值「点击复制」的行：左列标签 → 命中即启用复制（如「舰船 ID」）
 COPYABLE_LABELS: tuple[str, ...] = (
@@ -176,7 +191,129 @@ def firing_arc_tooltip(fa: dict) -> str:
     return "\n".join(tips)
 
 
-class ShipCardWidget(QGroupBox):
+class CardFrame(QGroupBox):
+    """卡片基座：圆角卡面 + 横跨顶边框的「水晶棱角」标题框。
+
+    标题框不是贴在卡内，而是**跨在卡片顶边框上**（一截在卡外、一截在卡内），
+    底边是卡内的一条细线，右端 45° 切角，左端不贴卡片左边框而是内缩一段：
+    · 卡面/边框由本控件自绘，顶边框在标题框范围内留出缺口（QSS 画不出缺口）
+    · 标题文字仍交给 QSS 的 ::title，字体与度量由 Qt 负责
+    · 卡内那半个标题框铺一层极淡信号色，读作棱晶片的折射面
+    · 底边左端一小段信号色锚点，与全息面板的左缘锚点同一套语言
+    """
+
+    def __init__(self, title: str = "", parent=None):
+        super().__init__(parent)
+        self.setProperty("class", "ShipCardWidget")
+        text = (title or "").strip()
+        self.setTitle(text)
+        if not text:
+            # 属性必须在 setStyleSheet 之前设好，QSS 属性选择器才会命中
+            self.setProperty("untitled", True)
+        self.setStyleSheet(card_style())
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+    # ── 标题框几何 ──────────────────────────────────────
+
+    def _plate_end(self) -> float:
+        """标题框右端 x：文字右缘 + 余量，并保证切角后仍在卡内。"""
+        fm = QFontMetrics(self.font())
+        return min(CARD_TITLE_LEFT + fm.horizontalAdvance(self.title()) + 9,
+                   self.width() - CARD_RADIUS - CARD_PLATE_CHAMFER - 6)
+
+    def _body_path(self) -> QPainterPath:
+        rect = QRectF(0.5, CARD_EDGE_Y + 0.5,
+                      self.width() - 1.0, self.height() - CARD_EDGE_Y - 1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, CARD_RADIUS, CARD_RADIUS)
+        return path
+
+    def paintEvent(self, event):
+        titled = bool(self.title().strip())
+        if not titled:
+            super().paintEvent(event)
+            return
+
+        x_end = self._plate_end()
+        pl = CARD_PLATE_LEFT
+        if x_end <= pl + 20 or self.height() <= CARD_PLATE_BOTTOM + 4:
+            super().paintEvent(event)
+            return
+
+        # 1) 卡面（半透明皮肤也能透出背景）+ 标题框在卡内的折射底面
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.qcolor("card_bg")))
+        p.drawPath(self._body_path())
+
+        y0 = CARD_EDGE_Y + 0.5
+        pb = CARD_PLATE_BOTTOM
+        ch = CARD_PLATE_CHAMFER
+        facet = QColor(theme.qcolor("accent"))
+        facet.setAlphaF(0.10 if theme.dark else 0.05)
+        p.setBrush(facet)
+        p.drawPolygon(QPolygonF([
+            QPointF(pl, y0), QPointF(x_end, y0),
+            QPointF(x_end, pb - ch), QPointF(x_end - ch, pb), QPointF(pl, pb),
+        ]))
+        p.end()
+
+        # 2) 交给 QGroupBox 画标题文字（QSS 里卡面与边框已设为 transparent/none）
+        super().paintEvent(event)
+
+        # 3) 描边：卡片边框（顶边在标题框处断开）+ 棱角标题框
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(theme.qcolor("border")), 1.0)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        r = CARD_RADIUS
+        right, bottom = self.width() - 0.5, self.height() - 0.5
+        border = QPainterPath()
+        # 顶边左段（卡片左边框 → 标题框左端）
+        border.moveTo(0.5, y0 + r)
+        border.arcTo(QRectF(0.5, y0, 2 * r, 2 * r), 180, -90)
+        border.lineTo(pl, y0)
+        # 顶边右段（标题框右端 → 卡片右边框）
+        border.moveTo(x_end, y0)
+        border.lineTo(right - r, y0)
+        border.arcTo(QRectF(right - 2 * r, y0, 2 * r, 2 * r), 90, -90)
+        border.lineTo(right, bottom - r)
+        border.arcTo(QRectF(right - 2 * r, bottom - 2 * r, 2 * r, 2 * r), 0, -90)
+        border.lineTo(0.5 + r, bottom)
+        border.arcTo(QRectF(0.5, bottom - 2 * r, 2 * r, 2 * r), 270, -90)
+        border.lineTo(0.5, y0 + r)
+        p.drawPath(border)
+
+        # 标题框：闭合的棱晶片，右下斜切 45°
+        plate = QPainterPath()
+        plate.moveTo(pl, CARD_PLATE_TOP)
+        plate.lineTo(x_end, CARD_PLATE_TOP)
+        plate.lineTo(x_end, pb - ch)
+        plate.lineTo(x_end - ch, pb)
+        plate.lineTo(pl, pb)
+        plate.closeSubpath()
+        p.drawPath(plate)
+
+        # 斜切内侧再画一条平行棱线，窄窄一道斜面才像晶体而不是普通切角
+        bevel = QPen(pen.color(), 1.0)
+        c = QColor(pen.color())
+        c.setAlphaF(0.55)
+        bevel.setColor(c)
+        p.setPen(bevel)
+        p.drawLine(QPointF(x_end - 4, pb - ch), QPointF(x_end - ch - 4, pb))
+
+        # 底边左端信号色锚点
+        anchor = QPen(QColor(theme.qcolor("accent")), 2.0)
+        anchor.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(anchor)
+        p.drawLine(QPointF(pl + 4, pb), QPointF(max(pl + 4, min(pl + 20, x_end - ch - 6)), pb))
+        p.end()
+
+
+class ShipCardWidget(CardFrame):
     """单张数据卡片，包含标题和键值表格"""
 
     firing_arc_clicked = Signal(dict)
@@ -198,27 +335,17 @@ class ShipCardWidget(QGroupBox):
             action: 卡片最下方动作行（{"label": 左列标题, "text": 按钮文字,
                     "tooltip", "data"}），点击发射 action_clicked(data)
         """
-        super().__init__(parent)
-        self.setProperty("class", "ShipCardWidget")
-        self._adjusting = False
-
-        # 标题（含图标）
         label = section.get("label", "")
         icon = section.get("icon", "") or SECTION_ICONS.get(label, "")
-        title = f"  {icon} {label}" if icon else f"  {label}"
-        self.setTitle(title)
-        if not label:
-            # 属性须在 setStyleSheet 前设好，QSS 属性选择器才会命中
-            self.setProperty("untitled", True)
-        self.setStyleSheet(card_style())
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        super().__init__(f"{icon} {label}".strip() if icon else label, parent)
+        self._adjusting = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 0)
         layout.setSpacing(0)
 
         self._table = QTableWidget()
-        self._table.setStyleSheet(TABLE_STYLE)
+        self._table.setStyleSheet(table_style())
         self._table.setColumnCount(2)
         self._table.setShowGrid(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -611,9 +738,9 @@ class ShipCardWidget(QGroupBox):
         for child in self.children():
             if isinstance(child, QPushButton):
                 extra_h += child.sizeHint().height() + 6
-        # 38 = 卡内标题带(padding-top 32) + 下内边距 6
-        # 无标题卡片 QSS 去掉了标题带，只留 10（上 6 + 下 4）
-        card_height = height + (10 if self.property("untitled") else 38) + extra_h
+        # 38 = 顶边框上方标题框上半截(14) + 卡内标题带(16) + 布局上边距 2 + 下内边距 6
+        # 无标题卡片 QSS 没有标题位，只留 12（上 6 + 布局 2 + 下 4）
+        card_height = height + (12 if self.property("untitled") else 38) + extra_h
         self.setFixedHeight(card_height)
         self._adjusting = False
 

@@ -118,11 +118,11 @@ class WargamingDetailPanel(DetailPanel):
         _wg_talent_layout.setContentsMargins(0, 0, 0, 0); _wg_talent_layout.setSpacing(4)
         _wg_talent_layout.addStretch()
         _WG_UNIQUE_BTN = theme.qss("""
-            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
+            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_plate@;
                           border-radius:6px; min-width:52px; min-height:52px;
                           max-width:52px; max-height:52px;
-                          font-size:9px; color:@gold@; padding:0px; }
-            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_hi@; }
+                          font-size:9px; color:@gold_plate@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_plate_hi@; }
         """)
 
         def _wg_rebuild(crew_id: str):

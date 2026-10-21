@@ -76,7 +76,7 @@ class CrewCustomizeDialog(HoloDialog):
             QDialog { background:@window_bg@; color:@text@; }
             QLabel { color:@text@; font-size:12px; }
             QGroupBox { border:1px solid @border@; border-radius:4px; margin-top:12px;
-                        font-size:12px; color:@gold@; padding-top:12px; }
+                        font-size:12px; color:@gold_surface@; padding-top:12px; }
             QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px; }
             QComboBox { background:@input_bg@; border:1px solid @border@; border-radius:3px;
                         padding:3px 6px; color:@text@; font-size:11px; }
@@ -91,7 +91,7 @@ class CrewCustomizeDialog(HoloDialog):
         # ── 当前舰长信息 ──
         info = QLabel(f"当前: {self._crew_data.get('disp', '未知')}")
         info.setStyleSheet(theme.qss(
-            "font-size:14px; font-weight:bold; color:@gold@; padding:4px 0;"))
+            "font-size:14px; font-weight:bold; color:@gold_surface@; padding:4px 0;"))
         layout.addWidget(info)
 
         crew_id = self._crew_data.get('crew_id', '')
@@ -272,7 +272,7 @@ class CrewCustomizeDialog(HoloDialog):
                         header = QLabel(f"✦ {lname}")
                         header.setWordWrap(False)
                         header.setStyleSheet(theme.qss(
-            "color:@gold@; font-size:12px; font-weight:bold; padding:4px 0 2px 0;"))
+            "color:@gold_surface@; font-size:12px; font-weight:bold; padding:4px 0 2px 0;"))
                         sc_layout.addWidget(header)
                         for t in ltalents:
                             t = dict(t)  # sqlite3.Row → dict
@@ -306,11 +306,11 @@ class CrewCustomizeDialog(HoloDialog):
                                     background: @panel_alt@;
                                 }
                                 QCheckBox::indicator:checked {
-                                    background: @gold@;
-                                    border-color: @gold_hi@;
+                                    background: @gold_surface@;
+                                    border-color: @gold_plate@;
                                 }
                                 QCheckBox::indicator:hover {
-                                    border-color: @gold@;
+                                    border-color: @gold_plate_hi@;
                                 }
                             """))
                             hl.addWidget(cb)
@@ -648,11 +648,11 @@ class CrewCustomizeDialog(HoloDialog):
                     background: @panel_alt@;
                 }
                 QCheckBox::indicator:checked {
-                    background: @gold@;
-                    border-color: @gold_hi@;
+                    background: @gold_surface@;
+                    border-color: @gold_plate@;
                 }
                 QCheckBox::indicator:hover {
-                    border-color: @gold@;
+                    border-color: @gold_plate_hi@;
                 }
             """))
             cb.stateChanged.connect(lambda checked, k=sk, c=cb: self._on_epic_toggle(k, checked, c))

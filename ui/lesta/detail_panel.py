@@ -379,11 +379,11 @@ class LestaDetailPanel(DetailPanel):
         self._crew_customize_btn.setToolTip("自定义舰长技能/天赋")
         # 图标按钮：深色仪器面 + 琥珀金边（尺寸与原版一致）
         self._crew_customize_btn.setStyleSheet(theme.qss("""
-            QPushButton { background:@icon_btn_bg@; border:1px solid @gold_border@;
+            QPushButton { background:@icon_btn_bg@; border:1px solid @gold_plate@;
                           border-radius:3px;
                           min-width:24px; max-width:24px; min-height:24px; max-height:24px;
-                          font-size:13px; color:@gold@; padding:0px; }
-            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_hi@; }
+                          font-size:13px; color:@gold_plate@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_plate_hi@; }
             QPushButton:disabled { background:@icon_btn_bg@; border-color:@border@;
                                    color:@icon_btn_text_dim@; }
         """))
@@ -445,7 +445,7 @@ class LestaDetailPanel(DetailPanel):
         if legends:
             for cd in legends:
                 self._crew_data.append(cd)
-                _model.appendRow(_colored_item(f"★ {cd['disp']}", theme["gold"]))
+                _model.appendRow(_colored_item(f"★ {cd['disp']}", theme["gold_surface"]))
 
         # ── 精英舰长（自定义入口，红色） ──
         elite_entry = {
@@ -1174,12 +1174,12 @@ class LestaDetailPanel(DetailPanel):
 
                         # 传奇/特殊天赋：琥珀金边的深色仪器面（尺寸与原版一致）
                         UNIQUE_BTN = theme.qss("""
-                            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
+                            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_plate@;
                                           border-radius:6px; min-width:52px; min-height:52px;
                                           max-width:52px; max-height:52px;
-                                          font-size:9px; color:@gold@; padding:0px; }
+                                          font-size:9px; color:@gold_plate@; padding:0px; }
                             QPushButton:hover { background:@icon_btn_bg_hover@;
-                                                border-color:@gold_hi@; }
+                                                border-color:@gold_plate_hi@; }
                         """)
                         for sk in skills:
                             skey = sk['skill_key']
@@ -1374,12 +1374,12 @@ class LestaDetailPanel(DetailPanel):
                                 from PySide6.QtCore import QSize as _QS
                                 _tbtn = QPushButton()
                                 _tbtn.setStyleSheet(theme.qss("""
-                                    QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
+                                    QPushButton { background:@icon_btn_bg@; border:2px solid @gold_plate@;
                                                   border-radius:6px; min-width:52px; min-height:52px;
                                                   max-width:52px; max-height:52px;
-                                                  font-size:9px; color:@gold@; padding:0px; }
+                                                  font-size:9px; color:@gold_plate@; padding:0px; }
                                     QPushButton:hover { background:@icon_btn_bg_hover@;
-                                                        border-color:@gold_hi@; }
+                                                        border-color:@gold_plate_hi@; }
                                 """))
                                 _tpath = _trow2['icon_path'] or ""
                                 if _tpath and _P(_tpath).exists():

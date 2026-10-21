@@ -353,6 +353,16 @@ _SKIN_CYRENE = {
 #  角色皮肤注册表
 # ─────────────────────────────────────────────────────────────
 
+# ── 固定金色（不随主题 / 皮肤变化）──────────────────────────
+# 「稀有 / 强化 / 自定义」这类金色入口专用。它们要求金色本身稳定：
+#   · 深色仪器面上的图标与描边用亮琥珀（浅色主题下 @gold@ 是土黄，压不住深底）
+#   · 浅色卡面上的文字用深一档的琥珀（亮琥珀在白底上几乎看不清）
+# 以额外 token 形式并入 theme.colors，QSS 里可直接写 @gold_plate@ 等。
+GOLD_ON_PLATE = "#FFC107"
+GOLD_ON_PLATE_HI = "#FFD54F"
+GOLD_ON_SURFACE = "#CC6600"
+
+
 @dataclass(frozen=True)
 class SkinSpec:
     """一套「角色皮肤」的注册信息。
@@ -494,6 +504,12 @@ class _Theme:
             self.mode = mode
         self.dark = detect_dark_mode(self.mode)
         self.colors = dict(self._palette())
+        # 固定金色：三套调色板共用的额外 token（不随明暗/皮肤变化）
+        self.colors.update({
+            "gold_plate": GOLD_ON_PLATE,
+            "gold_plate_hi": GOLD_ON_PLATE_HI,
+            "gold_surface": GOLD_ON_SURFACE,
+        })
 
     def set_mode(self, mode: str) -> None:
         """显式设置主题模式并立即刷新颜色表。"""
