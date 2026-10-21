@@ -32,9 +32,8 @@ class SciFiButton(QPushButton):
         self._hover = False
 
         f = QFont(self.font())
-        f.setFamilies(["Consolas", "Cascadia Mono", "Microsoft YaHei UI", "Microsoft YaHei"])
+        f.setFamilies(["Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"])
         f.setPointSize(9)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
         self.setFont(f)
         _LIVE.add(self)
 
@@ -83,7 +82,7 @@ class SciFiButton(QPushButton):
 
     # ── 绘制 ─────────────────────────────────────────────
     def paintEvent(self, e) -> None:  # noqa: N802
-        from ui.widgets.scifi_panel import paint_frame_strokes
+        from ui.widgets.scifi_panel import paint_chamfer_frame
 
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -93,41 +92,40 @@ class SciFiButton(QPushButton):
         active = self.isChecked() or self.isDown()
         hovered = self._hover and enabled
 
-        # 1) 底：半透明金属薄片（上亮下暗，给按钮一点实体感）
+        # 1) 底：深蓝薄片（上亮下暗），选中时换成冰蓝调
         if not enabled:
             base = QColor(theme["panel_bg"])
-            base.setAlphaF(0.35)
+            base.setAlphaF(0.40)
             p.fillPath(path, base)
         else:
             if active:
                 top_c = QColor(theme.qcolor("accent"))
-                top_c.setAlphaF(0.26)
+                top_c.setAlphaF(0.30)
                 bot_c = QColor(theme.qcolor("accent"))
-                bot_c.setAlphaF(0.10)
+                bot_c.setAlphaF(0.12)
             elif hovered:
                 top_c = QColor(theme["hover_bg"])
                 bot_c = QColor(theme["hover_bg"])
-                bot_c.setAlphaF(0.55)
+                bot_c.setAlphaF(0.60)
             else:
                 top_c = QColor(theme.qcolor("metal_hi"))
-                top_c.setAlphaF(0.13 if theme.dark else 0.55)
+                top_c.setAlphaF(0.10 if theme.dark else 0.55)
                 bot_c = QColor(theme.qcolor("metal_lo"))
-                bot_c.setAlphaF(0.05 if theme.dark else 0.18)
+                bot_c.setAlphaF(0.04 if theme.dark else 0.16)
             grad = QLinearGradient(QPointF(0, 0), QPointF(0, self.height()))
             grad.setColorAt(0.0, top_c)
             grad.setColorAt(1.0, bot_c)
             p.fillPath(path, QBrush(grad))
 
-        # 2) 边：光晕 → 银 → 蓝芯
-        strokes = self._frame_strokes()
+        # 2) 边：切角细线 + 微弱辉光
         if enabled:
-            paint_frame_strokes(p, strokes, halo_width=4.0, core_width=1.6)
+            paint_chamfer_frame(p, QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                float(self.CHAMFER), glow=hovered or active)
         else:
             dull = QColor(theme["border"])
             p.setPen(QPen(dull, 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            for s in strokes:
-                p.drawPolyline(s)
+            p.drawPath(path)
 
         # 3) 左侧信号光条：悬停 / 选中时亮起
         if enabled and (hovered or active):
@@ -142,7 +140,7 @@ class SciFiButton(QPushButton):
         elif active:
             p.setPen(QColor(theme.qcolor("accent_hi")))
         elif hovered:
-            p.setPen(QColor(theme["text"]))
+            p.setPen(QColor(theme.qcolor("accent")))
         else:
             p.setPen(QColor(theme["text"]))
         p.setFont(self.font())

@@ -122,13 +122,14 @@ class TopToolbar(QWidget):
         layout.addWidget(self.crystal_mark)
         layout.addSpacing(6)
 
-        self.brand_label = QLabel("WOWS PARAGRAMS")
+        self.brand_label = QLabel("Wows Paragrams Unpack")
         _bf = QFont(self.brand_label.font())
-        _bf.setFamilies(["Consolas", "Cascadia Mono", "Microsoft YaHei UI"])
-        _bf.setPointSize(9)
+        _bf.setFamilies(["Microsoft YaHei UI", "Segoe UI"])
+        _bf.setPointSize(11)
         _bf.setBold(True)
-        _bf.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2.2)
+        _bf.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
         self.brand_label.setFont(_bf)
+        self.brand_label.setToolTip("战舰世界数据解析与可视化工具")
         theme.bind(self.brand_label, "color:@text@; background:transparent; border:none;")
         layout.addWidget(self.brand_label)
 

@@ -85,6 +85,102 @@ def _rect_path(r: QRectF) -> QPainterPath:
     return path
 
 
+def chamfer_rect_path(r: QRectF, chamfer: float = 18.0) -> QPainterPath:
+    """左上 / 右下 45° 切角的矩形路径（参考图里面板与窗口的统一轮廓）。"""
+    c = max(0.0, min(chamfer, r.width() / 3, r.height() / 3))
+    p = QPainterPath()
+    p.moveTo(r.left() + c, r.top())
+    p.lineTo(r.right(), r.top())
+    p.lineTo(r.right(), r.bottom() - c)
+    p.lineTo(r.right() - c, r.bottom())
+    p.lineTo(r.left(), r.bottom())
+    p.lineTo(r.left(), r.top() + c)
+    p.closeSubpath()
+    return p
+
+
+def paint_chamfer_frame(p: QPainter, r: QRectF, chamfer: float = 18.0,
+                       *, glow: bool = True) -> QPainterPath:
+    """画一层切角细线框：外侧弱辉光 + 1px 冰蓝线 + 切角描亮。"""
+    path = chamfer_rect_path(r, chamfer)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+
+    if glow:
+        halo = QPen(_with_alpha(theme.qcolor("light_halo"), 0.45), 3.0)
+        halo.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        p.setPen(halo)
+        p.drawPath(path)
+
+    p.setPen(QPen(theme.qcolor("panel_frame"), 1.0))
+    p.drawPath(path)
+
+    hi = QPen(theme.qcolor("panel_frame_hi"), 1.4)
+    hi.setCapStyle(Qt.PenCapStyle.FlatCap)
+    p.setPen(hi)
+    c = max(0.0, min(chamfer, r.width() / 3, r.height() / 3))
+    p.drawLine(QPointF(r.left() + c, r.top()), QPointF(r.left(), r.top() + c))
+    p.drawLine(QPointF(r.right(), r.bottom() - c), QPointF(r.right() - c, r.bottom()))
+    return path
+
+
+def _draw_corner_crystal(p: QPainter, center: QPointF, s: float,
+                         edge: QColor, body: QColor) -> None:
+    """窗口角的晶体装饰：多面体 + 内部折射线（参考图四角的发光晶体）。
+
+    只在工作区四角各放一个，不进入任何控件内部——保持「克制点缀」。
+    """
+    cx, cy = center.x(), center.y()
+    p.save()
+
+    # 主体：拉长的六边形
+    path = QPainterPath()
+    path.moveTo(cx, cy - s)
+    path.lineTo(cx + s * 0.62, cy - s * 0.35)
+    path.lineTo(cx + s * 0.52, cy + s * 0.62)
+    path.lineTo(cx, cy + s)
+    path.lineTo(cx - s * 0.52, cy + s * 0.62)
+    path.lineTo(cx - s * 0.62, cy - s * 0.35)
+    path.closeSubpath()
+
+    fill = QColor(body)
+    fill.setAlphaF(0.20 if theme.dark else 0.28)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(fill)
+    p.drawPath(path)
+
+    # 内部切面：一条竖直棱 + 两条斜棱，形成折射感
+    facet = QColor(body)
+    facet.setAlphaF(0.34 if theme.dark else 0.40)
+    p.setBrush(facet)
+    left = QPainterPath()
+    left.moveTo(cx, cy - s)
+    left.lineTo(cx, cy + s)
+    left.lineTo(cx - s * 0.52, cy + s * 0.62)
+    left.lineTo(cx - s * 0.62, cy - s * 0.35)
+    left.closeSubpath()
+    p.drawPath(left)
+
+    hi = QColor(edge)
+    hi.setAlphaF(0.30)
+    p.setBrush(hi)
+    top = QPainterPath()
+    top.moveTo(cx, cy - s)
+    top.lineTo(cx + s * 0.62, cy - s * 0.35)
+    top.lineTo(cx, cy - s * 0.05)
+    top.closeSubpath()
+    p.drawPath(top)
+
+    # 棱线
+    line = QColor(edge)
+    line.setAlphaF(0.85 if theme.dark else 0.70)
+    p.setPen(QPen(line, 1.0))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+    p.drawLine(QPointF(cx, cy - s), QPointF(cx, cy + s))
+    p.drawLine(QPointF(cx - s * 0.62, cy - s * 0.35), QPointF(cx + s * 0.62, cy - s * 0.35))
+    p.restore()
+
+
 def frame_strokes(r: QRectF, *, chamfer: float = 16.0,
                   gap_ratio: float = 0.42) -> list[list[QPointF]]:
     """科幻「角标式」框：四条边各画一段，边中留缺口。
@@ -187,6 +283,7 @@ class SciFiPanel(QFrame):
     HUD_REST = 0.40
     GLOW_RINGS = 3
     MARGIN = 4          # 外圈预留：辉光 3 圈 + HUD 悬停外扩 2px
+    MIN_CHAMFER = 16    # 切角下限：太小就看不出「切角」这个语言了
     BREATH_MS = 4000
     BREATH_AMP = 0.06
 
@@ -228,7 +325,7 @@ class SciFiPanel(QFrame):
     def content_margins(self) -> tuple[int, int, int, int]:
         """推荐给内部 layout 的边距：避开辉光环带与切角。"""
         m = self.MARGIN + 1
-        c = self._chamfer // 2 if self._active() else 0
+        c = max(self._chamfer, self.MIN_CHAMFER) // 2 if self._active() else 0
         return (m + 2, m + c, m + 2, m + c)
 
     def set_glow(self, glow: bool) -> None:
@@ -289,7 +386,8 @@ class SciFiPanel(QFrame):
         """全息面板的填充轮廓：对角切角（左上 + 右下），不带圆角。"""
         r = r.adjusted(inset, inset, -inset, -inset)
         base = self._chamfer if chamfer is None else chamfer
-        c = max(0.0, min(base, r.width() / 3, r.height() / 3))
+        base = max(base, self.MIN_CHAMFER)
+        c = max(0.0, min(base, r.width() / 4, r.height() / 4))
         p = QPainterPath()
         p.moveTo(r.left() + c, r.top())
         p.lineTo(r.right(), r.top())
@@ -339,60 +437,60 @@ class SciFiPanel(QFrame):
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = self._panel_rect()
+        path = self._chamfer_path(r)
 
-        # 1) 近透明全息底：网格与背景透上来，面板本身几乎不挡视线
-        path = self._chamfer_path(r, inset=0.0, chamfer=10.0)
-        p.fillPath(path, theme.qcolor("holo_panel"))
+        # 1) 面板底：深蓝半透明，网格与背后的光带能透上来
+        p.fillPath(path, theme.qcolor("panel_fill"))
 
-        # 2) 银色金属：单条 45° 的反光斜带（不是整块银色，只留一道冷光）
+        # 2) 内部斜向微光：左上略亮、右下略暗，制造一点点体积
         p.save()
         p.setClipPath(path)
         sheen = QLinearGradient(r.topLeft(), r.bottomRight())
-        sa = QColor(theme.qcolor("metal_hi"))
-        sa.setAlphaF(0.09 if theme.dark else 0.45)
-        sb = QColor(theme.qcolor("metal_hi"))
+        sa = QColor(theme.qcolor("accent"))
+        sa.setAlphaF(0.055 if theme.dark else 0.035)
+        sb = QColor(theme.qcolor("accent"))
         sb.setAlphaF(0.0)
         sheen.setColorAt(0.0, sa)
-        sheen.setColorAt(0.42, sb)
-        sheen.setColorAt(0.58, sa)
-        sheen.setColorAt(1.0, sb)
+        sheen.setColorAt(0.55, sb)
+        sheen.setColorAt(1.0, sa)
         p.fillPath(path, QBrush(sheen))
         p.restore()
 
-        # 3) 角标式框：四边各画一段，边中留缺口（金属 + 蓝光三层描边）
-        strokes = frame_strokes(r, chamfer=max(14.0, min(22.0, r.height() / 5)))
-        paint_frame_strokes(p, strokes, halo_width=5.0, core_width=2.0)
+        # 3) 边框：1px 冰蓝细线 + 外侧 3px 弱辉光（参考图的轮廓就是一条细线）
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        halo = QPen(_with_alpha(theme.qcolor("light_halo"), 0.45), 3.0)
+        halo.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        p.setPen(halo)
+        p.drawPath(path)
 
-        # 4) 顶边刻度：一排短竖线，模拟仪表刻度（只在够宽的画布上出现）
-        if r.width() > 240 and r.height() > 110:
-            tick = QColor(theme.qcolor("metal_mid"))
-            tick.setAlphaF(0.40 if theme.dark else 0.50)
-            p.setPen(QPen(tick, 1))
-            x = r.left() + r.width() * 0.58
-            x_end = min(x + 8 * 7.0, r.right() - 70)
-            i = 0
-            while x < x_end:
-                h = 5.0 if i % 3 == 0 else 3.0
-                p.drawLine(QPointF(x, r.top()), QPointF(x, r.top() + h))
-                x += 7.0
-                i += 1
+        frame = QPen(theme.qcolor("panel_frame"), 1.0)
+        p.setPen(frame)
+        p.drawPath(path)
 
-        # 5) 顶部定位光段：顶边中间一小段高亮，标出「投射起点」
-        c = max(14.0, min(22.0, r.height() / 5))
-        loc = QPen(_with_alpha(theme.qcolor("accent"), 0.95), 1)
-        loc.setCapStyle(Qt.PenCapStyle.FlatCap)
-        p.setPen(loc)
-        mid0 = r.left() + r.width() * 0.40
-        p.drawLine(QPointF(mid0, r.top()), QPointF(mid0 + 30, r.top()))
+        # 4) 切角描亮：两条 45° 边用高亮色，标出面板的「光学入口」
+        hi = QPen(theme.qcolor("panel_frame_hi"), 1.4)
+        hi.setCapStyle(Qt.PenCapStyle.FlatCap)
+        p.setPen(hi)
+        c = max(0.0, min(self._chamfer, r.width() / 3, r.height() / 3))
+        p.drawLine(QPointF(r.left() + c, r.top()), QPointF(r.left(), r.top() + c))
+        p.drawLine(QPointF(r.right(), r.bottom() - c), QPointF(r.right() - c, r.bottom()))
+
+        # 5) 左缘定位锚点：切角下方一小段高亮，代替整条标题线（不压内容）
+        if r.height() > 90:
+            anchor = QColor(theme.qcolor("accent"))
+            anchor.setAlphaF(0.75)
+            p.setPen(QPen(anchor, 1.6))
+            y0 = r.top() + c + 8
+            p.drawLine(QPointF(r.left(), y0), QPointF(r.left(), min(y0 + 22, r.bottom() - c - 8)))
 
         # 6) 晶体切面（关键位置才用）
         if self._crystal:
-            _draw_facet(p, QPointF(r.left() + c + 8, r.top() + 4.5), 4.2,
+            _draw_facet(p, QPointF(r.left() + c + 10, r.top() + 5.0), 4.4,
                         theme.qcolor("crystal_edge"), theme.qcolor("crystal"))
 
         # 7) 昔涟点缀（静态晶体切面）
         if self._spark:
-            _draw_spark(p, QPointF(r.right() - 14, r.top() + 10), 4.0,
+            _draw_spark(p, QPointF(r.right() - 14, r.top() + 12), 4.0,
                         theme.qcolor("spark_violet" if self._spark == "violet" else "spark_pearl"))
         p.end()
         return pm
@@ -447,10 +545,12 @@ class SciFiPanel(QFrame):
 class HoloBackdrop(QWidget):
     GRID = 32
 
-    def __init__(self, parent: QWidget | None = None, frame: bool = False) -> None:
+    def __init__(self, parent: QWidget | None = None, frame: bool = False,
+                 crystals: bool = False) -> None:
         super().__init__(parent)
         self._tile: QPixmap | None = None
         self._frame = frame
+        self._crystals = crystals
         _LIVE.add(self)
         _hook_bus()
 
@@ -476,12 +576,54 @@ class HoloBackdrop(QWidget):
         # 网格在深浅两套主题下都绘制（浅色用深青、深色用冰蓝），
         # 否则系统为浅色时完全看不到全息空间感。
         if theme.holo_enabled:
+            self._paint_light_bands(p)
             if self._tile is None:
                 self._tile = self._build_tile()
             p.drawTiledPixmap(e.rect(), self._tile, e.rect().topLeft())
             self._paint_light_field(p)
         if self._frame:
             self._paint_frame(p)
+        if self._crystals:
+            self._paint_corner_crystals(p)
+
+    def _paint_corner_crystals(self, p: QPainter) -> None:
+        """工作区四角的晶体装饰（对应参考图的四角发光晶体）。
+
+        晶体中心压在角落上，一半探出画布，读起来像「从窗口边角长出来的投影棱晶」。
+        """
+        if not theme.holo_enabled:
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        if w < 360 or h < 240:
+            return
+        s = min(24.0, min(w, h) * 0.050)
+        off = s * 0.45
+        edge = theme.qcolor("crystal_edge")
+        body = theme.qcolor("crystal")
+        for cx, cy in ((off, off),
+                       (w - off, off),
+                       (off, h - off),
+                       (w - off, h - off)):
+            _draw_corner_crystal(p, QPointF(cx, cy), s, edge, body)
+
+    def _paint_light_bands(self, p: QPainter) -> None:
+        """斜向冷光带：参考图那种「投影光幕」的空间感，透明度极低。"""
+        w, h = self.width(), self.height()
+        if w < 8 or h < 8:
+            return
+        band = QLinearGradient(QPointF(w, 0), QPointF(0, h))
+        c_on = QColor(theme.qcolor("accent"))
+        c_on.setAlphaF(0.035 if theme.dark else 0.05)
+        c_off = QColor(theme.qcolor("accent"))
+        c_off.setAlpha(0.0)
+        band.setColorAt(0.00, c_on)
+        band.setColorAt(0.16, c_off)
+        band.setColorAt(0.34, c_on)
+        band.setColorAt(0.52, c_off)
+        band.setColorAt(0.72, c_on)
+        band.setColorAt(0.90, c_off)
+        p.fillRect(self.rect(), QBrush(band))
 
     def _paint_light_field(self, p: QPainter) -> None:
         """极弱的蓝青空间光场：让背景有纵深，而不是一张纯色底。"""
@@ -501,20 +643,19 @@ class HoloBackdrop(QWidget):
         p.fillRect(self.rect(), QBrush(grad))
 
     def _paint_frame(self, p: QPainter) -> None:
-        """独立窗口的光学边框：角标式折线 + 银色金属 + 蓝色光线芯。"""
+        """独立窗口的外框：与面板同一套切角细线语言。"""
         if not theme.holo_enabled:
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(8.5, 8.5, -8.5, -8.5)
-        strokes = frame_strokes(r, chamfer=20.0)
-        paint_frame_strokes(p, strokes, halo_width=6.0, core_width=1.8)
+        r = QRectF(self.rect()).adjusted(7.5, 7.5, -7.5, -7.5)
+        paint_chamfer_frame(p, r, 22.0)
 
-        # 左上定位光段
-        c = 20.0
-        loc = QPen(_with_alpha(theme.qcolor("accent"), 0.95), 1)
-        loc.setCapStyle(Qt.PenCapStyle.FlatCap)
-        p.setPen(loc)
-        p.drawLine(QPointF(r.left(), r.top() + c + 22), QPointF(r.left(), r.top() + c + 52))
+        # 左缘定位锚点
+        anchor = QColor(theme.qcolor("accent"))
+        anchor.setAlphaF(0.8)
+        p.setPen(QPen(anchor, 1.6))
+        y0 = r.top() + 22 + 8
+        p.drawLine(QPointF(r.left(), y0), QPointF(r.left(), min(y0 + 24, r.bottom() - 30)))
 
 
 # ─────────────────────────────────────────────────────────────

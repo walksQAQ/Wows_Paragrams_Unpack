@@ -116,72 +116,87 @@ _LIGHT = {
     "metal_brush":  "rgba(110, 140, 170, 0.08)",
     "light_core":   "rgba(20, 130, 170, 0.92)",
     "light_halo":   "rgba(30, 150, 200, 0.22)",
+    # ── 参考图对齐（浅色）──
+    "accent_warm":    "#B87315",
+    "accent_warm_hi": "#D68910",
+    "panel_frame":      "rgba(60, 130, 175, 0.55)",
+    "panel_frame_hi":   "rgba(20, 110, 150, 0.90)",
+    "panel_fill":       "rgba(255, 255, 255, 0.72)",
+    "panel_fill_soft":  "rgba(245, 250, 254, 0.60)",
 }
 
+
 _DARK = {
-    # ── PRISM CORE · 深色（规范主色板）──
-    "window_bg":   "#070A12",                 # bg-primary
-    "panel_bg":    "#101A2B",                 # bg-surface
-    "panel_alt":   "#0B1120",                 # bg-secondary
-    "input_bg":    "#0A1524",                 # inset
-    "text":        "#EAF6FF",                 # text-primary
-    "text_muted":  "#9BAFC5",                 # text-secondary
-    "text_hint":   "#62758B",                 # text-muted
-    "border":      "#26384D",                 # line-subtle
-    "border_soft": "#3C6480",                 # line-structure
-    "hover_bg":    "#172B3C",                 # photon-cyan 8% 预混
-    "selected_bg": "#6CEBFF",                 # photon-cyan
-    "selected_fg": "#06131A",                 # on_accent
-    "scroll_bg":   "rgba(255, 255, 255, 0.04)",
-    "scroll_handle": "rgba(108, 235, 255, 0.18)",
-    "scroll_handle_hover": "rgba(108, 235, 255, 0.34)",
+    # ── PRISM CORE · 深色（参考图配色：深海军蓝 + 冰蓝光线 + 橙黄强调）──
+    "window_bg":   "#070F1C",                 # 深海军蓝底（不用纯黑）
+    "panel_bg":    "#0C1A2E",                 # 面板底
+    "panel_alt":   "#091422",                 # 次级区域
+    "input_bg":    "#0A1626",                 # 凹陷输入底
+    "text":        "#DCEAF7",                 # 主文字（冷白）
+    "text_muted":  "#8CA6C2",                 # 次要说明
+    "text_hint":   "#5A7290",                 # 弱化提示
+    "border":      "#1B3350",                 # 普通分隔线
+    "border_soft": "#2C5478",                 # 结构线
+    "hover_bg":    "#13293F",                 # 悬停底
+    "selected_bg": "#4FD8F2",
+    "selected_fg": "#06131A",
+    "scroll_bg":   "rgba(255, 255, 255, 0.03)",
+    "scroll_handle": "rgba(79, 216, 242, 0.22)",
+    "scroll_handle_hover": "rgba(79, 216, 242, 0.40)",
     # 工具栏
-    "toolbar_bg":        "#0B1120",
-    "toolbar_btn_bg":    "#0B1120",
-    "toolbar_btn_hover": "#172B3C",
-    "toolbar_btn_border": "#26384D",
-    "toolbar_btn_text":  "#EAF6FF",
-    "toolbar_btn_disabled": "#0A1524",
-    "toolbar_text":      "#EAF6FF",
-    "toolbar_text_muted": "#62758B",
+    "toolbar_bg":        "#091422",
+    "toolbar_btn_bg":    "#0A1626",
+    "toolbar_btn_hover": "#13293F",
+    "toolbar_btn_border": "#1B3350",
+    "toolbar_btn_text":  "#DCEAF7",
+    "toolbar_btn_disabled": "#091422",
+    "toolbar_text":      "#DCEAF7",
+    "toolbar_text_muted": "#5A7290",
     # ── 语义色 ──
-    "accent":       "#6CEBFF",                # photon-cyan：焦点 / 主交互
-    "accent_hi":    "#9AF3FF",
-    "on_accent":    "#06131A",
-    "warn":         "#FFC978",                # state-warning
-    "danger":       "#FF718D",                # state-error
-    "info":         "#6C9DFF",                # photon-blue
-    "success":      "#72F5C5",                # state-success
-    "warning":      "#FFC978",
-    "error":        "#FF718D",
-    "photon_blue":  "#6C9DFF",
-    "photon_violet": "#B9A6FF",
-    "crystal":      "#B9A6FF",                # 晶体折射色
-    "crystal_edge": "#6CEBFF",
-    "surface_2":    "#152238",                # bg-elevated
-    "elevated":     "#152238",
-    "inset":        "#0A1524",
-    "line_strong":  "#3C6480",                # line-structure
-    "line_structure": "#3E76B0",
-    "hud":          "rgba(108, 235, 255, 0.45)",
-    "holo_ice":     "rgba(108, 235, 255, 0.20)",
-    "holo_glow":    "rgba(108, 235, 255, 0.26)",
-    "spark_pearl":  "#EAF6FF",
-    "spark_violet": "#B9A6FF",
-    "holo_panel":   "rgba(14, 24, 40, 0.42)",
-    "grid":         "rgba(108, 235, 255, 0.10)",
+    "accent":       "#4FD8F2",                # 冰蓝：焦点 / 主交互
+    "accent_hi":    "#8CEAFF",
+    "on_accent":    "#04121C",
+    "warn":         "#FFB454",                # 橙黄：关键数值 / 警告
+    "danger":       "#FF6E88",
+    "info":         "#6C9DFF",
+    "success":      "#5FE8B8",
+    "warning":      "#FFB454",
+    "error":        "#FF6E88",
+    "photon_blue":  "#5B9BE8",
+    "photon_violet": "#9B8CFF",
+    "crystal":      "#8FB8FF",                # 晶体折射色
+    "crystal_edge": "#7FE3FF",
+    # 参考图里被强调的数字用暖色，与冰蓝主色形成对比（不是把所有文字都染蓝）
+    "accent_warm":    "#FFB454",
+    "accent_warm_hi": "#FFD08A",
+    "surface_2":    "#122640",
+    "elevated":     "#122640",
+    "inset":        "#0A1626",
+    "line_strong":  "#2C5478",
+    "line_structure": "#3E93C8",
+    # 面板轮廓：参考图是 1px 青色细线，不是粗金属框
+    "panel_frame":      "rgba(96, 198, 242, 0.88)",
+    "panel_frame_hi":   "rgba(140, 226, 255, 0.92)",
+    "panel_fill":       "rgba(13, 33, 58, 0.82)",
+    "panel_fill_soft":  "rgba(16, 38, 66, 0.62)",
+    "hud":          "rgba(79, 216, 242, 0.50)",
+    "holo_ice":     "rgba(79, 216, 242, 0.22)",
+    "holo_glow":    "rgba(79, 216, 242, 0.28)",
+    "spark_pearl":  "#DCEAF7",
+    "spark_violet": "#9B8CFF",
+    "holo_panel":   "rgba(10, 26, 46, 0.72)",
+    "grid":         "rgba(90, 180, 220, 0.075)",
     # ── 银色金属 + 蓝色光线（深色）──
-    # 金属在深底上要"银"：高明度低饱和，靠 alpha 压到不刺眼
-    "metal_hi":     "#DCE7F2",
-    "metal_mid":    "#9DAFC2",
-    "metal_lo":     "#46586C",
-    "metal_edge":   "rgba(206, 222, 238, 0.42)",
-    "metal_glow":   "rgba(150, 200, 240, 0.16)",
-    "metal_sheen_a": "rgba(214, 230, 245, 0.13)",
-    "metal_sheen_b": "rgba(120, 145, 172, 0.02)",
-    "metal_brush":  "rgba(220, 235, 250, 0.045)",
-    "light_core":   "rgba(140, 245, 255, 0.95)",
-    "light_halo":   "rgba(80, 200, 255, 0.28)",
+    "metal_hi":     "#C8DCEC",
+    "metal_mid":    "#7E9CB8",
+    "metal_lo":     "#3A5470",
+    "metal_edge":   "rgba(120, 170, 210, 0.45)",
+    "metal_glow":   "rgba(110, 190, 235, 0.18)",
+    "metal_sheen_a": "rgba(150, 200, 238, 0.10)",
+    "metal_sheen_b": "rgba(70, 110, 150, 0.03)",
+    "metal_brush":  "rgba(160, 205, 240, 0.04)",
+    "light_core":   "rgba(120, 226, 250, 0.95)",
+    "light_halo":   "rgba(60, 170, 220, 0.30)",
 }
 
 

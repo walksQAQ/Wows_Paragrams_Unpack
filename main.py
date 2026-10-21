@@ -79,17 +79,16 @@ def _load_qss_text() -> str | None:
 
 
 def _apply_font(app: QApplication) -> None:
-    """应用级字体：西文/数字走等宽（Consolas），中文回退雅黑。
+    """应用级字体：清晰的无衬线（参考图里中文与数字都是无衬线体）。
 
-    科幻仪表盘大量是数字、路径和短标签，等宽字体让它们自然对齐，
-    也让整体观感从「办公软件」变成「设备界面」。
+    数字/路径由各控件按需使用等宽字体，不在这里全局替换。
     """
     from PySide6.QtGui import QFont
 
     f = QFont()
     f.setFamilies([
-        "Cascadia Mono", "Consolas", "JetBrains Mono",
         "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI",
+        "PingFang SC", "Noto Sans CJK SC",
     ])
     f.setPointSize(9)
     f.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QDialog, QMainWindow, QVBoxLayout
 
 from utils.theme import theme
 from ui.widgets.scifi_panel import (
-    HoloBackdrop, SciFiPanel, frame_strokes, paint_frame_strokes, _LIVE,
+    HoloBackdrop, SciFiPanel, paint_chamfer_frame, _LIVE,
 )
 
 # 独立主窗口（non-modal 浏览器）只需覆盖与全局 QSS 不同之处：
@@ -61,7 +61,7 @@ QDialog QPushButton:pressed {
     border-color: @accent@;
 }
 QDialog QGroupBox {
-    border: 1px solid @border@;
+    border: 1px solid @border_soft@;
     border-radius: 0px;
     margin-top: 12px;
     padding-top: 9px;
@@ -70,7 +70,7 @@ QDialog QGroupBox::title {
     subcontrol-origin: margin;
     left: 8px;
     padding: 0 6px;
-    color: @text_muted@;
+    color: @accent@;
     background-color: @window_bg@;
 }
 """
@@ -106,8 +106,7 @@ class HoloDialog(QDialog):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(7.5, 7.5, -7.5, -7.5)
-        strokes = frame_strokes(r, chamfer=18.0)
-        paint_frame_strokes(p, strokes, halo_width=5.0, core_width=1.6)
+        paint_chamfer_frame(p, r, 18.0)
 
 
 __all__ = ["HoloDialog", "HoloWindow", "DIALOG_QSS", "WINDOW_QSS"]

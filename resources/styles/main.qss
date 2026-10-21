@@ -24,21 +24,21 @@ QLabel {
     color: @text@;
 }
 
-/* 分组框：精密仪器式细线框（低圆角），标题压在线上 */
+/* 分组框：精密仪器式细线框，标题压在线上 */
 QGroupBox {
     color: @text@;
-    border: 1px solid @border@;
+    border: 1px solid @border_soft@;
     border-radius: 0px;
     margin-top: 12px;
     padding-top: 9px;
 }
 
-/* 分组框标题：压在结构线上，像仪器刻印 */
+/* 分组框标题：冰蓝刻印，压在结构线上 */
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 8px;
     padding: 0 6px;
-    color: @text_muted@;
+    color: @accent@;
     background-color: @panel_bg@;
 }
 
