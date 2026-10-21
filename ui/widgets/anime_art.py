@@ -1,15 +1,18 @@
 """二次元皮肤 · 昔涟（白 + 粉）的装饰层。
 
-设计依据（《崩坏：星穹铁道》昔涟 / Cyrene 官方设定）
+设计依据（《崩坏：星穹铁道》昔涟 / Cyrene 与翁法罗斯）
 ------------------------------------------------------
+* **莫比乌斯环**：来自官方对**翁法罗斯这个世界本身**的形状设定——永恒之地
+  永劫回归、记忆反复回退，「世界」即一条首尾相接、扭一次才回到原点的带子。
+  昔涟是「创世」泰坦、被称作「翁法罗斯之心」，所以这套皮肤干脆用**世界之形**
+  做底层空间符号：装饰列的环是它，工作区背景的水印也是它。
 * **爱**：官方文案「去人们心中栽种『爱』的水晶花」、五星光锥《This Love,
-  Forever》，官方立绘外形本身就是一颗心 → 心形是这套皮肤的视觉锚点。
+  Forever》，官方立绘外形本身就是一颗心 → 心形与莫比乌斯环同心，是这套
+  皮肤的第二层符号。
 * **水晶**：银质水晶发饰、银质粉心晶石戒指、水晶鞋、「碎片就像水晶花一样」
   → 折面棱晶与水晶花。
 * **藕荷紫 / 长春花蓝**：官方立绘采样色 #8A5FAE / #C195D6 / #8990D9，
   用作水晶折射与次级强调，避免整屏都是粉。
-* **莫比乌斯环**：非官方元素，属本项目的演绎——对应她「永恒轮回 / 闭合因果」
-  的叙事，以及「真我」这条自我指涉的环。用一条扭半圈就回到起点的缎带表达。
 
 这里的绘制全部是静态、低透明度的线面组合，不参与任何业务交互。
 """
@@ -34,9 +37,9 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from utils.theme import theme
 
 #: 装饰列宽度（px）
-ART_WIDTH = 176
+ART_WIDTH = 196
 #: 窗口窄于此宽度时自动收起：装饰列不能把详情面板挤到裁切
-MIN_WINDOW_WIDTH = 1660
+MIN_WINDOW_WIDTH = 1700
 
 
 # ─────────────────────────────────────────────────────────────
@@ -148,7 +151,7 @@ def _periwinkle(alpha: float) -> QColor:
 
 def _draw_mobius(p: QPainter, cx: float, cy: float, radius: float,
                  alpha_scale: float) -> None:
-    half_w = radius * 0.34
+    half_w = radius * 0.30
     tilt, squash = 0.75, 0.78
     _, strands = mobius_ribbon(cx, cy, radius, half_w, tilt=tilt, squash=squash)
 
@@ -324,14 +327,14 @@ class AnimeArtSlot(QWidget):
         p.setPen(QPen(_pink(0.80), 1.5))
         _draw_corner_ticks(p, inner)
 
-        # 3) 主体：莫比乌斯环（上）+ 心（环心）+ 水晶簇（下）
+        # 3) 主体：莫比乌斯环（翁法罗斯世界之形，上）+ 心（环心）+ 水晶簇（下）
         cx = r.center().x()
-        radius = min(w * 0.28, inner.height() * 0.13)
+        radius = min(w * 0.34, inner.height() * 0.14)
         ring_cy = inner.top() + inner.height() * 0.28
         _draw_mobius(p, cx, ring_cy, radius, a)
-        _draw_heart(p, cx, ring_cy + radius * 0.02, radius * 0.30, a * 1.15)
-        _draw_crystals(p, cx, inner.top() + inner.height() * 0.53,
-                       min(w * 0.16, 30.0), a)
+        _draw_heart(p, cx, ring_cy + radius * 0.02, radius * 0.32, a * 1.15)
+        _draw_crystals(p, cx, inner.top() + inner.height() * 0.55,
+                       min(w * 0.16, 32.0), a)
 
         # 4) 底部说明：这块是留给立绘的
         f = QFont(self.font())

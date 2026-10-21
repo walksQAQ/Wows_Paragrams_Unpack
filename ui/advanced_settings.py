@@ -76,7 +76,7 @@ class AdvancedSettingsDialog(HoloDialog):
         self._theme_combo.addItem("跟随系统", "auto")
         self._theme_combo.addItem("浅色（浅蓝）", "light")
         self._theme_combo.addItem("深色（海军蓝）", "dark")
-        self._theme_combo.addItem("二次元（白 + 浅粉）", "anime")
+        self._theme_combo.addItem("二次元 · 昔涟", "anime")
         self._theme_combo.setMinimumWidth(140)
         trow.addWidget(self._theme_combo)
         trow.addStretch()
@@ -89,7 +89,7 @@ class AdvancedSettingsDialog(HoloDialog):
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
-        tlay.addWidget(QLabel("「二次元」为白+浅粉独立皮肤，主界面右侧预留立绘装饰位。",
+        tlay.addWidget(QLabel("「二次元」为昔涟主题（白+浅粉），主界面右侧预留立绘装饰位。",
                               wordWrap=True,
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)
