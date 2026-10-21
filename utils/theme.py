@@ -250,98 +250,99 @@ _DARK = {
 
 
 _ANIME = {
-    # ── 二次元皮肤（白 + 浅粉）：功能色一律沿用同一套语义 token，只换色相 ──
-    "window_bg":   "#FDF6FA",                 # 奶油白（带一丝樱粉）
+    # ── 二次元皮肤 · 昔涟（白 + 粉）：白为底，粉只做装饰与交互信号 ──
+    "window_bg":   "#FBF7FC",                 # 带一丝藕荷的白
     "panel_bg":    "#FFFFFF",                 # 面板纯白，保证数据区可读
-    "panel_alt":   "#FBEEF5",                 # 次级区域
-    "input_bg":    "#FFFAFC",                 # 输入框
-    "text":        "#3B2733",                 # 主文字（暖调深梅）
-    "text_muted":  "#7A5C6C",                 # 次要说明
-    "text_hint":   "#A98D9C",                 # 弱提示
-    "border":      "#F2DCE8",                 # 普通分隔线
-    "border_soft": "#E4C2D4",                 # 结构线
-    "hover_bg":    "#FDEFF6",                 # 悬停底
-    "selected_bg": "#D2638F",                 # 樱粉（白底上压深保对比）
+    "panel_alt":   "#F8F0F9",                 # 次级区域
+    "input_bg":    "#FDF9FE",                 # 输入框
+    "text":        "#382A4A",                 # 主文字（深藕紫）
+    "text_muted":  "#756286",                 # 次要说明
+    "text_hint":   "#A091AF",                 # 弱提示
+    "border":      "#EFE4F3",                 # 普通分隔线
+    "border_soft": "#DECDE8",                 # 结构线
+    "hover_bg":    "#F9EFF8",                 # 悬停底
+    "selected_bg": "#C2557C",                 # 樱粉（白底上压深保对比）
     "selected_fg": "#FFFFFF",
-    "scroll_bg":   "rgba(212, 99, 143, 0.06)",
-    "scroll_handle": "rgba(212, 99, 143, 0.26)",
-    "scroll_handle_hover": "rgba(212, 99, 143, 0.44)",
+    "scroll_bg":   "rgba(194, 85, 124, 0.06)",
+    "scroll_handle": "rgba(194, 85, 124, 0.24)",
+    "scroll_handle_hover": "rgba(194, 85, 124, 0.42)",
     # 工具栏
-    "toolbar_bg":        "#FBEEF5",
+    "toolbar_bg":        "#F8F0F9",
     "toolbar_btn_bg":    "#FFFFFF",
-    "toolbar_btn_hover": "#FDEFF6",
-    "toolbar_btn_border": "#F2DCE8",
-    "toolbar_btn_text":  "#3B2733",
-    "toolbar_btn_disabled": "#F8EBF2",
-    "toolbar_text":      "#3B2733",
-    "toolbar_text_muted": "#A98D9C",
+    "toolbar_btn_hover": "#F9EFF8",
+    "toolbar_btn_border": "#EFE4F3",
+    "toolbar_btn_text":  "#382A4A",
+    "toolbar_btn_disabled": "#F5ECF7",
+    "toolbar_text":      "#382A4A",
+    "toolbar_text_muted": "#A091AF",
     # ── 语义色 ──
-    "accent":       "#D2638F",                # 樱粉：焦点 / 主交互
-    "accent_hi":    "#B94D77",
+    "accent":       "#C2557C",                # 樱粉：焦点 / 主交互（对白 4.6:1）
+    "accent_hi":    "#A8436A",
     "on_accent":    "#FFFFFF",
-    "warn":         "#B26A16",
-    "danger":       "#C43A5C",
-    "info":         "#7B6BC4",
+    "warn":         "#A96A1C",
+    "danger":       "#C4395F",                # 偏玫红，仍与主色区分
+    "info":         "#7B79C9",                # 长春花蓝
     "success":      "#2F8F6E",
-    "warning":      "#B26A16",
-    "error":        "#C43A5C",
-    "photon_blue":  "#C08BC4",                # 二次元皮肤里的次级高亮：藕荷紫
+    "warning":      "#A96A1C",
+    "error":        "#C4395F",
+    "photon_blue":  "#8990D9",                # 官方长春花蓝
     "photon_violet": "#A87BC4",
-    "crystal":      "#D98CB8",                # 晶体折射色
-    "crystal_edge": "#C4709C",
-    "accent_warm":    "#C08428",              # 关键数值用暖金，与樱粉主色拉开
-    "accent_warm_hi": "#DB9E43",
-    "surface_2":    "#FFFAFC",
+    "crystal":      "#B98BD0",                # 水晶：藕荷紫（官方 #C195D6 系）
+    "crystal_edge": "#8E86D4",                # 折射棱：长春花蓝
+    "accent_warm":    "#B0734F",              # 关键数值用玫瑰金，与粉紫拉开
+    "accent_warm_hi": "#C98A63",
+    "surface_2":    "#FDF9FE",
     "elevated":     "#FFFFFF",
-    "inset":        "#FFFAFC",
-    "line_strong":  "#E4C2D4",
-    "line_structure": "#D9A9BE",
+    "inset":        "#FDF9FE",
+    "line_strong":  "#DECDE8",
+    "line_structure": "#D5BEDF",
     # 面板轮廓：1px 樱粉细线 + 外侧极弱粉辉
-    "panel_frame":      "rgba(214, 122, 162, 0.55)",
-    "panel_frame_hi":   "rgba(196, 88, 132, 0.88)",
-    "panel_fill":       "rgba(255, 255, 255, 0.78)",
-    "panel_fill_soft":  "rgba(253, 244, 249, 0.62)",
-    "hud":          "rgba(210, 99, 143, 0.48)",
-    "holo_ice":     "rgba(210, 99, 143, 0.16)",
-    "holo_glow":    "rgba(210, 99, 143, 0.24)",
-    "spark_pearl":  "#3B2733",
-    "spark_violet": "#A87BC4",
-    "holo_panel":   "rgba(255, 250, 252, 0.62)",
-    "grid":         "rgba(210, 99, 143, 0.14)",
-    # ── 暖银金属 + 粉色光线 ──
+    "panel_frame":      "rgba(232, 132, 170, 0.52)",
+    "panel_frame_hi":   "rgba(200, 92, 134, 0.88)",
+    "panel_fill":       "rgba(255, 255, 255, 0.80)",
+    "panel_fill_soft":  "rgba(252, 246, 253, 0.64)",
+    "hud":          "rgba(235, 126, 163, 0.48)",
+    "holo_ice":     "rgba(235, 126, 163, 0.15)",
+    "holo_glow":    "rgba(235, 126, 163, 0.24)",
+    "spark_pearl":  "#382A4A",
+    "spark_violet": "#C195D6",
+    "holo_panel":   "rgba(255, 251, 253, 0.62)",
+    "grid":         "rgba(200, 92, 134, 0.13)",
+    # ── 冷银金属（她的饰品是银质，不是金色）+ 粉光 ──
     "metal_hi":     "#FFFFFF",
-    "metal_mid":    "#E7D7DF",
-    "metal_lo":     "#B49AA6",
-    "metal_edge":   "rgba(180, 140, 160, 0.55)",
-    "metal_glow":   "rgba(220, 140, 175, 0.12)",
-    "metal_sheen_a": "rgba(255, 255, 255, 0.90)",
-    "metal_sheen_b": "rgba(230, 195, 212, 0.30)",
-    "metal_brush":  "rgba(190, 150, 170, 0.08)",
-    "light_core":   "rgba(226, 118, 165, 0.92)",
-    "light_halo":   "rgba(232, 150, 190, 0.22)",
-    # ── 强化 / 传奇技能：暖金 ──
+    "metal_mid":    "#DCD6E4",
+    "metal_lo":     "#A99DB5",
+    "metal_edge":   "rgba(166, 150, 180, 0.55)",
+    "metal_glow":   "rgba(224, 142, 178, 0.12)",
+    "metal_sheen_a": "rgba(255, 255, 255, 0.92)",
+    "metal_sheen_b": "rgba(226, 205, 232, 0.30)",
+    "metal_brush":  "rgba(178, 160, 192, 0.08)",
+    "light_core":   "rgba(235, 126, 163, 0.92)",
+    "light_halo":   "rgba(216, 150, 196, 0.22)",
+    # ── 强化 / 传奇技能：暖金（识别性优先，不跟主题走）──
     "gold":        "#C08A2E",
     "gold_hi":     "#D9A445",
     "gold_bg":     "#FDF3E3",
     "gold_border": "#E3BC7A",
     # 属性增减值
     "value_pos":   "#2F8F6E",
-    "value_neg":   "#C43A5C",
+    "value_neg":   "#C4395F",
     # 富文本 tooltip 用色
-    "tip_text":    "#3B2733",
-    "tip_muted":   "#6B4F5E",
-    "tip_dim":     "#8E7382",
-    "tip_rule":    "#E4C2D4",
-    # ── 图标按钮：与其它两套一致保持深底，白色游戏图标才不会糊在浅色背景上 ──
-    "icon_btn_bg":        "#47283A",
-    "icon_btn_bg_hover":  "#6B4058",
-    "icon_btn_checked":   "#5C2E46",
-    "icon_btn_border":    "#7A4C63",
-    "icon_btn_border_hi": "#FFA9CE",
-    "icon_btn_text":      "#F3E3EC",
-    "icon_btn_text_dim":  "#C0A2B2",
-    "icon_btn_text_hi":   "#FFC2DC",
+    "tip_text":    "#382A4A",
+    "tip_muted":   "#6A566F",
+    "tip_dim":     "#8E7C9A",
+    "tip_rule":    "#DECDE8",
+    # ── 图标按钮：深藕紫底，白色游戏图标才不会糊在浅色背景上 ──
+    "icon_btn_bg":        "#3A2C52",
+    "icon_btn_bg_hover":  "#58417A",
+    "icon_btn_checked":   "#4A2C63",
+    "icon_btn_border":    "#6B4E86",
+    "icon_btn_border_hi": "#FFA9CF",
+    "icon_btn_text":      "#F1E7F5",
+    "icon_btn_text_dim":  "#BBA6C9",
+    "icon_btn_text_hi":   "#FFC6E0",
 }
+
 
 
 def detect_dark_mode(mode: str = "auto") -> bool:

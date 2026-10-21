@@ -591,7 +591,7 @@ class HoloBackdrop(QWidget):
     def paintEvent(self, e) -> None:  # noqa: N802
         p = QPainter(self)
         p.fillRect(e.rect(), QColor(theme["window_bg"]))
-        # 网格在深浅两套主题下都绘制（浅色用深青、深色用冰蓝），
+        # 网格在深浅两套主题下都绘制（浅色用深蓝、深色用冰蓝），
         # 否则系统为浅色时完全看不到全息空间感。
         if theme.holo_enabled:
             self._paint_light_bands(p)
@@ -599,6 +599,13 @@ class HoloBackdrop(QWidget):
                 self._tile = self._build_tile()
             p.drawTiledPixmap(e.rect(), self._tile, e.rect().topLeft())
             self._paint_light_field(p)
+        # 二次元皮肤的空间锚点（工作区背景层，实际只在面板间隙露出）
+        if theme.anime:
+            from ui.widgets.anime_art import paint_anime_watermark
+            paint_anime_watermark(
+                p, QRectF(self.rect()),
+                1.0 if theme.holo_enabled else 0.35,
+            )
         if self._frame:
             self._paint_frame(p)
         if self._crystals:
@@ -742,7 +749,28 @@ class CrystalMark(QWidget):
     def _on_style_changed(self) -> None:
         self.update()
 
+    def _paint_heart(self, e) -> None:
+        """二次元（昔涟）皮肤：品牌标识换成心形——她的官方立绘本身就是一颗心，
+        「爱」是官方文案明写的主题，比棱晶更贴合这套皮肤。"""
+        from ui.widgets.anime_art import heart_path
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        body = QColor(theme.qcolor("accent"))
+        path = heart_path(w / 2.0, h * 0.42, min(w, h) * 0.40)
+        p.setPen(Qt.PenStyle.NoPen)
+        fill = QColor(body)
+        fill.setAlphaF(0.22)
+        p.setBrush(fill)
+        p.drawPath(path)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(body, 1.2))
+        p.drawPath(path)
+
     def paintEvent(self, e) -> None:  # noqa: N802
+        if theme.anime:
+            self._paint_heart(e)
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
