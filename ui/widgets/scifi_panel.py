@@ -123,66 +123,6 @@ def paint_chamfer_frame(p: QPainter, r: QRectF, chamfer: float = 18.0,
     return path
 
 
-def _draw_corner_crystal(p: QPainter, center: QPointF, s: float,
-                         edge: QColor, body: QColor) -> None:
-    """窗口角的晶体装饰：多面体 + 内部折射线（参考图四角的发光晶体）。
-
-    只在工作区四角各放一个，不进入任何控件内部——保持「克制点缀」。
-    """
-    cx, cy = center.x(), center.y()
-    p.save()
-
-    # 主体：拉长的六边形
-    path = QPainterPath()
-    path.moveTo(cx, cy - s)
-    path.lineTo(cx + s * 0.62, cy - s * 0.35)
-    path.lineTo(cx + s * 0.52, cy + s * 0.62)
-    path.lineTo(cx, cy + s)
-    path.lineTo(cx - s * 0.52, cy + s * 0.62)
-    path.lineTo(cx - s * 0.62, cy - s * 0.35)
-    path.closeSubpath()
-
-    fill = QColor(body)
-    # 深色主题里晶体是「提亮」的玻璃，浅色主题里是「压暗」的玻璃——后者必须
-    # 大幅降低不透明度，否则在近白底上会变成一块实心色块（看不出晶体的意思）。
-    fill.setAlphaF(0.20 if theme.dark else 0.10)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(fill)
-    p.drawPath(path)
-
-    # 内部切面：一条竖直棱 + 两条斜棱，形成折射感
-    facet = QColor(body)
-    facet.setAlphaF(0.34 if theme.dark else 0.14)
-    p.setBrush(facet)
-    left = QPainterPath()
-    left.moveTo(cx, cy - s)
-    left.lineTo(cx, cy + s)
-    left.lineTo(cx - s * 0.52, cy + s * 0.62)
-    left.lineTo(cx - s * 0.62, cy - s * 0.35)
-    left.closeSubpath()
-    p.drawPath(left)
-
-    hi = QColor(edge)
-    hi.setAlphaF(0.30 if theme.dark else 0.16)
-    p.setBrush(hi)
-    top = QPainterPath()
-    top.moveTo(cx, cy - s)
-    top.lineTo(cx + s * 0.62, cy - s * 0.35)
-    top.lineTo(cx, cy - s * 0.05)
-    top.closeSubpath()
-    p.drawPath(top)
-
-    # 棱线
-    line = QColor(edge)
-    line.setAlphaF(0.85 if theme.dark else 0.55)
-    p.setPen(QPen(line, 1.0))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPath(path)
-    p.drawLine(QPointF(cx, cy - s), QPointF(cx, cy + s))
-    p.drawLine(QPointF(cx - s * 0.62, cy - s * 0.35), QPointF(cx + s * 0.62, cy - s * 0.35))
-    p.restore()
-
-
 def frame_strokes(r: QRectF, *, chamfer: float = 16.0,
                   gap_ratio: float = 0.42) -> list[list[QPointF]]:
     """科幻「角标式」框：四条边各画一段，边中留缺口。
@@ -563,12 +503,10 @@ class HoloBackdrop(QWidget):
     #: 外框切角上限：必须小于 HoloWindow.WRAP_MARGIN - 框线内缩，否则内层会穿出
     FRAME_CHAMFER = 20.0
 
-    def __init__(self, parent: QWidget | None = None, frame: bool = False,
-                 crystals: bool = False) -> None:
+    def __init__(self, parent: QWidget | None = None, frame: bool = False) -> None:
         super().__init__(parent)
         self._tile: QPixmap | None = None
         self._frame = frame
-        self._crystals = crystals
         _LIVE.add(self)
         _hook_bus()
 
@@ -602,29 +540,6 @@ class HoloBackdrop(QWidget):
         # 角色皮肤只改配色与品牌标识，不再在工作区叠加任何纹样
         if self._frame:
             self._paint_frame(p)
-        if self._crystals:
-            self._paint_corner_crystals(p)
-
-    def _paint_corner_crystals(self, p: QPainter) -> None:
-        """工作区四角的晶体装饰（对应参考图的四角发光晶体）。
-
-        晶体中心压在角落上，一半探出画布，读起来像「从窗口边角长出来的投影棱晶」。
-        """
-        if not theme.holo_enabled:
-            return
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        if w < 360 or h < 240:
-            return
-        s = min(24.0, min(w, h) * 0.050)
-        off = s * 0.45
-        edge = theme.qcolor("crystal_edge")
-        body = theme.qcolor("crystal")
-        for cx, cy in ((off, off),
-                       (w - off, off),
-                       (off, h - off),
-                       (w - off, h - off)):
-            _draw_corner_crystal(p, QPointF(cx, cy), s, edge, body)
 
     def _paint_light_bands(self, p: QPainter) -> None:
         """斜向冷光带：参考图那种「投影光幕」的空间感，透明度极低。"""

@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.toolbar)
 
         # ── 中间区域：全息网格底 + 三列内容 ───────────────
-        self.middle = HoloBackdrop(crystals=True)
+        self.middle = HoloBackdrop()
         content_layout = QHBoxLayout(self.middle)
         content_layout.setContentsMargins(8, 8, 8, 8)
         content_layout.setSpacing(8)

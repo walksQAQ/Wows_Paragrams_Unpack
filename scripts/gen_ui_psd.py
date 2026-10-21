@@ -199,9 +199,6 @@ def build(theme: dict[str, str], mode_name: str, ref_png: Path | None) -> "PSDIm
     g = group("01 background")
     add(g, solid((W, H), rgba(theme["window_bg"])), "bg / window-bg  @window_bg@", (0, 0, W, H))
     add(g, grid_layer((W, H), rgba(theme["grid"])), "bg / grid 32px  @grid@", (0, 0, W, H))
-    for i, (cx, cy) in enumerate(((26, 96), (W - 26, 96), (26, H - 130), (W - 26, H - 130))):
-        add(g, diamond(22, rgba(theme["crystal_edge"]), rgba(theme["crystal"], 0.12)),
-            f"bg / corner-crystal {i + 1}  @crystal@", (cx - 11, cy - 11, 22, 22))
 
     # 02 顶部栏 -----------------------------------------------
     g = group("02 topbar")

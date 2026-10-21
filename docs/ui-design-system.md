@@ -67,7 +67,7 @@ SKINS = {
 
 | 组件 | 文件 | 职责 |
 |---|---|---|
-| `HoloBackdrop` | `ui/widgets/scifi_panel.py` | 工作区背景：底色、网格、斜向冷光带、外框、四角晶体、皮肤水印 |
+| `HoloBackdrop` | `ui/widgets/scifi_panel.py` | 工作区背景：底色、网格、斜向冷光带、外框（无角落装饰、无皮肤水印） |
 | `SciFiPanel` | 同上 | 切角面板：半透明底、外辉光、1px 轮廓、切角描亮、左缘锚点、刻度 |
 | `ScanStrip` | 同上 | 状态栏任务扫描光线 |
 | `CrystalMark` / `SparkDot` | 同上 | 品牌棱晶标识 / 点缀光点（皮肤可换形态） |
@@ -99,7 +99,7 @@ SKINS = {
 ### 4.2 装饰分层（硬规则）
 
 ```
-HoloBackdrop 背景层        ← 网格、光带、四角晶体（所有主题一致）
+HoloBackdrop 背景层        ← 网格、光带（所有主题一致，四角留空）
   └─ SciFiPanel 面板底     ← 半透明切角底 + 轮廓 + 辉光
        └─ 业务控件          ← 文字、表格、图标，全部不透明前景
 ```
