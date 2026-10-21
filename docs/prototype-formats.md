@@ -82,7 +82,98 @@ Korabli 布局相对 WoWS 的 0x78 整体偏移 +8，字段 8 字节对齐，**�
 > `blendNoiseParams`」会多读 195 项，读进**下一条材质的 OOL 数据**，表现为
 > `blendNoiseParams` 出现 `1e28` / `1e36` 这类明显不合理的数值。
 
-### `collisionFlags` / `sortOrder`：字段语义（exe 反汇编 + 引擎源码 + 数据实测）
+### 解析 / 明文规则：自动识别、手动指定、远古版本
+
+同一份 `assets.bin` 在 **Korabli（0x88）** 与 **Wargaming（0x78）** 两套记录布局下解码结果
+完全不同（用错就整棵树变成一串 `0x...` 地址），所以规则必须选对。实现见
+`uncode_assets.parse_rules`：
+
+| 场景 | 规则来源 |
+|---|---|
+| **默认** | `自动` —— 一般不需要手动选 |
+| 选择游戏目录 | 先读客户端版本：`game_info.xml` 的 `<version name="client" installed="…">`；**没有该文件**（Steam / depot 老客户端）则读 `bin/<构建号>/bin64`\|`bin32` 下客户端主程序（`WorldOfWarships64.exe` / `Korabli64.exe`）的 FileVersion 资源 —— 那里的版本号一直是准的（实测 `v20210216` → `0.10.1.0`）。然后按下面的版本表判定 |
+| 连版本都读不到（只有 `.pkg`） | 按库内 prototype 魔数分类（`parse_rules.detect_rule_from_db`）：有 Skeleton 且无 ModelFbx/MiscSettings/Trail/VfxMaterial → 远古版本；有 Skeleton 且有 → Lesta；只有 SkeletonExtender → 寄服；判不出来才退回 Lesta |
+| 直接打开 `assets.bin` 文件 | **默认 `自动` 也会自动判断**：解析后按库内 prototype 魔数分类（同上）。也可手动指定 `Lesta / Wargaming / 寄服旧布局 / 远古版本` |
+
+### 官方 ModSDK 版本对照（WG-devacc/ModSDK + wgmods/ModSDK + 本地莱服 SDK 包实测）
+
+抓同名 `ASA104_Langley/ship/ASA004_Langley_1929.model` 逐版本对比：
+
+| 侧 / 版本 | `.model` 明文结构 | `<metaData>` |
+|---|---|---|
+| 寄服 12.7 / 12.8 / 13.0 / 13.1 | `castsShadow` `parent` `extent` `nodefullVisual` | `Wargaming \| Lesta Studio` |
+| 寄服 13.2 / 13.3 / 13.8 / 13.11 / 14.0 | 同上（13.8 起多可选 `<animations>`） | `Wargaming.net` |
+| **寄服 14.1** … 15.9 | **换成** `visual`（带扩展名）`animations` `dyes` `skeletonExtenders` | `Wargaming.net` |
+| 莱服 13.4 / 13.5 / 13.6 | `castsShadow` `parent` `extent` `nodefullVisual` | `Wargaming \| Lesta Studio` |
+| 莱服 13.8 … 25.9 / 25.12 … 26.10 | **结构始终不变**（无 `<animations>`） | `Lesta Studio` |
+
+由此得到的分界（`parse_rules`）与**三张表**（`types.py`）：
+
+| 规则 | 布局名 | 类型表 | 关键差异 |
+|---|---|---|---|
+| `Lesta` | `Lesta` | `KORABLI_TYPES` | Material 0x88 / Visual 0x40（geometry@+0x20）/ Model 0x20 |
+| `Wargaming`（14.1+） | `Wargaming` | `WG_TYPES` | Material 0x78 / Visual 0x70 / Model 0x28（该布局无 castsShadow） |
+| `legacy` / `wargaming_old`（≤14.0） | `Legacy` | `LEGACY_TYPES` | Material **0x58**（按值类型分组 + u8 类型索引）/ Visual 0x40 但 **geometry@+0x28、primitives@+0x20（互换）** / Skeleton 0x40 / **Model 0x40**（parent@+0x00 visual@+0x08 extent@+0x10） |
+
+- **寄服布局分界 = 14.1**（`WG_MODERN_CUTOFF`）：只有寄服变了；莱服记录布局自 13.4 至今未变。
+  寄服 13.x / 14.0 判为 `寄服旧布局（14.0 及更早）`，用第三张表；
+- **metaData 文案分界**：寄服 **13.2**（`META_WG_BRAND_CUTOFF`）、莱服 **13.7**
+  （`META_LESTA_BRAND_CUTOFF`，13.6 仍并写、13.8 已是 `Lesta Studio`）。
+
+远古版本（2021 客户端 `v20210216`，`WorldOfWarships64.exe` 0.10.1.0）的三张记录布局已用
+**Ghidra 反编译 + 全库记录自校验**坐实：
+
+- 步长来自类型注册函数：Material `0x58`（`FUN_140088010`）、Skeleton / Visual `0x40`
+  （`FUN_140088110` / `FUN_140088210`）、Model `0x40`（`FUN_140083560`）；
+- blob 头仍是 **16 字节**（`FUN_140439c10` 材质记录基址 = `idx*0x58+0x10`，
+  `FUN_1403eefa0` 模型记录基址 = `idx*0x40+0x10`）；
+- **Material 0x58**：值数组按类型分组存放，属性自带 u8 `类型码 | 元素下标<<3`：
+  `+0x00` fxPathId / `+0x08` collisionFlags / `+0x0C` sortOrder /
+  `+0x10` 属性数 + 6 类值计数（`+0x12..+0x17`，u8）/
+  `+0x18` 属性名指针（u32 字符串 id）/ `+0x20` 类型码指针 /
+  `+0x28..+0x50` bool/int/float/texture/vec4/mat4 值数组指针（记录相对）。
+  14,606 条记录的「类型码下标 < 对应计数」校验 0 失败、纹理路径 100% 反查成功；
+- **Model 0x40**：`parent` / `visual` 按 0x40 采样时 100% 落到同一舰船目录
+  （旧的 0x20 会把 `CTB0093.model` 指到 `CTA0527_lod1`）。
+
+⚠️ 仍未坐实：远古版本 `ModelPrototype` 的 `castsShadow` 落位（`+0x14` u16 的 bit0 是候选，
+但没有明文对照，导出时**省略该行**，JSON 里保留 `flags` 原值）。
+
+⚠️ 三点实测结论：
+- **不能按主程序名判断远古版本**：分家前（2022 及更早）还没有莱服/寄服之分，主程序同样叫
+  `WorldOfWarships64.exe`；那种客户端统一识别为**远古版本**即可；
+- **不能用 PointLight / VelocityField 判断「更老的寄服」**：2021 年的远古客户端库里同样有这两个
+  blob（实测 `v20210216`），只有骨骼系统（Skeleton vs SkeletonExtender）区分得开；
+- **`<metaData>` 不是二进制里的字段**，是 SDK 导出器补的常量（记录里没有字符串）。
+
+**远古版本模式**：分界取 **12.7（2023-08）** —— 版本的 `(X, Y) < (12, 7)` 即判定为远古
+（老客户端是 `0.x.y` 编号，如 `0.10.1.0`，同样落在这个区间内）。分家前的客户端只有一个
+（不分莱服/寄服），统一用第三张表（`LEGACY_TYPES`）解析。
+
+远古版本的 `ModelPrototype` 步长是 **0x40**（不是 Lesta 26.10 的 0x20），
+`VisualPrototype` 步长同为 0x40，但 `geometry` / `primitives` 指针**位置互换**。
+按 0x20 解出来的 `parent` / `nodefullVisual` 会指向别的船，所以第三张表把三者都单独列出。
+
+切换规则会**按新规则重新解析整份 assets.bin**（布局变了，缓存索引也按 `wows_type` 失效重建）；
+状态栏「来源」只显示**结论**——当前规则（含自动识别结果）与客户端版本，不写内部类型表；
+直接打开文件时还会带上**完整文件路径**（过长时中间省略，完整路径同时在 tooltip 与窗口标题里），
+自动判定的依据也放在 tooltip 里。例如：
+
+```
+来源: D:\World_of_Warships\res_packages\assets.bin             [自动（识别为 Wargaming）]
+来源: D:\World_of_Warships_RU\K…res_unpack\content\assets.bin  [自动（识别为 Lesta）]
+来源: D:\x\assets.bin                                          [自动（识别中…）]
+来源: D:\x\assets.bin                                          [自动（未判定，按 Lesta 解析）]
+来源: Korabli                                                  [Lesta（莱服），客户端 26.10.0.0]
+```
+
+规则**只属于本窗口、不持久化、也不继承主应用设置**：每次加载现选，不写回主程序配置，
+浏览器自己决定用哪张类型表（载入时按客户端 / 库内原型类型判定，或按对话框所选规则），
+且**不会改动主程序的 `wows_type`** —— 服务解码/构造统一走 `types.wows_type_context(...)`，
+临时切到本服务的服务器类型、退出时恢复原值（否则浏览器选了寄服就会把主程序 GUI 线程的
+类型上下文带偏）。
+
+### `collisionFlags` / `sortOrder`：字段语义（Ghidra 反编译 + 引擎源码 + 数据实测）
 
 **落位（Ghidra 反编译核对，不是猜的）**：WoWS 客户端在启动时注册 `MaterialPrototype` 类型
 （类型名字符串 + 记录步长 `0x78` + murmur3 类型哈希），字段注册表按名给出 record 偏移。
