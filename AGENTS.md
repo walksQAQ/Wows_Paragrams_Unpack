@@ -52,7 +52,7 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 
 - 底纹、光带、品牌标识**只能出现在背景层**（`HoloBackdrop` 的底图上），即所有面板之下，绝不覆盖任何文字或数值。
 - **禁止**用置顶叠加层（`raise_()` 之后绘制）去盖文字实现"水印感"。
-- 也**禁止**在业务区域内新增自成一套的纹样/立绘列（历史上的右侧纹样列已删除）。
+- 角色主题**只改配色**；唯一允许保留的结构性空间是「立绘预留位」（`ui/widgets/skin_art.py` 的 `SkinArtSlot`），它只占横向空间、不绘制内容，也不接收鼠标。
 - **唯一允许的颜色叠加**：舰长技能、舰船配件等图标格子的深色底——因为游戏图标是白色单色图形，浅色主题下必须有高对比底才能看清。
 - 半透明只作用于**背景层**；禁止 `setWindowOpacity`（会把文字一起淡化）。
 
@@ -91,7 +91,6 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 ---
 
 ## 5. 验证流程
-
 1. 全量语法检查（排除 `.venv` / `__pycache__` / `_decompile`）：
    ```powershell
    .venv\Scripts\python.exe -c "import pathlib,py_compile,os; ..."
@@ -103,5 +102,22 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 3. 真实数据验证路径：
    - `ship_basic_info` 里按 `shiptype='Battleship'` + `group_status_key NOT IN ('disabled','unavailable')` 取 `ship_id`；
    - 发信号：`bus.folder_selected.emit("Ship")` → `bus.file_selected.emit("Ship", ship_id)`。
-4. 主题往返切换（含皮肤）后，确认调色板、装饰显隐、配置保存都正确，并恢复用户原配置。
+4. 主题往返切换（含角色配色）后，确认调色板、立绘预留位显隐、配置保存都正确，并恢复用户原配置。
 5. 独立工具（模型查看器 / 资源浏览器 / 场景浏览器 / 版本比对 / 解包器 / 计算工具）改动后要逐个实例化冒烟。
+
+---
+
+## 6. 版式 PSD
+
+`docs/ui/` 下有从代码渲染导出的分层 PSD（浅色 / 深色 / 角色主题各一份），图层名格式
+`分区 / 元素  @token@`。用途与回填流程见 [docs/ui/README.md](docs/ui/README.md)。
+
+配色或布局改动后重新导出：
+
+```powershell
+pip install psd-tools        # 仅生成 PSD 需要，不是运行依赖
+.venv\Scripts\python.exe scripts\gen_ui_psd.py
+```
+
+⚠️ PSD 的**图层名必须是纯 ASCII**：psd-tools 用 macroman 写图层名，中文会直接抛
+`UnicodeEncodeError`。中文说明请画进图层像素或写在文档里。

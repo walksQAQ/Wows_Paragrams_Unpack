@@ -372,6 +372,8 @@ class SkinSpec:
     id: str
     name: str
     palette: dict[str, str]
+    #: 是否在主界面右侧留出立绘位（只占空间，不画任何内容）
+    art_slot: bool = False
 
 
 SKINS: dict[str, SkinSpec] = {
@@ -379,6 +381,7 @@ SKINS: dict[str, SkinSpec] = {
         id="cyrene",
         name="昔涟（半成品）",
         palette=_SKIN_CYRENE,
+        art_slot=True,
     ),
 }
 
@@ -555,6 +558,11 @@ class _Theme:
         if self.skin is not None:
             return self.skin.id
         return "dark" if self.dark else "light"
+
+    @property
+    def uses_art_slot(self) -> bool:
+        """当前主题是否需要在主界面右侧留出立绘位。"""
+        return bool(self.skin and self.skin.art_slot)
 
     def qcolor(self, key: str):
         """返回 token 对应的 QColor（支持 rgba(r, g, b, a) 写法，a 为 0–1 浮点）。"""

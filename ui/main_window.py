@@ -33,7 +33,13 @@ from ui.toolbar_widget import TopToolbar
 from ui.browser_panel import BrowserPanel
 from ui.module_select import ModuleSelect
 from ui.detail_panel import DetailPanel
-from ui.widgets import HoloBackdrop, ScanStrip, SciFiPanel
+from ui.widgets import (
+    HoloBackdrop,
+    ScanStrip,
+    SciFiPanel,
+    SkinArtSlot,
+    art_slot_visible,
+)
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +94,11 @@ class MainWindow(QMainWindow):
         self.detail = DetailPanel.for_server(_wows_type)()
         _detail_layout.addWidget(self.detail, stretch=1)
         content_layout.addWidget(self.detail_frame, stretch=1)
+
+        # 角色主题的立绘预留位：只占位置、不画内容，其它主题宽度为零不参与布局
+        self.art_slot = SkinArtSlot()
+        self.art_slot.setVisible(art_slot_visible(self.width()))
+        content_layout.addWidget(self.art_slot)
 
         main_layout.addWidget(self.middle, stretch=1)
 
@@ -154,6 +165,8 @@ class MainWindow(QMainWindow):
         bus.wows_type_changed.connect(self._on_server_changed)
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
         bus.folder_selected.connect(self._on_category_changed)
+        # 切换主题 → 重新判断立绘预留位是否需要出现
+        bus.theme_changed.connect(lambda _m: self._sync_art_slot())
         # 重置 UI 状态时取消所有选中项
         bus.data_loaded.connect(lambda _: self.clear_all_selections())
         bus.localization_ready.connect(self.clear_all_selections)
@@ -167,6 +180,22 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: bus.folder_selected.emit("Ship"))
         # 启动后延迟 1s 自动检测版本更新（不阻塞启动；遵守 24h 缓存间隔）
         QTimer.singleShot(1000, self._auto_check_update)
+
+    # ── 立绘预留位 ─────────────────────────────────────────
+
+    def _sync_art_slot(self) -> None:
+        slot = getattr(self, "art_slot", None)
+        if slot is None:
+            return
+        show = art_slot_visible(self.width())
+        if slot.isVisible() != show:
+            slot.setVisible(show)
+        if show:
+            slot.refresh_theme()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_art_slot()
 
     # ── 菜单 ──────────────────────────────────────────────
     def _setup_menu(self) -> None:
