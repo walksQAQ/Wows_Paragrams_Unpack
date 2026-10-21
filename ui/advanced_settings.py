@@ -85,20 +85,7 @@ class AdvancedSettingsDialog(HoloDialog):
         trow.addStretch()
         tlay.addLayout(trow)
 
-        # 皮肤立绘：程序不内置任何立绘素材，由用户自己指定图片
-        trow_art = QHBoxLayout()
-        trow_art.setSpacing(8)
-        trow_art.addWidget(QLabel("皮肤立绘："))
-        self._art_label = QLabel("")
-        self._art_label.setStyleSheet(theme.qss("color: @text_muted@; font-size: 11px;"))
-        trow_art.addWidget(self._art_label, 1)
-        self._art_btn = QPushButton("选择图片…")
-        self._art_btn.clicked.connect(self._pick_skin_art)
-        trow_art.addWidget(self._art_btn)
-        self._art_clear_btn = QPushButton("清除")
-        self._art_clear_btn.clicked.connect(self._clear_skin_art)
-        trow_art.addWidget(self._art_clear_btn)
-        tlay.addLayout(trow_art)
+        # 皮肤立绘由代码内置绘制，不需要外部图片
         self._holo_cb = QCheckBox("启用全息视觉效果（网格底 / 面板半透明 / 辉光 / 点缀）")
         tlay.addWidget(self._holo_cb)
         tlay.addWidget(QLabel("半透明只作用于背景层，正文、数值与控件始终保持不透明。",
@@ -108,7 +95,7 @@ class AdvancedSettingsDialog(HoloDialog):
         tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         tlay.addWidget(QLabel("「角色皮肤」是一整套独立配色与装饰语言（如昔涟：白 + 粉），"
-                              "底纹会透过半透明面板显示；立绘从本地图片载入。",
+                              "立绘由程序内置绘制，底纹会透过半透明面板显示。",
                               wordWrap=True,
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)
@@ -211,68 +198,11 @@ class AdvancedSettingsDialog(HoloDialog):
         self._theme_combo.setCurrentIndex(_idx if _idx >= 0 else 0)
         # 全息效果开关
         self._holo_cb.setChecked(bool(getattr(app_ctx.config, "holo_effects", True)))
-        # 二次元立绘
-        self._skin_art = str(getattr(app_ctx.config, "skin_art", "") or "")
-        self._refresh_art_label()
         # 版本检测
         self._auto_check_cb.setChecked(app_ctx.config.auto_check_update)
         self._include_pre_cb.setChecked(app_ctx.config.include_prerelease)
         # 游戏信息：两服各自的已入库数据版本（只读读取，不改动数据库）
         self._load_server_info()
-
-    def _refresh_art_label(self) -> None:
-        """显示当前立绘来源：用户指定的文件，或 data/skins 下的约定文件名。"""
-        from ui.widgets import resolve_art_path
-        path = resolve_art_path(self._skin_art)
-        if path is None:
-            self._art_label.setText("未设置（右侧装饰列显示占位纹样）")
-        else:
-            self._art_label.setText(path.name)
-
-    def _skin_art_stem(self) -> str:
-        """当前皮肤的立绘基准文件名（取该皮肤 art_files 的第一个去扩展名）。"""
-        from ui.widgets import skin_art_files
-        files = skin_art_files()
-        if not files:
-            return "art"
-        return files[0].rsplit(".", 1)[0]
-
-    def _pick_skin_art(self) -> None:
-        """选择一张本地图片作为皮肤立绘。图片会被复制进 data/skins 目录，
-        避免原文件被挪走后皮肤又空掉。程序本身不附带任何立绘图片。"""
-        import shutil
-        from pathlib import Path
-        from ui.widgets import ART_SUFFIXES, skins_dir
-
-        exts = " ".join("*" + s for s in sorted(ART_SUFFIXES))
-        start = str(skins_dir())
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择皮肤立绘", start, f"图片文件 ({exts})")
-        if not path:
-            return
-        src = Path(path)
-        dst = skins_dir() / (self._skin_art_stem() + src.suffix.lower())
-        try:
-            if src.resolve() != dst.resolve():
-                shutil.copyfile(src, dst)
-            self._skin_art = str(dst)
-        except Exception:  # noqa: BLE001
-            # 复制失败就直接引用原路径
-            self._skin_art = str(src)
-        self._refresh_art_label()
-
-    def _clear_skin_art(self) -> None:
-        """清除自定义立绘：删掉 data/skins 里该皮肤的图片并清空配置。"""
-        from ui.widgets import skin_art_files, skins_dir
-
-        self._skin_art = ""
-        d = skins_dir()
-        for name in skin_art_files():
-            try:
-                (d / name).unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
-        self._refresh_art_label()
 
     def _load_server_info(self) -> None:
         """填充「游戏信息」：分别读取两服数据库里最新一次完整入库的游戏版本号。
@@ -346,11 +276,6 @@ class AdvancedSettingsDialog(HoloDialog):
             app_ctx.config.holo_effects = _holo
             from ui.widgets import apply_holo_enabled
             apply_holo_enabled(_holo)
-        # 二次元立绘（变更后通知主窗口重新载入装饰列图片）
-        _art = str(getattr(self, "_skin_art", "") or "")
-        if _art != str(getattr(app_ctx.config, "skin_art", "") or ""):
-            app_ctx.config.skin_art = _art
-            bus.theme_changed.emit(app_ctx.config.theme_mode or "auto")
         # 版本检测
         app_ctx.config.auto_check_update = self._auto_check_cb.isChecked()
         app_ctx.config.include_prerelease = self._include_pre_cb.isChecked()

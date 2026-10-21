@@ -26,17 +26,64 @@ from utils.theme import theme
 from ui.widgets.dialog_style import HoloDialog
 
 
-# ── 颜色 ─────────────────────────────────────────────────
+# ── 颜色（全部走主题 token，随深浅主题与角色皮肤自动同步） ──
 
-def _c(hex_str: str) -> QColor:
-    return QColor(hex_str)
+def _arc_fire() -> QColor:
+    """可射击：语义上的「成功」色（浅色主题会自动压深保证对比）。
+
+    半透明填充：射界面会盖住舰体与网格，留一点透明度才能看出底下结构。
+    """
+    c = QColor(theme.qcolor("value_pos"))
+    c.setAlphaF(0.72)
+    return c
 
 
-ARC_GREEN = "#5dd85d"      # 可射击
-ARC_YELLOW = "#ffd24a"     # 俯仰受限
-ARC_OVERVIEW = "#8FAAB3"   # 总览图背景填充
-ARC_GRID = "#475559"       # 同心网格
-ARC_RADIAL = "#111516"     # 径向网格
+def _arc_limited() -> QColor:
+    """俯仰受限：语义上的「警告」色。"""
+    c = QColor(theme.qcolor("warning"))
+    c.setAlphaF(0.72)
+    return c
+
+
+def _arc_fill() -> QColor:
+    """总览扇环填充：主信号色的极淡底，不再用灰色实心。"""
+    c = QColor(theme.qcolor("accent"))
+    c.setAlphaF(0.16)
+    return c
+
+
+def _arc_grid() -> QColor:
+    """同心网格：结构线。"""
+    return theme.qcolor("border_soft")
+
+
+def _arc_radial() -> QColor:
+    """径向网格：比同心网格更弱，只做方位参考。"""
+    c = QColor(theme.qcolor("border"))
+    c.setAlphaF(0.55)
+    return c
+
+
+def _arc_hover() -> QColor:
+    c = QColor(theme.qcolor("accent"))
+    c.setAlphaF(0.45)
+    return c
+
+
+def _arc_ship() -> QColor:
+    """舰体轮廓填充：与总览扇环同一套色，保持图内语言一致。"""
+    c = QColor(theme.qcolor("accent"))
+    c.setAlphaF(0.10)
+    return c
+
+
+def _turret_sel() -> QColor:
+    return theme.qcolor("accent")
+
+
+def _turret_other() -> QColor:
+    return theme.qcolor("accent_warm")
+
 
 SLOT_LABELS = {
     "artillery": "主炮",
@@ -199,10 +246,11 @@ class FiringArcCanvas(QWidget):
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # 背景
-        p.fillRect(self.rect(), theme["panel_bg"])
+        # 背景：与面板同一套半透明底（不叠水印——这里要读扇形，
+        # 任何底纹都会降低射界图的辨识度）
+        p.fillRect(self.rect(), theme.qcolor("panel_fill"))
         if not self._guns:
-            p.setPen(QPen(theme["text_muted"]))
+            p.setPen(QPen(theme.qcolor("text_muted")))
             p.setFont(QFont("Microsoft YaHei", 10))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "该武器系统无射界数据")
             return
@@ -229,26 +277,26 @@ class FiringArcCanvas(QWidget):
                     base.addPath(self._sector_path(cx, cy, r, start_deg, end_deg))
                 start_deg = end_deg
                 cur = self._sectors[a]
-        p.fillPath(base, _c(ARC_OVERVIEW))
+        p.fillPath(base, _arc_fill())
 
         # 同心网格
         p.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(_c(ARC_GRID))
+        pen = QPen(_arc_grid())
         pen.setWidthF(1.0)
         p.setPen(pen)
         for i in range(1, self._max_turret + 1):
             r = i * scale
             p.drawEllipse(QPointF(cx, cy), r, r)
         # 径向网格（15°）
-        pen2 = QPen(_c(ARC_RADIAL))
+        pen2 = QPen(_arc_radial())
         pen2.setWidthF(1.0)
         p.setPen(pen2)
         for deg in range(0, 360, 15):
             p1 = self._pt(cx, cy, scale, deg)
             p2 = self._pt(cx, cy, radius, deg)
             p.drawLine(p1, p2)
-        # 外圈
-        p.setPen(QPen(_c(ARC_GRID)))
+        # 外圈：主信号色，作为整张图的「光学外环」
+        p.setPen(QPen(theme.qcolor("accent"), 1.2))
         p.drawEllipse(QPointF(cx, cy), radius, radius)
 
         # 悬停指示
@@ -256,7 +304,7 @@ class FiringArcCanvas(QWidget):
             r = self._sectors[self._hover_angle] * scale
             if r > 1.5:
                 hi = self._sector_path(cx, cy, r, self._hover_angle - 2, self._hover_angle + 2)
-                p.fillPath(hi, _c("#3a8fbf"))
+                p.fillPath(hi, _arc_hover())
 
     def _paint_detail(self, p: QPainter):
         w, h = self.width(), self.height()
@@ -267,8 +315,8 @@ class FiringArcCanvas(QWidget):
         ecc = 3.0
         body = QPainterPath()
         body.addEllipse(QRectF(cx - ship_len / ecc, cy - ship_len, 2 * ship_len / ecc, 2 * ship_len))
-        p.fillPath(body, _c(ARC_OVERVIEW))
-        p.setPen(QPen(_c(ARC_GRID)))
+        p.fillPath(body, _arc_ship())
+        p.setPen(QPen(_arc_grid()))
         p.drawPath(body)
 
         # 所有炮塔的显示位置（先算出来，选中炮塔的射界要以该炮塔为基准点）
@@ -293,7 +341,7 @@ class FiringArcCanvas(QWidget):
             x, y = pos
             is_sel = gun is self._selected
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_c("#2d8cf0" if is_sel else "#e8c15a"))
+            p.setBrush(_turret_sel() if is_sel else _turret_other())
             p.drawEllipse(QPointF(x, y), 7, 7)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(255, 255, 255, 200)))
@@ -397,9 +445,9 @@ class FiringArcCanvas(QWidget):
                 angle = nxt
             end = (angle + 1) % 360
             if val > 0:
-                color = ARC_GREEN if val == 2 else ARC_YELLOW
+                color = _arc_fire() if val == 2 else _arc_limited()
                 path = self._sector_path(cx, cy, r, start, end)
-                p.fillPath(path, _c(color))
+                p.fillPath(path, color)
             angle = end
             if angle == b0:
                 break

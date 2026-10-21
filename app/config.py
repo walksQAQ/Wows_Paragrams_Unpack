@@ -34,7 +34,6 @@ class AppConfig:
     bin_folder: str = ""  # 游戏 bin 子版本号（如 <bin目录名>）
     theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
     holo_effects: bool = True  # 全息视觉效果（网格背景 / 辉光 / 呼吸 / 点缀），仅影响外观
-    skin_art: str = ""  # 角色皮肤右侧装饰列的自定义立绘路径（留空则用占位纹样）
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
@@ -202,15 +201,6 @@ class ConfigManager:
         self.save()
 
     @property
-    def skin_art(self) -> str:
-        return self._config.skin_art
-
-    @skin_art.setter
-    def skin_art(self, value: str) -> None:
-        self._config.skin_art = str(value or "")
-        self.save()
-
-    @property
     def auto_check_update(self) -> bool:
         return self._config.auto_check_update
 
@@ -286,14 +276,13 @@ class ConfigManager:
 
     @staticmethod
     def _migrate_legacy_skin(raw: dict) -> dict:
-        """迁移早期的皮肤命名：theme_mode="anime" -> 皮肤 id，anime_art -> skin_art。"""
+        """迁移早期的皮肤命名：theme_mode="anime" -> 皮肤 id（cyrene）。"""
         mode = str(raw.get("theme_mode", "") or "")
         if mode and mode not in ("auto", "light", "dark") and mode not in SKIN_IDS:
             # 旧的 "anime" 就是第一套皮肤（昔涟）
             raw["theme_mode"] = "cyrene" if mode == "anime" else "auto"
-        if "skin_art" not in raw and raw.get("anime_art"):
-            raw["skin_art"] = raw["anime_art"]
         raw.pop("anime_art", None)
+        raw.pop("skin_art", None)
         return raw
 
     def _load(self) -> AppConfig:
@@ -310,7 +299,7 @@ class ConfigManager:
                 return default
             # 旧版配置迁移：把单一 game_path 拆到对应服务器的专用路径字段
             raw = self._migrate_legacy_paths(raw)
-            # 旧版皮肤命名迁移（anime -> cyrene / anime_art -> skin_art）
+            # 旧版皮肤命名迁移（anime -> cyrene），并清掉已废弃的立绘字段
             raw = self._migrate_legacy_skin(raw)
             # 只取 dataclass 定义的字段，抛弃多余字段
             valid_keys = {f.name for f in default.__dataclass_fields__.values()}

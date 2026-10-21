@@ -366,8 +366,11 @@ class SkinSpec:
 
     ``brand``      品牌标识形态（"crystal" 棱晶 / "heart" 心形）
     ``watermark``  工作区背景水印（"" 无 / "mobius" 莫比乌斯环 …）
-    ``art_slot``   是否启用右侧立绘装饰列
-    ``art_files``  ``data/skins/`` 下的约定文件名，按顺序探测
+    ``art_slot``   是否启用右侧立绘列
+    ``figure``     内置立绘纹样（"" 无 / "cyrene" …）：代码自绘的原创插画，
+                   没有图片时用它兜底
+    ``image_stem`` 用户自备立绘的文件名（不含扩展名），在 data/skins/ 下查找；
+                   有图时优先用图，没有才退回内置自绘
     """
 
     id: str
@@ -376,7 +379,8 @@ class SkinSpec:
     brand: str = "crystal"
     watermark: str = ""
     art_slot: bool = False
-    art_files: tuple[str, ...] = ()
+    figure: str = ""
+    image_stem: str = ""
 
 
 SKINS: dict[str, SkinSpec] = {
@@ -387,7 +391,8 @@ SKINS: dict[str, SkinSpec] = {
         brand="heart",
         watermark="mobius",
         art_slot=True,
-        art_files=("cyrene.png", "cyrene.webp", "cyrene.jpg", "cyrene.jpeg"),
+        figure="cyrene",
+        image_stem="cyrene",
     ),
 }
 

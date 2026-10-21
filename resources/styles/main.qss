@@ -33,13 +33,15 @@ QGroupBox {
     padding-top: 9px;
 }
 
-/* 分组框标题：冰蓝刻印，压在结构线上 */
+/* 分组框标题：冰蓝刻印，压在结构线上。
+   标题底必须与**所在页面**同色（分组框自身不画底色，露出的是窗口底色），
+   否则标题位置会多出一片与周围不同色的方块。 */
 QGroupBox::title {
     subcontrol-origin: margin;
     left: 8px;
     padding: 0 6px;
     color: @accent@;
-    background-color: @panel_bg@;
+    background-color: @window_bg@;
 }
 
 /* 文本输入类：凹陷槽底 + 细线框 */

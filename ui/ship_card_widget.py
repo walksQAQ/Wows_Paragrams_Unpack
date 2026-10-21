@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QHBoxLayout, QLabel, QButtonGroup,
-    QSizePolicy, QScrollArea, QApplication, QToolTip,
+    QSizePolicy, QScrollArea, QApplication, QToolTip, QFrame,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QCursor
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QFont, QColor, QCursor, QFontMetrics
 
 from app.signals import bus
 from utils.theme import theme
@@ -42,7 +42,7 @@ def card_style() -> str:
             border: 1px solid @border@;
             border-radius: 8px;
             margin-top: 10px;
-            padding: 4px 12px 8px 12px;
+            padding: 4px 12px 6px 12px;
             font-size: 12px;
             font-weight: bold;
             color: @text@;
@@ -227,8 +227,8 @@ class ShipCardWidget(QGroupBox):
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # 列宽：名称按内容，数值填满剩余
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        # 列宽：名称按内容（_fit_columns 定宽，分隔线行不参与），数值填满剩余
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setStretchLastSection(True)
         # 行高自适应文字换行
@@ -251,9 +251,7 @@ class ShipCardWidget(QGroupBox):
         if firing_arc and firing_arc.get("mode") == "front_back":
             self._add_firing_arc_row(firing_arc)
 
-        # 左列宽度按内容，右列填满剩余；通过 ResizeToContents 保持紧凑
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        # 避免左列太宽，设最大宽度为表格预计宽度的 30%
+        # 左列宽度由 _fit_columns 按标签内容定，右列填满剩余
         self._table.horizontalHeader().setMaximumSectionSize(300)
 
         layout.addWidget(self._table)
@@ -263,7 +261,6 @@ class ShipCardWidget(QGroupBox):
             self._add_action_row(action)
 
         # 延迟自适应高度，等布局完成后再计算
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._adjust_height)
 
     def _add_action_row(self, action: dict) -> None:
@@ -331,12 +328,14 @@ class ShipCardWidget(QGroupBox):
             self._add_firing_arc_row(fa)
 
     def resizeEvent(self, event):
-        """窗口缩放时重新调整高度"""
+        """窗口缩放时重新调整高度与列宽"""
         if not self._adjusting:
             self._adjusting = True
             super().resizeEvent(event)
             self._adjust_height()
             self._adjusting = False
+        # resizeEvent 阶段表格视口还是旧宽度，等布局落定后再定列宽
+        QTimer.singleShot(0, self._fit_columns)
 
     def _populate_items(self, items: list[dict]) -> None:
         """填充所有数据行"""
@@ -486,18 +485,28 @@ class ShipCardWidget(QGroupBox):
         self._table.setItem(row, 1, empty)
 
     def _add_separator_row(self) -> None:
-        """添加分隔线行"""
+        """添加分隔线行。
+
+        用跨两列的 1px 横线，而不是「─」×30 的文本：文本宽度固定（约 230px），
+        既会把左列撑宽、又会越过列边界压到右列数值上。
+        """
         row = self._table.rowCount()
         self._table.insertRow(row)
 
-        sep = QTableWidgetItem("─" * 30)
-        sep.setForeground(QColor(theme["border_soft"]))
-        sep.setFlags(sep.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-        self._table.setItem(row, 0, sep)
+        for col in range(self._table.columnCount()):
+            empty = QTableWidgetItem("")
+            empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self._table.setItem(row, col, empty)
+        self._table.setSpan(row, 0, 1, self._table.columnCount())
 
-        empty = QTableWidgetItem("")
-        empty.setFlags(empty.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-        self._table.setItem(row, 1, empty)
+        line = QFrame()
+        line.setFixedHeight(1)
+        theme.bind(line, "QFrame { background: @border_soft@; border: none; }")
+        holder = QWidget()
+        holder_lay = QHBoxLayout(holder)
+        holder_lay.setContentsMargins(0, 5, 0, 4)
+        holder_lay.addWidget(line)
+        self._table.setCellWidget(row, 0, holder)
 
     def _add_button_group_row(self, item: dict) -> None:
         """添加按钮组行（如 DOT 数量选择）"""
@@ -547,6 +556,35 @@ class ShipCardWidget(QGroupBox):
         self._table.setCellWidget(row, 1, btn_widget)
         self._table.setRowHeight(row, 24)
 
+    # ── 列宽 / 行高 ──────────────────────────────────────
+
+    def _fit_columns(self) -> None:
+        """左列宽度按标签实际文字定，右列吃掉剩余宽度。
+
+        以前用 ResizeToContents：分隔线行铺的是「─」×30，会把左列直接撑到
+        300px 上限，右列被挤出视口——数值就会紧贴右边框甚至被裁掉。
+        """
+        try:
+            vw = self._table.viewport().width()
+            rows = self._table.rowCount()
+        except (RuntimeError, AttributeError):
+            return
+        if vw <= 0 or rows <= 0:
+            return
+        widest = 0
+        for r in range(rows):
+            item = self._table.item(r, 0)
+            text = item.text() if item is not None else ""
+            if not text or text.startswith("─"):
+                continue
+            font = item.font()
+            fm = QFontMetrics(font) if font.pointSize() > 0 or font.pixelSize() > 0 \
+                else self._table.fontMetrics()
+            widest = max(widest, fm.horizontalAdvance(text))
+        # 右列至少留 110px（其最小宽度），左列最多占视口 60%
+        w0 = max(40, min(widest + 8, int(vw * 0.6), vw - 110))
+        self._table.setColumnWidth(0, w0)
+
     def _adjust_height(self) -> None:
         """根据行数自动调整卡片高度"""
         if self._adjusting:
@@ -558,6 +596,7 @@ class ShipCardWidget(QGroupBox):
             self._adjusting = False
             return
         self._adjusting = True
+        self._fit_columns()
         self._table.resizeRowsToContents()
         rows = self._table.rowCount()
         height = 4
@@ -569,7 +608,9 @@ class ShipCardWidget(QGroupBox):
         for child in self.children():
             if isinstance(child, QPushButton):
                 extra_h += child.sizeHint().height() + 6
-        card_height = height + 22 + extra_h
+        # 22 = 标题带(margin-top 10) + 上内边距 4 + 布局上边距 2 + 下内边距 6
+        # 无标题卡片 QSS 去掉了标题带，只留 12
+        card_height = height + (12 if self.property("untitled") else 22) + extra_h
         self.setFixedHeight(card_height)
         self._adjusting = False
 
