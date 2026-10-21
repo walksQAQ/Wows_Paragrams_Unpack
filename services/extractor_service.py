@@ -14,7 +14,7 @@ import shutil
 from app.signals import bus
 from app.application import app as app_ctx
 from utils.threading_utils import run_async
-from utils.path_utils import get_data_dir, get_app_dir, get_bundled_dir
+from utils.path_utils import get_data_dir, get_app_dir, get_bundled_dir, safe_join
 
 
 _DATA_FILE_NAMES = ["GameParams_py3.data", "GameParams_py2.data", "GameParams.data"]
@@ -63,8 +63,9 @@ def _extract_data_files(game_path: str, latest_bin: str, target_dir) -> list[str
             raise Exception(f"未在文件树中找到 {_DATA_FILE_NAMES}")
         found: list[str] = []
         for entry in candidates:
-            filename = entry.path.rsplit("/", 1)[-1]
-            out = target_dir / filename
+            # 条目名来自 .idx（不可信）：反斜杠同样算分隔符，取 basename 后再校验落点
+            filename = entry.path.replace("\\", "/").rsplit("/", 1)[-1]
+            out = safe_join(target_dir, filename)
             extractor.extract_single(entry.path, out)
             found.append(filename)
             bus.log_message.emit(f"✅ 已提取 {entry.path}")

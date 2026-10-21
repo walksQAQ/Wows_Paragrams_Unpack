@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from app.signals import bus
 from app.application import app as app_ctx
 from utils.threading_utils import run_async
-from utils.path_utils import get_data_dir, get_split_dir
+from utils.path_utils import get_data_dir, get_split_dir, safe_join
 from services.database_service import DatabaseManager, get_db, reset_db
 
 from services import GameParams as _GameParamsModule
@@ -39,9 +39,10 @@ class _GPEncode(json.JSONEncoder):
 def _write_one(key, value, index, out_dir):
     try:
         t = value.get('typeinfo', {}).get('type', 'UnknownType')
-        d = os.path.join(out_dir, str(t)) if index is None else os.path.join(out_dir, str(index), str(t))
+        # type / 实体名都来自游戏数据，可能含 ..\ 或盘符，必须校验落点
+        d = safe_join(out_dir, t) if index is None else safe_join(out_dir, str(index), t)
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, f"{key}.json"), 'w', encoding='latin1') as f:
+        with open(safe_join(d, f"{key}.json"), 'w', encoding='latin1') as f:
             json.dump(value, f, sort_keys=True, indent=4, separators=(',', ': '))
     except Exception:
         pass

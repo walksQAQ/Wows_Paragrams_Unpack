@@ -25,6 +25,8 @@ from utils.theme import theme
 from utils.threading_utils import run_async
 from utils.path_utils import get_data_dir
 
+from ui.widgets.dialog_style import HoloDialog
+
 
 #: species 过滤下拉项：显示文本 → 允许的 species（None = 全部）
 _SPECIES_FILTERS: list[tuple[str, tuple[str, ...] | None]] = [
@@ -35,7 +37,7 @@ _SPECIES_FILTERS: list[tuple[str, tuple[str, ...] | None]] = [
 ]
 
 
-class OrphanCamoDialog(QDialog):
+class OrphanCamoDialog(HoloDialog):
     """独立涂装列表（无舰船归属的 Exterior）。"""
 
     def __init__(self, parent=None):
@@ -49,7 +51,7 @@ class OrphanCamoDialog(QDialog):
         self._viewer = None
 
         self._build_ui()
-        theme.bind(self, "QDialog { background: @panel_bg@; }")
+        theme.bind(self, "QDialog { background: @window_bg@; color: @text@; }")
         self._reload()
 
     # ── UI ────────────────────────────────────────────────
@@ -75,7 +77,7 @@ class OrphanCamoDialog(QDialog):
         theme.bind(self.search, """
             QLineEdit { padding: 4px 6px; border: 1px solid @border@; border-radius: 3px;
                         background: @input_bg@; color: @text@; font-size: 11px; }
-            QLineEdit:focus { border-color: #0078d4; }
+            QLineEdit:focus { border-color: @accent@; }
         """)
         bar.addWidget(self.search, 1)
 
@@ -93,12 +95,6 @@ class OrphanCamoDialog(QDialog):
         bar.addWidget(self.cb_model_only)
 
         self.btn_refresh = QPushButton("↻ 重新扫描")
-        theme.bind(self.btn_refresh, """
-            QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
-                          padding: 4px 10px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: #0078d4; }
-            QPushButton:disabled { color: @text_hint@; }
-        """)
         bar.addWidget(self.btn_refresh)
         root.addLayout(bar)
 
@@ -110,7 +106,7 @@ class OrphanCamoDialog(QDialog):
             QListWidget { background: @panel_bg@; border: 1px solid @border@;
                           border-radius: 4px; color: @text@; font-size: 12px; }
             QListWidget::item { padding: 3px 6px; }
-            QListWidget::item:selected { background: @selected_bg@; color: @selected_fg@; }
+            QListWidget::item:selected { background: @hover_bg@; color: @accent@; }
             QListWidget::item:hover { background: @hover_bg@; color: @text@; }
         """)
         split.addWidget(self.list)
@@ -148,12 +144,6 @@ class OrphanCamoDialog(QDialog):
         self.btn_view = QPushButton("🖼 在 3D 查看器中查看（仅船体）")
         self.btn_view.setToolTip("无归属舰船 ⇒ 只按皮肤自带 hullConfig 加载船体，挂载可能缺失")
         self.btn_view.setEnabled(False)
-        theme.bind(self.btn_view, """
-            QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
-                          padding: 5px 12px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: #0078d4; }
-            QPushButton:disabled { color: @text_hint@; }
-        """)
         foot.addWidget(self.btn_view)
         root.addLayout(foot)
 

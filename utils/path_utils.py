@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -80,6 +81,35 @@ def get_split_dir() -> Path:
 def get_config_path() -> Path:
     """返回 config.json 路径（不存在时调用方负责创建）"""
     return get_app_dir() / "config.json"
+
+
+def safe_join(base: str | Path, *parts: str | Path) -> Path:
+    """把由外部数据推导出的路径拼到 ``base`` 下，落点越界时抛 :class:`ValueError`。
+
+    ``.idx`` / ``.pkg`` 条目名、游戏数据里的类型名与实体名都不可信：可能含 ``..``、
+    反斜杠分隔符、盘符前缀或 UNC 路径。直接 ``/`` 或 ``os.path.join`` 拼接会让写入
+    落到输出目录之外（任意文件写入 → 代码执行）。
+
+    只做纯字符串归一化，不解析符号链接，避免 data/ 被重定向（OneDrive、目录联接）
+    时误判为越界。
+    """
+    root = os.path.abspath(base)
+    for part in parts:
+        s = str(part)
+        # 绝对路径 / 盘符相对路径（C:foo）/ UNC / NTFS 数据流（a:b）一律拒绝
+        if os.path.isabs(s) or os.path.splitdrive(s)[0] or ":" in s:
+            raise ValueError(f"非法输出路径（含盘符或绝对路径）: {s}")
+    target = os.path.abspath(os.path.join(root, *(str(p) for p in parts)))
+    # commonpath 比较时按平台归一化、但返回的是原始大小写；两侧都 normcase 后再比，
+    # 否则 Windows 上合法路径会被误判为越界。
+    norm_root = os.path.normcase(root)
+    try:
+        inside = os.path.normcase(os.path.commonpath([root, target])) == norm_root
+    except ValueError:  # 不同盘符
+        inside = False
+    if not inside:
+        raise ValueError(f"非法输出路径（越出 {root}）: {target}")
+    return Path(target)
 
 
 # ── 打包内置资源（源码 / standalone / onefile 解压目录） ──

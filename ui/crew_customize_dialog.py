@@ -20,6 +20,8 @@ from PySide6.QtGui import QIcon, QPixmap, QFont
 from utils.theme import theme
 from utils.image_paths import pic_path
 
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
+
 
 # 「每失去1%生命值」类词条：单一键对应多项属性，需按技能面板 tooltip 的口径展开显示
 _EXPAND_MOD_KEYS = frozenset({"lastChanceReloadCoefficient"})
@@ -38,7 +40,7 @@ def _format_expanded_compare(key: str, v_reg, v_epic, ship_type_en: str, hint_co
     _epic_items = dict(_NM.lastchance_reload_items(v_epic, ship_type_en))
     if not _reg_items:
         return ""
-    _clr_reg = _NM.get_modifier_color(key, v_reg) or "#4caf50"
+    _clr_reg = _NM.get_modifier_color(key, v_reg) or theme["value_pos"]
     _clr_epic = _NM.get_modifier_color(key, v_epic) or _clr_reg
     out = f"<span style='color:{hint_color};'>每失去1%生命值：</span><br>"
     for _name, _reg_txt in _reg_items.items():
@@ -46,13 +48,13 @@ def _format_expanded_compare(key: str, v_reg, v_epic, ship_type_en: str, hint_co
         out += f"<span style='color:{hint_color};'>{_name}</span> "
         out += f"<span style='color:{_clr_reg};'>{_reg_txt}</span>"
         if _epic_txt != _reg_txt:
-            out += f" <span style='color:#ff6600;'>→</span> "
+            out += f" <span style='color:{theme['gold']};'>→</span> "
             out += f"<span style='color:{_clr_epic};'>{_epic_txt}</span>"
         out += "<br>"
     return out
 
 
-class CrewCustomizeDialog(QDialog):
+class CrewCustomizeDialog(HoloDialog):
     """自定义舰长配置对话框"""
 
     def __init__(self, crew_data: dict, db_nation: str, parent=None,
@@ -74,13 +76,10 @@ class CrewCustomizeDialog(QDialog):
             QDialog { background:@window_bg@; color:@text@; }
             QLabel { color:@text@; font-size:12px; }
             QGroupBox { border:1px solid @border@; border-radius:4px; margin-top:12px;
-                        font-size:12px; color:#c60; padding-top:12px; }
+                        font-size:12px; color:@gold_surface@; padding-top:12px; }
             QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px; }
             QComboBox { background:@input_bg@; border:1px solid @border@; border-radius:3px;
                         padding:3px 6px; color:@text@; font-size:11px; }
-            QPushButton { background:@panel_alt@; border:1px solid @border@; border-radius:3px;
-                          padding:4px 12px; color:@text@; font-size:11px; }
-            QPushButton:hover { background:@hover_bg@; }
         """)
         self._init_ui()
 
@@ -91,7 +90,8 @@ class CrewCustomizeDialog(QDialog):
 
         # ── 当前舰长信息 ──
         info = QLabel(f"当前: {self._crew_data.get('disp', '未知')}")
-        info.setStyleSheet("font-size:14px; font-weight:bold; color:#c60; padding:4px 0;")
+        info.setStyleSheet(theme.qss(
+            "font-size:14px; font-weight:bold; color:@gold_surface@; padding:4px 0;"))
         layout.addWidget(info)
 
         crew_id = self._crew_data.get('crew_id', '')
@@ -115,11 +115,7 @@ class CrewCustomizeDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         save_btn = QPushButton("保存配置")
-        save_btn.setStyleSheet("""
-            QPushButton { background:#1a73e8; border:1px solid #1a73e8; border-radius:3px;
-                          padding:6px 20px; color:#fff; font-size:12px; font-weight:bold; }
-            QPushButton:hover { background:#1565c0; }
-        """)
+        theme.bind(save_btn, PRIMARY_BTN_QSS)
         cancel_btn = QPushButton("取消")
         cancel_btn.clicked.connect(self.reject)
         save_btn.clicked.connect(self.accept)
@@ -245,18 +241,18 @@ class CrewCustomizeDialog(QDialog):
                         lines = ['<div style="font-size:12px; line-height:1.5;">']
                         tt = talent_row['trigger_type'] or ""
                         desc = _build_trigger_text(talent_row, tt, _trigger_map, _ribbon_map, _achievement_map)
-                        lines.append(f'<div style="color:#ffc107; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
+                        lines.append(f'<div style="color:{theme["gold"]}; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
                         try:
                             eff = json.loads(talent_row['effects_json']) if talent_row['effects_json'] else {}
                         except Exception:
                             eff = {}
                         if eff:
-                            lines.append('<div style="color:#aaa; margin-top:4px;">效果：</div>')
+                            lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:4px;">效果：</div>')
                             eff_lines = _format_talent_effects_text(eff, _mod_map, self._ship_type_en)
                             for l in eff_lines:
-                                lines.append(f'<div style="color:#ddd; padding-left:8px;">{l}</div>')
+                                lines.append(f'<div style="color:{theme["tip_text"]}; padding-left:8px;">{l}</div>')
                         if talent_row['max_trigger_num']:
-                            lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {talent_row["max_trigger_num"]} 次</div>')
+                            lines.append(f'<div style="color:{theme["tip_dim"]}; font-size:11px; margin-top:4px;">每场最多触发 {talent_row["max_trigger_num"]} 次</div>')
                         lines.append('</div>')
                         return "".join(lines)
 
@@ -275,7 +271,8 @@ class CrewCustomizeDialog(QDialog):
                         # 传奇舰长姓名标签
                         header = QLabel(f"✦ {lname}")
                         header.setWordWrap(False)
-                        header.setStyleSheet("color:#c60; font-size:12px; font-weight:bold; padding:4px 0 2px 0;")
+                        header.setStyleSheet(theme.qss(
+            "color:@gold_surface@; font-size:12px; font-weight:bold; padding:4px 0 2px 0;"))
                         sc_layout.addWidget(header)
                         for t in ltalents:
                             t = dict(t)  # sqlite3.Row → dict
@@ -309,11 +306,11 @@ class CrewCustomizeDialog(QDialog):
                                     background: @panel_alt@;
                                 }
                                 QCheckBox::indicator:checked {
-                                    background: #ff8800;
-                                    border-color: #ffaa33;
+                                    background: @gold_surface@;
+                                    border-color: @gold_plate@;
                                 }
                                 QCheckBox::indicator:hover {
-                                    border-color: #ff8800;
+                                    border-color: @gold_plate_hi@;
                                 }
                             """))
                             hl.addWidget(cb)
@@ -332,7 +329,7 @@ class CrewCustomizeDialog(QDialog):
                             right_layout.setContentsMargins(0,0,0,0)
                             right_layout.setSpacing(1)
                             # 触发条件
-                            trig_label = QLabel(f"<span style='color:#ffc107; font-size:10px;'>触发：</span><span style='color:{theme['text_muted']}; font-size:10px;'>{trig_text}</span>")
+                            trig_label = QLabel(f"<span style='color:{theme['gold']}; font-size:10px;'>触发：</span><span style='color:{theme['text_muted']}; font-size:10px;'>{trig_text}</span>")
                             trig_label.setWordWrap(True)
                             trig_label.setAttribute(Qt.WA_TransparentForMouseEvents)
                             right_layout.addWidget(trig_label)
@@ -477,15 +474,15 @@ class CrewCustomizeDialog(QDialog):
         def _build_tip(row):
             lines = ['<div style="font-size:12px; line-height:1.5;">']
             desc = _trigger_text(row)
-            lines.append(f'<div style="color:#ffc107; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
+            lines.append(f'<div style="color:{theme["gold"]}; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
             try: eff = json.loads(row['effects_json']) if row['effects_json'] else {}
             except Exception: eff = {}
             if eff:
-                lines.append('<div style="color:#aaa; margin-top:4px;">效果：</div>')
+                lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:4px;">效果：</div>')
                 for l in _effects_text(eff):
-                    lines.append(f'<div style="color:#ddd; padding-left:8px;">{l}</div>')
+                    lines.append(f'<div style="color:{theme["tip_text"]}; padding-left:8px;">{l}</div>')
             if row['max_trigger_num']:
-                lines.append(f'<div style="color:#888; font-size:11px; margin-top:4px;">每场最多触发 {row["max_trigger_num"]} 次</div>')
+                lines.append(f'<div style="color:{theme["tip_dim"]}; font-size:11px; margin-top:4px;">每场最多触发 {row["max_trigger_num"]} 次</div>')
             lines.append('</div>')
             return ''.join(lines)
 
@@ -502,11 +499,12 @@ class CrewCustomizeDialog(QDialog):
                     icon_path = sk['icon_path'] or ""
                     btn = QPushButton()
                     btn.setStyleSheet(theme.qss("""
-                        QPushButton { background:@panel_alt@; border:2px solid @border@;
+                        QPushButton { background:@icon_btn_bg@; border:2px solid @icon_btn_border@;
                                       border-radius:6px; min-width:52px; min-height:52px;
                                       max-width:52px; max-height:52px; font-size:9px;
-                                      color:@text@; padding:0px; }
-                        QPushButton:hover { background:@hover_bg@; border-color:@text_hint@; }
+                                      color:@icon_btn_text@; padding:0px; }
+                        QPushButton:hover { background:@icon_btn_bg_hover@;
+                                            border-color:@icon_btn_border_hi@; }
                     """))
                     btn.setCheckable(False)
                     btn.setToolTip(_build_tip(sk))
@@ -650,11 +648,11 @@ class CrewCustomizeDialog(QDialog):
                     background: @panel_alt@;
                 }
                 QCheckBox::indicator:checked {
-                    background: #ff8800;
-                    border-color: #ffaa33;
+                    background: @gold_surface@;
+                    border-color: @gold_plate@;
                 }
                 QCheckBox::indicator:hover {
-                    border-color: #ff8800;
+                    border-color: @gold_plate_hi@;
                 }
             """))
             cb.stateChanged.connect(lambda checked, k=sk, c=cb: self._on_epic_toggle(k, checked, c))
@@ -699,14 +697,14 @@ class CrewCustomizeDialog(QDialog):
                     if not reg_str and not ep_str:
                         continue
                     diff_text += f"<span style='color:{theme['text_hint']};'>{zh}</span> "
-                    diff_text += f"<span style='color:#aaa;'>{reg_str}</span>"
+                    diff_text += f"<span style='color:{theme['tip_dim']};'>{reg_str}</span>"
                     if reg_str != ep_str:
-                        diff_text += f" <span style='color:#ff6600;'>→ {ep_str}</span>"
+                        diff_text += f" <span style='color:{theme['gold']};'>→ {ep_str}</span>"
                     diff_text += "<br>"
 
             if diff_text:
                 diff_label = QLabel(diff_text)
-                diff_label.setStyleSheet("color:#aaa; font-size:10px;")
+                diff_label.setStyleSheet(theme.qss("color:@tip_dim@; font-size:10px;"))
                 diff_label.setWordWrap(True)
                 hl.addWidget(diff_label, 1)
 

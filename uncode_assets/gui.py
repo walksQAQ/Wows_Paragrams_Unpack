@@ -44,6 +44,8 @@ from PySide6.QtWidgets import (
 )
 
 from .errors import AssetsBinError
+from ui.widgets import HoloDialog, HoloWindow
+from utils.theme import theme
 from .parse_rules import (RULE_AUTO, RULE_LABELS, RULE_LESTA, RULE_LEGACY,
                           RULE_SHORT_LABELS, RULE_WARGAMING, RULE_WG_OLD,
                           detect_rule, layout_for_rule, model_meta_for_rule,
@@ -51,25 +53,7 @@ from .parse_rules import (RULE_AUTO, RULE_LABELS, RULE_LESTA, RULE_LEGACY,
 from .service import AssetsBinService
 from .vfs import VirtualFile
 
-# 深色主题样式
-_STYLE = """
-QMainWindow, QWidget { background-color: #1e1e1e; color: #d4d4d4; }
-QToolBar { background-color: #252526; border-bottom: 1px solid #333; spacing: 6px; padding: 4px; }
-QToolBar QPushButton { background-color: #0e639c; color: white; border: none; border-radius: 3px; padding: 4px 12px; }
-QToolBar QPushButton:hover { background-color: #1177bb; }
-QToolBar QPushButton:checked { background-color: #0e8a3c; }
-QTreeWidget { background-color: #1e1e1e; color: #d4d4d4; border: none; outline: none; }
-QTreeWidget::item { padding: 3px; }
-QTreeWidget::item:selected { background-color: #094771; }
-QTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: none; padding: 8px;
-            font-family: Consolas, "Courier New", monospace; font-size: 12px; }
-QLineEdit { background-color: #333; color: #d4d4d4; border: 1px solid #555; border-radius: 3px; padding: 4px 8px; }
-QComboBox { background-color: #333; color: #d4d4d4; border: 1px solid #555; border-radius: 3px; padding: 3px 6px; }
-QComboBox QAbstractItemView { background-color: #252526; color: #d4d4d4; selection-background-color: #094771; }
-QStatusBar { background-color: #252526; color: #9cdcfe; }
-QLabel#info { color: #9cdcfe; padding: 0 8px; }
-QLabel#source { color: #e0e0e0; padding: 0 10px; font-size: 12px; }
-"""
+
 
 
 class _SourceLabel(QLabel):
@@ -105,7 +89,7 @@ class _SourceLabel(QLabel):
 
     def _refresh(self) -> None:
         fm = self.fontMetrics()
-        # 左右各 10px padding（见 _STYLE 的 QLabel#source）+ 余量
+        # 左右各 10px padding（见 ui/widgets/dialog_style.py 的 QToolBar QLabel#source）+ 余量
         avail = self.width() - fm.horizontalAdvance(self._suffix) - 24
         if avail < 60:
             super().setText(self._suffix.strip())
@@ -223,7 +207,7 @@ class _LoadWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
-class _OpenAssetsDialog(QDialog):
+class _OpenAssetsDialog(HoloDialog):
     """「打开 assets.bin」对话框：选文件 + 选解析规则。
 
     裸 assets.bin 没有客户端信息可探测，规则必须在这里指定（浏览器界面里不再放规则选项）；
@@ -234,7 +218,6 @@ class _OpenAssetsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("打开 assets.bin")
         self.setMinimumWidth(560)
-        self.setStyleSheet(_STYLE)
 
         self.path_edit = QLineEdit(path)
         self.path_edit.setPlaceholderText("assets.bin 路径")
@@ -300,7 +283,7 @@ class _OpenAssetsDialog(QDialog):
         return self.rule_combo.currentData() or RULE_AUTO
 
 
-class AssetsBinViewer(QMainWindow):
+class AssetsBinViewer(HoloWindow):
     """assets.bin 可视化浏览器。"""
 
     #: 每个目录最多直接显示的文件节点数，超出显示占位项（避免大目录卡死 UI）
@@ -352,7 +335,6 @@ class AssetsBinViewer(QMainWindow):
         self._client_version = None
         self.setWindowTitle("assets.bin 浏览器")
         self._apply_preferred_size()
-        self.setStyleSheet(_STYLE)
         self._build_ui()
         # 打开窗口时不自动载入数据：由用户手动选择 assets.bin 文件或游戏目录，
         # 避免后台解析与模型查看器渲染争抢 GIL 造成卡顿。
@@ -678,7 +660,7 @@ class AssetsBinViewer(QMainWindow):
             item = QTreeWidgetItem([label])
             item.setData(0, Qt.ItemDataRole.UserRole, f.path)
             if f.prototype_type is None:
-                item.setForeground(0, QBrush(QColor("#8f8f8f")))
+                item.setForeground(0, QBrush(theme.qcolor("text_hint")))
             item.setToolTip(0, f"{f.path}  [{tname}]")
             parent_item.addChild(item)
             shown += 1

@@ -11,11 +11,44 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QLabel,
     QButtonGroup, QRadioButton, QProgressBar,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 
 from app.signals import bus
 from app.application import app as app_ctx
 from utils.theme import theme
+from ui.widgets import SparkDot
+
+
+class _ToolbarSeparator(QWidget):
+    """工具栏分组分隔：一段竖向渐变光线 + 上下两个小节点。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(11)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x = self.width() / 2.0
+        h = self.height()
+        top, bot = h * 0.24, h * 0.76
+
+        line = QColor(theme.qcolor("metal_mid"))
+        line.setAlphaF(0.55 if theme.dark else 0.45)
+        p.setPen(QPen(line, 1))
+        p.drawLine(QPointF(x, top), QPointF(x, bot))
+
+        core = QColor(theme.qcolor("light_core"))
+        core.setAlphaF(0.85)
+        p.setPen(QPen(core, 1))
+        p.drawLine(QPointF(x, top + 3), QPointF(x, top + 9))
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(core)
+        p.drawRect(QRectF(x - 1.5, top - 2.5, 3, 3))
+        p.drawRect(QRectF(x - 1.5, bot + 0.5, 3, 3))
 
 
 class TopToolbar(QWidget):
@@ -24,54 +57,40 @@ class TopToolbar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("TopToolbar")
-        # 工具栏整体样式：背景/按钮/进度条/服务器文字全部跟随主题（浅色主题=浅色工具栏）
+        # 纯 QWidget 子类必须开启此属性，QSS 的 background-color 才会真正绘制
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # 工具栏：近透明底 + 底缘一道光线，按钮为自绘斜切薄片
         theme.bind(self, """
             #TopToolbar {
-                background-color: @toolbar_bg@;
-                border-bottom: 1px solid @border@;
-            }
-            #TopToolbar QPushButton {
-                background-color: @toolbar_btn_bg@;
-                color: @toolbar_btn_text@;
-                border: 1px solid @toolbar_btn_border@;
-                border-radius: 4px;
-                padding: 6px 14px;
-                font-size: 12px;
-            }
-            #TopToolbar QPushButton:hover {
-                background-color: @toolbar_btn_hover@;
-                border-color: #0078d4;
-            }
-            #TopToolbar QPushButton:disabled {
-                background-color: @toolbar_btn_disabled@;
-                color: @toolbar_text_muted@;
-                border-color: @toolbar_btn_border@;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(150, 175, 200, 0.10),
+                    stop:0.55 rgba(90, 115, 145, 0.05),
+                    stop:1 rgba(150, 175, 200, 0.02));
+                border-bottom: 1px solid @metal_edge@;
             }
             #TopToolbar QLabel {
-                color: @toolbar_text@;
+                color: @text_muted@;
                 font-size: 12px;
             }
-            /* 服务器单选按钮：对齐 v3.2.2-test1 —— 不自定义 ::indicator，
-               圆点使用 Qt 原生渲染（灰环 + 选中蓝色内点），只控制文字颜色/间距 */
+            /* 服务器单选按钮：不使用自定义 ::indicator，圆点交给 Qt 原生渲染 */
             #TopToolbar QRadioButton {
-                color: @toolbar_text@;
+                color: @text@;
                 font-size: 12px;
                 spacing: 4px;
             }
             #TopToolbar QRadioButton:disabled {
-                color: @toolbar_text_muted@;
+                color: @text_hint@;
             }
             #TopToolbar QProgressBar {
-                border: 1px solid #0078d4; border-radius: 4px;
-                background: @toolbar_bg@; color: @toolbar_btn_text@;
-                font-size: 11px; font-weight: bold;
+                border: 1px solid @border_soft@; border-radius: 0px;
+                background: @inset@; color: @text@;
+                font-size: 10px; font-weight: bold;
                 text-align: center;
                 padding: 0;
             }
             #TopToolbar QProgressBar::chunk {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #0078d4, stop:1 #00a0ff);
-                border-radius: 3px;
+                    stop:0 @accent@, stop:1 @accent_hi@);
             }
         """)
 
@@ -84,20 +103,46 @@ class TopToolbar(QWidget):
         layout.setContentsMargins(12, 6, 12, 6)
         layout.setSpacing(8)
 
-        # ── 操作按钮（中文）─
-        self.btn_load = QPushButton("📦  加载数据")
-        self.btn_lang = QPushButton("🌐  加载文本")
-        self.btn_refresh = QPushButton("🔄  刷新界面")
-        self.btn_ballistics = QPushButton("📊  穿深计算器")
+        # ── 操作按钮（中文，合并加载+解析）─
+        from ui.widgets import CrystalMark, SciFiButton, SparkDot
+
+        self.btn_load = SciFiButton("加载数据")
+        self.btn_lang = SciFiButton("加载文本")
+        self.btn_refresh = SciFiButton("刷新界面")
+        self.btn_ballistics = SciFiButton("穿深计算器")
         # 资源解包器 / 独立涂装已移入菜单栏「工具」（见 ui/main_window.py）
-        # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
-        self.btn_copy = QPushButton("📋  复制当前信息")
-        self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
-        self.btn_copy_panel = QPushButton("📸  复制完整界面")
+        # 复制按钮：无下拉，点击 = 把信息面板整页渲染为长图复制
+        self.btn_copy_panel = SciFiButton("复制完整界面")
         self.btn_copy_panel.setToolTip("将当前 DetailPanel 全页内容渲染为长图并复制到系统剪贴板")
 
-        for b in (self.btn_load, self.btn_lang, self.btn_refresh, self.btn_ballistics,
-                  self.btn_copy, self.btn_copy_panel):
+        # ── 左侧标识区：晶体切面 + 程序名（等宽大字距，像设备铭牌）──
+        self.crystal_mark = CrystalMark()
+        layout.addWidget(self.crystal_mark)
+        layout.addSpacing(6)
+
+        self.brand_label = QLabel("Wows Paragrams Unpack")
+        _bf = QFont(self.brand_label.font())
+        _bf.setFamilies(["Microsoft YaHei UI", "Segoe UI"])
+        _bf.setPointSize(11)
+        _bf.setBold(True)
+        _bf.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.4)
+        self.brand_label.setFont(_bf)
+        self.brand_label.setToolTip("战舰世界数据解析与可视化工具")
+        theme.bind(self.brand_label, "color:@text@; background:transparent; border:none;")
+        layout.addWidget(self.brand_label)
+
+        layout.addSpacing(10)
+        layout.addWidget(_ToolbarSeparator())
+        layout.addSpacing(6)
+
+        for b in (self.btn_load, self.btn_lang, self.btn_refresh):
+            layout.addWidget(b)
+
+        layout.addSpacing(10)
+        layout.addWidget(_ToolbarSeparator())
+        layout.addSpacing(6)
+
+        for b in (self.btn_ballistics, self.btn_copy_panel):
             layout.addWidget(b)
 
         layout.addStretch()
@@ -130,9 +175,14 @@ class TopToolbar(QWidget):
         self.version_label = QLabel("")
         self.version_label.setToolTip("本地版本与 GitHub 最新版本同步状态")
         layout.addWidget(self.version_label)
-        self.btn_check_update = QPushButton("🔍  检查更新")
+        self.btn_check_update = SciFiButton("检查更新")
         self.btn_check_update.setToolTip("检测 GitHub 仓库是否有新版本（含 pre-release 识别）")
         layout.addWidget(self.btn_check_update)
+
+        # 昔涟点缀（全屏 3 处之一）：工具栏右端
+        layout.addSpacing(6)
+        self.spark_dot = SparkDot("pearl")
+        layout.addWidget(self.spark_dot)
         self._update_task_running = False
 
         layout.addSpacing(8)
@@ -142,7 +192,6 @@ class TopToolbar(QWidget):
         self.btn_lang.clicked.connect(self._on_lang)
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_ballistics.clicked.connect(self._on_ballistics)
-        self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
         self.btn_copy_panel.clicked.connect(lambda: bus.copy_panel_screenshot.emit())
         self.btn_check_update.clicked.connect(lambda: self.check_update(force=True))
         bus.update_check_done.connect(self._on_update_check_done)

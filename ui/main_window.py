@@ -1,17 +1,20 @@
 """
 MainWindow —— 应用主窗口。
 
-布局（基于 main_window.ui）：
+布局（全息指挥台风格）：
   ┌──────────────────────────────────────────────────────┐
-  │ [load data] [load lang] [set path] [refresh]  [Lesta] [WG] │
-  ├────┬─────────────────────────────────────────────────┤
-  │    │  ┌──────────────┬────────┬─────────────────┐    │
-  │ 80 │  │  文件列表     │ 模块   │   详情面板       │    │
-  │ px │  │  (200px)     │ (80px) │   (Stacked)     │    │
-  │    │  └──────────────┴────────┴─────────────────┘    │
-  ├────┴─────────────────────────────────────────────────┤
-  │  QTextBrowser (日志, 固定高度)                       │
+  │ [加载数据] [加载文本] [刷新界面]        [Lesta] [WG]  │
+  ├──────────────────────────────────────────────────────┤
+  │ ┌────────────┐ ┌────┐ ┌───────────────────────────┐  │
+  │ │ 舰船列表    │ │模块│ │ 详情面板（聚焦辉光）        │  │
+  │ │ 264px      │ │72px│ │ stretch=1                 │  │
+  │ │ SciFiPanel │ │    │ │ SciFiPanel(glow=True)     │  │
+  │ └────────────┘ └────┘ └───────────────────────────┘  │
+  ├──────────────────────────────────────────────────────┤
+  │  QTextBrowser（日志，固定 168px ≈ 10 行）              │
   └──────────────────────────────────────────────────────┘
+
+历史遗留的 80px 左侧分类栏已删除；中间区改为 HoloBackdrop（网格底）。
 """
 
 from __future__ import annotations
@@ -27,10 +30,19 @@ from app.signals import bus
 from app.application import app
 from utils.path_utils import is_debug_build
 from ui.toolbar_widget import TopToolbar
-from ui.category_bar import CategoryBar
 from ui.browser_panel import BrowserPanel
 from ui.module_select import ModuleSelect
 from ui.detail_panel import DetailPanel
+from ui.widgets import (
+    HoloBackdrop,
+    ScanStrip,
+    SciFiPanel,
+    SkinArtSlot,
+    art_slot_visible,
+)
+
+#: 底部日志框高度：按 11px 等宽字可显示约 10 行，够看清一整段日志
+LOG_FRAME_HEIGHT = 168
 
 
 class MainWindow(QMainWindow):
@@ -51,65 +63,80 @@ class MainWindow(QMainWindow):
         self.toolbar = TopToolbar()
         main_layout.addWidget(self.toolbar)
 
-        # ── 中间区域：分类栏 + 内容区（main_widget）───────
-        middle = QWidget()
-        middle_layout = QHBoxLayout(middle)
-        middle_layout.setContentsMargins(0, 0, 0, 0)
-        middle_layout.setSpacing(0)
+        # ── 中间区域：全息网格底 + 三列内容 ───────────────
+        self.middle = HoloBackdrop()
+        content_layout = QHBoxLayout(self.middle)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(8)
 
-        # 左侧分类按钮栏（80px 固定）
-        self.category_bar = CategoryBar()
-        middle_layout.addWidget(self.category_bar)
+        # 文件列表面板（264px 固定）——包在切角全息面板里
+        self.browser_frame = SciFiPanel(chamfer=12, accent="holo_ice", spark="pearl")
+        _browser_layout = QVBoxLayout(self.browser_frame)
+        _browser_layout.setContentsMargins(*self.browser_frame.content_margins())
+        _browser_layout.setSpacing(0)
 
-        # 右侧内容区（widget_2, 展开）
-        content_area = QWidget()
-        content_layout = QHBoxLayout(content_area)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        # 文件列表面板（200px 固定）
         self.browser = BrowserPanel()
         self.browser.setVisible(False)  # 默认隐藏，选择分类后显示
-        content_layout.addWidget(self.browser)
+        _browser_layout.addWidget(self.browser)
+        content_layout.addWidget(self.browser_frame)
 
-        # 模块选择区（80px 固定）
+        # 模块选择区（72px 固定，实心底，不加全息层）
         self.module_select = ModuleSelect()
         self.module_select.setVisible(False)  # 默认隐藏，有模块数据时再显示
         content_layout.addWidget(self.module_select)
 
         # 详情面板（StackedWidget, 展开）——方案 C：按服务器选子类
+        # 全界面唯一的聚焦辉光面板
+        self.detail_frame = SciFiPanel(chamfer=12, accent="holo_ice", glow=True,
+                                       spark="violet", crystal=True)
+        _detail_layout = QVBoxLayout(self.detail_frame)
+        _detail_layout.setContentsMargins(*self.detail_frame.content_margins())
+        _detail_layout.setSpacing(0)
+
         _wows_type = getattr(app.ctx, "wows_type", "") or "Lesta"
         self.detail = DetailPanel.for_server(_wows_type)()
-        content_layout.addWidget(self.detail, stretch=1)
+        _detail_layout.addWidget(self.detail, stretch=1)
+        content_layout.addWidget(self.detail_frame, stretch=1)
 
-        middle_layout.addWidget(content_area, stretch=1)
-        main_layout.addWidget(middle, stretch=1)
+        # 角色主题的立绘预留位：只占位置、不画内容，其它主题宽度为零不参与布局
+        # 先挂进布局再决定显隐——父控件为空时 setVisible(True) 会让它先成为一个
+        # 独立的顶层小窗口（启动瞬间闪一下），挂进布局后才不会有这个副作用。
+        self.art_slot = SkinArtSlot()
+        content_layout.addWidget(self.art_slot)
+        self.art_slot.setVisible(art_slot_visible(self.width()))
+
+        main_layout.addWidget(self.middle, stretch=1)
 
         # ── 底部区域（日志面板）─────────────────────────
         bottom_widget = QWidget()
         bottom_layout = QHBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.setContentsMargins(8, 0, 8, 8)
         bottom_layout.setSpacing(0)
 
         self.log_panel = QTextBrowser()
         self.log_panel.setReadOnly(True)
         _fnt = QFont()
-        _fnt.setFamilies(["Microsoft YaHei", "Segoe UI", "sans-serif"])
+        _fnt.setFamilies(["Cascadia Code", "Consolas", "Microsoft YaHei", "Segoe UI"])
         _fnt.setPointSize(9)
         self.log_panel.setFont(_fnt)
-        self.log_panel.setFixedHeight(100)
+
+        # 日志区也套一层全息金属框，避免在窗口底部露出一块无框纯黑
+        self.log_frame = SciFiPanel(chamfer=10, accent="holo_ice", hud_corners=False)
+        self.log_frame.setFixedHeight(LOG_FRAME_HEIGHT)
+        _log_layout = QVBoxLayout(self.log_frame)
+        _log_layout.setContentsMargins(*self.log_frame.content_margins())
+        _log_layout.setSpacing(0)
 
         from utils.theme import theme as _theme
 
         def _log_style() -> str:
             return _theme.qss("""
                 QTextBrowser {
-                    background-color: @input_bg@;
-                    color: @text@;
+                    background-color: transparent;
+                    color: @text_muted@;
                     border: none;
-                    border-top: 1px solid @border@;
                     padding: 4px 8px;
-                    font-family: "Consolas", "Courier New", monospace;
+                    font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
                     font-size: 11px;
                 }
             """)
@@ -117,32 +144,40 @@ class MainWindow(QMainWindow):
         self.log_panel.setStyleSheet(_log_style())
         # 主题切换时同步日志面板配色
         bus.theme_changed.connect(lambda _mode: self.log_panel.setStyleSheet(_log_style()))
-        bottom_layout.addWidget(self.log_panel)
+        _log_layout.addWidget(self.log_panel)
+        bottom_layout.addWidget(self.log_frame)
 
         main_layout.addWidget(bottom_widget)
 
         # ── 状态栏 ──────────────────────────────────────
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        # 任务运行时的细长扫描光线（PRISM CORE §4.5）
+        self.scan_strip = ScanStrip()
+        self.status_bar.addWidget(self.scan_strip, 1)
         self.status_label = QLabel("就绪")
         self.status_bar.addPermanentWidget(self.status_label)
+        bus.task_progress.connect(self._on_task_progress)
 
         # ── 菜单栏 ──────────────────────────────────────
         self._setup_menu()
 
         # ── 信号连接 ────────────────────────────────────
         bus.log_message.connect(self._on_log)
-        self.browser.file_selected.connect(bus.file_selected.emit)
-        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐；模块选择 → 详情页切换
+        self.browser.file_selected.connect(bus.file_selected.emit)        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐；模块选择 → 详情页切换
         self._wire_detail_signals()
         # 切换服务器 → 重建详情面板（方案 C：按服务器选子类），保证整界面跟随新服务器模式
         bus.wows_type_changed.connect(self._on_server_changed)
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
         bus.folder_selected.connect(self._on_category_changed)
-
+        # 切换主题 → 重新判断立绘预留位是否需要出现
+        bus.theme_changed.connect(lambda _m: self._sync_art_slot())
         # 重置 UI 状态时取消所有选中项
         bus.data_loaded.connect(lambda _: self.clear_all_selections())
         bus.localization_ready.connect(self.clear_all_selections)
+        # 任务结束 / 失败时收起扫描光线，避免任何卡住的动态指示
+        bus.data_loaded.connect(lambda _: self.scan_strip.set_active(False))
+        bus.data_processed.connect(lambda _ok: self.scan_strip.set_active(False))
 
         # ── 窗口居中 ────────────────────────────────────
         QTimer.singleShot(0, self._center_window)
@@ -151,8 +186,23 @@ class MainWindow(QMainWindow):
         # 启动后延迟 1s 自动检测版本更新（不阻塞启动；遵守 24h 缓存间隔）
         QTimer.singleShot(1000, self._auto_check_update)
 
-    # ── 菜单 ──────────────────────────────────────────────
+    # ── 立绘预留位 ─────────────────────────────────────────
 
+    def _sync_art_slot(self) -> None:
+        slot = getattr(self, "art_slot", None)
+        if slot is None:
+            return
+        show = art_slot_visible(self.width())
+        if slot.isVisible() != show:
+            slot.setVisible(show)
+        if show:
+            slot.refresh_theme()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_art_slot()
+
+    # ── 菜单 ──────────────────────────────────────────────
     def _setup_menu(self) -> None:
         menubar = self.menuBar()
 
@@ -273,6 +323,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtCore import QCoreApplication
 
         import __about__
+        from utils.theme import theme as _theme
 
         ver = QCoreApplication.applicationVersion()
 
@@ -288,7 +339,7 @@ class MainWindow(QMainWindow):
             f"<p><b>仓库：</b><a href='{__about__.__url__}'>{__about__.__url__}</a></p>"
             f"<p><b>许可证：</b>{__about__.__license__}</p>"
             "<hr>"
-            "<p style='color: #888888; font-size: 11px;'>"
+            f"<p style='color: {_theme.qss('@text_hint@')}; font-size: 11px;'>"
             "本工具仅供学习与研究使用，仅支持访问公开版本的游戏数据。"
             "所有数据版权及相关权利均归原游戏公司所有。"
             "</p>"
@@ -371,13 +422,32 @@ class MainWindow(QMainWindow):
 
     def clear_all_selections(self) -> None:
         """取消界面上所有选中项"""
-        self.category_bar.clear_selection()
         self.browser.file_list.clearSelection()
         self.module_select.clear_selection()
         self.detail.reset_to_default()
         self.module_select.setVisible(False)
 
+    def _on_task_progress(self, pct: int, message: str) -> None:
+        """任务进度反馈：状态栏文本 + 扫描光线（PRISM CORE §4.5）。
+
+        纯表现层：只读取进度值，不参与也不改变任何任务逻辑；
+        进度本身仍以数值/进度条表达，光线只是辅助指示。
+        """
+        try:
+            v = int(pct)
+        except (TypeError, ValueError):
+            return
+        if message:
+            self.status_label.setText(message)
+        self.scan_strip.set_active(v < 100)
+        if v >= 100:
+            QTimer.singleShot(400, lambda: self.scan_strip.set_active(False))
+
     # ── 窗口管理 ──────────────────────────────────────────
+
+    # 注：不再提供「整窗淡出」（setWindowOpacity）——它会把文字与图标一起淡化，
+    # 影响数据可读性。半透明只作用于背景层（HoloBackdrop 网格 + 面板底 alpha），
+    # 文字与控件始终保持 100% 不透明。
 
     def closeEvent(self, event) -> None:
         """主窗口关闭时，一并关闭所有独立子窗口，避免残留。"""

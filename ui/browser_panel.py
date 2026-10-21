@@ -39,12 +39,9 @@ class MultiSelectCombo(QPushButton):
         self.setMenu(self._menu)
         theme.bind(self, """
             QPushButton {
-                padding: 3px 4px; border: 1px solid @border@;
-                border-radius: 3px; font-size: 11px;
-                background-color: @panel_bg@; color: @text@; min-width: 70px;
-                text-align: left;
+                padding: 3px 4px; border-radius: 3px;
+                font-size: 11px; min-width: 70px; text-align: left;
             }
-            QPushButton:focus { border-color: #0078d4; }
             QPushButton::menu-indicator { subcontrol-position: right center; padding-right: 2px; }
         """)
         self._update_text()
@@ -116,7 +113,7 @@ class BrowserPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("BrowserPanel")
-        self.setFixedWidth(250)
+        self.setFixedWidth(264)
         theme.bind(self, """
             #BrowserPanel {
                 background-color: @panel_alt@;
@@ -140,7 +137,7 @@ class BrowserPanel(QWidget):
                 background-color: @input_bg@;
                 color: @text@;
             }
-            QLineEdit:focus { border-color: #0078d4; }
+            QLineEdit:focus { border-color: @accent@; }
         """)
         layout.addWidget(self.search_box)
 
@@ -152,31 +149,22 @@ class BrowserPanel(QWidget):
         self.btn_reset = QPushButton("↺")
         self.btn_reset.setToolTip("重置筛选条件")
         self.btn_reset.setFixedWidth(26)
-        theme.bind(self.btn_reset, """
-            QPushButton {
-                background: @panel_alt@; border: 1px solid @border@;
-                border-radius: 3px; font-size: 13px; font-weight: bold;
-                padding: 0; color: @text@;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: #0078d4; color: @text@; }
-        """)
+        theme.bind(self.btn_reset,
+                   "QPushButton { font-size: 13px; font-weight: bold; padding: 0; }")
 
         # 本地化缺失筛选：只显示无中文译名、名称回退到数据文件名的舰船
         self.btn_missing_loc = QPushButton("⚠ 本地化缺失")
         self.btn_missing_loc.setCheckable(True)
         self.btn_missing_loc.setToolTip("只显示本地化完全缺失、名称回退到数据文件名的舰船")
         self.btn_missing_loc.setVisible(False)
+        # 普通态继承统一按钮样式，只在「已启用筛选」这个语义状态下改成警告色
         theme.bind(self.btn_missing_loc, """
-            QPushButton {
-                background: @panel_alt@; border: 1px solid @border@;
-                border-radius: 3px; font-size: 11px; padding: 3px 6px;
-                color: @text@;
-            }
-            QPushButton:hover { border-color: #0078d4; color: @text@; }
+            QPushButton { font-size: 11px; padding: 3px 6px; }
             QPushButton:checked {
-                background: #b06f00; border-color: #e0a040;
-                color: #ffffff; font-weight: bold;
+                background: @warn@; border-color: @warn@;
+                color: @on_accent@; font-weight: bold;
             }
+            QPushButton:checked:hover { background: @warn@; border-color: @warn@; }
         """)
 
         filter_row1 = QHBoxLayout()
@@ -203,7 +191,7 @@ class BrowserPanel(QWidget):
         self.file_list.setIconSize(ship_badge.icon_box(SHIP_BADGE_SIZE))
         theme.bind(self.file_list, """
             QListWidget {
-                background-color: @panel_bg@;
+                background-color: transparent;
                 border: 1px solid @border@;
                 border-radius: 4px;
                 color: @text@;
@@ -214,8 +202,9 @@ class BrowserPanel(QWidget):
                 color: @text@;
             }
             QListWidget::item:selected {
-                background-color: @selected_bg@;
-                color: @selected_fg@;
+                background-color: @hover_bg@;
+                color: @text@;
+                border-left: 2px solid @accent@;
             }
             QListWidget::item:hover {
                 background-color: @hover_bg@;

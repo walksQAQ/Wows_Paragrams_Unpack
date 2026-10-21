@@ -12,7 +12,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QComboBox,
-    QGroupBox, QDialogButtonBox,
+    QGroupBox, QDialogButtonBox, QSpinBox, QFileDialog,
 )
 from PySide6.QtCore import Qt
 
@@ -20,8 +20,10 @@ from app.application import app as app_ctx
 from app.signals import bus
 from utils.theme import theme
 
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
 
-class AdvancedSettingsDialog(QDialog):
+
+class AdvancedSettingsDialog(HoloDialog):
     """高级设置对话框"""
 
     def __init__(self, parent=None):
@@ -74,10 +76,18 @@ class AdvancedSettingsDialog(QDialog):
         self._theme_combo.addItem("跟随系统", "auto")
         self._theme_combo.addItem("浅色", "light")
         self._theme_combo.addItem("深色", "dark")
-        self._theme_combo.setMinimumWidth(140)
+        # 角色皮肤（仅配色）从注册表生成；发布版 skin_ids() 为空，不出现这些项
+        from utils.theme import get_skin, skin_ids
+        for _sid in skin_ids():
+            _spec = get_skin(_sid)
+            if _spec is not None:
+                self._theme_combo.addItem(_spec.name, _sid)
+        self._theme_combo.setMinimumWidth(160)
         trow.addWidget(self._theme_combo)
         trow.addStretch()
         tlay.addLayout(trow)
+
+        # 皮肤只改配色，立绘/纹样已移除
         tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)
@@ -134,8 +144,15 @@ class AdvancedSettingsDialog(QDialog):
         layout.addWidget(grp_update)
 
         # ── 按钮 ──────────────────────────────────────
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                                QDialogButtonBox.StandardButton.Cancel)
+        # Qt 默认给英文 OK / Cancel，这里改成中文并与主界面按钮同款：
+        # 「保存」是主操作（信号色描边），「关闭」是普通按钮。
+        btns = QDialogButtonBox()
+        btn_save = btns.addButton("保存", QDialogButtonBox.ButtonRole.AcceptRole)
+        btn_close = btns.addButton("关闭", QDialogButtonBox.ButtonRole.RejectRole)
+        theme.bind(btn_save, PRIMARY_BTN_QSS)
+        btn_save.setDefault(True)
+        btn_save.setToolTip("保存全部设置并关闭")
+        btn_close.setToolTip("放弃未保存的修改并关闭")
         btns.accepted.connect(self._on_ok)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)

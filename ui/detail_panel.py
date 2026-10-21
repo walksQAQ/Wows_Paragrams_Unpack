@@ -40,6 +40,49 @@ _ADDITIVE_KEYS_BASE = frozenset({
 })
 
 
+def picture_tile_qss(size: int) -> str:
+    """全彩图片按钮（消耗品 / 升级品）的样式。
+
+    这些图本身自带底色与色彩，不需要再垫深色仪器面；但描边要留着，
+    否则一列图块会散在卡片上、看不出是可点的槽位。
+    描边宽度常态与选中态一致，选中时图标不会被挤动。
+    """
+    return theme.qss(f"""
+        QPushButton {{
+            background: transparent;
+            border: 2px solid @border_soft@;
+            border-radius: 8px;
+            padding: 1px;
+            min-width: {size}px; min-height: {size}px;
+            max-width: {size}px; max-height: {size}px;
+        }}
+        QPushButton:hover {{
+            background: @hover_bg@;
+            border-color: @border_soft@;
+        }}
+        QPushButton:checked {{
+            background: @hover_bg@;
+            border-color: @accent@;
+        }}
+    """)
+
+
+def picture_tile_text_qss(size: int) -> str:
+    """无图片时的文字兜底按钮：留一圈细框，文字用次要色。"""
+    return theme.qss(f"""
+        QPushButton {{
+            background: transparent;
+            border: 2px solid @border@;
+            border-radius: 8px;
+            padding: 1px; font-size: 8px; color: @text_muted@;
+            min-width: {size}px; min-height: {size}px;
+            max-width: {size}px; max-height: {size}px;
+        }}
+        QPushButton:hover {{ background: @hover_bg@; border-color: @border_soft@; }}
+        QPushButton:checked {{ background: @hover_bg@; border-color: @accent@; }}
+    """)
+
+
 class DetailPanel(QWidget):
     """右侧详情面板（数据库驱动）"""
 
@@ -49,7 +92,7 @@ class DetailPanel(QWidget):
     def _text_style() -> str:
         return theme.qss("""
             QTextEdit {
-                background-color: @panel_bg@;
+                background-color: transparent;
                 color: @text@;
                 border: none;
                 padding: 12px;
@@ -133,7 +176,6 @@ class DetailPanel(QWidget):
         self._show_hint()
         # 启动时不通知 ModuleSelect，保持空白占位
         bus.file_selected.connect(self._on_file_selected)
-        bus.copy_ship_info.connect(self._copy_ship_info_to_clipboard)
         bus.copy_panel_screenshot.connect(self._copy_panel_screenshot)
         # 主题切换后刷新默认页文字/背景颜色
         bus.theme_changed.connect(self._on_theme_changed)
@@ -333,14 +375,17 @@ class DetailPanel(QWidget):
                 # 更新 tooltip 稀有度标记
                 _old_tip = _btn.toolTip()
                 if _old_tip:
+                    _gold = theme["gold"]
                     if _rarity in ("EPIC", "LEGENDARY"):
                         _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(_rarity, "")
-                        _repl = f'<span style="color:#ff6600; font-weight:normal;">{_tag}</span>'
+                        _repl = f'<span style="color:{_gold}; font-weight:normal;">{_tag}</span>'
                         if "[强化]" not in _old_tip and "[传奇]" not in _old_tip:
                             _old_tip = _old_tip.replace("</b>", f" {_repl}</b>", 1)
                     else:
-                        _old_tip = _old_tip.replace(' <span style="color:#ff6600; font-weight:normal;">[强化]</span></b>', '</b>')
-                        _old_tip = _old_tip.replace(' <span style="color:#ff6600; font-weight:normal;">[传奇]</span></b>', '</b>')
+                        _old_tip = _old_tip.replace(
+                            f' <span style="color:{_gold}; font-weight:normal;">[强化]</span></b>', "</b>")
+                        _old_tip = _old_tip.replace(
+                            f' <span style="color:{_gold}; font-weight:normal;">[传奇]</span></b>', "</b>")
                     _btn.setToolTip(_old_tip)
 
     def _build_top_config_bar(self, config: dict) -> QWidget:
@@ -451,37 +496,37 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 font-size: 9px; color: @text@;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
+                background: @icon_btn_bg_hover@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @selected_bg@; color: @selected_fg@; border-color: @selected_bg@;
+                background: @icon_btn_checked@; color: @icon_btn_text_hi@; border-color: @icon_btn_border_hi@;
             }
         """)
         # 缺少图片时：缩小字号、弱化文字（主题化）
         BTN_STYLE_TXT = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
-                font-size: 8px; color: @text_hint@;
+                font-size: 8px; color: @icon_btn_text_dim@;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
+                background: @icon_btn_bg_hover@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @selected_bg@; color: @selected_fg@; border-color: @selected_bg@;
+                background: @icon_btn_checked@; color: @icon_btn_text_hi@; border-color: @icon_btn_border_hi@;
             }
         """)
 
@@ -595,7 +640,7 @@ class DetailPanel(QWidget):
         for section_key in ["upgrade", "signal", "commander"]:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.VLine)
-            sep.setStyleSheet("QFrame{color:#c8c8c8;}")
+            sep.setStyleSheet(theme.qss("QFrame{color:@border_soft@;}"))
             sep.setFixedWidth(1)
             layout.addWidget(sep)
 
@@ -631,24 +676,9 @@ class DetailPanel(QWidget):
                 uc_layout.setContentsMargins(0,0,0,0)
                 uc_layout.setSpacing(6)
                 uc_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读（不随主题变化）
-                SLOT_STYLE = """
-                    QPushButton {
-                        background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
-                        padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
-                    }
-                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                    QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
-                """
-                SLOT_STYLE_TXT = """
-                    QPushButton {
-                        background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
-                        padding: 2px; font-size: 8px; color: #bbb;
-                        min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
-                    }
-                    QPushButton:hover { background: #4a4a4a; border-color: #1a73e8; }
-                    QPushButton:checked { background: #1a73e8; border-color: #1a73e8; }
-                """
+                # 升级品图标是整张彩色图，不再垫深色仪器面（只保留悬停/选中的描边反馈）
+                SLOT_STYLE = picture_tile_qss(36)
+                SLOT_STYLE_TXT = picture_tile_text_qss(36)
                 for i in range(max_slots):  # 根据等级限制槽位数量
                     slot_mods = mods_by_slot.get(i, [])
                     # 每个插槽一列（编号=slot+1），即使无升级品也占位
@@ -682,7 +712,8 @@ class DetailPanel(QWidget):
                             mod_dict = mod.get("modifiers", {})
                             if mod_dict:
                                 from models.name_mapping import Mapping as NMM
-                                tt_parts.append('<hr style="border-color:#555;">')
+                                tt_parts.append(
+                                    f'<hr style="border-color:{theme["border_soft"]};">')
                                 for mk, mv in sorted(mod_dict.items()):
                                     label = NMM.MODIFIER_MAP.get(mk, mk)
                                     if isinstance(mv, dict):
@@ -991,15 +1022,12 @@ class DetailPanel(QWidget):
 
     def _build_sub_widget(self, title: str, sub_info: dict) -> QWidget:
         """构建无标签栏的子分类面板，仅显示默认配置内容，顶栏按钮控制切换"""
-        from ui.ship_card_widget import SECTION_ICONS, card_style
-        from PySide6.QtWidgets import QGroupBox
+        from ui.ship_card_widget import SECTION_ICONS, CardFrame
 
         icon = SECTION_ICONS.get(title, "")
-        title_text = f"  {icon} {title}" if icon else f"  {title}"
+        title_text = f"{icon} {title}" if icon else title
 
-        container = QGroupBox(title_text)
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame(title_text)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -1063,12 +1091,12 @@ class DetailPanel(QWidget):
                             for ai in ga:
                                 an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
-                                btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;border:1px solid @border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@hover_bg@;border-color:@selected_bg@;}QPushButton:checked{background:@selected_bg@;border-color:@selected_bg@;}"))
+                                btn.setStyleSheet(picture_tile_qss(36))
                                 btn.setToolTip(an)
                                 cand = self._ammo_icon_candidates(at, sp, ai, bool(ai.get("switchable")))
                                 ip = next((p for c in cand if not (p:=QPixmap(pic_path(f"ammo_types/{c}"))).isNull()), None)
                                 if ip: btn.setIcon(QIcon(ip.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
-                                else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;", f"padding:2px;font-size:8px;color:{theme['text_muted']};"))
+                                else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(picture_tile_text_qss(36))
                                 bl.addWidget(btn)
                                 st.addWidget(ShipCardWidget({"label":an,"items":di}) if di else (QLabel("无详细数据",styleSheet=theme.qss("color:@text_hint@;font-size:11px;padding:8px;"),alignment=Qt.AlignmentFlag.AlignCenter)))
                                 ci = st.count()-1
@@ -1115,16 +1143,14 @@ class DetailPanel(QWidget):
         return container
 
     def _build_aircraft_widget(self, sub_info: dict) -> QWidget:
-        """构建舰载机面板：每个机种为 QGroupBox，各配置用 QStackedWidget 切换"""
-        from ui.ship_card_widget import ShipCardWidget, card_style
-        from PySide6.QtWidgets import QGroupBox, QStackedWidget
+        """构建舰载机面板：每个机种为卡片，各配置用 QStackedWidget 切换"""
+        from ui.ship_card_widget import ShipCardWidget, CardFrame
+        from PySide6.QtWidgets import QStackedWidget
         from PySide6.QtGui import QPixmap, QIcon
         from PySide6.QtCore import QSize
         from PySide6.QtWidgets import QLabel
 
-        container = QGroupBox("  舰载机")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame("舰载机")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
@@ -1135,31 +1161,14 @@ class DetailPanel(QWidget):
         if not labels:
             return container
 
-        BTN_STYLE = theme.qss("""
-            QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
-                border-radius: 6px; padding: 2px;
-                min-width: 36px; min-height: 36px;
-                max-width: 36px; max-height: 36px;
-            }
-            QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
-            }
-            QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
-            }
-        """)
+        BTN_STYLE = picture_tile_qss(36)
 
         for sl in labels:
             content = contents.get(sl, {})
             if not isinstance(content, dict):
                 continue
 
-            grp = QGroupBox(f"  {sl}")
-            grp.setStyleSheet(card_style())
-            grp.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            grp = CardFrame(sl)
             grp_layout = QVBoxLayout(grp)
             grp_layout.setContentsMargins(2, 2, 2, 2)
             grp_layout.setSpacing(2)
@@ -1243,7 +1252,7 @@ class DetailPanel(QWidget):
                             btn.setIconSize(QSize(28, 28))
                         else:
                             btn.setText(aname[:2] if aname else "?")
-                            btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['text_muted']};"))
+                            btn.setStyleSheet(picture_tile_text_qss(36))
                         # 弹跳轰炸机炸弹：skip_bomb 标记覆盖整个按钮（图片自带透明区域）
                         if sp == "skipbomb":
                             _bp = QPixmap(pic_path("ammo_types/unique_features/indicators/skip_bomb.png"))
@@ -1268,22 +1277,7 @@ class DetailPanel(QWidget):
 
                 # 消耗品按钮行 + 详情堆栈（完全照搬舰船消耗品样式）
                 if raw_con:
-                    CON_BTN_STYLE = theme.qss("""
-                        QPushButton {
-                            background: @panel_alt@;
-                            border: 1px solid @border@;
-                            border-radius: 6px; padding: 2px;
-                            min-width: 40px; min-height: 40px;
-                            max-width: 40px; max-height: 40px;
-                        }
-                        QPushButton:hover {
-                            background: @hover_bg@;
-                            border-color: @selected_bg@;
-                        }
-                        QPushButton:checked {
-                            background: @selected_bg@; border-color: @selected_bg@;
-                        }
-                    """)
+                    CON_BTN_STYLE = picture_tile_qss(40)
                     con_btn_row = QWidget()
                     cbr_layout = QHBoxLayout(con_btn_row)
                     cbr_layout.setContentsMargins(4, 2, 4, 2)
@@ -1316,7 +1310,7 @@ class DetailPanel(QWidget):
                             btn.setIconSize(QSize(32, 32))
                         else:
                             btn.setText(cid[:2] if cid else "?")
-                            btn.setStyleSheet(CON_BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['text_muted']};"))
+                            btn.setStyleSheet(picture_tile_text_qss(40))
                         # WG：可用激活方式含 AUTO → 整图覆盖按钮（同 skip_bomb，图片带透明部分）
                         _aam = con_info.get('available_activation_modes') or []
                         if any(str(x).upper() == "AUTO" for x in _aam):
@@ -1394,10 +1388,10 @@ class DetailPanel(QWidget):
 
     def _build_support_widget(self, section: dict) -> QWidget:
         """构建支援机组面板：按机组分开显示，各自 tooltip 独立"""
-        from ui.ship_card_widget import ShipCardWidget, card_style
+        from ui.ship_card_widget import ShipCardWidget, CardFrame
         from PySide6.QtGui import QPixmap, QIcon
         from PySide6.QtCore import QSize
-        from PySide6.QtWidgets import QGroupBox, QStackedWidget, QPushButton, QLabel
+        from PySide6.QtWidgets import QStackedWidget, QPushButton, QLabel
 
         label = section.get("label", "支援")
         items = section.get("items", [])
@@ -1421,25 +1415,13 @@ class DetailPanel(QWidget):
         if cur:
             groups.append(cur)
 
-        container = QGroupBox(f"  {label}")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame(label)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        BTN_STYLE = theme.qss("""
-            QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
-                border-radius: 6px; padding: 2px;
-                min-width: 36px; min-height: 36px;
-                max-width: 36px; max-height: 36px;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
-            QPushButton:checked { background: @selected_bg@; border-color: @selected_bg@; }
-        """)
+        BTN_STYLE = picture_tile_qss(36)
 
         ammo_idx = 0
         for grp in groups:
@@ -1504,7 +1486,7 @@ class DetailPanel(QWidget):
                         btn.setIconSize(QSize(28, 28))
                     else:
                         btn.setText(aname[:2] if aname else "?")
-                        btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['text_muted']};"))
+                        btn.setStyleSheet(picture_tile_text_qss(36))
                     bl.addWidget(btn)
                     if detail_items:
                         ammo_stack.addWidget(ShipCardWidget({"label": aname, "items": detail_items}))
@@ -1521,12 +1503,10 @@ class DetailPanel(QWidget):
 
     def _build_consumables_widget(self, section: dict) -> QWidget:
         """构建消耗品数据面板：按槽位纵向排列，每槽位以按钮+图片显示"""
-        from ui.ship_card_widget import card_style
-        from PySide6.QtWidgets import QGroupBox, QStackedWidget
+        from ui.ship_card_widget import CardFrame
+        from PySide6.QtWidgets import QStackedWidget
 
-        container = QGroupBox("  消耗品数据")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame("消耗品数据")
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -1538,22 +1518,8 @@ class DetailPanel(QWidget):
         for rs in raw_slots:
             slots_map[rs["slot_index"]].append(rs)
 
-        BTN_STYLE = theme.qss("""
-            QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
-                border-radius: 6px; padding: 2px;
-                min-width: 40px; min-height: 40px;
-                max-width: 40px; max-height: 40px;
-            }
-            QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
-            }
-            QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
-            }
-        """)
+        # 消耗品图标是整张彩色图，本身足够分辨，不再叠深色底（只保留悬停/选中的描边）
+        BTN_STYLE = picture_tile_qss(40)
 
         for slot_idx in sorted(slots_map.keys()):
             items_in_slot = slots_map[slot_idx]
@@ -1567,7 +1533,8 @@ class DetailPanel(QWidget):
 
             # 槽位编号标签
             slot_label = QLabel(f"槽{slot_idx}")
-            slot_label.setStyleSheet("font-size:10px; color:#aaa; min-width:24px;")
+            slot_label.setStyleSheet(
+            theme.qss("font-size:10px; color:@icon_btn_text_dim@; min-width:24px;"))
             slot_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sr_layout.addWidget(slot_label)
 
@@ -1593,7 +1560,7 @@ class DetailPanel(QWidget):
                 else:
                     # 无图片时显示首字母
                     btn.setText(cid[:2] if cid else "?")
-                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['text_muted']};"))
+                    btn.setStyleSheet(picture_tile_text_qss(40))
 
                 # WG：可用激活方式含 AUTO → 整图覆盖按钮（同 skip_bomb，图片带透明部分）
                 _aam = rs.get('available_activation_modes') or []
@@ -1662,12 +1629,9 @@ class DetailPanel(QWidget):
 
     def _build_rage_mode_widget(self, section: dict) -> QWidget:
         """构建战斗指令面板：按钮+图片，详细数据精简显示"""
-        from ui.ship_card_widget import card_style
-        from PySide6.QtWidgets import QGroupBox
-
-        container = QGroupBox("  战斗指令")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        from ui.ship_card_widget import CardFrame
+        
+        container = CardFrame("战斗指令")
 
         layout = QVBoxLayout(container)
         # 增加整体内边距，使其与其他模块卡片保持一致的呼吸感
@@ -1691,18 +1655,18 @@ class DetailPanel(QWidget):
         btn.setObjectName(f"rage_{rname}")
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 32px; min-height: 32px;
                 max-width: 32px; max-height: 32px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
+                background: @icon_btn_bg_hover@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
+                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
             }
         """)
         btn.setStyleSheet(BTN_STYLE)
@@ -1756,9 +1720,9 @@ class DetailPanel(QWidget):
             elif "%" in display_value:
                 stripped = display_value.strip()
                 if stripped.startswith("+"):
-                    fg = "#1b8a1b"
+                    fg = theme["value_pos"]
                 elif stripped.startswith("-"):
-                    fg = "#d32f2f"
+                    fg = theme["value_neg"]
 
             val_lbl = QLabel(display_value)
             val_lbl.setWordWrap(True)
@@ -1789,8 +1753,7 @@ class DetailPanel(QWidget):
         # ── 关联增益（buff 多级切换：- / 等级 / + 步进器）──
         buff_levels = raw.get("buff_levels", []) or []
         if buff_levels:
-            buff_box = QGroupBox("")
-            buff_box.setStyleSheet(card_style())
+            buff_box = CardFrame()
             buff_layout = QVBoxLayout(buff_box)
             buff_layout.setContentsMargins(4, 4, 4, 4)
             buff_layout.setSpacing(6)
@@ -1806,11 +1769,10 @@ class DetailPanel(QWidget):
                 def _btn(txt: str) -> QPushButton:
                     b = QPushButton(txt)
                     b.setFixedSize(28, 24)
-                    b.setStyleSheet(theme.qss("""
-                        QPushButton { font-size:14px; font-weight:bold; color:@text@; background:@panel_alt@; border:1px solid @border@; border-radius:4px; }
-                        QPushButton:disabled { color:@text_muted@; background:@panel_alt@; border-color:@border@; }
-                        QPushButton:hover:!disabled { background:@hover_bg@; }
-                    """))
+                    theme.bind(b, """
+                        QPushButton { font-size:14px; font-weight:bold; padding:0; }
+                        QPushButton:disabled { color:@text_muted@; }
+                    """)
                     return b
 
                 minus_btn = _btn("-")
@@ -1973,8 +1935,8 @@ class DetailPanel(QWidget):
 
     def _build_weapon_widget(self, section: dict) -> QWidget:
         """构建武器面板（主炮/副炮）：每座炮独立显示 + 下方弹药按钮 + 点击切换详情"""
-        from ui.ship_card_widget import ShipCardWidget, card_style
-        from PySide6.QtWidgets import QGroupBox, QStackedWidget
+        from ui.ship_card_widget import ShipCardWidget, CardFrame
+        from PySide6.QtWidgets import QStackedWidget
 
         label = section.get("label", "武器")
         all_items = section.get("items", [])
@@ -1996,30 +1958,13 @@ class DetailPanel(QWidget):
         if cur:
             mount_groups.append(cur)
 
-        container = QGroupBox(f"  {label}")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame(label)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(6)
 
 
-        BTN_STYLE = theme.qss("""
-            QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
-                border-radius: 6px; padding: 2px;
-                min-width: 36px; min-height: 36px;
-                max-width: 36px; max-height: 36px;
-            }
-            QPushButton:hover {
-                background: @hover_bg@;
-                border-color: @selected_bg@;
-            }
-            QPushButton:checked {
-                background: @selected_bg@; border-color: @selected_bg@;
-            }
-        """)
+        BTN_STYLE = picture_tile_qss(36)
 
         ammo_idx = 0
         for grp_idx, grp_items in enumerate(mount_groups):
@@ -2117,7 +2062,7 @@ class DetailPanel(QWidget):
                         btn.setIconSize(QSize(28, 28))
                     else:
                         btn.setText(aname[:2] if aname else "?")
-                        btn.setStyleSheet(BTN_STYLE + f"QPushButton {{ font-size: 8px; color: {theme['text_muted']}; }}")
+                        btn.setStyleSheet(picture_tile_text_qss(36))
 
                     _trend = ammo_info.get("dmg_dist_trend")
                     if _trend in ("increase", "decrease"):
@@ -2167,14 +2112,8 @@ class DetailPanel(QWidget):
             btn = QPushButton(value_text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(firing_arc_tooltip(fa))
-            btn.setStyleSheet(theme.qss("""
-                QPushButton {
-                    background: @panel_alt@; color: @text@;
-                    border: 1px solid @border@; border-radius: 4px;
-                    padding: 4px 10px; font-size: 12px; text-align: center;
-                }
-                QPushButton:hover { background: @hover_bg@; border-color: @selected_bg@; }
-            """))
+            theme.bind(btn, "QPushButton { border-radius: 4px; padding: 4px 10px;"
+                            " font-size: 12px; text-align: center; }")
             btn.clicked.connect(lambda _=False, f=fa: self._open_firing_arc(f))
             hb.addWidget(lbl)
             hb.addStretch(1)
@@ -2185,9 +2124,8 @@ class DetailPanel(QWidget):
 
     def _build_aa_widget(self, section: dict) -> QWidget:
         """构建防空面板：每个防空区域拆分为独立卡片，命中率/射程移至 tooltip"""
-        from ui.ship_card_widget import ShipCardWidget, card_style
-        from PySide6.QtWidgets import QGroupBox
-
+        from ui.ship_card_widget import ShipCardWidget, CardFrame
+        
         items = section.get("items", [])
         label = section.get("label", "防空")
 
@@ -2203,9 +2141,7 @@ class DetailPanel(QWidget):
         if cur:
             groups.append(cur)
 
-        container = QGroupBox(f"  {label}")
-        container.setStyleSheet(card_style())
-        container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        container = CardFrame(label)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(4)
@@ -2415,154 +2351,6 @@ class DetailPanel(QWidget):
                 if _info is not None:
                     sec["_firing_arc"] = dict(_info, config_group=_pick)
 
-    # ── 完整信息复制（覆盖信息面板所有内容）───────────────────
-
-    def _copy_ship_info_to_clipboard(self) -> None:
-        """复制舰船数据（不含技能面板等界面内容）到剪贴板。
-
-        基于 presenter 输出的 sections + 子面板数据（数据驱动），
-        只包含舰船性能数据与弹药，天然排除技能面板/升级品/信号旗等界面内容。
-        """
-        if not self._current_filename:
-            bus.log_message.emit("ℹ️ 当前未选中实体，无法复制")
-            return
-        try:
-            from PySide6.QtWidgets import QApplication
-            if self._is_ship_mode and self._ship_sections:
-                text = self._render_sections_to_text(self._ship_sections)
-                sub = self._render_sub_sections_to_text(self._ship_sub_sections)
-                if sub:
-                    text = (text + "\n\n" + sub).rstrip()
-            else:
-                text = self._render_default_pages_to_text("display")
-            if not text.strip():
-                bus.log_message.emit("⚠️ 当前无内容可复制")
-                return
-            QApplication.clipboard().setText(text)
-            _show_name = (self._current_analyzed or {}).get("title") or self._current_filename
-            bus.log_message.emit(f"📋 已复制「{_show_name}」舰船数据到剪贴板")
-        except Exception as e:
-            import traceback
-            bus.log_message.emit(f"⚠️ 复制失败: {e}\n{traceback.format_exc()}")
-
-    def _render_sub_sections_to_text(self, sub_sections: dict) -> str:
-        """渲染子面板（舰载机等）数据为文本（数据驱动）。"""
-        lines: list[str] = []
-        for label, sub_info in sub_sections.items():
-            if not isinstance(sub_info, dict):
-                continue
-            labels = sub_info.get("sub_labels") or []
-            contents = sub_info.get("sub_contents") or {}
-            if not labels:
-                continue
-            lines.append(f"【{label}】")
-            for sl in labels:
-                content = contents.get(sl) or {}
-                if not isinstance(content, dict):
-                    continue
-                lines.append(f"· {sl}")
-                lines.extend(self._render_items_to_text(content.get("items") or [], indent=2))
-                lines.extend(self._render_ammo_to_text(content.get("raw_ammo_types") or [], indent=2))
-                # 舰载机等嵌套 config_contents
-                config_contents = content.get("config_contents") or {}
-                if config_contents:
-                    for _ck, cv in config_contents.items():
-                        if not isinstance(cv, dict):
-                            continue
-                        lines.extend(self._render_items_to_text(cv.get("items") or [], indent=4))
-                        lines.extend(self._render_ammo_to_text(cv.get("raw_ammo_types") or [], indent=4))
-                        lines.extend(self._render_consumables_to_text(cv.get("raw_consumables") or [], indent=4))
-                lines.append("")
-            lines.append("")
-        return "\n".join(lines).rstrip()
-
-    @staticmethod
-    def _render_items_to_text(items: list[dict], indent: int = 0) -> list[str]:
-        """把 section/子面板的 items 渲染为键值文本行。"""
-        lines: list[str] = []
-        pad = " " * indent
-        for item in items:
-            rt = item.get("row_type", "kv")
-            name = item.get("name", "")
-            if rt == "header":
-                lines.append(f"{pad}【{name}】")
-            elif rt == "sub_header":
-                lines.append(f"{pad}· {name}")
-            elif rt == "separator":
-                lines.append("")
-            elif rt == "button_group":
-                raw = item.get("raw_value", {})
-                cur = raw.get("current", "") if isinstance(raw, dict) else ""
-                if name:
-                    lines.append(f"{pad}{name}: {cur}".rstrip(": ") if cur else f"{pad}{name}")
-                elif cur:
-                    lines.append(f"{pad}{cur}")
-            else:  # kv
-                value = item.get("value", "")
-                unit = item.get("unit", "")
-                disp = f"{value} {unit}".strip() if unit and value else (value or unit or "")
-                details = item.get("details", []) or []
-                if details:
-                    lines.append(f"{pad}{name}: {disp}" if name else f"{pad}{disp}")
-                    for d in details:
-                        dn = d.get("name", "")
-                        dv = d.get("value", "")
-                        du = d.get("unit", "")
-                        dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
-                        if dn:
-                            lines.append(f"{pad}    {dn}: {dd}")
-                        elif dd:
-                            lines.append(f"{pad}    {dd}")
-                else:
-                    lines.append(f"{pad}{name}: {disp}".rstrip(": ") if name else f"{pad}{disp}")
-        return lines
-
-    @staticmethod
-    def _render_ammo_to_text(raw_ammo: list[dict], indent: int = 0) -> list[str]:
-        """把 raw_ammo_types 渲染为文本（弹药名 + 明细）。"""
-        lines: list[str] = []
-        pad = " " * indent
-        if not raw_ammo:
-            return lines
-        lines.append(f"{pad}【弹药】")
-        for ai in raw_ammo:
-            an = ai.get("name", "")
-            if an:
-                lines.append(f"{pad}  ● {an}")
-            for d in (ai.get("detail_items") or []):
-                dn = d.get("name", "")
-                dv = d.get("value", "")
-                du = d.get("unit", "")
-                dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
-                if dn:
-                    lines.append(f"{pad}      {dn}: {dd}")
-                elif dd:
-                    lines.append(f"{pad}      {dd}")
-        return lines
-
-    @staticmethod
-    def _render_consumables_to_text(raw_consumables: list[dict], indent: int = 0) -> list[str]:
-        """把 raw_consumables 渲染为文本（消耗品名 + 明细）。"""
-        lines: list[str] = []
-        pad = " " * indent
-        if not raw_consumables:
-            return lines
-        lines.append(f"{pad}【消耗品】")
-        for rc in raw_consumables:
-            an = rc.get("display_name") or rc.get("name", "")
-            if an:
-                lines.append(f"{pad}  ● {an}")
-            for d in (rc.get("detail_items") or []):
-                dn = d.get("name", "")
-                dv = d.get("value", "")
-                du = d.get("unit", "")
-                dd = f"{dv} {du}".strip() if du and dv else (dv or du or "")
-                if dn:
-                    lines.append(f"{pad}      {dn}: {dd}")
-                elif dd:
-                    lines.append(f"{pad}      {dd}")
-        return lines
-
     # ── 面板截图复制（展开折叠后整页截图）────────────────────
 
     def get_capture_components(self) -> list[QWidget]:
@@ -2655,41 +2443,6 @@ class DetailPanel(QWidget):
                 continue
             except Exception:
                 continue
-
-    def _render_default_pages_to_text(self, scope: str) -> str:
-        """渲染通用模式页面（详情/数据）为纯文本（不含原始 JSON）。"""
-        if scope == "all":
-            labels = ["【详情】", "【数据】"]
-            parts = []
-            for i in range(min(2, len(self._default_pages))):
-                t = self._default_pages[i].toPlainText().strip()
-                if not t or t.startswith("📋 使用说明") or "暂无" in t[:20]:
-                    continue
-                parts.append(f"{labels[i]}\n{t}")
-            return "\n\n".join(parts)
-        idx = self.stack.currentIndex()
-        if 0 <= idx < len(self._default_pages):
-            t = self._default_pages[idx].toPlainText()
-            if t.startswith("📋 使用说明"):
-                return ""
-            return t
-        return ""
-
-    @classmethod
-    def _render_sections_to_text(cls, sections: list[dict]) -> str:
-        """将 ship_presenter 输出的 sections 结构渲染为纯文本（键值面板格式）。"""
-        lines: list[str] = []
-        for sec in sections:
-            label = sec.get("label", "")
-            icon = sec.get("icon", "")
-            title = f"{icon} {label}".strip() if icon else label
-            if title:
-                lines.append(title)
-                lines.append("─" * max(4, len(title) * 2))
-            lines.extend(cls._render_items_to_text(sec.get("items", [])))
-            lines.extend(cls._render_ammo_to_text(sec.get("raw_ammo_types") or []))
-            lines.append("")
-        return "\n".join(lines).rstrip()
 
     def _consumable_detail_items(self, items: list, bp, cfgd: dict, conn, vc: str, kv,
                                   *, num_raw, prep, cd_time, wt, auto, ct) -> None:
@@ -2955,10 +2708,7 @@ class DetailPanel(QWidget):
             cstack.addWidget(te)
             btn = QPushButton(cl)
             btn.setCheckable(True)
-            btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;color:@text@;border:1px solid @border@;"
-                              "border-radius:4px;padding:4px 10px;font-size:11px;}"
-                              "QPushButton:hover{background:@hover_bg@;color:@text@;}"
-                              "QPushButton:checked{background:@selected_bg@;color:@selected_fg@;}"))
+            theme.bind(btn, "QPushButton { border-radius:4px; padding:4px 10px; font-size:11px; }")
             btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
             blay.addWidget(btn)
             cbtns.append(btn)

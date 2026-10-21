@@ -50,11 +50,14 @@ def _apply_palette(app: QApplication, theme) -> None:
     pal.setColor(QPalette.ColorRole.Button, panel)
     pal.setColor(QPalette.ColorRole.ButtonText, text)
     pal.setColor(QPalette.ColorRole.PlaceholderText, muted)
-    pal.setColor(QPalette.ColorRole.Highlight, QColor(theme["selected_bg"]))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(theme["selected_fg"]))
+    # 选中态：淡信号底 + 主文本色。accent 只做信号（左侧信号条、焦点边框），
+    # 不做整块填充——否则列表选中行会变成一大片荧光色，既刺眼又伤可读性。
+    pal.setColor(QPalette.ColorRole.Highlight, QColor(theme["hover_bg"]))
+    pal.setColor(QPalette.ColorRole.HighlightedText, text)
+    # 悬浮提示：与 QSS 的 QToolTip 底色一致，圆角外的窗口底色才不会露出另一种颜色
+    pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(theme["hover_bg"]))
+    pal.setColor(QPalette.ColorRole.ToolTipText, text)
     if theme.dark:
-        pal.setColor(QPalette.ColorRole.ToolTipBase, QColor("#2d2d2d"))
-        pal.setColor(QPalette.ColorRole.ToolTipText, QColor("#e8e8e8"))
         pal.setColor(QPalette.ColorRole.Link, QColor("#4da3ff"))
         for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
             pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
@@ -76,18 +79,36 @@ def _load_qss_text() -> str | None:
     return None
 
 
+def _apply_font(app: QApplication) -> None:
+    """应用级字体：清晰的无衬线（参考图里中文与数字都是无衬线体）。
+
+    数字/路径由各控件按需使用等宽字体，不在这里全局替换。
+    """
+    from PySide6.QtGui import QFont
+
+    f = QFont()
+    f.setFamilies([
+        "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI",
+        "PingFang SC", "Noto Sans CJK SC",
+    ])
+    f.setPointSize(9)
+    f.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    app.setFont(f)
+
+
 def apply_theme(app: QApplication, mode: str = "auto") -> None:
     """按主题模式刷新主题状态、调色板与全局样式表。
 
-    mode: "auto"(跟随系统) | "light" | "dark"
+    mode: "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
     """
     from utils.theme import theme
     theme.refresh(mode)
+    _apply_font(app)
     _apply_palette(app, theme)
     qss = _load_qss_text()
     if qss is not None:
         app.setStyleSheet(theme.qss(qss))
-    print(f"[main] Theme applied: mode={mode} -> {'dark' if theme.dark else 'light'}")
+    print(f"[main] Theme applied: mode={mode} -> {theme.palette_name()}")
 
 
 
@@ -190,7 +211,12 @@ def _refresh_all_widgets_theme() -> None:
 
 
 def main() -> None:
-    # 0. 确保 __about__.py 存在（生成物缺失时从模板自动重建）
+    # 0. 打包成 exe 后，spawn 出的工具子进程会重新执行本模块的引导代码；
+    #    freeze_support() 让它在子进程里立即返回，不会二次启动 GUI。
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    # 0.1 确保 __about__.py 存在（生成物缺失时从模板自动重建）
     _ensure_about()
 
     # 1. 创建 Qt 应用
@@ -298,10 +324,16 @@ def main() -> None:
 
     QTimer.singleShot(200, _auto_refresh)
 
-    # 7. 进入事件循环（退出时关闭日志文件）
+    # 7. 进入事件循环（退出时关闭日志文件与工具子进程）
     ret = app.exec()
+    try:
+        from utils.tool_process import shutdown_tool_processes
+        shutdown_tool_processes()
+    except Exception:  # noqa: BLE001
+        pass
     log_writer.close()
     sys.exit(ret)
+
 
 if __name__ == "__main__":
     main()

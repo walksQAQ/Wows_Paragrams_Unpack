@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.path_utils import get_config_path
+from utils.theme import skin_ids
 
 
 @dataclass
@@ -28,7 +29,7 @@ class AppConfig:
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 <bin目录名>）
-    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark"
+    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
@@ -181,7 +182,7 @@ class ConfigManager:
 
     @theme_mode.setter
     def theme_mode(self, value: str) -> None:
-        if value not in ("auto", "light", "dark"):
+        if value not in ("auto", "light", "dark") and value not in skin_ids():
             value = "auto"
         self._config.theme_mode = value
         self.save()
@@ -260,6 +261,17 @@ class ConfigManager:
             raw["game_path_lesta"] = legacy
         return raw
 
+    @staticmethod
+    def _migrate_legacy_skin(raw: dict) -> dict:
+        """迁移早期的皮肤命名：theme_mode="anime" -> 皮肤 id（cyrene）。"""
+        mode = str(raw.get("theme_mode", "") or "")
+        if mode and mode not in ("auto", "light", "dark") and mode not in skin_ids():
+            # 旧的 "anime" 就是第一套皮肤（昔涟）
+            raw["theme_mode"] = "cyrene" if mode == "anime" else "auto"
+        raw.pop("anime_art", None)
+        raw.pop("skin_art", None)
+        return raw
+
     def _load(self) -> AppConfig:
         """从磁盘加载配置，缺失字段用默认值填充"""
         default = AppConfig.default()
@@ -274,6 +286,8 @@ class ConfigManager:
                 return default
             # 旧版配置迁移：把单一 game_path 拆到对应服务器的专用路径字段
             raw = self._migrate_legacy_paths(raw)
+            # 旧版皮肤命名迁移（anime -> cyrene），并清掉已废弃的立绘字段
+            raw = self._migrate_legacy_skin(raw)
             # 只取 dataclass 定义的字段，抛弃多余字段
             valid_keys = {f.name for f in default.__dataclass_fields__.values()}
             filtered = {k: v for k, v in raw.items() if k in valid_keys}

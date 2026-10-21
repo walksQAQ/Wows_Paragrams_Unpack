@@ -25,27 +25,13 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QMessageBox,
 )
 
+from ui.widgets import HoloDialog, HoloWindow
 from .parse_rules import (RULE_AUTO, RULE_LEGACY, RULE_WG_OLD, detect_rule,
                           layout_for_rule, model_meta_for_rule)
 from .space import (
     SceneResolver, SpaceScene, parse_space_bin, parse_geometry_header, scan_scenes,
 )
 
-_STYLE = """
-QMainWindow, QWidget { background-color: #1e1e1e; color: #d4d4d4; }
-QToolBar { background-color: #252526; border-bottom: 1px solid #333; spacing: 6px; padding: 4px; }
-QToolBar QPushButton { background-color: #0e639c; color: white; border: none; border-radius: 3px; padding: 4px 12px; }
-QToolBar QPushButton:hover { background-color: #1177bb; }
-QTreeWidget { background-color: #1e1e1e; color: #d4d4d4; border: none; outline: none; }
-QTreeWidget::item { padding: 3px; }
-QTreeWidget::item:selected { background-color: #094771; }
-QTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: none; padding: 8px;
-            font-family: Consolas, "Courier New", monospace; font-size: 12px; }
-QLineEdit { background-color: #333; color: #d4d4d4; border: 1px solid #555; border-radius: 3px; padding: 4px 8px; }
-QStatusBar { background-color: #252526; color: #9cdcfe; }
-QLabel#info { color: #9cdcfe; padding: 0 8px; }
-QLabel#source { color: #7f7f7f; padding: 0 8px; font-size: 11px; }
-"""
 
 _ROLE_SCENE = Qt.ItemDataRole.UserRole
 _ROLE_KIND = Qt.ItemDataRole.UserRole + 1
@@ -98,7 +84,7 @@ class _ScanWorker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
-class SpaceBrowser(QMainWindow):
+class SpaceBrowser(HoloWindow):
     """港口/地图场景浏览器。"""
 
     def __init__(self, game_dir: Optional[str] = None, parent=None):
@@ -125,7 +111,6 @@ class SpaceBrowser(QMainWindow):
             self._apply_detected_rule(game_dir)
         self.setWindowTitle("港口 / 地图场景浏览器")
         self.resize(1280, 820)
-        self.setStyleSheet(_STYLE)
         self._build_ui()
         self._geom_cache: dict[str, dict] = {}
         self._space_cache: dict[str, int] = {}

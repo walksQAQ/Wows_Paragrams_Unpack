@@ -2,7 +2,7 @@
 ModuleSelect —— 模块选择区（90px 窄栏）。
 
 按钮样式：图标在上，文字在下（双行）。
-匹配 CategoryBar 的图标+文字显示方式。
+匹配模块按钮的图标+文字显示方式。
 支持动态模块列表：
 - 舰船数据按 section 分组显示（基础属性、船体、消耗品等）
 - 非舰船数据使用默认的 详情/数据/原始 三页
@@ -52,7 +52,7 @@ _RE_LETTER_MOD = re.compile(r'^([A-Z])\s*模块$')
 
 
 class ModuleSelect(QWidget):
-    """模块选择区（90px），图标+文字双行按钮"""
+    """模块选择区（72px），图标+文字双行按钮"""
 
     module_selected = Signal(str)
     modules_changed = Signal(list)
@@ -62,23 +62,28 @@ class ModuleSelect(QWidget):
             background-color: transparent;
             color: @text_muted@;
             border: none;
-            border-radius: 8px;
+            border-left: 2px solid transparent;
+            border-radius: 4px;
             padding: 8px 2px;
         }
         QPushButton:hover {
             background-color: @hover_bg@;
             color: @text@;
+            border-left: 2px solid @line_structure@;
         }
         QPushButton:checked {
-            background-color: @selected_bg@;
-            color: @selected_fg@;
+            background-color: transparent;
+            color: @accent@;
+            border-left: 2px solid @accent@;
         }
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("ModuleSelect")
-        self.setFixedWidth(90)
+        # 纯 QWidget 子类必须开启此属性，QSS 的 background-color 才会真正绘制
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedWidth(72)
         theme.bind(self, """
             #ModuleSelect {
                 background-color: @panel_alt@;

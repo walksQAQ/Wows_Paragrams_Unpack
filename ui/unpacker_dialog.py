@@ -37,6 +37,8 @@ from utils.theme import theme
 from utils.path_utils import get_app_dir
 from utils.threading_utils import run_async
 
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
+
 
 def _fmt_size(n: int) -> str:
     """字节 → 人类可读。"""
@@ -47,7 +49,7 @@ def _fmt_size(n: int) -> str:
     return f"{n:.1f} GB"
 
 
-class UnpackerDialog(QDialog):
+class UnpackerDialog(HoloDialog):
     """资源解包器：浏览 VFS → 加入队列 / glob 批量 → 解包到目录。"""
 
     #: 后台线程 → 主线程：进度(0..100) + 状态文本
@@ -72,7 +74,7 @@ class UnpackerDialog(QDialog):
 
         self._build_ui()
         theme.bind(self, """
-            QDialog { background: @panel_bg@; }
+            QDialog { background: @window_bg@; color: @text@; }
             QLabel { color: @text@; font-size: 11px; background: transparent; }
         """)
         self.progress_sig.connect(self._on_progress)
@@ -89,13 +91,7 @@ class UnpackerDialog(QDialog):
         _edit_qss = """
             QLineEdit { padding: 4px 6px; border: 1px solid @border@; border-radius: 3px;
                         background: @input_bg@; color: @text@; font-size: 11px; }
-            QLineEdit:focus { border-color: #0078d4; }
-        """
-        _btn_qss = """
-            QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
-                          padding: 4px 10px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: #0078d4; }
-            QPushButton:disabled { color: @text_hint@; }
+            QLineEdit:focus { border-color: @accent@; }
         """
         _combo_qss = ("QComboBox { padding: 3px 6px; border: 1px solid @border@; border-radius: 3px;"
                       " background: @input_bg@; color: @text@; font-size: 11px; }")
@@ -103,7 +99,7 @@ class UnpackerDialog(QDialog):
             QListWidget { background: @panel_bg@; border: 1px solid @border@;
                           border-radius: 4px; color: @text@; font-size: 12px; }
             QListWidget::item { padding: 2px 6px; }
-            QListWidget::item:selected { background: @selected_bg@; color: @selected_fg@; }
+            QListWidget::item:selected { background: @hover_bg@; color: @accent@; }
             QListWidget::item:hover { background: @hover_bg@; color: @text@; }
         """
 
@@ -116,7 +112,6 @@ class UnpackerDialog(QDialog):
         theme.bind(self.ed_game, _edit_qss)
         row0.addWidget(self.ed_game, 1)
         self.btn_pick_game = QPushButton("浏览…")
-        theme.bind(self.btn_pick_game, _btn_qss)
         row0.addWidget(self.btn_pick_game)
         row0.addWidget(QLabel("版本"))
         self.cb_bin = QComboBox()
@@ -124,7 +119,6 @@ class UnpackerDialog(QDialog):
         theme.bind(self.cb_bin, _combo_qss)
         row0.addWidget(self.cb_bin)
         self.btn_open = QPushButton("载入")
-        theme.bind(self.btn_open, _btn_qss)
         row0.addWidget(self.btn_open)
         root.addLayout(row0)
 
@@ -136,10 +130,8 @@ class UnpackerDialog(QDialog):
         row1 = QHBoxLayout()
         row1.setSpacing(6)
         self.btn_up = QPushButton("↑ 上级")
-        theme.bind(self.btn_up, _btn_qss)
         row1.addWidget(self.btn_up)
         self.btn_root = QPushButton("⌂ 根")
-        theme.bind(self.btn_root, _btn_qss)
         row1.addWidget(self.btn_root)
         self.ed_path = QLineEdit()
         self.ed_path.setPlaceholderText("虚拟路径（回车进入），如 content/gameplay/")
@@ -150,10 +142,8 @@ class UnpackerDialog(QDialog):
         theme.bind(self.ed_glob, _edit_qss)
         row1.addWidget(self.ed_glob, 1)
         self.btn_glob = QPushButton("按 glob 列出")
-        theme.bind(self.btn_glob, _btn_qss)
         row1.addWidget(self.btn_glob)
         self.btn_add_glob = QPushButton("glob 结果加入队列")
-        theme.bind(self.btn_add_glob, _btn_qss)
         row1.addWidget(self.btn_add_glob)
         root.addLayout(row1)
 
@@ -173,11 +163,9 @@ class UnpackerDialog(QDialog):
         rowb = QHBoxLayout()
         rowb.setSpacing(6)
         self.btn_add_sel = QPushButton("＋ 加入队列")
-        theme.bind(self.btn_add_sel, _btn_qss)
         rowb.addWidget(self.btn_add_sel)
         self.btn_add_dir = QPushButton("＋ 整个目录（*.data 等子集）")
         self.btn_add_dir.setToolTip("把当前目录下匹配 glob 的全部文件加入队列；glob 为空则用 **/*")
-        theme.bind(self.btn_add_dir, _btn_qss)
         rowb.addWidget(self.btn_add_dir)
         rowb.addStretch()
         ll.addLayout(rowb)
@@ -197,10 +185,8 @@ class UnpackerDialog(QDialog):
         rowq = QHBoxLayout()
         rowq.setSpacing(6)
         self.btn_del_sel = QPushButton("－ 移除选中")
-        theme.bind(self.btn_del_sel, _btn_qss)
         rowq.addWidget(self.btn_del_sel)
         self.btn_clear = QPushButton("清空队列")
-        theme.bind(self.btn_clear, _btn_qss)
         rowq.addWidget(self.btn_clear)
         rowq.addStretch()
         rl.addLayout(rowq)
@@ -217,7 +203,6 @@ class UnpackerDialog(QDialog):
         theme.bind(self.ed_out, _edit_qss)
         row2.addWidget(self.ed_out, 1)
         self.btn_pick_out = QPushButton("浏览…")
-        theme.bind(self.btn_pick_out, _btn_qss)
         row2.addWidget(self.btn_pick_out)
         root.addLayout(row2)
 
@@ -231,16 +216,11 @@ class UnpackerDialog(QDialog):
             row3.addWidget(cb)
         row3.addStretch()
         self.btn_start = QPushButton("开始解包")
-        theme.bind(self.btn_start, """
-            QPushButton { background: #0078d4; color: #ffffff; border: 1px solid #0078d4;
-                          border-radius: 3px; padding: 5px 14px; font-size: 12px; font-weight: bold; }
-            QPushButton:hover { background: #1a88e0; }
-            QPushButton:disabled { background: @panel_alt@; color: @text_hint@; border-color: @border@; }
-        """)
+        theme.bind(self.btn_start, PRIMARY_BTN_QSS)
+        self.btn_start.setDefault(True)
         row3.addWidget(self.btn_start)
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.setEnabled(False)
-        theme.bind(self.btn_cancel, _btn_qss)
         row3.addWidget(self.btn_cancel)
         root.addLayout(row3)
 
@@ -248,9 +228,9 @@ class UnpackerDialog(QDialog):
         self.progress.setVisible(False)
         self.progress.setFixedHeight(16)
         theme.bind(self.progress, """
-            QProgressBar { border: 1px solid #0078d4; border-radius: 4px; background: @input_bg@;
+            QProgressBar { border: 1px solid @accent@; border-radius: 4px; background: @input_bg@;
                            color: @text@; font-size: 11px; text-align: center; }
-            QProgressBar::chunk { background: #0078d4; }
+            QProgressBar::chunk { background: @accent@; }
         """)
         root.addWidget(self.progress)
 
