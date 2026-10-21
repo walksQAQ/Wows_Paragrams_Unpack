@@ -32,10 +32,10 @@ OUT_DIR = ROOT / "docs" / "ui"
 W, H = 1600, 920
 MENUBAR = (0, 0, 1600, 30)
 TOOLBAR = (0, 30, 1600, 40)
-BROWSER = (8, 78, 294, 698)
-DETAIL = (310, 78, 1074, 698)
-ART_SLOT = (1392, 78, 200, 698)
-LOG = (8, 784, 1584, 100)
+BROWSER = (8, 78, 294, 630)
+DETAIL = (310, 78, 1074, 630)
+ART_SLOT = (1392, 78, 200, 630)
+LOG = (8, 716, 1584, 168)
 STATUS = (0, 892, 1600, 28)
 
 CHAMFER = 12
@@ -316,9 +316,9 @@ def build(theme: dict[str, str], mode_name: str, ref_png: Path | None) -> "PSDIm
 
     # 三张卡片
     for ci2, (name, box) in enumerate((
-        ("基础属性", (334, 368, 240, 336)),
-        ("船体", (592, 368, 366, 336)),
-        ("主炮", (972, 368, 412, 336)),
+        ("基础属性", (334, 368, 240, 300)),
+        ("船体", (592, 368, 366, 300)),
+        ("主炮", (972, 368, 412, 300)),
     ), start=1):
         add(g, fill_layer((box[0], box[1], box[2], 26), rgba(theme["card_bg"]), radius=6),
             f"card / title-strip-{ci2}  @card_bg@", (box[0], box[1], box[2], 26))

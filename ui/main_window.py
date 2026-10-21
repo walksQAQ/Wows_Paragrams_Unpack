@@ -11,7 +11,7 @@ MainWindow —— 应用主窗口。
   │ │ SciFiPanel │ │    │ │ SciFiPanel(glow=True)     │  │
   │ └────────────┘ └────┘ └───────────────────────────┘  │
   ├──────────────────────────────────────────────────────┤
-  │  QTextBrowser（日志，固定 100px）                     │
+  │  QTextBrowser（日志，固定 168px ≈ 10 行）              │
   └──────────────────────────────────────────────────────┘
 
 历史遗留的 80px 左侧分类栏已删除；中间区改为 HoloBackdrop（网格底）。
@@ -40,6 +40,9 @@ from ui.widgets import (
     SkinArtSlot,
     art_slot_visible,
 )
+
+#: 底部日志框高度：按 11px 等宽字可显示约 10 行，够看清一整段日志
+LOG_FRAME_HEIGHT = 168
 
 
 class MainWindow(QMainWindow):
@@ -119,7 +122,7 @@ class MainWindow(QMainWindow):
 
         # 日志区也套一层全息金属框，避免在窗口底部露出一块无框纯黑
         self.log_frame = SciFiPanel(chamfer=10, accent="holo_ice", hud_corners=False)
-        self.log_frame.setFixedHeight(100)
+        self.log_frame.setFixedHeight(LOG_FRAME_HEIGHT)
         _log_layout = QVBoxLayout(self.log_frame)
         _log_layout.setContentsMargins(*self.log_frame.content_margins())
         _log_layout.setSpacing(0)
