@@ -10,7 +10,9 @@ from ui.widgets.scifi_panel import (
 )
 from ui.widgets.dialog_style import DIALOG_QSS, PRIMARY_BTN_QSS, HoloDialog, HoloWindow
 from ui.widgets.scifi_button import SciFiButton
+from ui.widgets.anime_art import ART_WIDTH, MIN_WINDOW_WIDTH, AnimeArtSlot, art_slot_visible
 
 __all__ = ["HoloBackdrop", "SciFiPanel", "SparkDot", "CrystalMark", "ScanStrip",
            "apply_holo_enabled", "HoloDialog", "HoloWindow", "DIALOG_QSS",
-           "PRIMARY_BTN_QSS", "SciFiButton"]
+           "PRIMARY_BTN_QSS", "SciFiButton",
+           "AnimeArtSlot", "ART_WIDTH", "MIN_WINDOW_WIDTH", "art_slot_visible"]

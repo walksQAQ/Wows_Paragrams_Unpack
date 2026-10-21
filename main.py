@@ -98,7 +98,7 @@ def _apply_font(app: QApplication) -> None:
 def apply_theme(app: QApplication, mode: str = "auto") -> None:
     """按主题模式刷新主题状态、调色板与全局样式表。
 
-    mode: "auto"(跟随系统) | "light" | "dark"
+    mode: "auto"(跟随系统) | "light" | "dark" | "anime"(二次元皮肤)
     """
     from utils.theme import theme
     theme.refresh(mode)
@@ -107,7 +107,7 @@ def apply_theme(app: QApplication, mode: str = "auto") -> None:
     qss = _load_qss_text()
     if qss is not None:
         app.setStyleSheet(theme.qss(qss))
-    print(f"[main] Theme applied: mode={mode} -> {'dark' if theme.dark else 'light'}")
+    print(f"[main] Theme applied: mode={mode} -> {theme.palette_name()}")
 
 
 

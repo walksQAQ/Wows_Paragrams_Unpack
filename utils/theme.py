@@ -64,24 +64,24 @@ _LIGHT = {
     "text_hint":   "#7C8FA0",                 # text-muted
     "border":      "#C9D8E4",                 # line-subtle
     "border_soft": "#A8C2D6",                 # line-structure
-    "hover_bg":    "#E8F4F8",                 # photon-cyan 8% 预混
-    "selected_bg": "#0E7C93",                 # photon-cyan（亮色需压深保对比）
+    "hover_bg":    "#EAF2FB",                 # photon-blue 8% 预混
+    "selected_bg": "#2E6FB0",                 # photon-blue（亮色需压深保对比）
     "selected_fg": "#FFFFFF",                 # on_accent
     "scroll_bg":   "rgba(0, 0, 0, 0.04)",
-    "scroll_handle": "rgba(14, 124, 147, 0.22)",
-    "scroll_handle_hover": "rgba(14, 124, 147, 0.38)",
+    "scroll_handle": "rgba(46, 111, 176, 0.22)",
+    "scroll_handle_hover": "rgba(46, 111, 176, 0.40)",
     # 工具栏
     "toolbar_bg":        "#E8EFF6",
     "toolbar_btn_bg":    "#FFFFFF",
-    "toolbar_btn_hover": "#E8F4F8",
+    "toolbar_btn_hover": "#EAF2FB",
     "toolbar_btn_border": "#C9D8E4",
     "toolbar_btn_text":  "#0D1B26",
     "toolbar_btn_disabled": "#EEF3F8",
     "toolbar_text":      "#0D1B26",
     "toolbar_text_muted": "#7C8FA0",
     # ── 语义色 ──
-    "accent":       "#0E7C93",                # photon-cyan：焦点 / 主交互
-    "accent_hi":    "#0A6273",
+    "accent":       "#2E6FB0",                # photon-blue：焦点 / 主交互
+    "accent_hi":    "#1E5A9E",
     "on_accent":    "#FFFFFF",
     "warn":         "#A35A00",                # state-warning
     "danger":       "#B3243C",                # state-error
@@ -91,20 +91,20 @@ _LIGHT = {
     "error":        "#B3243C",
     "photon_blue":  "#2F6FD0",
     "photon_violet": "#6B5BB5",
-    "crystal":      "#6B5BB5",
-    "crystal_edge": "#2F6FD0",
+    "crystal":      "#3E7FA8",                 # 晶体折射色（浅色主题下用钢蓝，不用紫）
+    "crystal_edge": "#2B6A93",
     "surface_2":    "#F7FAFD",                # bg-elevated
     "elevated":     "#F7FAFD",
     "inset":        "#F7FAFD",
     "line_strong":  "#A8C2D6",                # line-structure
     "line_structure": "#8FB0CC",
-    "hud":          "rgba(14, 124, 147, 0.50)",
-    "holo_ice":     "rgba(14, 124, 147, 0.16)",
-    "holo_glow":    "rgba(14, 124, 147, 0.22)",
+    "hud":          "rgba(46, 111, 176, 0.50)",
+    "holo_ice":     "rgba(46, 111, 176, 0.16)",
+    "holo_glow":    "rgba(46, 111, 176, 0.22)",
     "spark_pearl":  "#0D1B26",
     "spark_violet": "#6B5BB5",
     "holo_panel":   "rgba(248, 251, 254, 0.55)",
-    "grid":         "rgba(14, 124, 147, 0.16)",
+    "grid":         "rgba(46, 111, 176, 0.16)",
     # ── 银色金属 + 蓝色光线（浅色）──
     "metal_hi":     "#FFFFFF",
     "metal_mid":    "#C7D3DE",
@@ -114,13 +114,13 @@ _LIGHT = {
     "metal_sheen_a": "rgba(255, 255, 255, 0.85)",
     "metal_sheen_b": "rgba(170, 190, 210, 0.30)",
     "metal_brush":  "rgba(110, 140, 170, 0.08)",
-    "light_core":   "rgba(20, 130, 170, 0.92)",
-    "light_halo":   "rgba(30, 150, 200, 0.22)",
+    "light_core":   "rgba(46, 118, 190, 0.92)",
+    "light_halo":   "rgba(62, 140, 214, 0.22)",
     # ── 参考图对齐（浅色）──
     "accent_warm":    "#B87315",
     "accent_warm_hi": "#D68910",
-    "panel_frame":      "rgba(60, 130, 175, 0.55)",
-    "panel_frame_hi":   "rgba(20, 110, 150, 0.90)",
+    "panel_frame":      "rgba(70, 122, 182, 0.55)",
+    "panel_frame_hi":   "rgba(42, 100, 168, 0.90)",
     "panel_fill":       "rgba(255, 255, 255, 0.72)",
     "panel_fill_soft":  "rgba(245, 250, 254, 0.60)",
     # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
@@ -135,15 +135,15 @@ _LIGHT = {
     "tip_dim":     "#5E7186",
     "tip_rule":    "#C9D8E4",
     # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
-    # 与深色主题同一策略：深底 + 亮青描边；绝不能用中间明度青绿做选中底。
-    "icon_btn_bg":        "#16304A",
-    "icon_btn_bg_hover":  "#2F5D80",
-    "icon_btn_checked":   "#0B4A6B",
-    "icon_btn_border":    "#3C6383",
-    "icon_btn_border_hi": "#5FD9F2",
+    # 与深色主题同一策略：深底 + 亮蓝描边；绝不能用中间明度蓝做选中底。
+    "icon_btn_bg":        "#1A3155",
+    "icon_btn_bg_hover":  "#2F5D8E",
+    "icon_btn_checked":   "#12467A",
+    "icon_btn_border":    "#3F639B",
+    "icon_btn_border_hi": "#7FC3F0",
     "icon_btn_text":      "#DCE9F4",
     "icon_btn_text_dim":  "#93A9BE",
-    "icon_btn_text_hi":   "#7FE3FF",
+    "icon_btn_text_hi":   "#A8D8FA",
 }
 
 
@@ -249,6 +249,101 @@ _DARK = {
 }
 
 
+_ANIME = {
+    # ── 二次元皮肤（白 + 浅粉）：功能色一律沿用同一套语义 token，只换色相 ──
+    "window_bg":   "#FDF6FA",                 # 奶油白（带一丝樱粉）
+    "panel_bg":    "#FFFFFF",                 # 面板纯白，保证数据区可读
+    "panel_alt":   "#FBEEF5",                 # 次级区域
+    "input_bg":    "#FFFAFC",                 # 输入框
+    "text":        "#3B2733",                 # 主文字（暖调深梅）
+    "text_muted":  "#7A5C6C",                 # 次要说明
+    "text_hint":   "#A98D9C",                 # 弱提示
+    "border":      "#F2DCE8",                 # 普通分隔线
+    "border_soft": "#E4C2D4",                 # 结构线
+    "hover_bg":    "#FDEFF6",                 # 悬停底
+    "selected_bg": "#D2638F",                 # 樱粉（白底上压深保对比）
+    "selected_fg": "#FFFFFF",
+    "scroll_bg":   "rgba(212, 99, 143, 0.06)",
+    "scroll_handle": "rgba(212, 99, 143, 0.26)",
+    "scroll_handle_hover": "rgba(212, 99, 143, 0.44)",
+    # 工具栏
+    "toolbar_bg":        "#FBEEF5",
+    "toolbar_btn_bg":    "#FFFFFF",
+    "toolbar_btn_hover": "#FDEFF6",
+    "toolbar_btn_border": "#F2DCE8",
+    "toolbar_btn_text":  "#3B2733",
+    "toolbar_btn_disabled": "#F8EBF2",
+    "toolbar_text":      "#3B2733",
+    "toolbar_text_muted": "#A98D9C",
+    # ── 语义色 ──
+    "accent":       "#D2638F",                # 樱粉：焦点 / 主交互
+    "accent_hi":    "#B94D77",
+    "on_accent":    "#FFFFFF",
+    "warn":         "#B26A16",
+    "danger":       "#C43A5C",
+    "info":         "#7B6BC4",
+    "success":      "#2F8F6E",
+    "warning":      "#B26A16",
+    "error":        "#C43A5C",
+    "photon_blue":  "#C08BC4",                # 二次元皮肤里的次级高亮：藕荷紫
+    "photon_violet": "#A87BC4",
+    "crystal":      "#D98CB8",                # 晶体折射色
+    "crystal_edge": "#C4709C",
+    "accent_warm":    "#C08428",              # 关键数值用暖金，与樱粉主色拉开
+    "accent_warm_hi": "#DB9E43",
+    "surface_2":    "#FFFAFC",
+    "elevated":     "#FFFFFF",
+    "inset":        "#FFFAFC",
+    "line_strong":  "#E4C2D4",
+    "line_structure": "#D9A9BE",
+    # 面板轮廓：1px 樱粉细线 + 外侧极弱粉辉
+    "panel_frame":      "rgba(214, 122, 162, 0.55)",
+    "panel_frame_hi":   "rgba(196, 88, 132, 0.88)",
+    "panel_fill":       "rgba(255, 255, 255, 0.78)",
+    "panel_fill_soft":  "rgba(253, 244, 249, 0.62)",
+    "hud":          "rgba(210, 99, 143, 0.48)",
+    "holo_ice":     "rgba(210, 99, 143, 0.16)",
+    "holo_glow":    "rgba(210, 99, 143, 0.24)",
+    "spark_pearl":  "#3B2733",
+    "spark_violet": "#A87BC4",
+    "holo_panel":   "rgba(255, 250, 252, 0.62)",
+    "grid":         "rgba(210, 99, 143, 0.14)",
+    # ── 暖银金属 + 粉色光线 ──
+    "metal_hi":     "#FFFFFF",
+    "metal_mid":    "#E7D7DF",
+    "metal_lo":     "#B49AA6",
+    "metal_edge":   "rgba(180, 140, 160, 0.55)",
+    "metal_glow":   "rgba(220, 140, 175, 0.12)",
+    "metal_sheen_a": "rgba(255, 255, 255, 0.90)",
+    "metal_sheen_b": "rgba(230, 195, 212, 0.30)",
+    "metal_brush":  "rgba(190, 150, 170, 0.08)",
+    "light_core":   "rgba(226, 118, 165, 0.92)",
+    "light_halo":   "rgba(232, 150, 190, 0.22)",
+    # ── 强化 / 传奇技能：暖金 ──
+    "gold":        "#C08A2E",
+    "gold_hi":     "#D9A445",
+    "gold_bg":     "#FDF3E3",
+    "gold_border": "#E3BC7A",
+    # 属性增减值
+    "value_pos":   "#2F8F6E",
+    "value_neg":   "#C43A5C",
+    # 富文本 tooltip 用色
+    "tip_text":    "#3B2733",
+    "tip_muted":   "#6B4F5E",
+    "tip_dim":     "#8E7382",
+    "tip_rule":    "#E4C2D4",
+    # ── 图标按钮：与其它两套一致保持深底，白色游戏图标才不会糊在浅色背景上 ──
+    "icon_btn_bg":        "#47283A",
+    "icon_btn_bg_hover":  "#6B4058",
+    "icon_btn_checked":   "#5C2E46",
+    "icon_btn_border":    "#7A4C63",
+    "icon_btn_border_hi": "#FFA9CE",
+    "icon_btn_text":      "#F3E3EC",
+    "icon_btn_text_dim":  "#C0A2B2",
+    "icon_btn_text_hi":   "#FFC2DC",
+}
+
+
 def detect_dark_mode(mode: str = "auto") -> bool:
     """检测是否应使用深色主题。
 
@@ -256,6 +351,7 @@ def detect_dark_mode(mode: str = "auto") -> bool:
       mode = "auto"  → 跟随系统（环境变量 WPU_THEME 可强制覆盖，用于调试）
              "dark"  → 强制深色
              "light" → 强制浅色
+             "anime" → 二次元皮肤（白 + 浅粉），永远是亮色
 
     优先级（auto 时）：
       1. 环境变量 WPU_THEME=dark|light 强制指定（调试/演示用）
@@ -265,13 +361,13 @@ def detect_dark_mode(mode: str = "auto") -> bool:
     # 0) 显式指定模式（优先于环境变量与系统检测）
     if mode == "dark":
         return True
-    if mode == "light":
+    if mode in ("light", "anime"):
         return False
     # 1) 环境变量强制指定（可覆盖系统设置，调试用）
     forced = os.environ.get("WPU_THEME", "").strip().lower()
     if forced in ("dark", "1", "true", "yes"):
         return True
-    if forced in ("light", "0", "false", "no"):
+    if forced in ("light", "anime", "0", "false", "no"):
         return False
     # 2) Qt 已就绪：使用 QStyleHints.colorScheme()
     try:
@@ -300,25 +396,36 @@ def detect_dark_mode(mode: str = "auto") -> bool:
 
 
 class _Theme:
-    """当前主题单例：持有 dark 标志与颜色表，提供 qss() 占位符替换。"""
+    """当前主题单例：持有 dark/anime 标志与颜色表，提供 qss() 占位符替换。
+
+    支持三套皮肤：light（浅蓝）/ dark（深海军蓝）/ anime（白 + 浅粉）。
+    """
 
     def __init__(self) -> None:
-        self.mode: str = "auto"  # "auto" | "light" | "dark"
+        self.mode: str = "auto"  # "auto" | "light" | "dark" | "anime"
+        self.anime: bool = False
         self.dark: bool = detect_dark_mode(self.mode)
         self.colors: dict[str, str] = dict(_DARK if self.dark else _LIGHT)
         # 已绑定控件的内联样式模板：[(weakref, template), ...]
         self._bindings: list[tuple] = []
 
+    def _palette(self) -> dict[str, str]:
+        """按当前模式选调色板。anime 是独立皮肤（永远是亮色），不参与系统深浅检测。"""
+        self.anime = self.mode == "anime"
+        if self.anime:
+            return _ANIME
+        return _DARK if self.dark else _LIGHT
+
     def refresh(self, mode: str | None = None) -> None:
         """重新检测主题。
 
-        mode 参数："auto" | "light" | "dark"，传入后持久化到 self.mode；
+        mode 参数："auto" | "light" | "dark" | "anime"，传入后持久化到 self.mode；
         不传则沿用当前模式。
         """
-        if mode is not None and mode in ("auto", "light", "dark"):
+        if mode is not None and mode in ("auto", "light", "dark", "anime"):
             self.mode = mode
         self.dark = detect_dark_mode(self.mode)
-        self.colors = dict(_DARK if self.dark else _LIGHT)
+        self.colors = dict(self._palette())
 
     def set_mode(self, mode: str) -> None:
         """显式设置主题模式并立即刷新颜色表。"""
@@ -377,6 +484,12 @@ class _Theme:
     # 便捷访问单个颜色
     def __getitem__(self, key: str) -> str:
         return self.colors[key]
+
+    def palette_name(self) -> str:
+        """当前生效的调色板名：light / dark / anime。"""
+        if self.anime:
+            return "anime"
+        return "dark" if self.dark else "light"
 
     def qcolor(self, key: str):
         """返回 token 对应的 QColor（支持 rgba(r, g, b, a) 写法，a 为 0–1 浮点）。"""

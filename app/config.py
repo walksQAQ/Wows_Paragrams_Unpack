@@ -28,7 +28,7 @@ class AppConfig:
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 <bin目录名>）
-    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark"
+    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | "anime"(二次元皮肤)
     holo_effects: bool = True  # 全息视觉效果（网格背景 / 辉光 / 呼吸 / 点缀），仅影响外观
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
@@ -182,7 +182,7 @@ class ConfigManager:
 
     @theme_mode.setter
     def theme_mode(self, value: str) -> None:
-        if value not in ("auto", "light", "dark"):
+        if value not in ("auto", "light", "dark", "anime"):
             value = "auto"
         self._config.theme_mode = value
         self.save()

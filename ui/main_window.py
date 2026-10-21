@@ -33,7 +33,7 @@ from ui.toolbar_widget import TopToolbar
 from ui.browser_panel import BrowserPanel
 from ui.module_select import ModuleSelect
 from ui.detail_panel import DetailPanel
-from ui.widgets import HoloBackdrop, ScanStrip, SciFiPanel
+from ui.widgets import HoloBackdrop, ScanStrip, SciFiPanel, AnimeArtSlot, art_slot_visible
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +88,12 @@ class MainWindow(QMainWindow):
         self.detail = DetailPanel.for_server(_wows_type)()
         _detail_layout.addWidget(self.detail, stretch=1)
         content_layout.addWidget(self.detail_frame, stretch=1)
+
+        # 二次元皮肤专用的装饰列（预留插画空间）。
+        # 其它主题下宽度归零、不参与布局，所以科幻/浅蓝两套界面完全不受影响。
+        self.art_slot = AnimeArtSlot()
+        self.art_slot.setVisible(art_slot_visible(self.width()))
+        content_layout.addWidget(self.art_slot)
 
         main_layout.addWidget(self.middle, stretch=1)
 
@@ -148,13 +154,14 @@ class MainWindow(QMainWindow):
 
         # ── 信号连接 ────────────────────────────────────
         bus.log_message.connect(self._on_log)
-        self.browser.file_selected.connect(bus.file_selected.emit)
-        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐；模块选择 → 详情页切换
+        self.browser.file_selected.connect(bus.file_selected.emit)        # 动态模块：DetailPanel 通知 ModuleSelect 更新按钮并控制显隐；模块选择 → 详情页切换
         self._wire_detail_signals()
         # 切换服务器 → 重建详情面板（方案 C：按服务器选子类），保证整界面跟随新服务器模式
         bus.wows_type_changed.connect(self._on_server_changed)
         # 分类切换 → 显示/隐藏模块选择区（舰长类不显示三级菜单）
         bus.folder_selected.connect(self._on_category_changed)
+        # 切换皮肤 → 重新判断二次元装饰列是否该出现
+        bus.theme_changed.connect(self._refresh_art_slot)
 
         # 重置 UI 状态时取消所有选中项
         bus.data_loaded.connect(lambda _: self.clear_all_selections())
@@ -170,8 +177,24 @@ class MainWindow(QMainWindow):
         # 启动后延迟 1s 自动检测版本更新（不阻塞启动；遵守 24h 缓存间隔）
         QTimer.singleShot(1000, self._auto_check_update)
 
-    # ── 菜单 ──────────────────────────────────────────────
+    # ── 二次元装饰列 ───────────────────────────────────────
 
+    def _refresh_art_slot(self, *_args) -> None:
+        """按皮肤与窗口宽度决定装饰列显隐（其它皮肤下宽度为 0，不占布局）。"""
+        slot = getattr(self, "art_slot", None)
+        if slot is None:
+            return
+        show = art_slot_visible(self.width())
+        if slot.isVisible() != show:
+            slot.setVisible(show)
+        if show:
+            slot.refresh_theme()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_art_slot()
+
+    # ── 菜单 ──────────────────────────────────────────────
     def _setup_menu(self) -> None:
         menubar = self.menuBar()
 

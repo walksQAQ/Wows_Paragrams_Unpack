@@ -143,14 +143,16 @@ def _draw_corner_crystal(p: QPainter, center: QPointF, s: float,
     path.closeSubpath()
 
     fill = QColor(body)
-    fill.setAlphaF(0.20 if theme.dark else 0.28)
+    # 深色主题里晶体是「提亮」的玻璃，浅色主题里是「压暗」的玻璃——后者必须
+    # 大幅降低不透明度，否则在近白底上会变成一块实心色块（看不出晶体的意思）。
+    fill.setAlphaF(0.20 if theme.dark else 0.10)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(fill)
     p.drawPath(path)
 
     # 内部切面：一条竖直棱 + 两条斜棱，形成折射感
     facet = QColor(body)
-    facet.setAlphaF(0.34 if theme.dark else 0.40)
+    facet.setAlphaF(0.34 if theme.dark else 0.14)
     p.setBrush(facet)
     left = QPainterPath()
     left.moveTo(cx, cy - s)
@@ -161,7 +163,7 @@ def _draw_corner_crystal(p: QPainter, center: QPointF, s: float,
     p.drawPath(left)
 
     hi = QColor(edge)
-    hi.setAlphaF(0.30)
+    hi.setAlphaF(0.30 if theme.dark else 0.16)
     p.setBrush(hi)
     top = QPainterPath()
     top.moveTo(cx, cy - s)
@@ -172,7 +174,7 @@ def _draw_corner_crystal(p: QPainter, center: QPointF, s: float,
 
     # 棱线
     line = QColor(edge)
-    line.setAlphaF(0.85 if theme.dark else 0.70)
+    line.setAlphaF(0.85 if theme.dark else 0.55)
     p.setPen(QPen(line, 1.0))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawPath(path)
