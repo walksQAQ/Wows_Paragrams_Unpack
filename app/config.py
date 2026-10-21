@@ -15,10 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.path_utils import get_config_path
-from utils.theme import SKINS
-
-#: 合法的皮肤 id（与 utils.theme.SKINS 单一来源，新增皮肤无需再改这里）
-SKIN_IDS = frozenset(SKINS)
+from utils.theme import skin_ids
 
 
 @dataclass
@@ -186,7 +183,7 @@ class ConfigManager:
 
     @theme_mode.setter
     def theme_mode(self, value: str) -> None:
-        if value not in ("auto", "light", "dark") and value not in SKIN_IDS:
+        if value not in ("auto", "light", "dark") and value not in skin_ids():
             value = "auto"
         self._config.theme_mode = value
         self.save()
@@ -278,7 +275,7 @@ class ConfigManager:
     def _migrate_legacy_skin(raw: dict) -> dict:
         """迁移早期的皮肤命名：theme_mode="anime" -> 皮肤 id（cyrene）。"""
         mode = str(raw.get("theme_mode", "") or "")
-        if mode and mode not in ("auto", "light", "dark") and mode not in SKIN_IDS:
+        if mode and mode not in ("auto", "light", "dark") and mode not in skin_ids():
             # 旧的 "anime" 就是第一套皮肤（昔涟）
             raw["theme_mode"] = "cyrene" if mode == "anime" else "auto"
         raw.pop("anime_art", None)

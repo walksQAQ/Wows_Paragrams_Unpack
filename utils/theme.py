@@ -357,30 +357,21 @@ _SKIN_CYRENE = {
 class SkinSpec:
     """一套「角色皮肤」的注册信息。
 
-    皮肤与 auto/light/dark **正交**：主题模式决定深浅，皮肤决定一整套配色与
-    装饰语言。皮肤是整份调色板（覆盖明暗），所以启用皮肤时 ``theme.dark``
-    恒为 False。
+    皮肤与 auto/light/dark **正交**：主题模式决定深浅，皮肤则整份替换调色板
+    （因此启用皮肤时 ``theme.dark`` 恒为 False）。
 
-    以后加新的二次元主题（别的角色 / 别的世界观），只需往 :data:`SKINS` 里
-    补一条，界面各处都按下面的**能力位**走，不必再改控件代码：
+    **皮肤只改颜色**：早期的纹样 / 立绘 / 水印等装饰能力已全部移除，界面结构
+    （网格、切角、辉光）仍由 `scifi_panel.py` 统一绘制，所有主题一致。
 
-    ``brand``      品牌标识形态（"crystal" 棱晶 / "heart" 心形）
-    ``watermark``  工作区背景水印（"" 无 / "mobius" 莫比乌斯环 …）
-    ``art_slot``   是否启用右侧立绘列
-    ``figure``     内置立绘纹样（"" 无 / "cyrene" …）：代码自绘的原创插画，
-                   没有图片时用它兜底
-    ``image_stem`` 用户自备立绘的文件名（不含扩展名），在 data/skins/ 下查找；
-                   有图时优先用图，没有才退回内置自绘
+    **发布版不可选用**：皮肤只在源码/调试运行时出现在主题下拉里，Nuitka 编译的
+    发布版只提供 auto / light / dark（见 :func:`skin_ids`）。
+
+    以后加新的二次元配色，只需往 :data:`SKINS` 补一条完整调色板即可。
     """
 
     id: str
     name: str
     palette: dict[str, str]
-    brand: str = "crystal"
-    watermark: str = ""
-    art_slot: bool = False
-    figure: str = ""
-    image_stem: str = ""
 
 
 SKINS: dict[str, SkinSpec] = {
@@ -388,23 +379,28 @@ SKINS: dict[str, SkinSpec] = {
         id="cyrene",
         name="昔涟（半成品）",
         palette=_SKIN_CYRENE,
-        brand="heart",
-        watermark="mobius",
-        art_slot=True,
-        figure="cyrene",
-        image_stem="cyrene",
     ),
 }
 
 
 def skin_ids() -> tuple[str, ...]:
-    """皮肤 id 列表（保持注册顺序，供设置界面生成下拉项）。"""
+    """**当前可用**的皮肤 id 列表。
+
+    只有源码/调试运行时才返回皮肤；Nuitka 编译的发布版返回空元组，也就是说
+    发布版里皮肤既不出现在设置中，也无法通过配置文件启用（`:func:`get_skin`
+    对不可用皮肤返回 None，主题自动回落到普通深浅色）。
+    """
+    from utils.path_utils import is_debug_build
+    if not is_debug_build():
+        return ()
     return tuple(SKINS)
 
 
 def get_skin(skin_id: str) -> SkinSpec | None:
-    """按 id 取皮肤定义；未知 id 返回 None（等同「不启用皮肤」）。"""
-    return SKINS.get(skin_id or "")
+    """按 id 取皮肤定义；未知或当前不可用的皮肤返回 None。"""
+    if not skin_id or skin_id not in skin_ids():
+        return None
+    return SKINS[skin_id]
 
 
 def detect_dark_mode(mode: str = "auto") -> bool:
@@ -559,23 +555,6 @@ class _Theme:
         if self.skin is not None:
             return self.skin.id
         return "dark" if self.dark else "light"
-
-    # ── 皮肤能力位（未启用皮肤时回落到中性值） ──
-
-    @property
-    def brand_style(self) -> str:
-        """品牌标识形态："crystal"（棱晶）/ "heart"（心形）…"""
-        return self.skin.brand if self.skin else "crystal"
-
-    @property
-    def watermark_style(self) -> str:
-        """工作区背景水印形态：""（无）/ "mobius" …"""
-        return self.skin.watermark if self.skin else ""
-
-    @property
-    def uses_art_slot(self) -> bool:
-        """当前皮肤是否启用右侧立绘装饰列。"""
-        return bool(self.skin and self.skin.art_slot)
 
     def qcolor(self, key: str):
         """返回 token 对应的 QColor（支持 rgba(r, g, b, a) 写法，a 为 0–1 浮点）。"""

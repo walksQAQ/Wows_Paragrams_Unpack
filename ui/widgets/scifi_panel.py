@@ -599,13 +599,7 @@ class HoloBackdrop(QWidget):
                 self._tile = self._build_tile()
             p.drawTiledPixmap(e.rect(), self._tile, e.rect().topLeft())
             self._paint_light_field(p)
-        # 角色皮肤的空间锚点（画得很大，面板底半透明会透出来）
-        if theme.watermark_style:
-            from ui.widgets.skin_art import paint_skin_watermark
-            paint_skin_watermark(
-                p, QRectF(self.rect()),
-                1.0 if theme.holo_enabled else 0.35,
-            )
+        # 角色皮肤只改配色与品牌标识，不再在工作区叠加任何纹样
         if self._frame:
             self._paint_frame(p)
         if self._crystals:
@@ -749,29 +743,7 @@ class CrystalMark(QWidget):
     def _on_style_changed(self) -> None:
         self.update()
 
-    def _paint_heart(self, e) -> None:
-        """品牌标识画成心形（`brand == "heart"` 的皮肤）。
-        昔涟的官方立绘本身就是一颗心，「爱」也是官方文案明写的主题，
-        比棱晶更贴合这套皮肤。"""
-        from ui.widgets.skin_art import heart_path
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        body = QColor(theme.qcolor("accent"))
-        path = heart_path(w / 2.0, h * 0.42, min(w, h) * 0.40)
-        p.setPen(Qt.PenStyle.NoPen)
-        fill = QColor(body)
-        fill.setAlphaF(0.22)
-        p.setBrush(fill)
-        p.drawPath(path)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(body, 1.2))
-        p.drawPath(path)
-
     def paintEvent(self, e) -> None:  # noqa: N802
-        if theme.brand_style == "heart":
-            self._paint_heart(e)
-            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
@@ -906,4 +878,5 @@ class ScanStrip(QWidget):
         g.setColorAt(0.5, peak)
         g.setColorAt(1.0, clear)
         p.fillRect(QRectF(x, 0, band, h), QBrush(g))
-
+
+

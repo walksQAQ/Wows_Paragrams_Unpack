@@ -76,16 +76,18 @@ class AdvancedSettingsDialog(HoloDialog):
         self._theme_combo.addItem("跟随系统", "auto")
         self._theme_combo.addItem("浅色", "light")
         self._theme_combo.addItem("深色", "dark")
-        # 角色皮肤（二次元主题）从注册表生成：以后新增皮肤不用改这里
-        from utils.theme import SKINS, skin_ids
+        # 角色皮肤（仅配色）从注册表生成；发布版 skin_ids() 为空，不出现这些项
+        from utils.theme import get_skin, skin_ids
         for _sid in skin_ids():
-            self._theme_combo.addItem(SKINS[_sid].name, _sid)
+            _spec = get_skin(_sid)
+            if _spec is not None:
+                self._theme_combo.addItem(_spec.name, _sid)
         self._theme_combo.setMinimumWidth(160)
         trow.addWidget(self._theme_combo)
         trow.addStretch()
         tlay.addLayout(trow)
 
-        # 皮肤立绘由代码内置绘制，不需要外部图片
+        # 皮肤只改配色，立绘/纹样已移除
         self._holo_cb = QCheckBox("启用全息视觉效果（网格底 / 面板半透明 / 辉光 / 点缀）")
         tlay.addWidget(self._holo_cb)
         tlay.addWidget(QLabel("半透明只作用于背景层，正文、数值与控件始终保持不透明。",
@@ -94,8 +96,8 @@ class AdvancedSettingsDialog(HoloDialog):
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         tlay.addWidget(QLabel("选择「跟随系统」时，应用会随 Windows 深浅色主题自动切换。",
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
-        tlay.addWidget(QLabel("「角色皮肤」是一整套独立配色与装饰语言（如昔涟：白 + 粉），"
-                              "立绘由程序内置绘制，底纹会透过半透明面板显示。",
+        tlay.addWidget(QLabel("「角色皮肤」只是一整套替换配色（如昔涟：白 + 粉），"
+                              "不含任何额外纹样；仅在源码运行时可选，发布版不提供。",
                               wordWrap=True,
                               styleSheet=theme.qss("color: @text_hint@; font-size: 11px;")))
         layout.addWidget(grp_theme)

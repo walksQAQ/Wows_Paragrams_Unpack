@@ -34,25 +34,28 @@ from utils.theme import theme
 def card_style() -> str:
     # 选择器必须写 `QGroupBox`（类型选择器含子类）而不是 `ShipCardWidget QGroupBox`：
     # 后者要求祖先链上有 ShipCardWidget，卡片自身反而命中不了，卡片底色/圆角失效。
-    # ::title 必须自带与卡片同色的底，才能盖住压在标题下的顶边线；
-    # 只写 color 会沿用全局 QSS 的 @panel_bg@ 白底，在卡片上留下一片白框。
+    #
+    # 标题画在卡片**内部**（subcontrol-origin: padding），靠 padding-top 给它让出位置：
+    #   · 标题落在卡面上，同色不冲突，不需要给标题单独铺底（铺了就是一块白框）
+    #   · 不会压在边框线上，顶边线完整
+    #   · 卡片外不再有悬空的标题带，卡片=一个完整的圆角面板
     return theme.qss("""
         QGroupBox {
             background: @card_bg@;
             border: 1px solid @border@;
             border-radius: 8px;
-            margin-top: 10px;
-            padding: 4px 12px 6px 12px;
+            margin-top: 0px;
+            padding: 32px 12px 6px 12px;
             font-size: 12px;
             font-weight: bold;
             color: @text@;
         }
         QGroupBox::title {
-            subcontrol-origin: margin;
+            subcontrol-origin: padding;
             subcontrol-position: top left;
-            left: 12px;
-            padding: 0 4px;
-            background-color: @card_bg@;
+            left: 13px;
+            padding: 10px 0px 6px 0px;
+            background: transparent;
             color: @text@;
         }
         /* 无标题卡片（作为父卡片的续行容器）：不画标题带与边框，
@@ -61,7 +64,7 @@ def card_style() -> str:
             background: transparent;
             border: none;
             margin-top: 0px;
-            padding-top: 4px;
+            padding: 6px 0px 4px 0px;
         }
     """)
 
@@ -608,9 +611,9 @@ class ShipCardWidget(QGroupBox):
         for child in self.children():
             if isinstance(child, QPushButton):
                 extra_h += child.sizeHint().height() + 6
-        # 22 = 标题带(margin-top 10) + 上内边距 4 + 布局上边距 2 + 下内边距 6
-        # 无标题卡片 QSS 去掉了标题带，只留 12
-        card_height = height + (12 if self.property("untitled") else 22) + extra_h
+        # 38 = 卡内标题带(padding-top 32) + 下内边距 6
+        # 无标题卡片 QSS 去掉了标题带，只留 10（上 6 + 下 4）
+        card_height = height + (10 if self.property("untitled") else 38) + extra_h
         self.setFixedHeight(card_height)
         self._adjusting = False
 

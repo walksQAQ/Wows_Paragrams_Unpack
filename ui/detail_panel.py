@@ -40,6 +40,49 @@ _ADDITIVE_KEYS_BASE = frozenset({
 })
 
 
+def picture_tile_qss(size: int) -> str:
+    """全彩图片按钮（消耗品 / 升级品）的样式。
+
+    这些图本身自带底色与色彩，不需要再垫深色仪器面；但描边要留着，
+    否则一列图块会散在卡片上、看不出是可点的槽位。
+    描边宽度常态与选中态一致，选中时图标不会被挤动。
+    """
+    return theme.qss(f"""
+        QPushButton {{
+            background: transparent;
+            border: 2px solid @border_soft@;
+            border-radius: 8px;
+            padding: 1px;
+            min-width: {size}px; min-height: {size}px;
+            max-width: {size}px; max-height: {size}px;
+        }}
+        QPushButton:hover {{
+            background: @hover_bg@;
+            border-color: @border_soft@;
+        }}
+        QPushButton:checked {{
+            background: @hover_bg@;
+            border-color: @accent@;
+        }}
+    """)
+
+
+def picture_tile_text_qss(size: int) -> str:
+    """无图片时的文字兜底按钮：留一圈细框，文字用次要色。"""
+    return theme.qss(f"""
+        QPushButton {{
+            background: transparent;
+            border: 2px solid @border@;
+            border-radius: 8px;
+            padding: 1px; font-size: 8px; color: @text_muted@;
+            min-width: {size}px; min-height: {size}px;
+            max-width: {size}px; max-height: {size}px;
+        }}
+        QPushButton:hover {{ background: @hover_bg@; border-color: @border_soft@; }}
+        QPushButton:checked {{ background: @hover_bg@; border-color: @accent@; }}
+    """)
+
+
 class DetailPanel(QWidget):
     """右侧详情面板（数据库驱动）"""
 
@@ -634,26 +677,9 @@ class DetailPanel(QWidget):
                 uc_layout.setContentsMargins(0,0,0,0)
                 uc_layout.setSpacing(6)
                 uc_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                # 图标按钮：白色透明图标需要固定的深色仪器面，故底色不随主题变亮
-                SLOT_STYLE = theme.qss("""
-                    QPushButton {
-                        background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
-                        border-radius: 4px;
-                        padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
-                    }
-                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
-                    QPushButton:checked { background: @icon_btn_checked@; border-color: @icon_btn_border_hi@; }
-                """)
-                SLOT_STYLE_TXT = theme.qss("""
-                    QPushButton {
-                        background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
-                        border-radius: 4px;
-                        padding: 2px; font-size: 8px; color: @icon_btn_text_dim@;
-                        min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
-                    }
-                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
-                    QPushButton:checked { background: @icon_btn_checked@; border-color: @icon_btn_border_hi@; }
-                """)
+                # 升级品图标是整张彩色图，不再垫深色仪器面（只保留悬停/选中的描边反馈）
+                SLOT_STYLE = picture_tile_qss(36)
+                SLOT_STYLE_TXT = picture_tile_text_qss(36)
                 for i in range(max_slots):  # 根据等级限制槽位数量
                     slot_mods = mods_by_slot.get(i, [])
                     # 每个插槽一列（编号=slot+1），即使无升级品也占位
@@ -1544,22 +1570,8 @@ class DetailPanel(QWidget):
         for rs in raw_slots:
             slots_map[rs["slot_index"]].append(rs)
 
-        BTN_STYLE = theme.qss("""
-            QPushButton {
-                background: @icon_btn_bg@;
-                border: 1px solid @icon_btn_border@;
-                border-radius: 6px; padding: 2px;
-                min-width: 40px; min-height: 40px;
-                max-width: 40px; max-height: 40px;
-            }
-            QPushButton:hover {
-                background: @icon_btn_bg_hover@;
-                border-color: @icon_btn_border_hi@;
-            }
-            QPushButton:checked {
-                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
-            }
-        """)
+        # 消耗品图标是整张彩色图，本身足够分辨，不再叠深色底（只保留悬停/选中的描边）
+        BTN_STYLE = picture_tile_qss(40)
 
         for slot_idx in sorted(slots_map.keys()):
             items_in_slot = slots_map[slot_idx]
@@ -1600,7 +1612,7 @@ class DetailPanel(QWidget):
                 else:
                     # 无图片时显示首字母
                     btn.setText(cid[:2] if cid else "?")
-                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['icon_btn_text_dim']};"))
+                    btn.setStyleSheet(picture_tile_text_qss(40))
 
                 # WG：可用激活方式含 AUTO → 整图覆盖按钮（同 skip_bomb，图片带透明部分）
                 _aam = rs.get('available_activation_modes') or []

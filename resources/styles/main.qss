@@ -28,7 +28,7 @@ QLabel {
 QGroupBox {
     color: @text@;
     border: 1px solid @border_soft@;
-    border-radius: 0px;
+    border-radius: 6px;
     margin-top: 12px;
     padding-top: 9px;
 }
@@ -49,7 +49,7 @@ QLineEdit, QPlainTextEdit, QTextEdit {
     background-color: @inset@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 3px 6px;
     selection-background-color: @accent@;
     selection-color: @on_accent@;
@@ -75,7 +75,7 @@ QComboBox {
     background-color: @inset@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 3px 6px;
     selection-background-color: @accent@;
     selection-color: @on_accent@;
@@ -128,7 +128,7 @@ QPushButton {
                 stop:1 @metal_sheen_a@);
     color: @text@;
     border: 1px solid @metal_edge@;
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 5px 14px;
     min-height: 16px;
 }
@@ -174,7 +174,7 @@ QToolButton {
     background: transparent;
     color: @text@;
     border: 1px solid transparent;
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 3px;
 }
 
@@ -201,7 +201,7 @@ QCheckBox::indicator {
     height: 13px;
     border: 1px solid @border_soft@;
     background-color: @inset@;
-    border-radius: 0px;
+    border-radius: 3px;
     image: none;
 }
 
@@ -246,7 +246,7 @@ QMenuBar::item {
     color: @text_muted@;
     padding: 4px 12px;
     margin: 3px 2px;
-    border-radius: 0px;
+    border-radius: 4px;
 }
 
 /* 菜单栏项悬停 / 选中：左侧光线标记 + 提亮文字 */
@@ -266,7 +266,7 @@ QMenu {
     background-color: @panel_bg@;
     color: @text@;
     border: 1px solid @line_strong@;
-    border-radius: 0px;
+    border-radius: 6px;
     padding: 4px 0;
 }
 
@@ -317,7 +317,7 @@ QTableWidget, QTreeWidget, QListView, QListWidget, QTableView, QTreeView {
     alternate-background-color: @surface_2@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 6px;
     gridline-color: @border@;
     outline: 0;
     /* 选中态：淡信号底 + 左侧信号条（见 ::item:selected），
@@ -346,7 +346,7 @@ QTableCornerButton::section {
 /* 选项卡内容区：面板底 + 细线框 */
 QTabWidget::pane {
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 6px;
     background: @panel_bg@;
     top: -1px;
 }
@@ -389,7 +389,7 @@ QProgressBar {
     background: @inset@;
     color: @text@;
     border: 1px solid @border_soft@;
-    border-radius: 0px;
+    border-radius: 7px;
     text-align: center;
     font-size: 11px;
 }
@@ -397,7 +397,7 @@ QProgressBar {
 /* 进度条填充：信号色 → 高亮信号色 */
 QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 @accent@, stop:1 @accent_hi@);
-    border-radius: 1px;
+    border-radius: 6px;
 }
 
 /* 数字框：凹陷槽 + 细线框 */
@@ -405,7 +405,7 @@ QSpinBox, QDoubleSpinBox {
     background-color: @inset@;
     color: @text@;
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 4px;
     padding: 2px 4px;
 }
 
@@ -419,13 +419,13 @@ QSlider::groove:horizontal {
     height: 4px;
     background: @inset@;
     border: 1px solid @border@;
-    border-radius: 0px;
+    border-radius: 2px;
 }
 
 /* 滑块已填充段：信号色 */
 QSlider::sub-page:horizontal {
     background: @accent@;
-    border-radius: 0px;
+    border-radius: 2px;
 }
 
 /* 滑块把手：面板底 + 信号描边 */
@@ -434,7 +434,7 @@ QSlider::handle:horizontal {
     margin: -5px 0;
     background: @panel_bg@;
     border: 1px solid @accent@;
-    border-radius: 0px;
+    border-radius: 6px;
 }
 
 /* 悬浮提示：深玻璃底 + 冰蓝细框（全息铭牌） */
@@ -443,7 +443,7 @@ QToolTip {
     color: @text@;
     border: 1px solid @line_strong@;
     border-top: 1px solid @info@;
-    border-radius: 0px;
+    border-radius: 6px;
     padding: 6px 10px;
     font-size: 11px;
     font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
@@ -457,7 +457,7 @@ QTextEdit#LogArea, QTextBrowser#LogArea {
     font-size: 11px;
     border: none;
     border-top: 1px solid @border@;
-    border-radius: 0;
+    border-radius: 4px;
     padding: 4px 10px;
 }
 
@@ -499,6 +499,7 @@ QScrollBar:vertical {
 QScrollBar::handle:vertical {
     background: @scroll_handle@;
     border-left: 1px solid @metal_edge@;
+    border-radius: 4px;
     min-height: 28px;
 }
 
@@ -529,6 +530,7 @@ QScrollBar:horizontal {
 QScrollBar::handle:horizontal {
     background: @scroll_handle@;
     border-top: 1px solid @metal_edge@;
+    border-radius: 4px;
     min-width: 28px;
 }
 
