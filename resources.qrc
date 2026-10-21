@@ -664,6 +664,8 @@
     <file>resources/pictures/wargaming/ammo_types/he_sec.png</file>
     <file>resources/pictures/wargaming/ammo_types/impulselaser.png</file>
     <file>resources/pictures/wargaming/ammo_types/missiles.png</file>
+    <file>resources/pictures/wargaming/ammo_types/phaserlaser.png</file>
+    <file>resources/pictures/wargaming/ammo_types/phaserlasersplash.png</file>
     <file>resources/pictures/wargaming/ammo_types/pinger.png</file>
     <file>resources/pictures/wargaming/ammo_types/projectile.png</file>
     <file>resources/pictures/wargaming/ammo_types/projectile_ap.png</file>
@@ -693,6 +695,7 @@
     <file>resources/pictures/wargaming/ammo_types/torpedo_subdefault.png</file>
     <file>resources/pictures/wargaming/ammo_types/torpedo_supership.png</file>
     <file>resources/pictures/wargaming/ammo_types/unique_features/indicators/burst_fire.png</file>
+    <file>resources/pictures/wargaming/ammo_types/unique_features/indicators/gun_heating.png</file>
     <file>resources/pictures/wargaming/ammo_types/unique_features/indicators/skip_bomb.png</file>
     <file>resources/pictures/wargaming/ammo_types/unique_features/indicators/torpedo_damage_by_dist_decrease.png</file>
     <file>resources/pictures/wargaming/ammo_types/unique_features/indicators/torpedo_damage_by_dist_increase.png</file>
@@ -937,6 +940,14 @@
     <file>resources/pictures/wargaming/consumables/consumable_PXY629_TriggerSabotage.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PXY630_TacticalMinefield.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_PXY631_TriggerHeal.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY632_Healing_Exhaust_Smoke_TimeBased.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY633_Call_Healing_Smoke_Curtain.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY634_Fire_On_Me.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY635_Active_Assistance.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY636_Shield_Regen.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY637_Ally_Shield_Regeneration.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY638_Area_Damage.png</file>
+    <file>resources/pictures/wargaming/consumables/consumable_PXY639_RLS_Event.png</file>
     <file>resources/pictures/wargaming/consumables/consumable_undefined.png</file>
     <file>resources/pictures/wargaming/consumables/features/auto_activation.png</file>
     <file>resources/pictures/wargaming/consumables/features/time_based.png</file>
@@ -1060,6 +1071,24 @@
     <file>resources/pictures/wargaming/modernization/icon_modernization_PCM116_Modern_Spec_Mod_White2.png</file>
     <file>resources/pictures/wargaming/modernization/icon_modernization_PCM117_Modern_Spec_Mod_Red1.png</file>
     <file>resources/pictures/wargaming/modernization/icon_modernization_PCM118_Modern_Spec_Mod_Red2.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM001_Mod_1_Rune_Covered_Shell.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM002_Mod_1_Crystal_Shrapnell.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM003_Mod_1_Cosmic_Gunpowder.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM004_Mod_1_Experimental_Autoloaders.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM005_Mod_2_Unnatural_Probabilities.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM006_Mod_2_Timeless_Ammunition.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM007_Mod_2_Blessed_Explosives.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM008_Mod_2_Augurs_Guidance.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM009_Mod_3_Revenant_Battery.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM010_Mod_3_Spectral_Current.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM011_Mod_3_Mistveil.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM012_Mod_3_Unyielding_Hull.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM013_Mod_4_Battle_Hardened_Mystics.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM014_Mod_4_Quarters_of_the_Mystics.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM015_Mod_4_Extra_Ritual_Circles.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM016_Mod_5_Additional_Personnel.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM017_Mod_5_Zero_Gravity_Storage.png</file>
+    <file>resources/pictures/wargaming/modernization/icon_modernization_PXM018_Mod_5_Eternal_Barriers.png</file>
     <file>resources/pictures/wargaming/modules/icon_module_Abilities.png</file>
     <file>resources/pictures/wargaming/modules/icon_module_Artillery.png</file>
     <file>resources/pictures/wargaming/modules/icon_module_DiveBomber.png</file>
@@ -1236,6 +1265,12 @@
     <file>resources/pictures/wargaming/talents/PVW100_2_8_20.png</file>
     <file>resources/pictures/wargaming/talents/PWW010_1_11.png</file>
     <file>resources/pictures/wargaming/talents/PWW010_2_16.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_1_21.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_2_21_24.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_3_21.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_4_21_24.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_5_0_21.png</file>
+    <file>resources/pictures/wargaming/talents/PXW178_6_14_24.png</file>
     <file>resources/pictures/wargaming/talents/PZW426_1_2.png</file>
     <file>resources/pictures/wargaming/talents/PZW426_2_18_19.png</file>
     <file>resources/pictures/wargaming/talents/PZW426_3_17.png</file>
