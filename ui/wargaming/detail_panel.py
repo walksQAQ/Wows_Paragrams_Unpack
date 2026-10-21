@@ -79,12 +79,14 @@ class WargamingDetailPanel(DetailPanel):
                     _def_crew = _crew_list[0][0]
             except Exception:
                 _crew_list, _def_crew = [], ""
-        WG_SKILL_BTN = """
-            QPushButton { background:@inset@; border:1px solid @border@; border-radius:4px;
+        # 技能格：深色仪器面 + 冰蓝细边（白图标恒定可读，尺寸与原版一致）
+        WG_SKILL_BTN = theme.qss("""
+            QPushButton { background:@icon_btn_bg@; border:1px solid @icon_btn_border@;
+                          border-radius:4px;
                           min-width:30px; min-height:30px; max-width:30px; max-height:30px;
-                          font-size:8px; color:#ccc; padding:0px; }
-            QPushButton:hover { background:@panel_alt@; border-color:@accent@; }
-        """
+                          font-size:8px; color:@icon_btn_text@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@accent@; }
+        """)
         wg_grid = QWidget()
         wgl = QGridLayout(wg_grid)
         wgl.setContentsMargins(0, 0, 0, 0); wgl.setSpacing(3)
@@ -115,13 +117,13 @@ class WargamingDetailPanel(DetailPanel):
         _wg_talent_layout = QHBoxLayout(_wg_talent_container)
         _wg_talent_layout.setContentsMargins(0, 0, 0, 0); _wg_talent_layout.setSpacing(4)
         _wg_talent_layout.addStretch()
-        _WG_UNIQUE_BTN = """
-            QPushButton { background:#1a1a1a; border:2px solid #ffc107;
+        _WG_UNIQUE_BTN = theme.qss("""
+            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
                           border-radius:6px; min-width:52px; min-height:52px;
                           max-width:52px; max-height:52px;
-                          font-size:9px; color:#ffc107; padding:0px; }
-            QPushButton:hover { background:@inset@; border-color:#ffd54f; }
-        """
+                          font-size:9px; color:@gold@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_hi@; }
+        """)
 
         def _wg_rebuild(crew_id: str):
             """按所选舰长重建技能网格（数据取自该舰长技能组）"""
@@ -170,7 +172,7 @@ class WargamingDetailPanel(DetailPanel):
                         # tooltip：触发条件 + 效果
                         _tip = ['<div style="font-size:12px;line-height:1.5;">']
                         _tcond = _trig_map.get(_ttype, "获得特定勋带时触发" if _ttype == "ribbons" else (_ttype or "触发"))
-                        _tip.append(f'<div style="color:#ffc107;font-weight:bold;margin-bottom:4px;">▸ {_tcond}</div>')
+                        _tip.append(f'<div style="color:{theme["gold"]};font-weight:bold;margin-bottom:4px;">▸ {_tcond}</div>')
                         try:
                             _eff = json.loads(_tsk["effects_json"]) if _tsk["effects_json"] else {}
                         except Exception:
@@ -204,12 +206,12 @@ class WargamingDetailPanel(DetailPanel):
                                     _ft = _NM_WG2.format_modifier(_k2, _v2, color=True)
                                     _eff_lines.append(f"{_zh2}: {_ft}" if _ft else _zh2)
                         if _eff_lines:
-                            _tip.append('<div style="color:#aaa;margin-top:4px;">效果：</div>')
+                            _tip.append(f'<div style="color:{theme["tip_dim"]};margin-top:4px;">效果：</div>')
                             for _el in _eff_lines:
-                                _tip.append(f'<div style="color:#ddd;padding-left:8px;">{_el}</div>')
+                                _tip.append(f'<div style="color:{theme["tip_text"]};padding-left:8px;">{_el}</div>')
                         _mt = _tsk["max_trigger_num"]
                         if _mt:
-                            _tip.append(f'<div style="color:#888;font-size:11px;margin-top:4px;">每场最多触发 {_mt} 次</div>')
+                            _tip.append(f'<div style="color:{theme["tip_dim"]};font-size:11px;margin-top:4px;">每场最多触发 {_mt} 次</div>')
                         _tip.append('</div>')
                         _tbtn.setToolTip(_NM_WG2.rich_tooltip("".join(_tip)))
                         _wg_talent_layout.insertWidget(_wg_talent_layout.count() - 1, _tbtn)
@@ -249,11 +251,11 @@ class WargamingDetailPanel(DetailPanel):
                         _rar = _sk.get("rarity", "")
                         if _rar in ("EPIC", "LEGENDARY"):
                             _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(_rar, "")
-                            _tt.append(f"<div style='color:#ff6600;'>{_tag}</div>")
+                            _tt.append(f"<div style='color:{theme['gold']};'>{_tag}</div>")
                         # 词条属性：中文名 + 格式化数值（bool 项只显示开启名称，list/dict 等非数值跳过）
                         _mods = _sk.get("modifiers") or {}
                         if _mods:
-                            _tt.append("<hr style='border-color:#444;margin:4px 0;'>")
+                            _tt.append(f"<hr style='border-color:{theme['tip_rule']};margin:4px 0;'>")
                             for _mk, _mv in _mods.items():
                                 _zh = _NM_WG2.MODIFIER_MAP.get(_mk, _mk)
                                 if isinstance(_mv, bool):
@@ -266,7 +268,7 @@ class WargamingDetailPanel(DetailPanel):
                                     # 复合词条：与技能面板同口径展开为多项装填/防空属性
                                     for _w, _vv in _NM_WG2.lastchance_reload_items(_mv, _cur_st):
                                         _tt.append(f"<div style='white-space:nowrap;'>{_w}: "
-                                                   f"<span style='color:#4caf50;'>{_vv}</span></div>")
+                                                   f"<span style='color:{theme['value_pos']};'>{_vv}</span></div>")
                                     continue
                                 _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
                                 if _val:
@@ -276,7 +278,8 @@ class WargamingDetailPanel(DetailPanel):
                         _ttype = _trig.get("triggerType", "")
                         if _ttype:
                             _tcond = _WG_TRIGGER_COND.get(_ttype, _ttype)
-                            _tt.append(f"<div style='color:#ffa;margin-top:2px;font-style:italic;'>◇ {_tcond}</div>")
+                            _tt.append(f"<div style='color:{theme['gold_hi']};margin-top:2px;"
+                       f"font-style:italic;'>◇ {_tcond}</div>")
                             for _mk, _mv in (_trig.get("modifiers") or {}).items():
                                 _zh = _NM_WG2.MODIFIER_MAP.get(_mk, _mk)
                                 if not isinstance(_mv, (int, float)):
@@ -284,7 +287,7 @@ class WargamingDetailPanel(DetailPanel):
                                 if _mk in ("lastChanceReloadCoefficient",):
                                     for _w, _vv in _NM_WG2.lastchance_reload_items(_mv, _cur_st):
                                         _tt.append(f"<div style='white-space:nowrap;padding-left:10px;'>{_w}: "
-                                                   f"<span style='color:#4caf50;'>{_vv}</span></div>")
+                                                   f"<span style='color:{theme['value_pos']};'>{_vv}</span></div>")
                                     continue
                                 _val = _NM_WG2.format_modifier(_mk, _mv, color=True)
                                 if _val:
@@ -305,8 +308,8 @@ class WargamingDetailPanel(DetailPanel):
         from PySide6.QtGui import QStandardItemModel as _QSIM, QStandardItem as _QSIt, QColor as _QCol
         _wg_crew_combo = _QComboBox()
         _wg_model = _QSIM(_wg_crew_combo)
-        _cat_order = [("legendary", "传奇舰长", "#ffc107", "★ "),
-                      ("epic", "强化舰长", "#26c6da", "◈ "),
+        _cat_order = [("legendary", "传奇舰长", theme["gold"], "★ "),
+                      ("epic", "强化舰长", theme["accent"], "◈ "),
                       ("normal", "普通舰长", None, "")]
         _cat_items = {k: [] for k, *_ in _cat_order}
         for _cid, _pname, _uniq, _us_cnt, _epic in _crew_list:
@@ -354,12 +357,12 @@ class WargamingDetailPanel(DetailPanel):
         wg_flags = config.get("signal_flags", [])
         if wg_flags:
             wg_sig_dir = pic_path("signal_flags")
-            WG_SIG_BTN = """
-                QPushButton { background: #3a3a3a; border: 1px solid #555;
+            WG_SIG_BTN = theme.qss("""
+                QPushButton { background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
                 border-radius: 4px; padding: 0; }
-                QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
-                QPushButton:checked { background: @accent@; border-color: @accent@; }
-            """
+                QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
+                QPushButton:checked { background:@icon_btn_checked@; border-color: @accent@; }
+            """)
             def _fmt_wg(mk, mv):
                 cn = _NM_WG.MODIFIER_MAP.get(mk, mk)
                 if isinstance(mv, dict):

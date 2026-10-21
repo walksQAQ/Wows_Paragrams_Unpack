@@ -39,12 +39,9 @@ class MultiSelectCombo(QPushButton):
         self.setMenu(self._menu)
         theme.bind(self, """
             QPushButton {
-                padding: 3px 4px; border: 1px solid @border@;
-                border-radius: 3px; font-size: 11px;
-                background-color: @panel_bg@; color: @text@; min-width: 70px;
-                text-align: left;
+                padding: 3px 4px; border-radius: 3px;
+                font-size: 11px; min-width: 70px; text-align: left;
             }
-            QPushButton:focus { border-color: @accent@; }
             QPushButton::menu-indicator { subcontrol-position: right center; padding-right: 2px; }
         """)
         self._update_text()
@@ -152,31 +149,22 @@ class BrowserPanel(QWidget):
         self.btn_reset = QPushButton("↺")
         self.btn_reset.setToolTip("重置筛选条件")
         self.btn_reset.setFixedWidth(26)
-        theme.bind(self.btn_reset, """
-            QPushButton {
-                background: @panel_alt@; border: 1px solid @border@;
-                border-radius: 3px; font-size: 13px; font-weight: bold;
-                padding: 0; color: @text@;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @accent@; color: @text@; }
-        """)
+        theme.bind(self.btn_reset,
+                   "QPushButton { font-size: 13px; font-weight: bold; padding: 0; }")
 
         # 本地化缺失筛选：只显示无中文译名、名称回退到数据文件名的舰船
         self.btn_missing_loc = QPushButton("⚠ 本地化缺失")
         self.btn_missing_loc.setCheckable(True)
         self.btn_missing_loc.setToolTip("只显示本地化完全缺失、名称回退到数据文件名的舰船")
         self.btn_missing_loc.setVisible(False)
+        # 普通态继承统一按钮样式，只在「已启用筛选」这个语义状态下改成警告色
         theme.bind(self.btn_missing_loc, """
-            QPushButton {
-                background: @panel_alt@; border: 1px solid @border@;
-                border-radius: 3px; font-size: 11px; padding: 3px 6px;
-                color: @text@;
-            }
-            QPushButton:hover { border-color: @accent@; color: @text@; }
+            QPushButton { font-size: 11px; padding: 3px 6px; }
             QPushButton:checked {
                 background: @warn@; border-color: @warn@;
                 color: @on_accent@; font-weight: bold;
             }
+            QPushButton:checked:hover { background: @warn@; border-color: @warn@; }
         """)
 
         filter_row1 = QHBoxLayout()

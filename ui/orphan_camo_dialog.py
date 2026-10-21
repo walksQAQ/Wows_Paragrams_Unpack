@@ -95,12 +95,6 @@ class OrphanCamoDialog(HoloDialog):
         bar.addWidget(self.cb_model_only)
 
         self.btn_refresh = QPushButton("↻ 重新扫描")
-        theme.bind(self.btn_refresh, """
-            QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
-                          padding: 4px 10px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: @accent@; }
-            QPushButton:disabled { color: @text_hint@; }
-        """)
         bar.addWidget(self.btn_refresh)
         root.addLayout(bar)
 
@@ -150,12 +144,6 @@ class OrphanCamoDialog(HoloDialog):
         self.btn_view = QPushButton("🖼 在 3D 查看器中查看（仅船体）")
         self.btn_view.setToolTip("无归属舰船 ⇒ 只按皮肤自带 hullConfig 加载船体，挂载可能缺失")
         self.btn_view.setEnabled(False)
-        theme.bind(self.btn_view, """
-            QPushButton { background: @panel_alt@; border: 1px solid @border@; border-radius: 3px;
-                          padding: 5px 12px; font-size: 11px; color: @text@; }
-            QPushButton:hover { border-color: @accent@; }
-            QPushButton:disabled { color: @text_hint@; }
-        """)
         foot.addWidget(self.btn_view)
         root.addLayout(foot)
 

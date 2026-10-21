@@ -469,12 +469,6 @@ class FiringArcDialog(HoloDialog):
         theme.bind(self, """
             QDialog { background: @window_bg@; color: @text@; }
             QLabel { color: @text@; font-size: 12px; }
-            QPushButton {
-                background: @input_bg@; color: @text@;
-                border: 1px solid @border@; border-radius: 3px;
-                padding: 4px 14px; min-height: 26px;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
         """)
 
         root = QVBoxLayout(self)

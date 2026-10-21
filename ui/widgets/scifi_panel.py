@@ -322,11 +322,25 @@ class SciFiPanel(QFrame):
         self._sync_animations()
 
     # ── 公共辅助 ─────────────────────────────────────────
+    def _effective_chamfer(self) -> float:
+        """当前尺寸下实际绘制出来的切角尺寸（与 _chamfer_path 的钳制一致）。"""
+        r = self._panel_rect()
+        base = max(self._chamfer, self.MIN_CHAMFER)
+        return max(0.0, min(base, r.width() / 4, r.height() / 4))
+
     def content_margins(self) -> tuple[int, int, int, int]:
-        """推荐给内部 layout 的边距：避开辉光环带与切角。"""
-        m = self.MARGIN + 1
-        c = max(self._chamfer, self.MIN_CHAMFER) // 2 if self._active() else 0
-        return (m + 2, m + c, m + 2, m + c)
+        """内容安全区：四边都退到 1px 框线与 45° 切角三角区之内。
+
+        切角是斜的，所以只要内容区的任一角落在「斜线外侧」，控件边框/文字就会
+        从切掉的那个角里穿出去。用统一留白 p 满足 (p + p) >= MARGIN*2 + c + 余量，
+        这样无论内容贴哪条边都不会压到框线。
+        """
+        m = self.MARGIN
+        if not self._active():
+            return (m + 2, m + 2, m + 2, m + 2)
+        c = self._effective_chamfer()
+        pad = int(max(10.0, (m * 2 + c) / 2.0 + 3.0))
+        return (pad, pad, pad, pad)
 
     def set_glow(self, glow: bool) -> None:
         self._glow = glow
@@ -544,6 +558,8 @@ class SciFiPanel(QFrame):
 
 class HoloBackdrop(QWidget):
     GRID = 32
+    #: 外框切角上限：必须小于 HoloWindow.WRAP_MARGIN - 框线内缩，否则内层会穿出
+    FRAME_CHAMFER = 20.0
 
     def __init__(self, parent: QWidget | None = None, frame: bool = False,
                  crystals: bool = False) -> None:
@@ -647,14 +663,15 @@ class HoloBackdrop(QWidget):
         if not theme.holo_enabled:
             return
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(7.5, 7.5, -7.5, -7.5)
-        paint_chamfer_frame(p, r, 22.0)
+        r = QRectF(self.rect()).adjusted(8.5, 8.5, -8.5, -8.5)
+        chamfer = max(12.0, min(self.FRAME_CHAMFER, self.width() / 8, self.height() / 8))
+        paint_chamfer_frame(p, r, chamfer)
 
-        # 左缘定位锚点
+        # 左缘定位锚点（放在框线内侧，不压到内容）
         anchor = QColor(theme.qcolor("accent"))
         anchor.setAlphaF(0.8)
         p.setPen(QPen(anchor, 1.6))
-        y0 = r.top() + 22 + 8
+        y0 = r.top() + chamfer + 8
         p.drawLine(QPointF(r.left(), y0), QPointF(r.left(), min(y0 + 24, r.bottom() - 30)))
 
 

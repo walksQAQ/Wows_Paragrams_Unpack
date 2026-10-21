@@ -377,14 +377,16 @@ class LestaDetailPanel(DetailPanel):
 
         self._crew_customize_btn = QPushButton("✎")
         self._crew_customize_btn.setToolTip("自定义舰长技能/天赋")
-        # 老版本(v3.2.2-test1)样式：固定深色底+黄色文字
-        self._crew_customize_btn.setStyleSheet("""
-            QPushButton { background:@panel_alt@; border:1px solid #ffc107; border-radius:3px;
+        # 图标按钮：深色仪器面 + 琥珀金边（尺寸与原版一致）
+        self._crew_customize_btn.setStyleSheet(theme.qss("""
+            QPushButton { background:@icon_btn_bg@; border:1px solid @gold_border@;
+                          border-radius:3px;
                           min-width:24px; max-width:24px; min-height:24px; max-height:24px;
-                          font-size:13px; color:#ffc107; padding:0px; }
-            QPushButton:hover { background:#4a4a4a; border-color:#ffd54f; }
-            QPushButton:disabled { background:@inset@; border-color:@border@; color:#555; }
-        """)
+                          font-size:13px; color:@gold@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@gold_hi@; }
+            QPushButton:disabled { background:@icon_btn_bg@; border-color:@border@;
+                                   color:@icon_btn_text_dim@; }
+        """))
         self._crew_customize_btn.setEnabled(False)
 
         crew_row_layout.addWidget(self._crew_combo, 1)
@@ -443,7 +445,7 @@ class LestaDetailPanel(DetailPanel):
         if legends:
             for cd in legends:
                 self._crew_data.append(cd)
-                _model.appendRow(_colored_item(f"★ {cd['disp']}", "#ffc107"))
+                _model.appendRow(_colored_item(f"★ {cd['disp']}", theme["gold"]))
 
         # ── 精英舰长（自定义入口，红色） ──
         elite_entry = {
@@ -456,18 +458,18 @@ class LestaDetailPanel(DetailPanel):
             'unique_skill_count': 0,
         }
         self._crew_data.append(elite_entry)
-        _model.appendRow(_colored_item("♦ 精英舰长", "#e53935"))
+        _model.appendRow(_colored_item("♦ 精英舰长", theme["error"]))
 
         if specials:
             for cd in specials:
                 self._crew_data.append(cd)
-                _model.appendRow(_colored_item(f"◆ {cd['disp']}", "#42a5f5"))
+                _model.appendRow(_colored_item(f"◆ {cd['disp']}", theme["info"]))
 
         # ── 有独立 PCOL 的通用舰长（特殊通用舰长，青色标识） ──
         if named_regulars:
             for cd in named_regulars:
                 self._crew_data.append(cd)
-                _model.appendRow(_colored_item(f"◈ {cd['disp']}", "#26c6da"))
+                _model.appendRow(_colored_item(f"◈ {cd['disp']}", theme["accent"]))
 
         # 自定义稀有舰长（蓝色，始终显示）
         custom_entry = {
@@ -480,7 +482,7 @@ class LestaDetailPanel(DetailPanel):
             'unique_skill_count': 0,
         }
         self._crew_data.append(custom_entry)
-        _model.appendRow(_colored_item("◆ ✎ 自定义稀有舰长", "#42a5f5"))
+        _model.appendRow(_colored_item("◆ ✎ 自定义稀有舰长", theme["info"]))
 
         # ── 标准舰长（默认技能组） ──
         if generic_regulars:
@@ -534,14 +536,16 @@ class LestaDetailPanel(DetailPanel):
         skill_btns: list[list[QPushButton]] = [[], [], [], []]  # 按行(层)分组
         selected_tier_spent = [0, 0, 0, 0]  # 每层已花点数
 
-        # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-        SKILL_BTN = """
-            QPushButton { background:@inset@; border:1px solid @border@; border-radius:4px;
+        # 技能格：深色仪器面 + 冰蓝细边（白色透明图标恒定可读，尺寸与原版一致）
+        SKILL_BTN = theme.qss("""
+            QPushButton { background:@icon_btn_bg@; border:1px solid @icon_btn_border@;
+                          border-radius:4px;
                           min-width:32px; min-height:32px; max-width:32px; max-height:32px;
-                          font-size:9px; color:#ccc; padding:0px; }
-            QPushButton:hover { background:@panel_alt@; border-color:@accent@; }
-            QPushButton:checked { background:@accent@; color:#fff; border-color:@accent@; }
-        """
+                          font-size:9px; color:@icon_btn_text@; padding:0px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@accent@; }
+            QPushButton:checked { background:@icon_btn_checked@; color:@accent_hi@;
+                                  border-color:@accent@; }
+        """)
 
         from models.name_mapping import Mapping as _NM
         _MODIFIER_MAP = getattr(_NM, 'MODIFIER_MAP', {})
@@ -607,7 +611,8 @@ class LestaDetailPanel(DetailPanel):
             # 特殊修饰符覆盖描述
             _desc_override = {
                 "restoreForsage": "完全恢复舰载机中队飞机最后一个攻击编队的引擎加力",
-                "fireResistanceEnabled": "最大火灾次数 <span style=\"color:#4caf50;\">-1</span>",
+                "fireResistanceEnabled":
+                    f'最大火灾次数 <span style="color:{theme["value_pos"]};">-1</span>',
             }
             # 隐藏的修饰符（不在技能提示中显示）
             _hidden_mods = {"torpedoDetectionCoefficientByPlane"}
@@ -677,19 +682,19 @@ class LestaDetailPanel(DetailPanel):
                     # 每失去1%生命值的变化：展开口径统一在 name_mapping 中维护
                     # （装填时间降低、防空持续伤害提升均视为增益 → 绿色）
                     for _w, _val in _NM.lastchance_reload_items(mv, st):
-                        lines.append(f'{_w}  <span style="color:#4caf50;">{_val}</span>')
+                        lines.append(f'{_w}  <span style="color:{theme["value_pos"]};">{_val}</span>')
                     continue
                 elif mk == "shootShiftBatteryLastChanceCoeff":
                     # 每消耗1%下潜能力的变化
                     _pct = f"+{mv:.2f}%"
                     # 敌方对我炮击误差增大 → 增益 → 绿色
-                    lines.append(f'被敌方炮弹攻击的误差  <span style="color:#4caf50;">{_pct}</span>')
+                    lines.append(f'被敌方炮弹攻击的误差  <span style="color:{theme["value_pos"]};">{_pct}</span>')
                     continue
                 elif mk == "batteryRegenBatteryLastChanceCoeff":
                     # 每消耗1%下潜能力的变化
                     _pct = f"+{mv:.2f}%"
                     # 下潜能力恢复提升 → 增益 → 绿色
-                    lines.append(f'每秒下潜能力恢复  <span style="color:#4caf50;">{_pct}</span>')
+                    lines.append(f'每秒下潜能力恢复  <span style="color:{theme["value_pos"]};">{_pct}</span>')
                     continue
                 elif mk in ("GMHECSDamageCoeff", "GMSHECSDamageCoeff"):
                     # 高爆和半穿甲弹分开显示
@@ -726,7 +731,7 @@ class LestaDetailPanel(DetailPanel):
             """添加一行修饰符描述（统一：标签 + 带颜色数值，增益绿/减益红）
             _neg=True 时方向取反（负值=增益，如起火率降低）。"""
             def _c(text, gain):
-                clr = "#4caf50" if gain else "#f44336"
+                clr = theme["value_pos"] if gain else theme["value_neg"]
                 return f'<span style="color:{clr};">{text}</span>'
             if isinstance(v, bool):
                 lines.append(f"启用 {label}" if v else label)
@@ -929,18 +934,20 @@ class LestaDetailPanel(DetailPanel):
                         title = skill_name if skill_name else sk_key
                         if rarity in ("EPIC", "LEGENDARY"):
                             _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(rarity, "")
-                            title = f'{title} <span style="color:#ff6600; font-weight:normal;">{_tag}</span>'
+                            title = (f'{title} <span style="color:{theme["gold"]};'
+                                     f' font-weight:normal;">{_tag}</span>')
                         tip_lines = [f'<div style="font-size:11px; line-height:1.4;"><b>{title}</b>']
                         if skill_desc:
                             # 字面 \n（未解析转义）与真实换行符 → 富文本换行
                             _desc = skill_desc.replace("\\n", "<br/>").replace("\n", "<br/>")
-                            tip_lines.append(f'<div style="color:#ccc; margin-top:2px;">{_desc}</div>')
+                            tip_lines.append(f'<div style="color:{theme["tip_text"]}; margin-top:2px;">{_desc}</div>')
                         # 特定技能不做加成词条显示
                         _skip_mod_skills = {"detection_alert", "detection_aiming", "planes_forsage_renewal", "maneuverability", "detection_direction", "depth_charge_bomber_alert", "submarine_danger_alert"}
                         if mods and icon_name not in _skip_mod_skills:
-                            tip_lines.append('<hr style="border-color:#444; margin:4px 0;">')
+                            tip_lines.append(
+                                f'<hr style="border-color:{theme["tip_rule"]}; margin:4px 0;">')
                             for _ml in _format_skill_mod(mods, cur_shiptype):
-                                tip_lines.append(f'<div style="color:#aaa; margin-top:2px;">{_ml}</div>')
+                                tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:2px;">{_ml}</div>')
                         # 触发条件与触发段加成
                         if trigger and trigger.get("triggerType"):
                             ttype = trigger.get("triggerType", "")
@@ -948,9 +955,9 @@ class LestaDetailPanel(DetailPanel):
                             tmods = trigger.get("modifiers", {})
                             if tmods:
                                 cond_text = _format_trigger_cond(ttype, divider, trigger)
-                                tip_lines.append(f'<div style="color:#ffa; margin-top:2px; font-style:italic;">◇ {cond_text}</div>')
+                                tip_lines.append(f'<div style="color:{theme["gold_hi"]}; margin-top:2px; font-style:italic;">◇ {cond_text}</div>')
                                 for _tl in _format_skill_mod(tmods, cur_shiptype):
-                                    tip_lines.append(f'<div style="color:#aaa; margin-top:1px; padding-left:10px;">{_tl}</div>')
+                                    tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; padding-left:10px;">{_tl}</div>')
                                 # atbaHeat：显示升温/冷却详细描述
                                 if ttype == "atbaHeat":
                                     heat = trigger.get("heatInterpolator", [])
@@ -959,17 +966,17 @@ class LestaDetailPanel(DetailPanel):
                                     if len(heat) >= 2:
                                         _full_time = heat[-1][0]
                                         _full_pct = int(heat[-1][1] * 100)
-                                        tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">对副炮优先目标连续射击逐渐提升准度</div>')
-                                        tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  达到最高效率需 {_full_time:.0f} 秒（{_full_pct}%）</div>')
+                                        tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; font-size:10px;">对副炮优先目标连续射击逐渐提升准度</div>')
+                                        tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; font-size:10px;">  达到最高效率需 {_full_time:.0f} 秒（{_full_pct}%）</div>')
                                         if cdelay > 0:
-                                            tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  停火 {cdelay:.0f} 秒后开始降温</div>')
+                                            tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; font-size:10px;">  停火 {cdelay:.0f} 秒后开始降温</div>')
                                         if penalty < 1.0:
-                                            tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">  切换目标保留 {penalty*100:.0f}% 累积准度</div>')
+                                            tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; font-size:10px;">  切换目标保留 {penalty*100:.0f}% 累积准度</div>')
                                 # activationOnDetectTrigger：显示持续时间
                                 if ttype == "activationOnDetectTrigger":
                                     _dur = trigger.get("duration", 0)
                                     if _dur > 0:
-                                        tip_lines.append(f'<div style="color:#aaa; margin-top:1px; font-size:10px;">被发现后 {_dur:.0f} 秒内，降低敌人对您的射击准度</div>')
+                                        tip_lines.append(f'<div style="color:{theme["tip_dim"]}; margin-top:1px; font-size:10px;">被发现后 {_dur:.0f} 秒内，降低敌人对您的射击准度</div>')
                                 # activationOnRibbons / activationOnBuoyancyState 的具体细节
                                 # 已合并进 _format_trigger_cond 的触发条件行，避免重复显示
                         tip_lines.append('</div>')
@@ -1146,7 +1153,7 @@ class LestaDetailPanel(DetailPanel):
                                 else:
                                     _add_talent_line(lines, zh, v, is_pct, mod_key=k)
                             if is_level:
-                                lines.insert(0, '<div style="color:#888; font-size:11px;">该天赋作用时间等于战舰等级</div>')
+                                lines.insert(0, f'<div style="color:{theme["tip_dim"]}; font-size:11px;">该天赋作用时间等于战舰等级</div>')
                             return "\n".join(lines) if lines else None
 
                         def _add_talent_line(ln, label, v, is_pct, mod_key=""):
@@ -1165,14 +1172,15 @@ class LestaDetailPanel(DetailPanel):
                                 else:
                                     ln.append(f"{label} {v:+.0f}" if v else f"{label} {v:.0f}")
 
-                        # 老版本(v3.2.2-test1)样式：固定深色底+黄色文字
-                        UNIQUE_BTN = """
-                            QPushButton { background:#1a1a1a; border:2px solid #ffc107;
+                        # 传奇/特殊天赋：琥珀金边的深色仪器面（尺寸与原版一致）
+                        UNIQUE_BTN = theme.qss("""
+                            QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
                                           border-radius:6px; min-width:52px; min-height:52px;
                                           max-width:52px; max-height:52px;
-                                          font-size:9px; color:#ffc107; padding:0px; }
-                            QPushButton:hover { background:@inset@; border-color:#ffd54f; }
-                        """
+                                          font-size:9px; color:@gold@; padding:0px; }
+                            QPushButton:hover { background:@icon_btn_bg_hover@;
+                                                border-color:@gold_hi@; }
+                        """)
                         for sk in skills:
                             skey = sk['skill_key']
                             ttype = sk['trigger_type']
@@ -1205,7 +1213,7 @@ class LestaDetailPanel(DetailPanel):
                                 sk, ttype, _trigger_map, _ribbon_map
                             )
                             tip_lines.append(
-                                f'<div style="color:#ffc107; font-weight:bold; '
+                                f'<div style="color:{theme["gold"]}; font-weight:bold; '
                                 f'margin-bottom:4px;">▸ {trigger_line}</div>'
                             )
 
@@ -1216,7 +1224,7 @@ class LestaDetailPanel(DetailPanel):
                                 eff = {}
                             if eff:
                                 tip_lines.append(
-                                    '<div style="color:#aaa; margin-top:4px;">效果：</div>'
+                                    f'<div style="color:{theme["tip_dim"]}; margin-top:4px;">效果：</div>'
                                 )
                                 for ek, ev in eff.items():
                                     if not isinstance(ev, dict):
@@ -1225,13 +1233,13 @@ class LestaDetailPanel(DetailPanel):
                                     if desc:
                                         for _line in desc.split("\n"):
                                             tip_lines.append(
-                                                f'<div style="color:#ddd; padding-left:8px;">{_line}</div>'
+                                                f'<div style="color:{theme["tip_text"]}; padding-left:8px;">{_line}</div>'
                                             )
 
                             # 触发次数
                             if sk['max_trigger_num']:
                                 tip_lines.append(
-                                    f'<div style="color:#888; font-size:11px; '
+                                    f'<div style="color:{theme["tip_dim"]}; font-size:11px; '
                                     f'margin-top:4px;">每场最多触发 {sk["max_trigger_num"]} 次</div>'
                                 )
 
@@ -1366,11 +1374,12 @@ class LestaDetailPanel(DetailPanel):
                                 from PySide6.QtCore import QSize as _QS
                                 _tbtn = QPushButton()
                                 _tbtn.setStyleSheet(theme.qss("""
-                                    QPushButton { background:@panel_alt@; border:2px solid #ffc107;
+                                    QPushButton { background:@icon_btn_bg@; border:2px solid @gold_border@;
                                                   border-radius:6px; min-width:52px; min-height:52px;
                                                   max-width:52px; max-height:52px;
-                                                  font-size:9px; color:#ffc107; padding:0px; }
-                                    QPushButton:hover { background:@hover_bg@; border-color:#ffd54f; }
+                                                  font-size:9px; color:@gold@; padding:0px; }
+                                    QPushButton:hover { background:@icon_btn_bg_hover@;
+                                                        border-color:@gold_hi@; }
                                 """))
                                 _tpath = _trow2['icon_path'] or ""
                                 if _tpath and _P(_tpath).exists():
@@ -1398,13 +1407,13 @@ class LestaDetailPanel(DetailPanel):
         signal_flags_dir = pic_path("signal_flags")
         slot_types_dir = pic_path("signal_flags/slot_types")
         signal_slots = config.get("signal_slots", [])
-        # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-        SIG_BTN = """
-            QPushButton { background: #3a3a3a; border: 1px solid #555;
+        # 信号旗槽位：深色仪器面（白图标恒定可读），悬停/选中走冰蓝
+        SIG_BTN = theme.qss("""
+            QPushButton { background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
             border-radius: 4px; padding: 0; }
-            QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
-            QPushButton:checked { background:@panel_alt@; border: 2px solid @accent@; }
-        """
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
+            QPushButton:checked { background:@icon_btn_checked@; border: 2px solid @accent@; }
+        """)
         from models.name_mapping import Mapping as _NM
 
         def _fmt_mod(mk, mv):
@@ -1472,14 +1481,14 @@ class LestaDetailPanel(DetailPanel):
         flag_stack.setMaximumWidth(220)
         flag_stack.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         _active_slot = [-1]  # 当前展开的槽位索引，-1=无
-        # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读
-        MENU_BTN = """
-            QPushButton { background: #3a3a3a; border: none;
+        # 弹出菜单项：深色仪器面 + 浅色文字（菜单在浮层里，白底会看不清）
+        MENU_BTN = theme.qss("""
+            QPushButton { background: @icon_btn_bg@; border: none;
             border-radius: 3px; padding: 1px 4px; text-align: left;
-            font-size: 10px; color: #ddd; min-height: 18px; }
-            QPushButton:hover { background:@panel_alt@; }
-            QPushButton:checked { background: @accent@; }
-        """
+            font-size: 10px; color: @icon_btn_text@; min-height: 18px; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; }
+            QPushButton:checked { background: @icon_btn_checked@; color: @accent_hi@; }
+        """)
         from models.name_mapping import Mapping as _NM
 
         # 恢复之前保存的信号旗选择状态

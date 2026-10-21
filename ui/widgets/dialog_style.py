@@ -38,28 +38,8 @@ QDialog {
     background: @window_bg@;
     color: @text@;
 }
-/* 对话框按钮：方角细光线框，与主界面的斜切薄片同一硬度 */
-QDialog QPushButton {
-    background: transparent;
-    border: 1px solid @metal_edge@;
-    border-radius: 0px;
-    padding: 5px 16px;
-    color: @text@;
-}
-QDialog QPushButton:hover {
-    border-color: @accent@;
-    color: @accent@;
-    background: @hover_bg@;
-}
-QDialog QPushButton:default {
-    border-color: @accent@;
-    color: @accent@;
-}
-QDialog QPushButton:pressed {
-    background: @accent@;
-    color: @on_accent@;
-    border-color: @accent@;
-}
+/* 按钮样式不在这里重复定义：对话框继承 resources/styles/main.qss 里那唯一一条
+   QPushButton 规则，保证「保存/取消/关闭/浏览」与主界面普通按钮完全一致。 */
 QDialog QGroupBox {
     border: 1px solid @border_soft@;
     border-radius: 0px;
@@ -75,6 +55,37 @@ QDialog QGroupBox::title {
 }
 """
 
+#: 主操作按钮（对话框的「确定/保存」、工具的主要动作）。
+#: 普通按钮 = 全局 QPushButton 规则；这个变体只加信号色描边，不做整块填充。
+PRIMARY_BTN_QSS = """
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 @metal_sheen_a@, stop:0.55 @metal_glow@,
+                stop:1 @metal_sheen_a@);
+    color: @accent@;
+    border: 1px solid @accent@;
+    border-radius: 0px;
+    padding: 5px 14px;
+    min-height: 16px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background: @hover_bg@;
+    color: @accent_hi@;
+    border-color: @accent_hi@;
+}
+QPushButton:pressed {
+    background: @inset@;
+    color: @accent_hi@;
+    border-color: @accent@;
+}
+QPushButton:disabled {
+    background: @panel_bg@;
+    color: @text_hint@;
+    border-color: @border@;
+}
+"""
+
 
 def _with_alpha(c: QColor, factor: float) -> QColor:
     out = QColor(c)
@@ -85,11 +96,16 @@ def _with_alpha(c: QColor, factor: float) -> QColor:
 class HoloDialog(QDialog):
     """带光学边框的子窗口基类。
 
-    在窗口内侧 6px 处绘制「断续结构线 + 顶部/左侧定位光段」，与主窗口的
-    SciFiPanel 保持同一视觉语言。绘制位于窗口自身表面，不占用布局、不遮挡内容。
+    在窗口内侧绘制「切角细线 + 弱辉光」，与主窗口的 SciFiPanel 保持同一视觉语言。
+    绘制位于窗口自身表面，不占用布局、不遮挡内容；但由于切角是斜的，内容区的
+    四角必须退到斜线内侧，否则控件边框/文字会从切掉的那个角里穿出去——因此
+    这里在首次显示时把顶层 layout 的边距抬到 :meth:`content_inset`。
     """
 
-    INSET = 6
+    FRAME_INSET = 7
+    FRAME_CHAMFER = 14
+    #: 内容与框线之间的最小留白（保证四角都在切角轮廓内）
+    CONTENT_INSET = 18
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -99,30 +115,51 @@ class HoloDialog(QDialog):
     def _on_style_changed(self) -> None:
         self.update()
 
+    def _ensure_content_inset(self) -> None:
+        """把顶层 layout 的边距抬到安全值（只增不减，避免抖动）。"""
+        lay = self.layout()
+        if lay is None:
+            return
+        m = lay.contentsMargins()
+        need = self.CONTENT_INSET if theme.holo_enabled else 10
+        new = (max(m.left(), need), max(m.top(), need),
+               max(m.right(), need), max(m.bottom(), need))
+        if new != (m.left(), m.top(), m.right(), m.bottom()):
+            lay.setContentsMargins(*new)
+
+    def showEvent(self, e) -> None:  # noqa: N802
+        self._ensure_content_inset()
+        super().showEvent(e)
+
     def paintEvent(self, e) -> None:  # noqa: N802
         super().paintEvent(e)
         if not theme.holo_enabled:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(7.5, 7.5, -7.5, -7.5)
-        paint_chamfer_frame(p, r, 18.0)
+        r = QRectF(self.rect()).adjusted(
+            self.FRAME_INSET + 0.5, self.FRAME_INSET + 0.5,
+            -(self.FRAME_INSET + 0.5), -(self.FRAME_INSET + 0.5))
+        paint_chamfer_frame(p, r, self.FRAME_CHAMFER)
 
 
-__all__ = ["HoloDialog", "HoloWindow", "DIALOG_QSS", "WINDOW_QSS"]
+__all__ = ["HoloDialog", "HoloWindow", "DIALOG_QSS", "WINDOW_QSS", "PRIMARY_BTN_QSS"]
 
 
 class HoloWindow(QMainWindow):
     """独立主窗口（非模态浏览器）的统一外观。
 
     自动把原有的中央控件包进 HoloBackdrop（窗口底色 + 32px 网格 + 光学边框），
-    外圈留 12px 避开边框，内容再放进切角全息面板，与主窗口的工作区同一语言。
+    外圈留出足够边距避开外框的切角，内容再放进切角全息面板，与主窗口的工作区
+    同一语言。
 
     只改呈现层：调用方仍然照旧 setCentralWidget(内容)，内部完成包装，
     不改变任何布局层级关系或信号连接。
     """
 
-    WRAP_MARGIN = 10
+    #: 外框（HoloBackdrop 绘制）与内层面板之间的安全距离。
+    #: 必须 >= 外框切角的一半 + 框线位置，否则内层面板的角会穿出外框的斜角。
+    WRAP_MARGIN = 16
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)

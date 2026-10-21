@@ -123,6 +123,24 @@ _LIGHT = {
     "panel_frame_hi":   "rgba(20, 110, 150, 0.90)",
     "panel_fill":       "rgba(255, 255, 255, 0.72)",
     "panel_fill_soft":  "rgba(245, 250, 254, 0.60)",
+    # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
+    "icon_btn_bg":        "#24384F",
+    "icon_btn_bg_hover":  "#31506E",
+    "icon_btn_border":    "#3E5D7D",
+    "icon_btn_border_hi": "#0E7C93",
+    "icon_btn_checked":   "#0E7C93",
+    "icon_btn_text":      "#D6E4F0",
+    "icon_btn_text_dim":  "#93A9BE",
+    "gold":        "#A35A00",
+    "gold_hi":     "#C47300",
+    "gold_bg":     "#FBF1DE",
+    "gold_border": "#D8A24B",
+    "value_pos":   "#0E7A5A",
+    "value_neg":   "#B3243C",
+    "tip_text":    "#0D1B26",
+    "tip_muted":   "#3B4F63",
+    "tip_dim":     "#5E7186",
+    "tip_rule":    "#C9D8E4",
 }
 
 
@@ -197,6 +215,29 @@ _DARK = {
     "metal_brush":  "rgba(160, 205, 240, 0.04)",
     "light_core":   "rgba(120, 226, 250, 0.95)",
     "light_halo":   "rgba(60, 170, 220, 0.30)",
+    # ── 图标按钮（技能 / 升级品 / 信号旗 / 模块）──
+    # 游戏图标是「白色图形 + 透明底」，因此这层底色在深浅两套主题下都保持深色，
+    # 让白图标始终有足够对比度，不随主题变亮而消失。
+    "icon_btn_bg":        "#0E1E33",
+    "icon_btn_bg_hover":  "#1B3550",
+    "icon_btn_border":    "#2A4A6B",
+    "icon_btn_border_hi": "#4FD8F2",
+    "icon_btn_checked":   "#17456B",
+    "icon_btn_text":      "#AFC6DC",
+    "icon_btn_text_dim":  "#6C86A0",
+    # 强化 / 传奇技能：琥珀金强调
+    "gold":        "#FFC24D",
+    "gold_hi":     "#FFD98A",
+    "gold_bg":     "#2A2113",
+    "gold_border": "#8A6520",
+    # 属性增减值
+    "value_pos":   "#5FE8B8",
+    "value_neg":   "#FF6E88",
+    # 富文本 tooltip 用色
+    "tip_text":    "#DCEAF7",
+    "tip_muted":   "#A8BED4",
+    "tip_dim":     "#7A90A8",
+    "tip_rule":    "#2C5478",
 }
 
 

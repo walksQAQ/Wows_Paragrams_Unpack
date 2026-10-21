@@ -928,7 +928,13 @@ class Mapping:
         else:
             is_increase = value > 0
         is_buff = (not is_neg_dir and is_increase) or (is_neg_dir and not is_increase)
-        return "#4caf50" if is_buff else "#f44336"
+        # 用主题色而不是写死的高饱和绿/红：深色主题用亮青绿/粉红，浅色主题用压深的同色相，
+        # 保证两种主题下都有足够对比度又不刺眼。
+        try:
+            from utils.theme import theme
+            return theme["value_pos"] if is_buff else theme["value_neg"]
+        except Exception:  # noqa: BLE001
+            return "#4caf50" if is_buff else "#f44336"
 
     @staticmethod
     def format_modifier(key: str, value: float | int, *, color: bool = False) -> str:

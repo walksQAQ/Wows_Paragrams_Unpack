@@ -20,7 +20,7 @@ from app.application import app as app_ctx
 from app.signals import bus
 from utils.theme import theme
 
-from ui.widgets.dialog_style import HoloDialog
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
 
 
 class AdvancedSettingsDialog(HoloDialog):
@@ -142,8 +142,15 @@ class AdvancedSettingsDialog(HoloDialog):
         layout.addWidget(grp_update)
 
         # ── 按钮 ──────────────────────────────────────
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
-                                QDialogButtonBox.StandardButton.Cancel)
+        # Qt 默认给英文 OK / Cancel，这里改成中文并与主界面按钮同款：
+        # 「保存」是主操作（信号色描边），「关闭」是普通按钮。
+        btns = QDialogButtonBox()
+        btn_save = btns.addButton("保存", QDialogButtonBox.ButtonRole.AcceptRole)
+        btn_close = btns.addButton("关闭", QDialogButtonBox.ButtonRole.RejectRole)
+        theme.bind(btn_save, PRIMARY_BTN_QSS)
+        btn_save.setDefault(True)
+        btn_save.setToolTip("保存全部设置并关闭")
+        btn_close.setToolTip("放弃未保存的修改并关闭")
         btns.accepted.connect(self._on_ok)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)

@@ -38,7 +38,7 @@ from app.signals import bus
 from services.geometry_service import HullMesh, ShipGeometry
 from services.tool_tasks import parse_geometry_bytes, parse_geometry_file
 from ui.geometry_viewer import _Spinner, resolve_viewport_backend
-from ui.widgets.dialog_style import HoloDialog
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
 from ui.widgets.scifi_panel import SciFiPanel, _LIVE as _LIVE_WIDGETS, _with_alpha
 from utils.threading_utils import run_async
 from utils.tool_process import run_in_tool_process
@@ -491,12 +491,8 @@ class GeometryFilePicker(HoloDialog):
         btn_row.addStretch(1)
         self.btn_cancel = QPushButton("取消")
         self.btn_ok = QPushButton("加载")
-        # 「加载」是主要操作：信号色描边 + 淡信号底，与「取消」明确区分
-        theme.bind(self.btn_ok,
-                   "QPushButton { border:1px solid @accent@; color:@accent@;"
-                   " background:@hover_bg@; font-weight:bold; }"
-                   "QPushButton:hover { background:@accent@; color:@on_accent@; }"
-                   "QPushButton:pressed { background:@accent_hi@; color:@on_accent@; }")
+        theme.bind(self.btn_ok, PRIMARY_BTN_QSS)
+        self.btn_ok.setDefault(True)
         btn_row.addWidget(self.btn_cancel)
         btn_row.addWidget(self.btn_ok)
         root.addLayout(btn_row)

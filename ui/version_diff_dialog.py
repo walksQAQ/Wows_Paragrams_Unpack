@@ -27,17 +27,26 @@ from utils.theme import theme
 from ui.widgets.dialog_style import HoloDialog
 
 
-# ── 三色高亮（与实体列表一致）──────────────────────────────
-_COLOR_ADDED = QColor("#1e7d32")      # 绿
-_COLOR_REMOVED = QColor("#c62828")    # 红
-_COLOR_MODIFIED = QColor("#b26a00")   # 黄/琥珀
-_COLOR_UNCHANGED = QColor("#6b7280")  # 灰
+# ── 三色高亮（与实体列表一致）：跟随主题，保证深色下也清晰可辨 ──────────
+def _kind_color(name: str) -> QColor:
+    """差异类型颜色：新增=绿 / 删除=红 / 修改=琥珀 / 未变=灰。
+
+    用主题 token 而不是写死的深色值——否则深色主题下这几色会糊在暗背景里。
+    """
+    key = {
+        "added": "value_pos",
+        "removed": "value_neg",
+        "modified": "gold",
+        "unchanged": "text_hint",
+    }[name]
+    return QColor(theme[key])
+
 
 _KIND_COLORS = {
-    "added": _COLOR_ADDED,
-    "removed": _COLOR_REMOVED,
-    "modified": _COLOR_MODIFIED,
-    "unchanged": _COLOR_UNCHANGED,
+    "added": _kind_color("added"),
+    "removed": _kind_color("removed"),
+    "modified": _kind_color("modified"),
+    "unchanged": _kind_color("unchanged"),
 }
 
 #: 实体列表最多展示行数（unchanged 可能上万条，防止一次性渲染卡死）
@@ -78,9 +87,6 @@ class VersionDiffDialog(HoloDialog):
         theme.bind(self, """
             QDialog { background:@window_bg@; color:@text@; }
             QLabel { color:@text@; font-size:12px; }
-            QPushButton { background:@panel_alt@; border:1px solid @border@; border-radius:3px;
-                          padding:4px 14px; color:@text@; font-size:12px; }
-            QPushButton:hover { background:@hover_bg@; }
             QPushButton:disabled { color:@text_hint@; background:@panel_bg@; }
             QComboBox, QLineEdit { background:@input_bg@; border:1px solid @border@; border-radius:3px;
                                    padding:3px 6px; color:@text@; font-size:12px; }
@@ -90,9 +96,9 @@ class VersionDiffDialog(HoloDialog):
                                    border:1px solid @border@; padding:4px; }
             QTreeWidget { background:@input_bg@; border:1px solid @border@; color:@text@; font-size:12px; }
             QSplitter::handle { background:@border@; }
-            #noteBanner { background:#3a3a00; color:#ffd75e; border:1px solid #7a5c00;
+            #noteBanner { background:@gold_bg@; color:@gold@; border:1px solid @gold_border@;
                           border-radius:3px; padding:4px 8px; }
-            #fieldHeader { font-size:13px; font-weight:bold; color:#c60; padding:4px 2px; }
+            #fieldHeader { font-size:13px; font-weight:bold; color:@gold@; padding:4px 2px; }
             #footer { color:@text_hint@; font-size:11px; }
             #sectionTitle { font-size:12px; font-weight:bold; color:@text_muted@; }
         """)
@@ -464,11 +470,11 @@ class VersionDiffDialog(HoloDialog):
                 if c == 0:
                     item.setData(Qt.ItemDataRole.UserRole, etype)
                 elif c == 1:
-                    item.setForeground(_COLOR_ADDED)
+                    item.setForeground(_KIND_COLORS["added"])
                 elif c == 2:
-                    item.setForeground(_COLOR_REMOVED)
+                    item.setForeground(_KIND_COLORS["removed"])
                 elif c == 3:
-                    item.setForeground(_COLOR_MODIFIED)
+                    item.setForeground(_KIND_COLORS["modified"])
                 self.overview_table.setItem(i, c, item)
 
     def _on_overview_clicked(self, row: int, _col: int) -> None:
@@ -642,7 +648,7 @@ class VersionDiffDialog(HoloDialog):
                 item.setForeground(0, QColor(theme["text"]))
             item.setFont(0, font)
             if kind == "branch":
-                item.setForeground(0, _COLOR_MODIFIED)
+                item.setForeground(0, _KIND_COLORS["modified"])
             parent.addChild(item)
             for ch in children:
                 self._add_tree_node(item, ch, is_top=False)
@@ -663,5 +669,5 @@ class VersionDiffDialog(HoloDialog):
                 item.setForeground(c, color)
         else:  # unchanged
             item.setForeground(0, QColor(theme["text"]))
-            item.setForeground(2, _COLOR_UNCHANGED)
+            item.setForeground(2, _KIND_COLORS["unchanged"])
         parent.addChild(item)

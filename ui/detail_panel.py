@@ -333,14 +333,17 @@ class DetailPanel(QWidget):
                 # 更新 tooltip 稀有度标记
                 _old_tip = _btn.toolTip()
                 if _old_tip:
+                    _gold = theme["gold"]
                     if _rarity in ("EPIC", "LEGENDARY"):
                         _tag = {"EPIC": "[强化]", "LEGENDARY": "[传奇]"}.get(_rarity, "")
-                        _repl = f'<span style="color:#ff6600; font-weight:normal;">{_tag}</span>'
+                        _repl = f'<span style="color:{_gold}; font-weight:normal;">{_tag}</span>'
                         if "[强化]" not in _old_tip and "[传奇]" not in _old_tip:
                             _old_tip = _old_tip.replace("</b>", f" {_repl}</b>", 1)
                     else:
-                        _old_tip = _old_tip.replace(' <span style="color:#ff6600; font-weight:normal;">[强化]</span></b>', '</b>')
-                        _old_tip = _old_tip.replace(' <span style="color:#ff6600; font-weight:normal;">[传奇]</span></b>', '</b>')
+                        _old_tip = _old_tip.replace(
+                            f' <span style="color:{_gold}; font-weight:normal;">[强化]</span></b>', "</b>")
+                        _old_tip = _old_tip.replace(
+                            f' <span style="color:{_gold}; font-weight:normal;">[传奇]</span></b>', "</b>")
                     _btn.setToolTip(_old_tip)
 
     def _build_top_config_bar(self, config: dict) -> QWidget:
@@ -451,37 +454,37 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 font-size: 9px; color: @text@;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
-                background: @hover_bg@; color: @accent@; border-color: @accent@;
+                background: @icon_btn_checked@; color: @accent_hi@; border-color: @accent@;
             }
         """)
         # 缺少图片时：缩小字号、弱化文字（主题化）
         BTN_STYLE_TXT = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 font-size: 8px; color: @text_hint@;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
-                background: @hover_bg@; color: @accent@; border-color: @accent@;
+                background: @icon_btn_checked@; color: @accent_hi@; border-color: @accent@;
             }
         """)
 
@@ -595,7 +598,7 @@ class DetailPanel(QWidget):
         for section_key in ["upgrade", "signal", "commander"]:
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.VLine)
-            sep.setStyleSheet("QFrame{color:#c8c8c8;}")
+            sep.setStyleSheet(theme.qss("QFrame{color:@border_soft@;}"))
             sep.setFixedWidth(1)
             layout.addWidget(sep)
 
@@ -631,24 +634,26 @@ class DetailPanel(QWidget):
                 uc_layout.setContentsMargins(0,0,0,0)
                 uc_layout.setSpacing(6)
                 uc_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-                # 老版本(v3.2.2-test1)样式：固定深色底+浅色文字，图标清晰可读（不随主题变化）
-                SLOT_STYLE = """
+                # 图标按钮：白色透明图标需要固定的深色仪器面，故底色不随主题变亮
+                SLOT_STYLE = theme.qss("""
                     QPushButton {
-                        background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
+                        background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
+                        border-radius: 4px;
                         padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
-                    QPushButton:checked { background: @accent@; border-color: @accent@; }
-                """
-                SLOT_STYLE_TXT = """
+                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
+                    QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
+                """)
+                SLOT_STYLE_TXT = theme.qss("""
                     QPushButton {
-                        background: #3a3a3a; border: 1px solid #555; border-radius: 4px;
-                        padding: 2px; font-size: 8px; color: #bbb;
+                        background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
+                        border-radius: 4px;
+                        padding: 2px; font-size: 8px; color: @icon_btn_text_dim@;
                         min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background:@panel_alt@; border-color: @accent@; }
-                    QPushButton:checked { background: @accent@; border-color: @accent@; }
-                """
+                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
+                    QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
+                """)
                 for i in range(max_slots):  # 根据等级限制槽位数量
                     slot_mods = mods_by_slot.get(i, [])
                     # 每个插槽一列（编号=slot+1），即使无升级品也占位
@@ -682,7 +687,8 @@ class DetailPanel(QWidget):
                             mod_dict = mod.get("modifiers", {})
                             if mod_dict:
                                 from models.name_mapping import Mapping as NMM
-                                tt_parts.append('<hr style="border-color:@border@;">')
+                                tt_parts.append(
+                                    f'<hr style="border-color:{theme["border_soft"]};">')
                                 for mk, mv in sorted(mod_dict.items()):
                                     label = NMM.MODIFIER_MAP.get(mk, mk)
                                     if isinstance(mv, dict):
@@ -1063,12 +1069,12 @@ class DetailPanel(QWidget):
                             for ai in ga:
                                 an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
-                                btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;border:1px solid @border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@hover_bg@;border-color:@accent@;}QPushButton:checked{background:@hover_bg@;border-color:@accent@;}"))
+                                btn.setStyleSheet(theme.qss("QPushButton{background:@icon_btn_bg@;border:1px solid @icon_btn_border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@icon_btn_bg_hover@;border-color:@accent@;}QPushButton:checked{background:@icon_btn_checked@;border-color:@accent@;}"))
                                 btn.setToolTip(an)
                                 cand = self._ammo_icon_candidates(at, sp, ai, bool(ai.get("switchable")))
                                 ip = next((p for c in cand if not (p:=QPixmap(pic_path(f"ammo_types/{c}"))).isNull()), None)
                                 if ip: btn.setIcon(QIcon(ip.scaled(28,28,Qt.KeepAspectRatio,Qt.SmoothTransformation))); btn.setIconSize(QSize(28,28))
-                                else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;", f"padding:2px;font-size:8px;color:{theme['text_muted']};"))
+                                else: btn.setText(an[:2] if an else "?"); btn.setStyleSheet(btn.styleSheet().replace("padding:2px;", f"padding:2px;font-size:8px;color:{theme['icon_btn_text_dim']};"))
                                 bl.addWidget(btn)
                                 st.addWidget(ShipCardWidget({"label":an,"items":di}) if di else (QLabel("无详细数据",styleSheet=theme.qss("color:@text_hint@;font-size:11px;padding:8px;"),alignment=Qt.AlignmentFlag.AlignCenter)))
                                 ci = st.count()-1
@@ -1137,14 +1143,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
@@ -1243,7 +1249,7 @@ class DetailPanel(QWidget):
                             btn.setIconSize(QSize(28, 28))
                         else:
                             btn.setText(aname[:2] if aname else "?")
-                            btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['text_muted']};"))
+                            btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['icon_btn_text_dim']};"))
                         # 弹跳轰炸机炸弹：skip_bomb 标记覆盖整个按钮（图片自带透明区域）
                         if sp == "skipbomb":
                             _bp = QPixmap(pic_path("ammo_types/unique_features/indicators/skip_bomb.png"))
@@ -1270,14 +1276,14 @@ class DetailPanel(QWidget):
                 if raw_con:
                     CON_BTN_STYLE = theme.qss("""
                         QPushButton {
-                            background: @panel_alt@;
-                            border: 1px solid @border@;
+                            background: @icon_btn_bg@;
+                            border: 1px solid @icon_btn_border@;
                             border-radius: 6px; padding: 2px;
                             min-width: 40px; min-height: 40px;
                             max-width: 40px; max-height: 40px;
                         }
                         QPushButton:hover {
-                            background: @hover_bg@;
+                            background: @icon_btn_bg_hover@;
                             border-color: @accent@;
                         }
                         QPushButton:checked {
@@ -1316,7 +1322,7 @@ class DetailPanel(QWidget):
                             btn.setIconSize(QSize(32, 32))
                         else:
                             btn.setText(cid[:2] if cid else "?")
-                            btn.setStyleSheet(CON_BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['text_muted']};"))
+                            btn.setStyleSheet(CON_BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['icon_btn_text_dim']};"))
                         # WG：可用激活方式含 AUTO → 整图覆盖按钮（同 skip_bomb，图片带透明部分）
                         _aam = con_info.get('available_activation_modes') or []
                         if any(str(x).upper() == "AUTO" for x in _aam):
@@ -1431,14 +1437,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
-            QPushButton:checked { background: @hover_bg@; border-color: @accent@; }
+            QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
         """)
 
         ammo_idx = 0
@@ -1504,7 +1510,7 @@ class DetailPanel(QWidget):
                         btn.setIconSize(QSize(28, 28))
                     else:
                         btn.setText(aname[:2] if aname else "?")
-                        btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['text_muted']};"))
+                        btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:8px; color:{theme['icon_btn_text_dim']};"))
                     bl.addWidget(btn)
                     if detail_items:
                         ammo_stack.addWidget(ShipCardWidget({"label": aname, "items": detail_items}))
@@ -1540,14 +1546,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
@@ -1567,7 +1573,8 @@ class DetailPanel(QWidget):
 
             # 槽位编号标签
             slot_label = QLabel(f"槽{slot_idx}")
-            slot_label.setStyleSheet("font-size:10px; color:#aaa; min-width:24px;")
+            slot_label.setStyleSheet(
+            theme.qss("font-size:10px; color:@icon_btn_text_dim@; min-width:24px;"))
             slot_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sr_layout.addWidget(slot_label)
 
@@ -1593,7 +1600,7 @@ class DetailPanel(QWidget):
                 else:
                     # 无图片时显示首字母
                     btn.setText(cid[:2] if cid else "?")
-                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['text_muted']};"))
+                    btn.setStyleSheet(BTN_STYLE.replace("padding: 2px;", f"padding: 2px; font-size:9px; color:{theme['icon_btn_text_dim']};"))
 
                 # WG：可用激活方式含 AUTO → 整图覆盖按钮（同 skip_bomb，图片带透明部分）
                 _aam = rs.get('available_activation_modes') or []
@@ -1691,14 +1698,14 @@ class DetailPanel(QWidget):
         btn.setObjectName(f"rage_{rname}")
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 32px; min-height: 32px;
                 max-width: 32px; max-height: 32px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
@@ -1756,9 +1763,9 @@ class DetailPanel(QWidget):
             elif "%" in display_value:
                 stripped = display_value.strip()
                 if stripped.startswith("+"):
-                    fg = "#1b8a1b"
+                    fg = theme["value_pos"]
                 elif stripped.startswith("-"):
-                    fg = "#d32f2f"
+                    fg = theme["value_neg"]
 
             val_lbl = QLabel(display_value)
             val_lbl.setWordWrap(True)
@@ -1806,11 +1813,10 @@ class DetailPanel(QWidget):
                 def _btn(txt: str) -> QPushButton:
                     b = QPushButton(txt)
                     b.setFixedSize(28, 24)
-                    b.setStyleSheet(theme.qss("""
-                        QPushButton { font-size:14px; font-weight:bold; color:@text@; background:@panel_alt@; border:1px solid @border@; border-radius:4px; }
-                        QPushButton:disabled { color:@text_muted@; background:@panel_alt@; border-color:@border@; }
-                        QPushButton:hover:!disabled { background:@hover_bg@; }
-                    """))
+                    theme.bind(b, """
+                        QPushButton { font-size:14px; font-weight:bold; padding:0; }
+                        QPushButton:disabled { color:@text_muted@; }
+                    """)
                     return b
 
                 minus_btn = _btn("-")
@@ -2006,14 +2012,14 @@ class DetailPanel(QWidget):
 
         BTN_STYLE = theme.qss("""
             QPushButton {
-                background: @panel_alt@;
-                border: 1px solid @border@;
+                background: @icon_btn_bg@;
+                border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
             QPushButton:hover {
-                background: @hover_bg@;
+                background: @icon_btn_bg_hover@;
                 border-color: @accent@;
             }
             QPushButton:checked {
@@ -2117,7 +2123,7 @@ class DetailPanel(QWidget):
                         btn.setIconSize(QSize(28, 28))
                     else:
                         btn.setText(aname[:2] if aname else "?")
-                        btn.setStyleSheet(BTN_STYLE + f"QPushButton {{ font-size: 8px; color: {theme['text_muted']}; }}")
+                        btn.setStyleSheet(BTN_STYLE + f"QPushButton {{ font-size: 8px; color: {theme['icon_btn_text_dim']}; }}")
 
                     _trend = ammo_info.get("dmg_dist_trend")
                     if _trend in ("increase", "decrease"):
@@ -2167,14 +2173,8 @@ class DetailPanel(QWidget):
             btn = QPushButton(value_text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(firing_arc_tooltip(fa))
-            btn.setStyleSheet(theme.qss("""
-                QPushButton {
-                    background: @panel_alt@; color: @text@;
-                    border: 1px solid @border@; border-radius: 4px;
-                    padding: 4px 10px; font-size: 12px; text-align: center;
-                }
-                QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
-            """))
+            theme.bind(btn, "QPushButton { border-radius: 4px; padding: 4px 10px;"
+                            " font-size: 12px; text-align: center; }")
             btn.clicked.connect(lambda _=False, f=fa: self._open_firing_arc(f))
             hb.addWidget(lbl)
             hb.addStretch(1)
@@ -2955,10 +2955,7 @@ class DetailPanel(QWidget):
             cstack.addWidget(te)
             btn = QPushButton(cl)
             btn.setCheckable(True)
-            btn.setStyleSheet(theme.qss("QPushButton{background:@panel_alt@;color:@text@;border:1px solid @border@;"
-                              "border-radius:4px;padding:4px 10px;font-size:11px;}"
-                              "QPushButton:hover{background:@hover_bg@;color:@text@;}"
-                              "QPushButton:checked{background:@hover_bg@;color:@accent@;}"))
+            theme.bind(btn, "QPushButton { border-radius:4px; padding:4px 10px; font-size:11px; }")
             btn.clicked.connect(partial(self._on_sub_btn, cstack, i, cbtns))
             blay.addWidget(btn)
             cbtns.append(btn)

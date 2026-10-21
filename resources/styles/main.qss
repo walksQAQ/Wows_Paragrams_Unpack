@@ -117,7 +117,9 @@ QComboBox QAbstractItemView {
     selection-color: @on_accent@;
 }
 
-/* 通用按钮：银色金属薄片（上下明暗渐变 + 金属描边，硬朗方角） */
+/* 通用按钮（唯一标准样式）：银色金属薄片 + 金属描边 + 硬朗方角。
+   所有普通按钮都走这一条，对话框的确定/取消/保存/关闭也继承它，
+   不要在对话框里再写一份 —— 只有「主操作」用 @accent@ 描边区分。 */
 QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                 stop:0 @metal_sheen_a@, stop:0.55 @metal_sheen_b@,
@@ -125,7 +127,8 @@ QPushButton {
     color: @text@;
     border: 1px solid @metal_edge@;
     border-radius: 0px;
-    padding: 4px 12px;
+    padding: 5px 14px;
+    min-height: 16px;
 }
 
 /* 通用按钮悬停：金属提亮 + 蓝色光线描边 */
@@ -134,25 +137,27 @@ QPushButton:hover {
                 stop:0 @metal_sheen_a@, stop:0.55 @metal_glow@,
                 stop:1 @metal_sheen_a@);
     border-color: @accent@;
+    color: @accent_hi@;
 }
 
-/* 通用按钮按下：信号色填充 */
+/* 通用按钮按下：底压暗 + 光线收束（不做大面积荧光填充） */
 QPushButton:pressed {
-    background-color: @accent@;
-    color: @on_accent@;
+    background-color: @inset@;
+    color: @accent_hi@;
     border-color: @accent@;
 }
 
-/* 可勾选按钮选中态：信号色填充 */
+/* 可勾选按钮选中态：光线描边 + 压暗底 */
 QPushButton:checked {
-    background-color: @accent@;
-    color: @on_accent@;
+    background-color: @icon_btn_checked@;
+    color: @accent_hi@;
     border-color: @accent@;
 }
 
-/* 默认按钮（对话框“确定”）：信号色描边强调 */
+/* 主操作按钮（对话框“确定/保存”、工具的主要动作）：信号色描边 */
 QPushButton:default {
     border-color: @accent@;
+    color: @accent@;
 }
 
 /* 通用按钮禁用：退回暗金属，文字降级 */

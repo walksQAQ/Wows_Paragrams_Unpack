@@ -32,7 +32,7 @@ from utils.path_utils import get_data_dir, is_debug_build
 from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
-from ui.widgets.dialog_style import HoloDialog
+from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
 
 
 #: 舰船下拉里徽章图标边长（px）
@@ -353,7 +353,7 @@ class GeometryViewerDialog(HoloDialog):
         camo_row.addWidget(self.camo_combo, 1)
         self.camo_combo.setVisible(CAMO_SWITCHER_ENABLED)
         self.btn_load = QPushButton("加载")
-        theme.bind(self.btn_load, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:6px 12px; }")
+        theme.bind(self.btn_load, PRIMARY_BTN_QSS)
         camo_row.addWidget(self.btn_load)
         self.btn_load.setVisible(CAMO_SWITCHER_ENABLED)
         pl.addLayout(camo_row)
@@ -449,8 +449,6 @@ class GeometryViewerDialog(HoloDialog):
         tree_row = QHBoxLayout()
         self.btn_all = QPushButton("全选")
         self.btn_none = QPushButton("全不选")
-        for b in (self.btn_all, self.btn_none):
-            theme.bind(b, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:3px 10px; font-size:11px; }")
         tree_row.addWidget(self.btn_all)
         tree_row.addWidget(self.btn_none)
         tree_row.addStretch(1)
@@ -486,8 +484,6 @@ class GeometryViewerDialog(HoloDialog):
         export_row = QHBoxLayout()
         self.btn_export_render = QPushButton("导出渲染模型")
         self.btn_export_armor = QPushButton("导出装甲模型")
-        for b in (self.btn_export_render, self.btn_export_armor):
-            theme.bind(b, "QPushButton { background:@toolbar_btn_bg@; color:@toolbar_btn_text@; border:1px solid @toolbar_btn_border@; border-radius:4px; padding:4px 8px; font-size:11px; }")
         export_row.addWidget(self.btn_export_render)
         export_row.addWidget(self.btn_export_armor)
         pl.addLayout(export_row)

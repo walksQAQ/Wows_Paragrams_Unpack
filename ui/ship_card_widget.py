@@ -67,7 +67,7 @@ TABLE_STYLE = """
     }
     QTableWidget::item {
         padding: 2px 12px;
-        border-bottom: 1px solid rgba(0,0,0,0.06);
+        border-bottom: 1px solid @border@;
         min-height: 18px;
     }
     /* Windows11 样式会给悬停/按下态画一层底色（深色下偏蓝），一并关掉 */
@@ -275,14 +275,7 @@ class ShipCardWidget(QGroupBox):
         tip = action.get("tooltip", "")
         if tip:
             btn.setToolTip(tip)
-        btn.setStyleSheet(theme.qss("""
-            QPushButton {
-                background: @panel_alt@; color: @text@;
-                border: 1px solid @border@; border-radius: 4px;
-                padding: 4px 10px; font-size: 12px;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
-        """))
+        theme.bind(btn, "QPushButton { border-radius: 4px; padding: 4px 10px; font-size: 12px; }")
         data = action.get("data")
         btn.clicked.connect(lambda _=False: self.action_clicked.emit(data))
 
@@ -311,14 +304,8 @@ class ShipCardWidget(QGroupBox):
         btn.setText(value_text)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setToolTip(firing_arc_tooltip(fa))
-        btn.setStyleSheet(theme.qss("""
-            QPushButton {
-                background: @panel_alt@; color: @text@;
-                border: 1px solid @border@; border-radius: 4px;
-                padding: 4px 8px; font-size: 12px; text-align: center;
-            }
-            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
-        """))
+        theme.bind(btn, "QPushButton { border-radius: 4px; padding: 4px 8px;"
+                        " font-size: 12px; text-align: center; }")
         btn.clicked.connect(lambda _=False: self.firing_arc_clicked.emit(fa))
         self._table.setCellWidget(row, 1, btn)
 
@@ -385,9 +372,9 @@ class ShipCardWidget(QGroupBox):
             has_digit = any(c.isdigit() for c in stripped)
             if has_sign and has_digit:
                 if stripped.startswith("+"):
-                    value_item.setForeground(QColor("#1b8a1b"))
+                    value_item.setForeground(QColor(theme["value_pos"]))
                 else:
-                    value_item.setForeground(QColor("#d32f2f"))
+                    value_item.setForeground(QColor(theme["value_neg"]))
             else:
                 value_item.setForeground(QColor(value_color()))
         value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
@@ -526,12 +513,13 @@ class ShipCardWidget(QGroupBox):
                 btn.setCheckable(True)
                 btn.setStyleSheet(theme.qss("""
                     QPushButton {
-                        background: @panel_alt@; border: 1px solid @border@;
-                        border-radius: 3px; font-size: 9px; color: @text@;
+                        background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
+                        border-radius: 3px; font-size: 9px; color: @icon_btn_text@;
                     }
-                    QPushButton:hover { background: @hover_bg@; border-color: #aaa; }
+                    QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
                     QPushButton:checked {
-                        background: @accent@; color: #fff; border-color: @accent@;
+                        background: @icon_btn_checked@; color: @accent_hi@;
+                        border-color: @accent@;
                     }
                 """))
                 group.addButton(btn, v)
