@@ -98,7 +98,7 @@ def _apply_font(app: QApplication) -> None:
 def apply_theme(app: QApplication, mode: str = "auto") -> None:
     """按主题模式刷新主题状态、调色板与全局样式表。
 
-    mode: "auto"(跟随系统) | "light" | "dark" | "anime"(二次元皮肤)
+    mode: "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
     """
     from utils.theme import theme
     theme.refresh(mode)

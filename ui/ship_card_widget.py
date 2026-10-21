@@ -32,23 +32,36 @@ from utils.theme import theme
 # ── 样式常量（动态求值，主题切换后生效） ─────────────────
 
 def card_style() -> str:
+    # 选择器必须写 `QGroupBox`（类型选择器含子类）而不是 `ShipCardWidget QGroupBox`：
+    # 后者要求祖先链上有 ShipCardWidget，卡片自身反而命中不了，卡片底色/圆角失效。
+    # ::title 必须自带与卡片同色的底，才能盖住压在标题下的顶边线；
+    # 只写 color 会沿用全局 QSS 的 @panel_bg@ 白底，在卡片上留下一片白框。
     return theme.qss("""
-        ShipCardWidget QGroupBox {
-            background: @panel_bg@;
+        QGroupBox {
+            background: @card_bg@;
             border: 1px solid @border@;
             border-radius: 8px;
-            margin-top: 8px;
-            padding: 8px 0px 2px 0px;
+            margin-top: 10px;
+            padding: 4px 12px 8px 12px;
             font-size: 12px;
             font-weight: bold;
             color: @text@;
         }
-        ShipCardWidget QGroupBox::title {
+        QGroupBox::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            left: 10px;
+            left: 12px;
             padding: 0 4px;
+            background-color: @card_bg@;
             color: @text@;
+        }
+        /* 无标题卡片（作为父卡片的续行容器）：不画标题带与边框，
+           否则父卡片内部会多出一条空底条和第二重边框 */
+        QGroupBox[untitled="true"] {
+            background: transparent;
+            border: none;
+            margin-top: 0px;
+            padding-top: 4px;
         }
     """)
 
@@ -191,6 +204,9 @@ class ShipCardWidget(QGroupBox):
         icon = section.get("icon", "") or SECTION_ICONS.get(label, "")
         title = f"  {icon} {label}" if icon else f"  {label}"
         self.setTitle(title)
+        if not label:
+            # 属性须在 setStyleSheet 前设好，QSS 属性选择器才会命中
+            self.setProperty("untitled", True)
         self.setStyleSheet(card_style())
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 

@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Optional
 
 from utils.path_utils import get_config_path
+from utils.theme import SKINS
+
+#: 合法的皮肤 id（与 utils.theme.SKINS 单一来源，新增皮肤无需再改这里）
+SKIN_IDS = frozenset(SKINS)
 
 
 @dataclass
@@ -28,8 +32,9 @@ class AppConfig:
     wows_type: str = "未选择"   # "Wargaming" | "Lesta" | "未选择"
     keep_split_json: bool = False  # 解析后是否保留 split JSON 文件
     bin_folder: str = ""  # 游戏 bin 子版本号（如 <bin目录名>）
-    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | "anime"(二次元皮肤)
+    theme_mode: str = "auto"  # "auto"(跟随系统) | "light" | "dark" | <皮肤 id>(如 cyrene)
     holo_effects: bool = True  # 全息视觉效果（网格背景 / 辉光 / 呼吸 / 点缀），仅影响外观
+    skin_art: str = ""  # 角色皮肤右侧装饰列的自定义立绘路径（留空则用占位纹样）
     auto_check_update: bool = True   # 启动时自动检测 GitHub 新版本
     include_prerelease: bool = False  # 版本检测是否把 pre-release 视为可更新版本
 
@@ -182,7 +187,7 @@ class ConfigManager:
 
     @theme_mode.setter
     def theme_mode(self, value: str) -> None:
-        if value not in ("auto", "light", "dark", "anime"):
+        if value not in ("auto", "light", "dark") and value not in SKIN_IDS:
             value = "auto"
         self._config.theme_mode = value
         self.save()
@@ -194,6 +199,15 @@ class ConfigManager:
     @holo_effects.setter
     def holo_effects(self, value: bool) -> None:
         self._config.holo_effects = bool(value)
+        self.save()
+
+    @property
+    def skin_art(self) -> str:
+        return self._config.skin_art
+
+    @skin_art.setter
+    def skin_art(self, value: str) -> None:
+        self._config.skin_art = str(value or "")
         self.save()
 
     @property
@@ -270,6 +284,18 @@ class ConfigManager:
             raw["game_path_lesta"] = legacy
         return raw
 
+    @staticmethod
+    def _migrate_legacy_skin(raw: dict) -> dict:
+        """迁移早期的皮肤命名：theme_mode="anime" -> 皮肤 id，anime_art -> skin_art。"""
+        mode = str(raw.get("theme_mode", "") or "")
+        if mode and mode not in ("auto", "light", "dark") and mode not in SKIN_IDS:
+            # 旧的 "anime" 就是第一套皮肤（昔涟）
+            raw["theme_mode"] = "cyrene" if mode == "anime" else "auto"
+        if "skin_art" not in raw and raw.get("anime_art"):
+            raw["skin_art"] = raw["anime_art"]
+        raw.pop("anime_art", None)
+        return raw
+
     def _load(self) -> AppConfig:
         """从磁盘加载配置，缺失字段用默认值填充"""
         default = AppConfig.default()
@@ -284,6 +310,8 @@ class ConfigManager:
                 return default
             # 旧版配置迁移：把单一 game_path 拆到对应服务器的专用路径字段
             raw = self._migrate_legacy_paths(raw)
+            # 旧版皮肤命名迁移（anime -> cyrene / anime_art -> skin_art）
+            raw = self._migrate_legacy_skin(raw)
             # 只取 dataclass 定义的字段，抛弃多余字段
             valid_keys = {f.name for f in default.__dataclass_fields__.values()}
             filtered = {k: v for k, v in raw.items() if k in valid_keys}

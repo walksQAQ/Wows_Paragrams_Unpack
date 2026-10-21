@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 
 # ── 深浅两套颜色定义 ──────────────────────────────────────
 
@@ -123,6 +124,7 @@ _LIGHT = {
     "panel_frame_hi":   "rgba(42, 100, 168, 0.90)",
     "panel_fill":       "rgba(255, 255, 255, 0.72)",
     "panel_fill_soft":  "rgba(245, 250, 254, 0.60)",
+    "card_bg":          "#FFFFFF",
     # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
     "gold":        "#A35A00",
     "gold_hi":     "#C47300",
@@ -200,6 +202,7 @@ _DARK = {
     "panel_frame_hi":   "rgba(140, 226, 255, 0.92)",
     "panel_fill":       "rgba(13, 33, 58, 0.82)",
     "panel_fill_soft":  "rgba(16, 38, 66, 0.62)",
+    "card_bg":          "#0C1A2E",
     "hud":          "rgba(79, 216, 242, 0.50)",
     "holo_ice":     "rgba(79, 216, 242, 0.22)",
     "holo_glow":    "rgba(79, 216, 242, 0.28)",
@@ -249,8 +252,8 @@ _DARK = {
 }
 
 
-_ANIME = {
-    # ── 二次元皮肤 · 昔涟（白 + 粉）：白为底，粉只做装饰与交互信号 ──
+_SKIN_CYRENE = {
+    # ── 角色皮肤 · 昔涟（白 + 粉）：白为底，粉只做装饰与交互信号 ──
     "window_bg":   "#FBF7FC",                 # 带一丝藕荷的白
     "panel_bg":    "#FFFFFF",                 # 面板纯白，保证数据区可读
     "panel_alt":   "#F8F0F9",                 # 次级区域
@@ -299,8 +302,10 @@ _ANIME = {
     # 面板轮廓：1px 樱粉细线 + 外侧极弱粉辉
     "panel_frame":      "rgba(232, 132, 170, 0.52)",
     "panel_frame_hi":   "rgba(200, 92, 134, 0.88)",
-    "panel_fill":       "rgba(255, 255, 255, 0.80)",
-    "panel_fill_soft":  "rgba(252, 246, 253, 0.64)",
+    "panel_fill":       "rgba(255, 255, 255, 0.62)",
+    "panel_fill_soft":  "rgba(252, 246, 253, 0.50)",
+    # 卡片底特意留一点透明：大尺度底纹要能透过面板与卡片显出来
+    "card_bg":          "rgba(255, 255, 255, 0.70)",
     "hud":          "rgba(235, 126, 163, 0.48)",
     "holo_ice":     "rgba(235, 126, 163, 0.15)",
     "holo_glow":    "rgba(235, 126, 163, 0.24)",
@@ -344,6 +349,58 @@ _ANIME = {
 }
 
 
+# ─────────────────────────────────────────────────────────────
+#  角色皮肤注册表
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SkinSpec:
+    """一套「角色皮肤」的注册信息。
+
+    皮肤与 auto/light/dark **正交**：主题模式决定深浅，皮肤决定一整套配色与
+    装饰语言。皮肤是整份调色板（覆盖明暗），所以启用皮肤时 ``theme.dark``
+    恒为 False。
+
+    以后加新的二次元主题（别的角色 / 别的世界观），只需往 :data:`SKINS` 里
+    补一条，界面各处都按下面的**能力位**走，不必再改控件代码：
+
+    ``brand``      品牌标识形态（"crystal" 棱晶 / "heart" 心形）
+    ``watermark``  工作区背景水印（"" 无 / "mobius" 莫比乌斯环 …）
+    ``art_slot``   是否启用右侧立绘装饰列
+    ``art_files``  ``data/skins/`` 下的约定文件名，按顺序探测
+    """
+
+    id: str
+    name: str
+    palette: dict[str, str]
+    brand: str = "crystal"
+    watermark: str = ""
+    art_slot: bool = False
+    art_files: tuple[str, ...] = ()
+
+
+SKINS: dict[str, SkinSpec] = {
+    "cyrene": SkinSpec(
+        id="cyrene",
+        name="昔涟（半成品）",
+        palette=_SKIN_CYRENE,
+        brand="heart",
+        watermark="mobius",
+        art_slot=True,
+        art_files=("cyrene.png", "cyrene.webp", "cyrene.jpg", "cyrene.jpeg"),
+    ),
+}
+
+
+def skin_ids() -> tuple[str, ...]:
+    """皮肤 id 列表（保持注册顺序，供设置界面生成下拉项）。"""
+    return tuple(SKINS)
+
+
+def get_skin(skin_id: str) -> SkinSpec | None:
+    """按 id 取皮肤定义；未知 id 返回 None（等同「不启用皮肤」）。"""
+    return SKINS.get(skin_id or "")
+
 
 def detect_dark_mode(mode: str = "auto") -> bool:
     """检测是否应使用深色主题。
@@ -352,7 +409,6 @@ def detect_dark_mode(mode: str = "auto") -> bool:
       mode = "auto"  → 跟随系统（环境变量 WPU_THEME 可强制覆盖，用于调试）
              "dark"  → 强制深色
              "light" → 强制浅色
-             "anime" → 二次元皮肤（白 + 浅粉），永远是亮色
 
     优先级（auto 时）：
       1. 环境变量 WPU_THEME=dark|light 强制指定（调试/演示用）
@@ -362,13 +418,13 @@ def detect_dark_mode(mode: str = "auto") -> bool:
     # 0) 显式指定模式（优先于环境变量与系统检测）
     if mode == "dark":
         return True
-    if mode in ("light", "anime"):
+    if mode == "light":
         return False
     # 1) 环境变量强制指定（可覆盖系统设置，调试用）
     forced = os.environ.get("WPU_THEME", "").strip().lower()
     if forced in ("dark", "1", "true", "yes"):
         return True
-    if forced in ("light", "anime", "0", "false", "no"):
+    if forced in ("light", "0", "false", "no"):
         return False
     # 2) Qt 已就绪：使用 QStyleHints.colorScheme()
     try:
@@ -397,33 +453,40 @@ def detect_dark_mode(mode: str = "auto") -> bool:
 
 
 class _Theme:
-    """当前主题单例：持有 dark/anime 标志与颜色表，提供 qss() 占位符替换。
+    """当前主题单例：持有深浅标志、皮肤与颜色表，提供 qss() 占位符替换。
 
-    支持三套皮肤：light（浅蓝）/ dark（深海军蓝）/ anime（白 + 浅粉）。
+    两层正交：**深浅模式**（auto / light / dark）与**角色皮肤**（见 :data:`SKINS`）。
+    启用皮肤时它接管整份调色板，因此 ``dark`` 恒为 False。
     """
 
+    #: 内置皮肤 id 集合（"auto"/"light"/"dark" 之外的取值都当皮肤处理）
     def __init__(self) -> None:
-        self.mode: str = "auto"  # "auto" | "light" | "dark" | "anime"
-        self.anime: bool = False
+        self.mode: str = "auto"  # "auto" | "light" | "dark" | <skin id>
+        self.skin: SkinSpec | None = None
         self.dark: bool = detect_dark_mode(self.mode)
         self.colors: dict[str, str] = dict(_DARK if self.dark else _LIGHT)
         # 已绑定控件的内联样式模板：[(weakref, template), ...]
         self._bindings: list[tuple] = []
 
+    @property
+    def skin_id(self) -> str:
+        """当前皮肤 id；未启用皮肤时为空串。"""
+        return self.skin.id if self.skin else ""
+
     def _palette(self) -> dict[str, str]:
-        """按当前模式选调色板。anime 是独立皮肤（永远是亮色），不参与系统深浅检测。"""
-        self.anime = self.mode == "anime"
-        if self.anime:
-            return _ANIME
+        """按当前模式选调色板。皮肤是完整调色板，不参与系统深浅检测。"""
+        self.skin = get_skin(self.mode) if self.mode not in ("auto", "light", "dark") else None
+        if self.skin is not None:
+            return self.skin.palette
         return _DARK if self.dark else _LIGHT
 
     def refresh(self, mode: str | None = None) -> None:
         """重新检测主题。
 
-        mode 参数："auto" | "light" | "dark" | "anime"，传入后持久化到 self.mode；
-        不传则沿用当前模式。
+        mode 参数："auto" | "light" | "dark" | <皮肤 id>，传入后持久化到
+        self.mode；不传则沿用当前模式。
         """
-        if mode is not None and mode in ("auto", "light", "dark", "anime"):
+        if mode is not None and (mode in ("auto", "light", "dark") or mode in SKINS):
             self.mode = mode
         self.dark = detect_dark_mode(self.mode)
         self.colors = dict(self._palette())
@@ -487,10 +550,27 @@ class _Theme:
         return self.colors[key]
 
     def palette_name(self) -> str:
-        """当前生效的调色板名：light / dark / anime。"""
-        if self.anime:
-            return "anime"
+        """当前生效的调色板名：light / dark / <皮肤 id>。"""
+        if self.skin is not None:
+            return self.skin.id
         return "dark" if self.dark else "light"
+
+    # ── 皮肤能力位（未启用皮肤时回落到中性值） ──
+
+    @property
+    def brand_style(self) -> str:
+        """品牌标识形态："crystal"（棱晶）/ "heart"（心形）…"""
+        return self.skin.brand if self.skin else "crystal"
+
+    @property
+    def watermark_style(self) -> str:
+        """工作区背景水印形态：""（无）/ "mobius" …"""
+        return self.skin.watermark if self.skin else ""
+
+    @property
+    def uses_art_slot(self) -> bool:
+        """当前皮肤是否启用右侧立绘装饰列。"""
+        return bool(self.skin and self.skin.art_slot)
 
     def qcolor(self, key: str):
         """返回 token 对应的 QColor（支持 rgba(r, g, b, a) 写法，a 为 0–1 浮点）。"""

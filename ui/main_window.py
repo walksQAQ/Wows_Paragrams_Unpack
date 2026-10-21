@@ -33,7 +33,15 @@ from ui.toolbar_widget import TopToolbar
 from ui.browser_panel import BrowserPanel
 from ui.module_select import ModuleSelect
 from ui.detail_panel import DetailPanel
-from ui.widgets import HoloBackdrop, ScanStrip, SciFiPanel, AnimeArtSlot, art_slot_visible
+from ui.widgets import (
+    HoloBackdrop,
+    ScanStrip,
+    SciFiPanel,
+    SkinArtSlot,
+    SkinWatermarkOverlay,
+    art_slot_visible,
+    resolve_art_path,
+)
 
 
 class MainWindow(QMainWindow):
@@ -89,13 +97,18 @@ class MainWindow(QMainWindow):
         _detail_layout.addWidget(self.detail, stretch=1)
         content_layout.addWidget(self.detail_frame, stretch=1)
 
-        # 二次元皮肤专用的装饰列（预留插画空间）。
-        # 其它主题下宽度归零、不参与布局，所以科幻/浅蓝两套界面完全不受影响。
-        self.art_slot = AnimeArtSlot()
+        # 角色皮肤的装饰列（预留插画空间）。
+        # 只有具备 art_slot 能力的皮肤才占宽度，其它主题下完全不参与布局。
+        self.art_slot = SkinArtSlot()
+        self._reload_art_slot_art()
         self.art_slot.setVisible(art_slot_visible(self.width()))
         content_layout.addWidget(self.art_slot)
 
         main_layout.addWidget(self.middle, stretch=1)
+
+        # 皮肤水印叠加层：盖在整个工作区之上，只做极淡的纸纹
+        self.art_watermark = SkinWatermarkOverlay(self.middle)
+        self.art_watermark.refresh_theme()
 
         # ── 底部区域（日志面板）─────────────────────────
         bottom_widget = QWidget()
@@ -162,7 +175,6 @@ class MainWindow(QMainWindow):
         bus.folder_selected.connect(self._on_category_changed)
         # 切换皮肤 → 重新判断二次元装饰列是否该出现
         bus.theme_changed.connect(self._refresh_art_slot)
-
         # 重置 UI 状态时取消所有选中项
         bus.data_loaded.connect(lambda _: self.clear_all_selections())
         bus.localization_ready.connect(self.clear_all_selections)
@@ -181,6 +193,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_art_slot(self, *_args) -> None:
         """按皮肤与窗口宽度决定装饰列显隐（其它皮肤下宽度为 0，不占布局）。"""
+        self._sync_skin_overlays()
         slot = getattr(self, "art_slot", None)
         if slot is None:
             return
@@ -188,7 +201,36 @@ class MainWindow(QMainWindow):
         if slot.isVisible() != show:
             slot.setVisible(show)
         if show:
+            self._reload_art_slot_art()
             slot.refresh_theme()
+
+    def _sync_skin_overlays(self) -> None:
+        """让水印叠加层铺满工作区并置顶（不抢焦点、不接收鼠标）。"""
+        wm = getattr(self, "art_watermark", None)
+        middle = getattr(self, "middle", None)
+        if wm is None or middle is None:
+            return
+        wm.setGeometry(middle.rect())
+        wm.refresh_theme()
+        if wm.isVisible():
+            wm.raise_()
+
+    def _reload_art_slot_art(self) -> None:
+        """按配置 / 约定文件名载入用户自备的立绘（程序不内置任何官方立绘）。"""
+        slot = getattr(self, "art_slot", None)
+        if slot is None:
+            return
+        try:
+            want = str(getattr(app.ctx.config, "skin_art", "") or "")
+        except Exception:  # noqa: BLE001
+            want = ""
+        path = resolve_art_path(want)
+        if path is None:
+            if slot.has_art:
+                slot.load_art(None)
+            return
+        if slot.art_file != str(path):
+            slot.load_art(path)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
