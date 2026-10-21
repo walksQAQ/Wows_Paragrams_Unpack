@@ -85,7 +85,7 @@ class WargamingDetailPanel(DetailPanel):
                           border-radius:4px;
                           min-width:30px; min-height:30px; max-width:30px; max-height:30px;
                           font-size:8px; color:@icon_btn_text@; padding:0px; }
-            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@accent@; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@icon_btn_border_hi@; }
         """)
         wg_grid = QWidget()
         wgl = QGridLayout(wg_grid)
@@ -360,8 +360,8 @@ class WargamingDetailPanel(DetailPanel):
             WG_SIG_BTN = theme.qss("""
                 QPushButton { background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
                 border-radius: 4px; padding: 0; }
-                QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
-                QPushButton:checked { background:@icon_btn_checked@; border-color: @accent@; }
+                QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
+                QPushButton:checked { background:@icon_btn_checked@; border-color: @icon_btn_border_hi@; }
             """)
             def _fmt_wg(mk, mv):
                 cn = _NM_WG.MODIFIER_MAP.get(mk, mk)

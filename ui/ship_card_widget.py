@@ -516,10 +516,10 @@ class ShipCardWidget(QGroupBox):
                         background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
                         border-radius: 3px; font-size: 9px; color: @icon_btn_text@;
                     }
-                    QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
+                    QPushButton:hover { background: @icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
                     QPushButton:checked {
-                        background: @icon_btn_checked@; color: @accent_hi@;
-                        border-color: @accent@;
+                        background: @icon_btn_checked@; color: @icon_btn_text_hi@;
+                        border-color: @icon_btn_border_hi@;
                     }
                 """))
                 group.addButton(btn, v)

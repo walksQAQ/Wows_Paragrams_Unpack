@@ -542,9 +542,9 @@ class LestaDetailPanel(DetailPanel):
                           border-radius:4px;
                           min-width:32px; min-height:32px; max-width:32px; max-height:32px;
                           font-size:9px; color:@icon_btn_text@; padding:0px; }
-            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@accent@; }
-            QPushButton:checked { background:@icon_btn_checked@; color:@accent_hi@;
-                                  border-color:@accent@; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@icon_btn_border_hi@; }
+            QPushButton:checked { background:@icon_btn_checked@; color:@icon_btn_text_hi@;
+                                  border-color:@icon_btn_border_hi@; }
         """)
 
         from models.name_mapping import Mapping as _NM
@@ -1411,8 +1411,8 @@ class LestaDetailPanel(DetailPanel):
         SIG_BTN = theme.qss("""
             QPushButton { background: @icon_btn_bg@; border: 1px solid @icon_btn_border@;
             border-radius: 4px; padding: 0; }
-            QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
-            QPushButton:checked { background:@icon_btn_checked@; border: 2px solid @accent@; }
+            QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
+            QPushButton:checked { background:@icon_btn_checked@; border: 2px solid @icon_btn_border_hi@; }
         """)
         from models.name_mapping import Mapping as _NM
 
@@ -1487,7 +1487,7 @@ class LestaDetailPanel(DetailPanel):
             border-radius: 3px; padding: 1px 4px; text-align: left;
             font-size: 10px; color: @icon_btn_text@; min-height: 18px; }
             QPushButton:hover { background:@icon_btn_bg_hover@; }
-            QPushButton:checked { background: @icon_btn_checked@; color: @accent_hi@; }
+            QPushButton:checked { background: @icon_btn_checked@; color: @icon_btn_text_hi@; }
         """)
         from models.name_mapping import Mapping as _NM
 

@@ -504,7 +504,7 @@ class CrewCustomizeDialog(HoloDialog):
                                       max-width:52px; max-height:52px; font-size:9px;
                                       color:@icon_btn_text@; padding:0px; }
                         QPushButton:hover { background:@icon_btn_bg_hover@;
-                                            border-color:@accent@; }
+                                            border-color:@icon_btn_border_hi@; }
                     """))
                     btn.setCheckable(False)
                     btn.setToolTip(_build_tip(sk))

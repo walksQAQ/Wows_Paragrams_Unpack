@@ -124,13 +124,6 @@ _LIGHT = {
     "panel_fill":       "rgba(255, 255, 255, 0.72)",
     "panel_fill_soft":  "rgba(245, 250, 254, 0.60)",
     # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
-    "icon_btn_bg":        "#24384F",
-    "icon_btn_bg_hover":  "#31506E",
-    "icon_btn_border":    "#3E5D7D",
-    "icon_btn_border_hi": "#0E7C93",
-    "icon_btn_checked":   "#0E7C93",
-    "icon_btn_text":      "#D6E4F0",
-    "icon_btn_text_dim":  "#93A9BE",
     "gold":        "#A35A00",
     "gold_hi":     "#C47300",
     "gold_bg":     "#FBF1DE",
@@ -141,6 +134,16 @@ _LIGHT = {
     "tip_muted":   "#3B4F63",
     "tip_dim":     "#5E7186",
     "tip_rule":    "#C9D8E4",
+    # ── 图标按钮（浅色主题下底色同样保持深色，保证白图标可读）──
+    # 与深色主题同一策略：深底 + 亮青描边；绝不能用中间明度青绿做选中底。
+    "icon_btn_bg":        "#16304A",
+    "icon_btn_bg_hover":  "#2F5D80",
+    "icon_btn_checked":   "#0B4A6B",
+    "icon_btn_border":    "#3C6383",
+    "icon_btn_border_hi": "#5FD9F2",
+    "icon_btn_text":      "#DCE9F4",
+    "icon_btn_text_dim":  "#93A9BE",
+    "icon_btn_text_hi":   "#7FE3FF",
 }
 
 
@@ -218,13 +221,6 @@ _DARK = {
     # ── 图标按钮（技能 / 升级品 / 信号旗 / 模块）──
     # 游戏图标是「白色图形 + 透明底」，因此这层底色在深浅两套主题下都保持深色，
     # 让白图标始终有足够对比度，不随主题变亮而消失。
-    "icon_btn_bg":        "#0E1E33",
-    "icon_btn_bg_hover":  "#1B3550",
-    "icon_btn_border":    "#2A4A6B",
-    "icon_btn_border_hi": "#4FD8F2",
-    "icon_btn_checked":   "#17456B",
-    "icon_btn_text":      "#AFC6DC",
-    "icon_btn_text_dim":  "#6C86A0",
     # 强化 / 传奇技能：琥珀金强调
     "gold":        "#FFC24D",
     "gold_hi":     "#FFD98A",
@@ -238,6 +234,18 @@ _DARK = {
     "tip_muted":   "#A8BED4",
     "tip_dim":     "#7A90A8",
     "tip_rule":    "#2C5478",
+    # ── 图标按钮（技能 / 升级品 / 信号旗 / 模块）──
+    # 游戏图标是「单色浅色图形 + 透明底」，只有在深色底上才对比清楚。
+    # 因此这层底色在深浅两套主题下都保持深色；选中态用「更深的蓝 + 亮青描边」，
+    # 而不是中间明度的青色——后者会让白图标几乎看不见。
+    "icon_btn_bg":        "#0F2033",
+    "icon_btn_bg_hover":  "#1E3E5C",
+    "icon_btn_checked":   "#0B4C6E",
+    "icon_btn_border":    "#31536F",
+    "icon_btn_border_hi": "#8AF0FF",
+    "icon_btn_text":      "#C6DAEC",
+    "icon_btn_text_dim":  "#8199B2",
+    "icon_btn_text_hi":   "#9AF3FF",
 }
 
 

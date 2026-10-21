@@ -463,10 +463,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @icon_btn_checked@; color: @accent_hi@; border-color: @accent@;
+                background: @icon_btn_checked@; color: @icon_btn_text_hi@; border-color: @icon_btn_border_hi@;
             }
         """)
         # 缺少图片时：缩小字号、弱化文字（主题化）
@@ -475,16 +475,16 @@ class DetailPanel(QWidget):
                 background: @icon_btn_bg@;
                 border: 1px solid @icon_btn_border@;
                 border-radius: 6px; padding: 2px;
-                font-size: 8px; color: @text_hint@;
+                font-size: 8px; color: @icon_btn_text_dim@;
                 min-width: 40px; min-height: 40px;
                 max-width: 40px; max-height: 40px;
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @icon_btn_checked@; color: @accent_hi@; border-color: @accent@;
+                background: @icon_btn_checked@; color: @icon_btn_text_hi@; border-color: @icon_btn_border_hi@;
             }
         """)
 
@@ -641,8 +641,8 @@ class DetailPanel(QWidget):
                         border-radius: 4px;
                         padding: 2px; min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
-                    QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
+                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
+                    QPushButton:checked { background: @icon_btn_checked@; border-color: @icon_btn_border_hi@; }
                 """)
                 SLOT_STYLE_TXT = theme.qss("""
                     QPushButton {
@@ -651,8 +651,8 @@ class DetailPanel(QWidget):
                         padding: 2px; font-size: 8px; color: @icon_btn_text_dim@;
                         min-width: 36px; min-height: 36px; max-width: 36px; max-height: 36px;
                     }
-                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @accent@; }
-                    QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
+                    QPushButton:hover { background:@icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
+                    QPushButton:checked { background: @icon_btn_checked@; border-color: @icon_btn_border_hi@; }
                 """)
                 for i in range(max_slots):  # 根据等级限制槽位数量
                     slot_mods = mods_by_slot.get(i, [])
@@ -1069,7 +1069,7 @@ class DetailPanel(QWidget):
                             for ai in ga:
                                 an = ai.get("name",""); di = ai.get("detail_items",[]); at = ai.get("ammo_type","").lower(); sp = ai.get("species","").lower()
                                 btn = QPushButton(""); btn.setFixedSize(36,36); btn.setCheckable(True)
-                                btn.setStyleSheet(theme.qss("QPushButton{background:@icon_btn_bg@;border:1px solid @icon_btn_border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@icon_btn_bg_hover@;border-color:@accent@;}QPushButton:checked{background:@icon_btn_checked@;border-color:@accent@;}"))
+                                btn.setStyleSheet(theme.qss("QPushButton{background:@icon_btn_bg@;border:1px solid @icon_btn_border@;border-radius:6px;padding:2px;min-width:36px;min-height:36px;max-width:36px;max-height:36px;}QPushButton:hover{background:@icon_btn_bg_hover@;border-color:@icon_btn_border_hi@;}QPushButton:checked{background:@icon_btn_checked@;border-color:@icon_btn_border_hi@;}"))
                                 btn.setToolTip(an)
                                 cand = self._ammo_icon_candidates(at, sp, ai, bool(ai.get("switchable")))
                                 ip = next((p for c in cand if not (p:=QPixmap(pic_path(f"ammo_types/{c}"))).isNull()), None)
@@ -1151,10 +1151,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @hover_bg@; border-color: @accent@;
+                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
             }
         """)
 
@@ -1284,10 +1284,10 @@ class DetailPanel(QWidget):
                         }
                         QPushButton:hover {
                             background: @icon_btn_bg_hover@;
-                            border-color: @accent@;
+                            border-color: @icon_btn_border_hi@;
                         }
                         QPushButton:checked {
-                            background: @hover_bg@; border-color: @accent@;
+                            background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
                         }
                     """)
                     con_btn_row = QWidget()
@@ -1443,8 +1443,8 @@ class DetailPanel(QWidget):
                 min-width: 36px; min-height: 36px;
                 max-width: 36px; max-height: 36px;
             }
-            QPushButton:hover { background: @hover_bg@; border-color: @accent@; }
-            QPushButton:checked { background: @icon_btn_checked@; border-color: @accent@; }
+            QPushButton:hover { background: @icon_btn_bg_hover@; border-color: @icon_btn_border_hi@; }
+            QPushButton:checked { background: @icon_btn_checked@; border-color: @icon_btn_border_hi@; }
         """)
 
         ammo_idx = 0
@@ -1554,10 +1554,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @hover_bg@; border-color: @accent@;
+                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
             }
         """)
 
@@ -1706,10 +1706,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @hover_bg@; border-color: @accent@;
+                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
             }
         """)
         btn.setStyleSheet(BTN_STYLE)
@@ -2020,10 +2020,10 @@ class DetailPanel(QWidget):
             }
             QPushButton:hover {
                 background: @icon_btn_bg_hover@;
-                border-color: @accent@;
+                border-color: @icon_btn_border_hi@;
             }
             QPushButton:checked {
-                background: @hover_bg@; border-color: @accent@;
+                background: @icon_btn_checked@; border-color: @icon_btn_border_hi@;
             }
         """)
 

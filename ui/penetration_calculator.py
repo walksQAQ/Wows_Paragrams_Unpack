@@ -534,7 +534,7 @@ class PenetrationCalculatorDialog(HoloDialog):
                 color: @text@;
                 border: 1px solid @border@;
                 selection-background-color: @hover_bg@;
-                selection-color: @accent@;
+                selection-color: @text@;
             }
             QPushButton { border-radius: 4px; padding: 6px 12px; min-height: 28px; }
             QTableWidget {
@@ -558,8 +558,8 @@ class PenetrationCalculatorDialog(HoloDialog):
                 padding: 4px;
             }
             QTableWidget::item:selected {
-                background: @icon_btn_checked@;
-                color: @accent_hi@;
+                background: @hover_bg@;
+                color: @text@;
             }
             QWidget {
                 color: @text@;
@@ -771,7 +771,7 @@ class PenetrationCalculatorDialog(HoloDialog):
             " border:1px solid @icon_btn_border@;"
             " border-radius:2px; padding:0px; font-size:9px;"
             " min-height:0px; max-height:14px; }"
-            "QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@accent@; }"
+            "QPushButton:hover { background:@icon_btn_bg_hover@; border-color:@icon_btn_border_hi@; }"
             "QPushButton:pressed { background:@icon_btn_checked@; }"
         )
         self.scatter_btn_up = QPushButton("▲", self)
@@ -1723,7 +1723,7 @@ class PenetrationCalculatorDialog(HoloDialog):
     def _mod_btn_style() -> str:
         return theme.qss("""
             QPushButton { border-radius:4px; padding:4px 7px; font-size:12px; }
-            QPushButton:checked { background:@icon_btn_checked@; border-color:@accent@; color:@accent_hi@; }
+            QPushButton:checked { background:@icon_btn_checked@; border-color:@icon_btn_border_hi@; color:@icon_btn_text_hi@; }
         """)
 
     def _load_mod_bonuses(self):
