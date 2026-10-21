@@ -111,9 +111,7 @@ class TopToolbar(QWidget):
         self.btn_refresh = SciFiButton("刷新界面")
         self.btn_ballistics = SciFiButton("穿深计算器")
         # 资源解包器 / 独立涂装已移入菜单栏「工具」（见 ui/main_window.py）
-        # 复制按钮：无下拉，点击 = 复制右下方信息面板的完整文本内容
-        self.btn_copy = SciFiButton("复制当前信息")
-        self.btn_copy.setToolTip("将右下方信息显示区的完整内容以文本复制到剪贴板")
+        # 复制按钮：无下拉，点击 = 把信息面板整页渲染为长图复制
         self.btn_copy_panel = SciFiButton("复制完整界面")
         self.btn_copy_panel.setToolTip("将当前 DetailPanel 全页内容渲染为长图并复制到系统剪贴板")
 
@@ -144,7 +142,7 @@ class TopToolbar(QWidget):
         layout.addWidget(_ToolbarSeparator())
         layout.addSpacing(6)
 
-        for b in (self.btn_ballistics, self.btn_copy, self.btn_copy_panel):
+        for b in (self.btn_ballistics, self.btn_copy_panel):
             layout.addWidget(b)
 
         layout.addStretch()
@@ -194,7 +192,6 @@ class TopToolbar(QWidget):
         self.btn_lang.clicked.connect(self._on_lang)
         self.btn_refresh.clicked.connect(self._on_refresh)
         self.btn_ballistics.clicked.connect(self._on_ballistics)
-        self.btn_copy.clicked.connect(lambda: bus.copy_ship_info.emit())
         self.btn_copy_panel.clicked.connect(lambda: bus.copy_panel_screenshot.emit())
         self.btn_check_update.clicked.connect(lambda: self.check_update(force=True))
         bus.update_check_done.connect(self._on_update_check_done)

@@ -223,7 +223,7 @@ def build(theme: dict[str, str], mode_name: str, ref_png: Path | None) -> "PSDIm
     # 工具栏按钮（斜切薄片）
     bx = 300
     for bi, label in enumerate(("加载数据", "加载文本", "刷新界面", "穿深计算器",
-                                "复制当前信息", "复制完整界面")):
+                                "复制完整界面")):
         wbtn = 16 + len(label) * 13
         add(g, chamfered((bx, 36, wbtn, 30), rgba(theme["metal_mid"]),
                          fill=rgba(theme["toolbar_btn_bg"]), chamfer=9),
