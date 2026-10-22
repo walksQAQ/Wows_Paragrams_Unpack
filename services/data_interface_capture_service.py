@@ -48,7 +48,11 @@ class DataInterfaceCaptureService:
             clean_parts = [p for p in parts if p is not None and not p.isNull()]
             if not clean_parts:
                 return QPixmap()
-            return self.compose(clean_parts)
+            from ui.widgets.watermark import watermark_pixmap
+            return watermark_pixmap(
+                self.compose(clean_parts),
+                getattr(detail_panel, "_watermark_version", ""),
+            )
         finally:
             setattr(detail_panel, "_capture_accumulate_con", False)
             self._restore_detail_stacks(flatten_saved)

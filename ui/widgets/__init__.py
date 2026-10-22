@@ -10,8 +10,10 @@ from ui.widgets.scifi_panel import (
 from ui.widgets.dialog_style import DIALOG_QSS, PRIMARY_BTN_QSS, HoloDialog, HoloWindow
 from ui.widgets.scifi_button import SciFiButton
 from ui.widgets.skin_art import ART_WIDTH, MIN_WINDOW_WIDTH, SkinArtSlot, art_slot_visible
+from ui.widgets.watermark import paint_watermark, watermark_label_qss, watermark_pixmap, watermark_text
 
 __all__ = ["HoloBackdrop", "SciFiPanel", "SparkDot", "CrystalMark", "ScanStrip",
            "HoloDialog", "HoloWindow", "DIALOG_QSS",
            "PRIMARY_BTN_QSS", "SciFiButton",
-           "SkinArtSlot", "ART_WIDTH", "MIN_WINDOW_WIDTH", "art_slot_visible"]
+           "SkinArtSlot", "ART_WIDTH", "MIN_WINDOW_WIDTH", "art_slot_visible",
+           "paint_watermark", "watermark_pixmap", "watermark_text", "watermark_label_qss"]

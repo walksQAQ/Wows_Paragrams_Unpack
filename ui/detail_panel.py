@@ -8,6 +8,7 @@ DetailPanel —— 右侧详情展示面板（QStackedWidget，动态页面）�
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import defaultdict
 
 from functools import partial
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QPushButton, QLabel, QFrame, QButtonGroup,
     QScrollArea, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QFont, QIcon, QPixmap
 
 from app.signals import bus
@@ -26,6 +27,7 @@ from presenters.registry import PresenterRegistry, CATEGORY_TO_ETYPE
 from ui.ship_card_widget import ShipCardWidget
 from utils.theme import theme
 from utils.image_paths import pic_path, pic_path_ci
+from ui.widgets.watermark import watermark_label_qss
 
 
 # U13: 加性修饰符键集（3 处重复 → 模块级常量）
@@ -171,6 +173,18 @@ class DetailPanel(QWidget):
         layout.setSpacing(0)
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
+        self._watermark_label = QLabel()
+        self._watermark_label.setFixedHeight(22)
+        self._watermark_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._watermark_label.setContentsMargins(8, 0, 8, 0)
+        self._watermark_label.setStyleSheet(watermark_label_qss())
+        layout.addWidget(self._watermark_label)
+        self._watermark_version = ""
+        self._watermark_timer = QTimer(self)
+        self._watermark_timer.setInterval(1000)
+        self._watermark_timer.timeout.connect(self._refresh_watermark)
+        self._watermark_timer.start()
+        self._refresh_watermark()
 
         self._build_default_pages()
         self._show_hint()
@@ -179,6 +193,15 @@ class DetailPanel(QWidget):
         bus.copy_panel_screenshot.connect(self._copy_panel_screenshot)
         # 主题切换后刷新默认页文字/背景颜色
         bus.theme_changed.connect(self._on_theme_changed)
+
+    def _refresh_watermark(self) -> None:
+        """刷新数据库版本与时间（每秒一次，时间精度到秒）。"""
+        try:
+            self._watermark_version = get_db(self.wows_type).get_latest_version_code() or ""
+        except (OSError, RuntimeError, sqlite3.Error):
+            self._watermark_version = ""
+        from ui.widgets.watermark import watermark_text
+        self._watermark_label.setText(watermark_text(self._watermark_version))
 
     def _apply_default_page_styles(self) -> None:
         """显式重置默认三页样式，确保说明页在主题切换时也跟随更新。"""
@@ -195,6 +218,7 @@ class DetailPanel(QWidget):
     def _on_theme_changed(self, _mode: str) -> None:
         """主题切换后：立即刷新默认页内容与样式；舰船卡片模式则完整重建页面以应用新主题。"""
         try:
+            self._watermark_label.setStyleSheet(watermark_label_qss())
             self._apply_default_page_styles()
             if self._default_pages:
                 # 过滤已被删除的页面，避免操作失效对象崩溃
@@ -2929,4 +2953,3 @@ class DetailPanel(QWidget):
                 te.setPlainText(hint)
             except Exception:  # noqa: BLE001
                 pass
-
