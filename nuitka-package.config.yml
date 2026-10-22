@@ -1,0 +1,11 @@
+# Nuitka 用户包配置（由 --user-package-configuration-file 加载）。
+#
+# pygltflib 模块末尾的 main() 只在 `python -m pygltflib` 时才会运行，函数体里
+# `import doctest` 会触发 anti-bloat 的 unwanted-module 警告，并让打包器多分析
+# 一个标准库模块。本项目只把它当库用（导出的 GLB 写入），因此把该函数体换成
+# `lambda: None`：警告消失，库的公开 API（GLTF2 / load / save 等）不受影响。
+- module-name: 'pygltflib' # checksum: 2b8876eb
+  anti-bloat:
+    - description: 'drop CLI-only doctest runner (module is only used as a library)'
+      change_function:
+        'main': "'(lambda: None)'"

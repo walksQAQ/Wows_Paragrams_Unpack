@@ -116,6 +116,12 @@ if not defined DLL_ARG (
 set EXTRA_NUITKA_ARGS=
 if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--lto=no
 
+:: 打包噪音收敛（2026-10）：
+::   --quiet                         只屏蔽 Nuitka 的 info 级日志（如 anti-bloat 的
+::                                   "Not including 'PIL.ImageTk' ..." 提示），warning/error 照常输出
+::   --user-package-configuration-file
+::                                   pygltflib.main() 里的 doctest 导入只在 `python -m pygltflib`
+::                                   时才会执行，打包时替换为空实现，去掉 anti-bloat 警告
 :: Step 2: compile onefile executable
 %PYTHON% -m nuitka ^
     --standalone ^
@@ -125,6 +131,8 @@ if "%CI_MODE%"=="1" set EXTRA_NUITKA_ARGS=--lto=no
     --windows-console-mode=attach ^
     --enable-plugin=pyside6 ^
     --assume-yes-for-downloads ^
+    --quiet ^
+    --user-package-configuration-file=nuitka-package.config.yml ^
     --include-module=app._resources ^
     --include-module=services.GameParams ^
     --include-package=meshoptimizer ^
