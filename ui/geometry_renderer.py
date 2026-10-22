@@ -2558,6 +2558,19 @@ class GeometryViewport(QOpenGLWidget):
             import time
             p = out / f"render_{int(time.time())}.png"
             img = self.grabFramebuffer()
+            from ui.widgets.watermark import WATERMARK_ALPHA, watermark_text
+            from PySide6.QtCore import Qt as _Qt
+            from PySide6.QtGui import QFont, QPainter
+            from utils.theme import theme
+            painter = QPainter(img)
+            painter.setFont(QFont("Consolas", 8))
+            color = theme.qcolor("text")
+            color.setAlpha(WATERMARK_ALPHA)
+            painter.setPen(color)
+            painter.drawText(img.rect().adjusted(8, 0, -8, -4),
+                             int(_Qt.AlignmentFlag.AlignRight | _Qt.AlignmentFlag.AlignBottom),
+                             watermark_text())
+            painter.end()
             img.save(str(p))
             from app.signals import bus
             bus.log_message.emit(f"📸 已存截图: {p}")
