@@ -31,7 +31,7 @@
 | ⚔️ **3D 可视化** | `.geometry` 模型解析 + 装甲厚度着色渲染（PyOpenGL） |
 | 🎯 **穿深 / 散布** | 基于游戏公式的穿深、纵向 / 横向散布计算 |
 | 🧊 **模型导出** | 导出 GLB / glTF 2.0（含装甲模型、PBR 通道贴图、挂点层级、顶点权重） |
-| 🧾 **明文转码**（实验性） | assets.bin 的 `.mfm` / `.visual` / `.model` / `.skel_ext` 转 Mod SDK 明文格式 |
+| 🧾 **明文转码**（实验性） | assets.bin 的 `.mfm` / `.visual` / `.model` / `.skel_ext` / 粒子 `.xml`（`high`/`low` 效果 + `shared` 元数据）转 Mod SDK 明文格式 |
 
 
 ### 使用流程
@@ -71,7 +71,32 @@
 ## 🧪 实验性功能：assets.bin 明文转码
 
 assets.bin 浏览器里的「明文格式」/「导出明文」会把 `.mfm` / `.visual` / `.model` /
-`.skel_ext` 转成 Mod SDK 明文样式。**该功能为实验性，可能存在部分数据有误。**
+`.skel_ext` / 粒子图集 `.contours` 转成可读明文，并把粒子效果转成与游戏 `.xml`
+粒子文件同构的 XML：
+
+- `/particles/xxx.xml/high`、`/particles/xxx.xml/low`（`EffectPrototype`）→ 完整效果
+  （系统 / 渲染器 / 发射器 / 动画 / 距离与标量曲线 / 强度通道曲线 /
+  **动作载荷**：tint 渐变、ramp、力场、屏障等 / 光照组件）；
+- `/particles/xxx.xml/shared`（`EffectMetadataPrototype`）→ 强度通道元数据
+  （通道名 + min / max / 默认值，固定 6 个槽位，与 `high` 里每个 system 的
+  `intensities` 曲线条数无关）；
+- `/particles/*/<贴图>.dds_<fx>_<fy>_<a>_<b>.contours`（`AtlasContourProto`）→
+  粒子图集**每帧轮廓多边形**（每帧 `pointCount` 个 vec2 点）。
+
+同一个粒子 `.xml` 的 `high` / `low` / `shared` **会合成一份明文**（`xxx.xml`），
+版式对齐游戏自带的粒子 XML（`res_unpack/helpers/particles/sfx_fail.xml`）：
+`<high>` / `<low>` / `<shared>` 三段 + `<prototype>` + 制表符缩进、4 位小数。
+文件树里这类粒子 `.xml` 也只占**一行**（自动折叠 high/low/shared，点它即得整份明文）。
+
+**该功能为实验性，可能存在部分数据有误。**
+
+粒子 XML 的字段布局来自客户端反编译（见
+[docs/korabli-particles-effect-format.md](./docs/korabli-particles-effect-format.md)）：
+**莱服 `Korabli64.exe`** 与 **寄服 `WorldOfWarships64.exe`** 各有一套布局
+（寄服系统结构 0x1C8、莱服 0x210），按当前服务器自动选用，两服的
+`high`/`low`/`shared` 都能转成明文（寄服差异见该文档 §16）。
+结构化字段已全部解码；数据池里没有被任何字段引用的对齐/空闲字节不写进明文，
+但仍参与回写，所以不改动时可逐字节还原原始数据。
 
 原因是 assets.bin 的记录布局与 Mod SDK 明文并非一一对应，已知差异包括：
 

@@ -1259,69 +1259,31 @@ def decode_misc_settings(data: bytes, db: PrototypeDatabase) -> dict:
 
 def decode_effect(data: bytes, db: PrototypeDatabase, record_base: int = 0,
                   item_size: int = 0x10) -> dict:
-    """解码 EffectPrototype（0x10B/条，blob 5，粒子效果图，Korabli 实测）。
+    """解码 EffectPrototype（粒子效果，blob 5）为结构化 dict。
 
-    记录布局（2026-08-05 数据驱动逆向，relptr 基准=blob 起点）：
-      +0x00 f32  scalar（通常 -1.0 或正数，语义未知）
-      +0x04 u32  count（子节点/条目数）
-      +0x08 u32  relptr（本记录 OOL 区域起点）
-      +0x0C u32  pad
-    OOL 区域 = [relptr, 下一记录 relptr)，相邻记录 OOL 首尾相接无间隙。
-    OOL 内含内嵌原始字符串（如 "glow_0"）与重复的 -1.0f/1.0f/计数/偏移 节点模式。
+    逐字段布局来自 26.11PT1 客户端 ``Korabli64.exe`` 反编译，
+    详见 :mod:`uncode_assets.fx` 模块文档。
 
-    本解码为尽力解析（wows-toolkit 亦无结构化解码）：
-      头部字段 + OOL 内嵌字符串 + 16B 对齐候选节点头（启发式）。
+    Args:
+        data: 从记录起始、延伸到 blob 末尾的切片。
+        db: 原型库（本类型不需要，保留签名一致）。
+        record_base / item_size: 兼容既有调用，未使用。
     """
-    if len(data) < item_size:
-        raise ParseError(f"EffectPrototype 数据过短: {len(data)}")
-    scalar = B.read_f32(data, 0x00)
-    count = B.read_u32(data, 0x04)
-    rel = B.read_u32(data, 0x08)
-    pad = B.read_u32(data, 0x0C)
-
-    # OOL 区域（blob-absolute [rel, next_rel) → data 切片坐标）
-    ool_start = rel - record_base
-    ool_end = len(data)
-    if len(data) >= item_size + 8:
-        nrel = B.read_u32(data, item_size + 8)
-        if nrel > rel:
-            ool_end = nrel - record_base
-    region = b""
-    ool_len = 0
-    if 0 <= ool_start < len(data):
-        ool_len = max(0, min(ool_end, len(data)) - ool_start)
-        region = data[ool_start:ool_start + ool_len]
-
-    # 16B 对齐候选节点头（启发式：relptr 落在本记录可达范围内）
-    nodes: List[dict] = []
-    blob_end = len(data) + record_base
-    for p in range(0, len(region) - 15, 16):
-        r = B.read_u32(region, p + 8)
-        if 0 < r < blob_end:
-            nodes.append({
-                "offset": p,
-                "value": _f(B.read_f32(region, p)),
-                "count": B.read_u32(region, p + 4),
-                "relptr": r,
-                "pad": B.read_u32(region, p + 12),
-            })
-            if len(nodes) >= 32:
-                break
-
-    return {
-        "_type": "EffectPrototype",
-        "scalar": _f(scalar),
-        "count": count,
-        "relptr": rel,
-        "pad": pad,
-        "ool_size": ool_len,
-        "embedded_strings": _extract_ascii_strings(region, limit=40),
-        "candidate_nodes": nodes,
-        "ool_hex": region[:256].hex(),
-    }
+    from .fx import decode_effect_data
+    return decode_effect_data(data)
 
 
-# ── 通用解码（EffectPreset / EffectMetadata / AtlasContour / ModelFbx / 未知）─
+def decode_effect_metadata(data: bytes, db: PrototypeDatabase, record_base: int = 0,
+                           item_size: int = 0x10) -> dict:
+    """解码 EffectMetadataPrototype（粒子 ``/xxx.xml/shared`` 元数据）。
+
+    布局来自 26.11PT1 客户端反编译，详见 :mod:`uncode_assets.fx` 模块文档。
+    """
+    from .fx import decode_metadata_data
+    return decode_metadata_data(data)
+
+
+# ── 通用解码（EffectPreset / AtlasContour / ModelFbx / 未知）─
 
 def decode_generic(data: bytes, db: PrototypeDatabase, type_name: str, item_size: int) -> dict:
     """通用解码：输出原始字节 + 尽力解析 i64 相对指针字段。"""
@@ -1388,7 +1350,12 @@ def decode_by_type(data: bytes, db: PrototypeDatabase, proto_type: Optional[Prot
         return decode_misc_settings(data, db)
     if name == "EffectPrototype":
         return decode_effect(data, db, record_base)
-    # ModelFbx / EffectPreset / EffectMetadata / AtlasContour / 未知
+    if name == "EffectMetadataPrototype":
+        return decode_effect_metadata(data, db)
+    if name == "AtlasContourProto":
+        from .atlas_contour import decode_contours
+        return decode_contours(data)
+    # ModelFbx / EffectPreset / 未知
     return decode_generic(data, db, name, item_size)
 
 

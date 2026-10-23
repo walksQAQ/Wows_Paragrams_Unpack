@@ -37,17 +37,17 @@ RULE_LEGACY = "legacy"
 #: UI 文案
 RULE_LABELS = {
     RULE_AUTO: "自动",
-    RULE_LESTA: "Lesta（莱服）",
-    RULE_WARGAMING: "Wargaming（寄服）",
-    RULE_WG_OLD: "寄服旧布局（14.0 及更早）",
-    RULE_LEGACY: "远古版本（2023年8月前的游戏客户端版本）",
+    RULE_LESTA: "Lesta（26.10）",
+    RULE_WARGAMING: "Wargaming（15.9）",
+    RULE_WG_OLD: "Wargaming（12/7 - 14.0）",
+    RULE_LEGACY: "远古版本（<12.7）",
 }
 
 #: 判定结果里用的短名（塞进状态栏方括号，不能用 RULE_LABELS 的长文案）
 RULE_SHORT_LABELS = {
     RULE_LESTA: "Lesta",
     RULE_WARGAMING: "Wargaming",
-    RULE_WG_OLD: "寄服旧布局",
+    RULE_WG_OLD: "Wargaming（旧布局）",
     RULE_LEGACY: "远古版本",
 }
 

@@ -245,12 +245,13 @@ def _decodable_types() -> frozenset:
         # WG 无 Skeleton/Trail/VfxMaterial/MiscSettings；Material/Visual/Model/Effect/SkeletonExtender 有解码器
         return frozenset({
             "MaterialPrototype", "VisualPrototype", "ModelPrototype",
-            "EffectPrototype", "SkeletonExtenderPrototype",
+            "EffectPrototype", "EffectMetadataPrototype", "SkeletonExtenderPrototype",
+            "AtlasContourProto",
         })
     return frozenset({
         "MaterialPrototype", "SkeletonPrototype", "VisualPrototype", "ModelPrototype",
         "MiscSettingsPrototype", "TrailPrototype", "VfxMaterialPrototype",
-        "EffectPrototype",
+        "EffectPrototype", "EffectMetadataPrototype", "AtlasContourProto",
     })
 
 

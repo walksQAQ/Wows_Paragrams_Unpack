@@ -446,32 +446,72 @@ count 与 relptr 一一对应：0x00→0x08, 0x02→0x10, 0x04→0x18, 0x06→0x
 
 ## EffectPrototype（0xEB23E0AF，item_size=0x10，blob 5，粒子效果图）
 
+记录（16 字节，**相对指针基准 = 记录自身地址**）：
+
 | 偏移 | 类型 | 说明 |
 |------|------|------|
-| +0x00 | f32 | scalar（常 -1.0 或正数如 9.5，语义未知）|
-| +0x04 | u32 | count（子节点/条目数）|
-| +0x08 | u32 | relptr（本记录 OOL 区域起点，**基准 = blob 起点**）|
-| +0x0C | u32 | pad |
+| +0x00 | f32 | `maxEmittingDuration` |
+| +0x04 | u32 | `systemsCount` |
+| +0x08 | i64 | `systems` 相对指针（基准 = 记录起点） |
+| +0x10 | — | 下一条记录 |
 
-- OOL 区域 = [relptr, 下一记录 relptr)，**相邻记录首尾相接无间隙**（rec0 0x9A90 → rec1 0xAEAF → ...单调递增）
-- OOL 内含**内嵌原始字符串**（非 strings 表，如 `particles/animated/Smoke_2_8x8.dds`、`particles/textures/circle_02.tga`、`sparks`、`glow_0`、`Biggy_fire_2`）→ `_extract_ascii_strings` 提取
-- OOL 内重复 `-1.0f/1.0f + u32 count + u32 偏移 + pad` 16B 节点模式 → `candidate_nodes`（16B 对齐启发式扫描）
-- 尽力解析（wows-toolkit 亦无结构化解码）
+`systems` 区域 = `systemsCount` 个 `fx::PSPrototype`（每个 0x210 字节）+ 变长数据池。
+逐字段布局（renderer / emitter / animation / general / distance / scaler / name /
+intensities / components、字符串与生成器编码、距离与强度配置曲线、
+光照/贴花组件、全部动作参数、全部枚举）见
+[korabli-particles-effect-format.md](./korabli-particles-effect-format.md)
+（由 26.11PT1 客户端反编译得到，正式服 2469 条记录往返校验通过；
+结构化字段已全部解码，剩余约 4.6% 字节是数据池里无字段引用的对齐/空闲块）。
+
+---
+
+## AtlasContourProto（0xF64359AA，item_size=0x10，粒子图集轮廓）
+
+`/particles/{animated,deform16f,textures}/<贴图>_<framesPerX>_<framesPerY>_<a>_<b>.contours`：
+给动态粒子图集（sprite sheet）记录**每帧的轮廓多边形**，客户端按
+`%s_%u_%u_%u_%u.contours`（exe 内格式串）拼名字去取。
+
+| 偏移 | 类型 | 说明 |
+|------|------|------|
+| +0x00 | u32 | `frameCount`（= 图集格子数，如 7×7 → 49） |
+| +0x04 | u32 | pad |
+| +0x08 | i64 | frames 数组相对指针（基准 = 记录起点） |
+
+frames 元素（0x10）：`{u32 pointCount; u32 pad; i64 rel}`，`rel` 基准 = **该元素自身**，
+指向 `pointCount` 个 `vec2`（f32 x / f32 y，值域约 [-1, 1]）。
+
+⚠️ 记录头与载荷之间那段（`[16, rel)`）**不是**本记录的数据 —— assets.bin 把各条记录的
+载荷顺序码在同一个 blob 里，`open_file()` 切出的 `[记录起点, blob 末尾)` 常有好几 MB
+是别的记录；本记录只有 `[0,16)` 和 `[rel, 载荷末尾)` 两段。
+
+已接入明文转码：`uncode_assets/atlas_contour.py`
+（decode / encode / format；莱服 285 条 + 寄服 458 条**载荷内 0 未解析字节**，
+记录头与载荷往返逐字节一致）。
 
 ---
 
 ## 其它类型（0x10 item_size，generic 兜底）
 
 - **EffectPresetPrototype**（0x42E15336）：.effect_preset / .xml
-- **EffectMetadataPrototype**（0xDFC8F8E0）
-- **AtlasContourProto**（0xF64359AA）：.contours
 - **ModelFbxPrototype**（0xDF80CF54）：空 blob（count=0，16B 占位）
 
 generic 解码：输出原始字节 + 按 8B 步长解析 u64 相对指针字段（基准 = 记录起始），启发式解析 ASCII 字符串。
 
+---
+
+## EffectMetadataPrototype（0xDFC8F8E0，item_size=0x10，blob 7，粒子 `shared` 元数据）
+
+粒子 `/particles/xxx.xml/shared` 类型的记录，给出该效果的强度通道（intensities）
+名称与取值范围（固定 6 个槽位 `Intensity 0…5`，用到具体通道的效果会改名，
+如 `Light_R / Light_G / Light_B / Light_Radius`；与 `high`/`low` 里每个 system 的
+`intensities` 曲线条数**互不相干**）。记录同样是 `{u32 count; u32 pad; i64 rel}`
+（基准 = 记录起点），元素 0x20 字节 = `String intensityName; f32 min/max/default; u32 未具名`。
+详见 [korabli-particles-effect-format.md §15](./korabli-particles-effect-format.md#15-effectmetadataprototype粒子-xxxmlshared)，
+已接入明文转码（`decoders.decode_effect_metadata`，正式服 1689 条往返校验通过）。
+
 ## 解码器清单（DECODABLE_TYPES）
 
-Material / Skeleton / Visual / Model / MiscSettings / Trail / VfxMaterial / Effect
+Material / Skeleton / Visual / Model / MiscSettings / Trail / VfxMaterial / Effect / EffectMetadata / AtlasContour
 
 ### 扩展名 → 类型映射（2026-08-03 实测）
 

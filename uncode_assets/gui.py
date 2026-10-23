@@ -10,17 +10,25 @@
   - 选择游戏目录**只影响本窗口**：不写回主程序的 game_path / bin_folder 配置
   - 打开窗口时不自动载入数据，由用户手动选择数据源
   - 后台线程加载解析（避免卡 UI），左侧懒加载虚拟文件树
+  - 文件树为「名称 + 类型」两列：目录与文件一眼可分；两列宽度可拖动，默认铺满左侧面板
+  - 粒子 `/particles/xxx.xml` 的 `high` / `low` / `shared` 在树里**折叠成一行**
+    （类型列写 `粒子效果 .xml`），点它/导出即得合并后的整份明文
   - 点击文件在右侧显示解码 JSON（深色等宽主题）
   - 顶部搜索：文件名/路径模糊匹配（多关键词交集），或按材质 **fx** 搜索
     （列出使用该 fx 的 `.mfm`；首次建立索引仅需秒级，之后即时）
   - 明文导出：单文件弹「另存为」；**多选（Ctrl/Shift）时选文件夹批量导出**
+  - 粒子 `.xml` 的 `high` / `low` / `shared` 会**合成一份**明文（格式对齐游戏自带的
+    粒子 XML，例如 `helpers/particles/sfx_fail.xml`），文件名 `<名字>.xml`
+  - 粒子图集 `.contours`（`AtlasContourProto`）也有明文：每帧点数 + 轮廓点坐标
   - 状态栏显示数据库概览
   - 关闭窗口时询问是否清理 .uncode_cache 索引缓存
 
-⚠️ **明文转码（.mfm / .visual / .model / .skel_ext）为实验性功能**：
+⚠️ **明文转码（.mfm / .visual / .model / .skel_ext / 粒子 .xml / .contours）为实验性功能**：
    assets.bin 与 Mod SDK 明文字段并非一一对应（如 `sortOrder` 二进制里有但 SDK
    不导出、`<parentMfm>` 继承链二进制里没有），部分数据可能与官方 SDK 导出结果
-   存在差异，请以游戏内实际表现为准。
+   存在差异，请以游戏内实际表现为准。粒子部分覆盖 `high`/`low`
+   （`EffectPrototype`）与 `shared`（`EffectMetadataPrototype`）两类记录，
+   导出时按 `<high>` / `<low>` / `<shared>` 三段写进同一个文件。
 
 独立运行：  python -m uncode_assets.gui [assets.bin 或 游戏目录]
 也可由主程序通过 AssetsBinViewer(source) 打开。
@@ -34,7 +42,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize, QThread, Signal
+from PySide6.QtCore import Qt, QSize, QThread, Signal, QEvent
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
@@ -365,7 +373,7 @@ class AssetsBinViewer(HoloWindow):
         self.btn_plain = QPushButton("明文格式（实验性）")
         self.btn_plain.setCheckable(True)
         self.btn_plain.setToolTip(
-            "以官方 Mod SDK 明文样式显示（材质 .mfm / 视觉 .visual / 模型 .model）\n"
+            "以官方 Mod SDK 明文样式显示（材质 .mfm / 视觉 .visual / 模型 .model / 粒子 .xml）\n"
             "⚠️ 实验性功能：assets.bin 与 SDK 明文字段并非一一对应，\n"
             "部分数据可能与官方导出结果存在差异，请以游戏内实际表现为准。")
         self.btn_plain.toggled.connect(self._on_toggle_plain)
@@ -421,13 +429,26 @@ class AssetsBinViewer(HoloWindow):
         self.setCentralWidget(splitter)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        self.tree.setColumnCount(1)
-        # 列宽随内容自适应，长路径/文件名超出时出现水平滚动条
-        self.tree.header().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # 两列：名称 + 类型 —— 粒子的 `/particles/xxx.xml` 是**目录**，
+        # 它下面的 high/low/shared 才是文件；只显示名字无法区分，故用类型列标注。
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["名称", "类型"])
+        hdr = self.tree.header()
+        # 两列都可拖动改宽；最后一列拉伸填满左侧面板（不留空白带）
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hdr.setMinimumSectionSize(56)
+        # 初始列宽（真正显示后再按面板宽度重新分配，见 _fit_tree_columns）
+        self.tree.setColumnWidth(0, self.NAME_COLUMN_WIDTH)
+        self.tree.setColumnWidth(1, self.TYPE_COLUMN_WIDTH)
+        self.tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.tree.setAutoScroll(True)
+        # 面板尺寸变化时重新分配列宽；用户手动拖过分隔线后就不再自动分配
+        self._last_fit_name_w = -1
+        self.tree.viewport().installEventFilter(self)
         # 支持多选：Ctrl/Shift 选中多个文件后「导出明文」批量导出到文件夹
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.itemExpanded.connect(self._on_item_expanded)
@@ -589,7 +610,37 @@ class AssetsBinViewer(HoloWindow):
     def _build_root(self) -> None:
         self.tree.clear()
         self._loaded_dirs.clear()
+        self._fit_tree_columns()
         self._load_children_of("/")
+
+    def _fit_tree_columns(self) -> None:
+        """按左侧面板当前宽度分配两列：名称列优先，类型列拿剩余空间。
+
+        最后一列由 ``stretchLastSection`` 自动填满，因此面板拉宽时不会留空白带；
+        两列都是 Interactive，用户随时可以拖分隔线改宽度——一旦手动改过名称列宽度，
+        之后面板尺寸变化就不再自动覆盖（见 :meth:`eventFilter`）。
+        """
+        avail = self.tree.viewport().width()
+        if avail <= 0:
+            avail = self.tree.width()
+        if avail <= 0:
+            name_w = self.NAME_COLUMN_WIDTH
+            type_w = self.TYPE_COLUMN_WIDTH
+        else:
+            name_w = max(self.NAME_COLUMN_WIDTH, int(avail * 0.62))
+            name_w = min(name_w, avail - self.MIN_TYPE_COLUMN_WIDTH)
+            name_w = max(140, name_w)
+            type_w = max(self.MIN_TYPE_COLUMN_WIDTH, avail - name_w)
+        self.tree.setColumnWidth(0, name_w)
+        self.tree.setColumnWidth(1, type_w)
+        self._last_fit_name_w = name_w
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt 命名)
+        if obj is self.tree.viewport() and event.type() == QEvent.Type.Resize:
+            # 名称列宽度仍等于上次自动分配值 ⇒ 用户没拖过，可以按新宽度重新分配
+            if self.tree.columnWidth(0) == self._last_fit_name_w:
+                self._fit_tree_columns()
+        return super().eventFilter(obj, event)
 
     def _node_path(self, item: QTreeWidgetItem) -> str:
         return item.data(0, Qt.ItemDataRole.UserRole)
@@ -613,6 +664,11 @@ class AssetsBinViewer(HoloWindow):
             parent_item = self._find_dir_item(dir_path)
         if parent_item is None:
             return
+        # 粒子分组已被折叠成叶子节点（数据不是目录）→ 不再往下加载
+        parent_path = self._node_path(parent_item)
+        if (parent_item is not self.tree.invisibleRootItem()
+                and parent_path and not self._svc.vfs.is_dir(parent_path)):
+            return
         # 已加载过则跳过（避免重复）；不能用 childCount 判断——
         # 目录可能已有子目录但文件尚未加载（如首次展开时提前返回）。
         key = self._svc.vfs.logical_path(dir_path)
@@ -624,10 +680,17 @@ class AssetsBinViewer(HoloWindow):
         self._loaded_dirs.add(key)
         for name in subdirs:
             child_path = ("/" + name) if dir_path == "/" else dir_path + "/" + name
-            item = QTreeWidgetItem([name])
+            primary = self._particle_part_file(child_path)
+            if primary:
+                # 粒子 .xml 的 high/low/shared 只是同一份 XML 的分区：折成一行
+                parent_item.addChild(self._particle_leaf_item(name, primary))
+                continue
+            item = QTreeWidgetItem([name, self.DIR_LABEL])
             item.setData(0, Qt.ItemDataRole.UserRole, child_path)
             item.setChildIndicatorPolicy(
                 QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+            item.setForeground(1, QBrush(theme.qcolor("text_hint")))
+            item.setToolTip(1, "目录（点开才会加载下层）")
             parent_item.addChild(item)
         # 文件节点：限制数量，避免一次性加入海量节点导致 UI 卡顿
         # 逻辑目录合并后，同名文件可能有多个原型类型（如 @content 骨架 +
@@ -650,18 +713,22 @@ class AssetsBinViewer(HoloWindow):
             if f.prototype_type is None:
                 # PKG 内原始存储的资源（assets.bin 无记录）：灰显 + 提示
                 tname = "PKG 资源"
+                tlabel = "PKG 资源（需解包）"
             else:
                 tname = f.prototype_type.name
                 if f.merged_skeleton:
                     # Lesta 的 .visual 拆成 Skeleton+Visual 两条记录，此处已合并为一个节点
                     tname += "（含骨架）"
+                tlabel = self._TYPE_LABELS.get(
+                    f.prototype_type.name, f.prototype_type.description or tname)
             label = (f.filename if name_counts.get(f.filename, 0) == 1
                      else f"{f.filename}  [{tname}]")
-            item = QTreeWidgetItem([label])
+            item = QTreeWidgetItem([label, tlabel])
             item.setData(0, Qt.ItemDataRole.UserRole, f.path)
             if f.prototype_type is None:
                 item.setForeground(0, QBrush(theme.qcolor("text_hint")))
             item.setToolTip(0, f"{f.path}  [{tname}]")
+            item.setToolTip(1, tname)
             parent_item.addChild(item)
             shown += 1
 
@@ -762,7 +829,38 @@ class AssetsBinViewer(HoloWindow):
         "ModelPrototype": (".model", "Model (*.model);;所有文件 (*)"),
         "SkeletonExtenderPrototype": (".skel_ext",
                                       "SkeletonExtender (*.skel_ext);;所有文件 (*)"),
+        "EffectPrototype": (".xml", "Particle XML (*.xml);;所有文件 (*)"),
+        "EffectMetadataPrototype": (".xml", "Particle XML (*.xml);;所有文件 (*)"),
+        "AtlasContourProto": (".contours", "Atlas contour (*.contours);;所有文件 (*)"),
     }
+
+    #: 树里「类型」列的显示名（缺少时退回 PrototypeType.description）
+    _TYPE_LABELS = {
+        "MaterialPrototype": "材质 .mfm",
+        "VisualPrototype": "模型 .visual",
+        "ModelPrototype": "模型 .model",
+        "SkeletonPrototype": "骨架 .visual",
+        "SkeletonExtenderPrototype": "骨架扩展 .skel_ext",
+        "EffectPrototype": "粒子效果 .xml",
+        "EffectMetadataPrototype": "粒子元数据 .xml",
+        "EffectPresetPrototype": "粒子预设 .effect_preset",
+        "TrailPrototype": "粒子轨迹 .trail",
+        "VfxMaterialPrototype": "VFX 材质 .vfx",
+        "AtlasContourProto": "图集轮廓 .contours",
+        "ModelFbxPrototype": "FBX 模型 .model_fbx",
+        "PointLightPrototype": "点光源 .point_light",
+        "VelocityFieldPrototype": "速度场 .velocity_field",
+        "MiscSettingsPrototype": "杂项设置",
+    }
+
+    #: 目录节点在「类型」列的文字
+    DIR_LABEL = "文件夹"
+
+    #: 文件树「名称」列默认宽度（未测量到面板宽度时用）
+    NAME_COLUMN_WIDTH = 260
+    #: 文件树「类型」列默认宽度 / 最小可用宽度
+    TYPE_COLUMN_WIDTH = 180
+    MIN_TYPE_COLUMN_WIDTH = 120
 
     def _selected_export_files(self) -> list[VirtualFile]:
         """当前树中选中的、可明文导出的文件（Ctrl/Shift 多选，按选择顺序去重）。"""
@@ -790,19 +888,22 @@ class AssetsBinViewer(HoloWindow):
         return out
 
     def _update_export_state(self) -> None:
-        """导出按钮在选中可明文导出的文件时启用（.mfm / .visual / .model / .skel_ext）。"""
+        """导出按钮在选中可明文导出的文件时启用（.mfm / .visual / .model / .skel_ext / 粒子 .xml / .contours）。"""
         files = self._selected_export_files()
         n = len(files)
         self.btn_export_file.setEnabled(n > 0)
         self.btn_export_file.setText("导出明文" if n <= 1 else f"导出明文（{n}）")
         if n <= 0:
             self.btn_export_file.setToolTip(
-                "明文导出所选文件——目前支持 .mfm / .visual / .model / .skel_ext"
-                "（其他类型暂未支持；可 Ctrl/Shift 多选批量导出）")
+                "明文导出所选文件——目前支持 .mfm / .visual / .model / .skel_ext / "
+                "粒子 .xml / .contours（其他类型暂未支持；可 Ctrl/Shift 多选批量导出）")
         elif n == 1:
             ext = self._EXPORT_KINDS[files[0].prototype_type.name][0]
+            extra = ""
+            if self._is_particle_path(files[0].path):
+                extra = "；同一 .xml 的 high / low / shared 会合成一份"
             self.btn_export_file.setToolTip(
-                f"明文导出当前所选文件（{ext}，官方 Mod SDK 格式）")
+                f"明文导出当前所选文件（{ext}{extra}）")
         else:
             self.btn_export_file.setToolTip(
                 f"明文导出所选 {n} 个文件（选择目标文件夹）")
@@ -824,6 +925,12 @@ class AssetsBinViewer(HoloWindow):
                 return
             if self._is_skel_ext(decoded):
                 self.json_view.setPlainText(self._skel_ext_text(self._current_path or "", decoded))
+                return
+            if self._is_effect(decoded) or self._is_effect_metadata(decoded):
+                self.json_view.setPlainText(self._effect_text(self._current_path or "", decoded))
+                return
+            if self._is_contour(decoded):
+                self.json_view.setPlainText(self._contour_text(self._current_path or "", decoded))
                 return
         data = decoded
         fx_path = self._material_fx_path(decoded)
@@ -862,11 +969,27 @@ class AssetsBinViewer(HoloWindow):
     def _is_skel_ext(decoded) -> bool:
         return isinstance(decoded, dict) and decoded.get("_type") == "SkeletonExtenderPrototype"
 
+    @staticmethod
+    def _is_effect(decoded) -> bool:
+        return isinstance(decoded, dict) and decoded.get("_type") == "EffectPrototype"
+
+    @staticmethod
+    def _is_effect_metadata(decoded) -> bool:
+        return (isinstance(decoded, dict)
+                and decoded.get("_type") == "EffectMetadataPrototype")
+
+    @staticmethod
+    def _is_contour(decoded) -> bool:
+        return isinstance(decoded, dict) and decoded.get("_type") == "AtlasContourProto"
+
     def _on_toggle_plain(self, checked: bool) -> None:
         self._mfm_plain = bool(checked)
         if (self._is_material(self._current_decoded) or self._is_visual(self._current_decoded)
                 or self._is_model(self._current_decoded)
-                or self._is_skel_ext(self._current_decoded)):
+                or self._is_skel_ext(self._current_decoded)
+                or self._is_effect(self._current_decoded)
+                or self._is_effect_metadata(self._current_decoded)
+                or self._is_contour(self._current_decoded)):
             self._render()
             if checked:
                 self.status_label.setText(
@@ -874,7 +997,8 @@ class AssetsBinViewer(HoloWindow):
                     "部分数据可能与官方导出存在差异")
         elif checked:
             self.status_label.setText(
-                "当前文件没有明文格式（仅 .mfm / .visual / .model / .skel_ext），保持 JSON 显示")
+                "当前文件没有明文格式（仅 .mfm / .visual / .model / .skel_ext / "
+                "粒子 .xml / .contours），保持 JSON 显示")
 
     def _mfm_text(self, path: str, decoded) -> str:
         """解码结果 → 官方 Mod SDK 明文 `.mfm` 文本。"""
@@ -902,6 +1026,100 @@ class AssetsBinViewer(HoloWindow):
         name = (path or "").rsplit("/", 1)[-1] or "skeleton_extender.skel_ext"
         return format_skel_ext_text(decoded, name=name)
 
+    def _effect_text(self, path: str, decoded) -> str:
+        """解码结果 → 粒子 XML（同一 `.xml` 的 high / low / shared 合成一份）。"""
+        from .fx import format_particle_text
+        _base, file_name = self._particle_group(path)
+        return format_particle_text(self._particle_parts(path, decoded),
+                                    file_name or "effect.xml")
+
+    def _contour_text(self, path: str, decoded) -> str:
+        """解码结果 → 图集轮廓明文（每帧一组轮廓点）。"""
+        from .atlas_contour import format_contours_text
+        name = (path or "").rsplit("/", 1)[-1] or "atlas.contours"
+        return format_contours_text(decoded, name)
+
+    #: 粒子文件的分区名（同一 `.xml` 的三个分区会合成一份明文）
+    _PARTICLE_PARTS = ("high", "low", "shared")
+
+    @classmethod
+    def _particle_group(cls, path: str) -> tuple[str, str]:
+        """`/particles/foo.xml/high` → (`/particles/foo.xml`, `foo.xml`)；非分区返回空。"""
+        parts = [p for p in (path or "").split("/") if p]
+        if len(parts) >= 2 and parts[-1] in cls._PARTICLE_PARTS:
+            return "/" + "/".join(parts[:-1]), parts[-2]
+        return "", ""
+
+    @classmethod
+    def _is_particle_path(cls, path: str) -> bool:
+        """路径是否是粒子文件的某个分区（`…/xxx.xml/high|low|shared`）。"""
+        return bool(cls._particle_group(path)[0])
+
+    def _particle_part_file(self, dir_path: str) -> str:
+        """`…/xxx.xml` 若是只装 high/low/shared 的粒子分区目录，返回主分区文件路径。
+
+        树里把它折成**一行**（点它直接看/导出合并后的整份 .xml 明文），
+        所以这里同时充当「该目录是不是粒子分组」的判定。
+        """
+        if self._svc is None or not dir_path.lower().endswith(".xml"):
+            return ""
+        try:
+            subdirs, files = self._svc.vfs.list_entries(dir_path)
+        except Exception:  # noqa: BLE001
+            return ""
+        if subdirs or not files:
+            return ""
+        if any(f.filename not in self._PARTICLE_PARTS for f in files):
+            return ""
+        for part in self._PARTICLE_PARTS:
+            target = f"{dir_path}/{part}"
+            if self._svc.vfs.get_file(target) is not None:
+                return target
+        return ""
+
+    def _particle_leaf_item(self, name: str, primary: str) -> QTreeWidgetItem:
+        """粒子分组合并后的单行节点（数据仍指向某个分区，导出自带合并逻辑）。"""
+        vf = self._svc.vfs.get_file(primary) if self._svc is not None else None
+        tname = ("EffectPrototype" if vf is None or vf.prototype_type is None
+                 else vf.prototype_type.name)
+        tlabel = self._TYPE_LABELS.get(tname, tname)
+        item = QTreeWidgetItem([name, tlabel])
+        item.setData(0, Qt.ItemDataRole.UserRole, primary)
+        item.setToolTip(0, f"/{name}：high / low / shared 已合并为一份明文")
+        item.setToolTip(1, f"{tname}（同一 .xml 的分区合并显示为一行）")
+        return item
+
+    def _particle_parts(self, path: str, decoded) -> dict:
+        """收集同一粒子文件各分区的解码结果（不存在/解码失败的分区跳过）。"""
+        base, _name = self._particle_group(path)
+        fallback = {"high": decoded} if self._is_effect(decoded) else {"shared": decoded}
+        if not base:
+            return fallback
+        found: dict = {}
+        for part in self._PARTICLE_PARTS:
+            target = f"{base}/{part}"
+            if target == path:
+                found[part] = decoded
+                continue
+            if self._svc is None:
+                continue
+            try:
+                if self._svc.vfs.get_file(target) is None:
+                    continue
+                found[part] = self._svc.vfs.decode_file(target)
+            except Exception:  # noqa: BLE001  单个分区失败不影响整体导出
+                continue
+        return found or fallback
+
+    @classmethod
+    def _effect_default_name(cls, path: str) -> str:
+        """`/particles/foo.xml/high` → `foo.xml`（三个分区合成同一份明文）。"""
+        base, file_name = cls._particle_group(path)
+        if file_name:
+            return file_name if file_name.lower().endswith(".xml") else f"{file_name}.xml"
+        name = (path or "").rsplit("/", 1)[-1]
+        return name or "effect.xml"
+
     def _export_payload(self, path: str, decoded):
         """解码结果 → (标题, 过滤器, 默认文件名, 明文文本)；不支持的类型返回 None。"""
         name = (path or "").rsplit("/", 1)[-1]
@@ -919,6 +1137,12 @@ class AssetsBinViewer(HoloWindow):
                     self._EXPORT_KINDS["SkeletonExtenderPrototype"][1],
                     name or "skeleton_extender.skel_ext",
                     self._skel_ext_text(path, decoded))
+        if self._is_effect(decoded) or self._is_effect_metadata(decoded):
+            return ("导出粒子 XML", self._EXPORT_KINDS["EffectPrototype"][1],
+                    self._effect_default_name(path), self._effect_text(path, decoded))
+        if self._is_contour(decoded):
+            return ("导出图集轮廓", self._EXPORT_KINDS["AtlasContourProto"][1],
+                    name or "atlas.contours", self._contour_text(path, decoded))
         return None
 
     def _decode_for_export(self, path: str):
@@ -956,7 +1180,8 @@ class AssetsBinViewer(HoloWindow):
         files = self._selected_export_files()
         if not files:
             self.status_label.setText(
-                "当前所选文件暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
+                "当前所选文件暂不支持明文导出"
+                "（仅 .mfm / .visual / .model / .skel_ext / 粒子 .xml）")
             return
         if len(files) == 1:
             self._export_single_file(files[0])
@@ -973,7 +1198,8 @@ class AssetsBinViewer(HoloWindow):
         payload = self._export_payload(path, decoded)
         if payload is None:
             self.status_label.setText(
-                f"{f.filename} 暂不支持明文导出（仅 .mfm / .visual / .model / .skel_ext）")
+                f"{f.filename} 暂不支持明文导出"
+                "（仅 .mfm / .visual / .model / .skel_ext / 粒子 .xml）")
             return
         caption, filt, default, text = payload
         out, _sel = QFileDialog.getSaveFileName(
@@ -1008,6 +1234,7 @@ class AssetsBinViewer(HoloWindow):
         self._last_export_dir = out_dir
         dest = Path(out_dir)
         used: dict[str, int] = {}
+        done_groups: set[str] = set()
         exported = 0
         failed: list[str] = []
         t0 = time.time()
@@ -1016,6 +1243,12 @@ class AssetsBinViewer(HoloWindow):
             for i, f in enumerate(files, 1):
                 self.status_label.setText(f"导出明文 {i}/{n}：{f.filename}")
                 QApplication.processEvents()
+                group, _grp_name = self._particle_group(f.path)
+                if group:
+                    # high / low / shared 合成一份明文，同一粒子文件只写一次
+                    if group in done_groups:
+                        continue
+                    done_groups.add(group)
                 decoded = self._decode_for_export(f.path)
                 payload = self._export_payload(f.path, decoded) if decoded else None
                 if payload is None:
@@ -1030,7 +1263,10 @@ class AssetsBinViewer(HoloWindow):
                     failed.append(f"{f.filename}({e})")
         finally:
             QApplication.restoreOverrideCursor()
+        merged = len(done_groups)
         msg = f"已导出 {exported}/{n} 个文件 → {out_dir}（{time.time() - t0:.1f}s）"
+        if merged:
+            msg += f"；其中 {merged} 个粒子 .xml 由 high/low/shared 合成"
         if failed:
             more = f" 等 {len(failed)} 个" if len(failed) > 3 else ""
             msg += f"；失败: {', '.join(failed[:3])}{more}"
@@ -1088,14 +1324,20 @@ class AssetsBinViewer(HoloWindow):
             if len(name_hits) >= limit:
                 break
         hits = [(p, "") for p in (name_hits + path_hits)[:limit]]
-        # 同一逻辑路径只保留一个命中（@content 骨架与 content 视觉在树中已合并）
+        # 同一逻辑路径只保留一个命中（@content 骨架与 content 视觉在树中已合并）；
+        # 同一粒子 .xml 的 high/low/shared 在树里也是一行，只留一条命中。
         best: dict = {}
         order: list = []
         for p, _ in hits:
-            key = self._svc.vfs.logical_path(p)
+            group, _grp = self._particle_group(p)
+            key = ("P:" + group) if group else self._svc.vfs.logical_path(p)
             if key not in best:
                 best[key] = p
                 order.append(key)
+            elif group:
+                if (self._PARTICLE_PARTS.index(p.rsplit("/", 1)[-1])
+                        < self._PARTICLE_PARTS.index(best[key].rsplit("/", 1)[-1])):
+                    best[key] = p
             elif best[key].startswith("/@") and not p.startswith("/@"):
                 best[key] = p
         self._set_search_hits(f"搜索「{keyword}」", [best[k] for k in order])
@@ -1193,49 +1435,59 @@ class AssetsBinViewer(HoloWindow):
                 return merged
         return vf
 
+    def _tree_location(self, path: str) -> tuple[str, str]:
+        """路径 → （树中所在目录, 该节点保存的路径）。
+
+        粒子 `/x.xml/high` 在树里被并成 `/x.xml` 那一行，节点数据仍是主分区
+        （`/high` 优先），所以搜索定位要落到那一行上。
+        """
+        base, _name = self._particle_group(path)
+        if base:
+            parts = [p for p in path.split("/") if p]
+            parent = "/" + "/".join(parts[:-2]) if len(parts) > 2 else "/"
+            return parent, (self._particle_part_file(base) or path)
+        parent = self._svc.vfs.logical_path(path).rpartition("/")[0] or "/"
+        return parent, path
+
     def _reveal_file(self, vfile: VirtualFile) -> None:
         """展开祖先目录并选中文件节点（目录树按逻辑路径合并 @content）。
 
         逐级**显式加载**子项后再查找，不依赖 itemExpanded 信号时序。
         """
-        parts = [p for p in self._svc.vfs.logical_path(vfile.path).split('/') if p]
+        parent_dir, node_path = self._tree_location(vfile.path)
+        dir_parts = [p for p in parent_dir.split('/') if p]
         node: QTreeWidgetItem = self.tree.invisibleRootItem()
         cur_path = "/"
-        for i, part in enumerate(parts):
-            is_last = i == len(parts) - 1
+        for part in dir_parts:
             # 确保当前目录的子项已加载（root 已由 _build_root 加载）
             if cur_path != "/":
                 self._load_children_of(cur_path)
-            target = vfile.path if is_last else None
             found = None
             for j in range(node.childCount()):
                 child = node.child(j)
-                if target is not None:
-                    # 文件节点文本可能带 [类型] 后缀，按原始路径匹配
-                    if child.data(0, Qt.ItemDataRole.UserRole) == target:
-                        found = child
-                        break
-                elif child.text(0) == part:
+                if child.text(0) == part and self._node_path(child) is not None:
                     found = child
                     break
             if found is None:
-                if not is_last:
-                    return
-                # 目录文件数超过 MAX_FILES_PER_DIR 时树里只有前 N 个 → 全量重载后重试
-                self._load_children_of(cur_path, show_all=True, force=True)
-                found = self._find_child_by_path(node, target)
-                if found is None:
-                    # 仍找不到（理论上不再发生）：直接打开内容，避免“点了没反应”
-                    self._show_file(vfile.path)
-                    self.status_label.setText(
-                        f"{vfile.path}（目录过大，已在右侧直接打开）")
-                    return
+                return
             node = found
             cur_path = ("/" + part) if cur_path == "/" else cur_path + "/" + part
-            if not is_last:
-                node.setExpanded(True)
-        self.tree.setCurrentItem(node)
-        self.tree.scrollToItem(node)
+            node.setExpanded(True)
+        if cur_path != "/":
+            self._load_children_of(cur_path)
+        found = self._find_child_by_path(node, node_path)
+        if found is None:
+            # 目录文件数超过 MAX_FILES_PER_DIR 时树里只有前 N 个 → 全量重载后重试
+            self._load_children_of(cur_path, show_all=True, force=True)
+            found = self._find_child_by_path(node, node_path)
+        if found is None:
+            # 仍找不到（理论上不再发生）：直接打开内容，避免“点了没反应”
+            self._show_file(vfile.path)
+            self.status_label.setText(
+                f"{vfile.path}（树中未找到对应节点，已在右侧直接打开）")
+            return
+        self.tree.setCurrentItem(found)
+        self.tree.scrollToItem(found)
         self._show_file(vfile.path)
 
     @staticmethod

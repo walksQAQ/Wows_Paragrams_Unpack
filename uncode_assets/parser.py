@@ -121,6 +121,8 @@ class DatabaseEntry:
     data: bytes            # 整个 blob（含 16B 头）
     record_count: int
     blob_index: int = -1   # 在数据库数组中的序号
+    #: blob 在 assets.bin 文件内的起始偏移（用于原地回写，0 表示未知）
+    file_offset: int = 0
     #: 解析时锁定的类型条目（:meth:`PrototypeDatabase.resolve_layout` 写入）。
     #: 为 None 时按当前线程的布局表即时查表（极少走到：直接调 parse_assets_bin 的场景）。
     prototype_type: Optional[PrototypeType] = None
@@ -430,6 +432,7 @@ def _parse_database_entries(data: bytes, entries_offset: int, count: int) -> Lis
             # blob 头：count u64 + header_size u64（恒 16）
             record_count = B.read_u64(blob, 0) if len(blob) >= 8 else 0
         else:
+            data_offset = 0
             blob = b""
             record_count = 0
 
@@ -440,6 +443,7 @@ def _parse_database_entries(data: bytes, entries_offset: int, count: int) -> Lis
             data=blob,
             record_count=record_count,
             blob_index=i,
+            file_offset=data_offset,
         ))
     return result
 

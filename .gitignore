@@ -39,3 +39,4 @@ _archive/shaders.py
 /_*.py
 /_dec_*.c
 /_ghidra_*.txt
+unpacked/
