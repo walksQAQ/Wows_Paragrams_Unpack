@@ -86,6 +86,8 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 | `compileall` 触发 qrc 重建 | `resources/__pycache__` 曾被打进资源包；`.pyc` 与缓存目录已在 qrc 生成脚本里排除 |
 | 子进程约束 | spawn 下 worker 必须是模块级函数、参数可 pickle、子进程内无 Qt 事件循环；打包必须 `multiprocessing.freeze_support()` |
 | 输出路径必须校验落点 | `.idx`/`.pkg` 条目名与游戏数据字段都是外部输入，可直接 `Path / name` 或 `os.path.join` 会被 `../`、反斜杠、盘符前缀带出输出目录（任意文件写入）。一律用 `utils.path_utils.safe_join(base, *parts)`，越界抛 `ValueError` |
+| 递归删除必须先认目录 | `rmtree` 的目标若由「exe 同级 / 数据目录」推出来，删除前要确认它确实是本程序的产物（例：旧工具的 `content/` 根下必有 `GameParams*.data`）。否则把解包器 exe 放进客户端或 `res_unpack/` 旁边，一次「加载数据」就会连带删掉整棵 `content/` 资源树 |
+| 解包落点必须收进 `res_unpack` | 客户端目录内只能落在 `<客户端>/res_unpack/`：客户端根自动改指，客户端内其它位置直接拒绝；另一个客户端（根或子目录）一律拒绝；普通目录自动套一层 `res_unpack`。规则集中在 `ui/unpacker_dialog.py::_resolve_output_dir`。判「是不是客户端根」只看目录自身（主程序名，或 `res_packages/` + `bin/` 并存），**不能**用 `detect_wows_type` 的递归探测——`res_unpack/` 里解包出的 `bin/` 会让它把自己的产物误判成客户端 |
 | Qt 对象被 GC | 冒烟脚本里窗口必须用列表持有引用，否则 C++ 析构可能崩溃（`0xC0000409`） |
 | 中文乱码 | PowerShell 内联 here-string 经管道传给 Python 会变 `?`；复杂脚本写成 UTF-8 `.py` 文件再执行 |
 | 启动闪小窗 | 自绘控件在 `__init__` 里对**还没有父控件**的自己调 `setVisible(True)`，会让它先变成一个独立的顶层窗口（12×12 闪一下）。构造期只在需要隐藏时 `setVisible(False)`，显示交给布局；给控件设显隐要放在 `layout.addWidget()` 之后 |

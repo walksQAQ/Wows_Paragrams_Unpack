@@ -15,6 +15,11 @@ GameParams 等固定目标），本工具面向任意文件的手动挑选与导
 
 低内存：逐文件**流式**解压写盘（``extract_single``），不整体驻留内存；取消可即时生效
 （多进程并行模式例外：``extract()`` 一次性提交，无逐文件进度与取消）。
+
+安全：条目名来自 ``.idx``（外部输入），落点一律经 ``safe_join`` 校验，越界条目跳过。
+输出目录统一收进 ``res_unpack`` 子目录：客户端根自动改指到 ``<根>/res_unpack``，
+客户端内的其它位置直接拒绝；另一个客户端目录一律拒绝（防跨客户端混写）；
+普通目录自动套一层 ``res_unpack``。
 """
 
 from __future__ import annotations
@@ -27,14 +32,14 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QSplitter,
-    QTextBrowser, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
+    QSplitter, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from app.application import app as app_ctx
 from app.signals import bus
 from utils.theme import theme
-from utils.path_utils import get_app_dir
+from utils.path_utils import get_app_dir, safe_join
 from utils.threading_utils import run_async
 
 from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
@@ -199,7 +204,11 @@ class UnpackerDialog(HoloDialog):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         row2.addWidget(QLabel("输出目录"))
-        self.ed_out = QLineEdit(str(get_app_dir() / "unpacked"))
+        self.ed_out = QLineEdit(str(get_app_dir() / "unpacked" / UnpackerDialog.CLIENT_SUBDIR))
+        self.ed_out.setToolTip(
+            "解包落点（显示为最终目录，所有文件都写在这里，保持虚拟路径结构）。\n"
+            f"· 客户端目录内只允许落在 {UnpackerDialog.CLIENT_SUBDIR}\\ 下，其它位置会被拒绝\n"
+            f"· 选普通目录时会自动套一层 {UnpackerDialog.CLIENT_SUBDIR}\\ 子目录")
         theme.bind(self.ed_out, _edit_qss)
         row2.addWidget(self.ed_out, 1)
         self.btn_pick_out = QPushButton("浏览…")
@@ -282,9 +291,15 @@ class UnpackerDialog(HoloDialog):
                 gp = app_ctx.ctx.game_path or ""
             except Exception:  # noqa: BLE001
                 gp = ""
-        if saved_out:
-            self.ed_out.setText(saved_out)
         self.ed_game.setText(str(gp))
+        if saved_out:
+            # 旧配置里的值可能是客户端根 / 普通目录，也可能属于别的客户端：
+            # 先跟着当前客户端改指，再归一成最终落点
+            self.ed_out.setText(saved_out)
+            self._retarget_output_for_game(str(gp))
+            resolved, _why = self._resolve_output_dir(str(gp), self.ed_out.text().strip())
+            if resolved:
+                self.ed_out.setText(resolved)
         self._refresh_versions(saved_bin)
         if gp:
             # 初始化阶段加载：不写回配置（若 gp 只是回退到主程序路径，不应固化）
@@ -348,6 +363,7 @@ class UnpackerDialog(HoloDialog):
         if not path:
             return
         self.ed_game.setText(path)
+        self._retarget_output_for_game(path)
         self._refresh_versions()
         # 写入解包器独立记录（下次打开沿用，不受主程序游戏路径变动影响）
         self._save_setting(unpacker_game_path=path, unpacker_bin_folder="")
@@ -531,12 +547,41 @@ class UnpackerDialog(HoloDialog):
 
     # ── 输出选项 ─────────────────────────────────────────
 
+    def _retarget_output_for_game(self, game: str) -> None:
+        """切换游戏目录后，把仍停在另一个客户端里的输出目录改指到当前客户端。
+
+        ``_start`` 会拒绝跨客户端写入；这里提前跟着切换，避免用户选完才发现被拒。
+        """
+        out = self.ed_out.text().strip()
+        if not out or not game:
+            return
+        try:
+            out_abs = Path(out).expanduser().resolve()
+            game_abs = Path(game).expanduser().resolve()
+        except OSError:
+            return
+        target_root = self._client_root_of(out_abs)
+        if target_root is None or target_root == game_abs:
+            return
+        if not self._client_kind(game_abs):
+            return
+        new_out = str(game_abs / self.CLIENT_SUBDIR)
+        self.ed_out.setText(new_out)
+        note = f"输出目录原在另一个客户端里，已改指到当前客户端的 {self.CLIENT_SUBDIR}\\"
+        self.lbl_status.setText(note)
+        self._append_log("ℹ️ " + note)
+
     def _pick_out_dir(self):
         cur = self.ed_out.text().strip()
         path = QFileDialog.getExistingDirectory(self, "选择输出目录", cur or str(get_app_dir()))
-        if path:
-            self.ed_out.setText(path)
-            self._save_setting(unpacker_output_dir=path)
+        if not path:
+            return
+        resolved, why = self._resolve_output_dir(self.ed_game.text().strip(), path)
+        if why:
+            self._report_rejected(why)
+            return
+        self.ed_out.setText(resolved)
+        self._save_setting(unpacker_output_dir=resolved)
 
     def _on_flatten_toggled(self, on: bool):
         if on and self.cb_par.isChecked():
@@ -547,6 +592,120 @@ class UnpackerDialog(HoloDialog):
             self.cb_flatten.setChecked(False)
 
     # ── 解包 ─────────────────────────────────────────────
+
+    #: 客户端目录内唯一允许的落盘子目录（沿用旧解包器在客户端根下建立的目录名）
+    CLIENT_SUBDIR = "res_unpack"
+
+    #: 客户端根目录的特征主程序（只看目录自身，不递归）
+    _CLIENT_EXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("Lesta", ("Korabli64.exe", "Korabli.exe")),
+        ("Wargaming", ("WorldOfWarships64.exe", "WorldOfWarships.exe")),
+    )
+
+    @classmethod
+    def _client_kind(cls, path: Path) -> str:
+        """判断 ``path`` 是否**本身**就是客户端根目录。
+
+        返回 ``"Lesta"`` / ``"Wargaming"`` / ``"client"``（像客户端但认不出服务器）；
+        不是客户端根返回 ``""``。
+
+        只用根目录自身的特征（主程序名，或 ``res_packages/`` + ``bin/`` 并存），
+        **不能**沿用 ``detect_wows_type`` 的「bin/<版本>/bin64 里有 exe」递归探测：
+        ``res_unpack/`` 里解包出来的 ``bin/`` 会让工具把自己的产物误判成客户端。
+        """
+        try:
+            names = {n.lower() for n in os.listdir(path)}
+        except OSError:
+            return ""
+        for kind, exes in cls._CLIENT_EXES:
+            if any(e.lower() in names for e in exes):
+                return kind
+        if "res_packages" in names and "bin" in names:
+            return "client"
+        return ""
+
+    @classmethod
+    def _client_root_of(cls, path: Path) -> Path | None:
+        """自 ``path`` 向上找到最近的客户端根目录（含自身）；不在客户端内返回 None。
+
+        名为 ``res_unpack`` 的目录**一律不算**客户端根：那正是本工具的落盘子目录，
+        里面解包出来的 ``res_packages/`` + ``bin/`` 会让「像客户端」的判据自指，
+        把自己的产物当成客户端。
+        """
+        for cand in (path, *path.parents):
+            if cand.name.lower() == cls.CLIENT_SUBDIR.lower():
+                continue
+            if cls._client_kind(cand):
+                return cand
+        return None
+
+    def _resolve_output_dir(self, game: str, out_dir: str) -> tuple[str, str]:
+        """把输出目录归一成**最终落点**，不允许时给出原因。
+
+        规则（统一子目录 ``CLIENT_SUBDIR`` = ``res_unpack``）：
+          - 客户端根                → ``<根>/res_unpack``
+          - 已在 ``res_unpack`` 内  → 原样放行
+          - 客户端内的其它位置      → **拒绝**（会覆盖客户端自身文件）
+          - 另一个客户端目录        → **拒绝**（跨客户端混写）
+          - 普通目录                → 套一层 ``res_unpack`` 子目录
+
+        返回 ``(最终落点, 错误信息)``；错误信息非空表示不允许，最终落点为空串。
+        """
+        if not out_dir:
+            return "", ""
+        try:
+            out_abs = Path(out_dir).expanduser().resolve()
+        except OSError:
+            return out_dir, ""
+        game_abs: Path | None = None
+        if game:
+            try:
+                game_abs = Path(game).expanduser().resolve()
+            except OSError:
+                game_abs = None
+
+        target_root = self._client_root_of(out_abs)
+        if target_root is not None:
+            if game_abs is not None and target_root != game_abs:
+                return "", (
+                    f"不能把 {game_abs} 的文件解包到另一个客户端目录里：\n"
+                    f"{target_root}\n\n"
+                    "两个客户端的资源树会互相覆盖。请先把上方的「游戏目录」"
+                    "切换成该客户端，或改选客户端之外的输出目录。")
+            allowed = target_root / self.CLIENT_SUBDIR
+            if out_abs == allowed or allowed in out_abs.parents:
+                return str(out_abs), ""
+            if out_abs == target_root:
+                return str(allowed), ""
+            return "", (
+                f"客户端目录内只允许解包到 {self.CLIENT_SUBDIR}\\ 下：\n"
+                f"{allowed}\n\n"
+                f"当前输出目录 {out_abs} 会覆盖客户端自身的同名文件。")
+
+        if out_abs.name.lower() == self.CLIENT_SUBDIR.lower():
+            return str(out_abs), ""
+        return str(out_abs / self.CLIENT_SUBDIR), ""
+
+    def _report_rejected(self, why: str) -> None:
+        """提示输出目录不被允许（状态栏 + 日志 + 弹窗）。"""
+        self.lbl_status.setText("输出目录不允许：" + why.splitlines()[0])
+        self._append_log("⛔ " + " ".join(why.split()))
+        bus.log_message.emit(f"⛔ 解包输出目录被拒绝：{' '.join(why.split())}")
+        QMessageBox.warning(self, "输出目录不允许", why)
+        self.ed_out.setFocus()
+        self.ed_out.selectAll()
+
+    def _apply_resolved_out(self, out_dir: str) -> str:
+        """把归一后的落点写回输入框；若与用户填的不同则说明原因。"""
+        typed = self.ed_out.text().strip()
+        if out_dir == typed:
+            return out_dir
+        self.ed_out.setText(out_dir)
+        if typed and Path(typed).name.lower() != self.CLIENT_SUBDIR.lower():
+            note = f"输出目录已套接统一子目录 {self.CLIENT_SUBDIR}\\ → {out_dir}"
+            self.lbl_status.setText(note)
+            self._append_log("ℹ️ " + note)
+        return out_dir
 
     def _start(self):
         if self._loading:
@@ -559,6 +718,11 @@ class UnpackerDialog(HoloDialog):
             self.lbl_status.setText("请先选择输出目录。")
             return
         game = self.ed_game.text().strip()
+        out_dir, why = self._resolve_output_dir(game, out_dir)
+        if why:
+            self._report_rejected(why)
+            return
+        out_dir = self._apply_resolved_out(out_dir)
         bin_folder = self.cb_bin.currentData() or ""
         # 记住本次使用的目录组合（解包器独立记录）
         self._save_setting(unpacker_game_path=game, unpacker_bin_folder=bin_folder,
@@ -624,9 +788,14 @@ class UnpackerDialog(HoloDialog):
             if flatten:
                 rel = os.path.basename(vfs)
             try:
-                p = ex.extract_single(vfs, out_dir / rel)
+                # 条目名来自 .idx（不可信）：含 ..、反斜杠、盘符前缀时直接拼接会把
+                # 写入带出输出目录（尤其是客户端边更新边解包，idx 可能读到半成品名）
+                p = ex.extract_single(vfs, safe_join(out_dir, rel))
                 written.append(p)
                 ok += 1
+            except ValueError as exc:
+                fail += 1
+                self.log_sig.emit(f"⚠️ 跳过非法输出路径 {vfs}: {exc}")
             except Exception as exc:  # noqa: BLE001
                 fail += 1
                 self.log_sig.emit(f"⚠️ 失败 {vfs}: {exc}")

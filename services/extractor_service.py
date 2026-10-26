@@ -74,6 +74,19 @@ def _extract_data_files(game_path: str, latest_bin: str, target_dir) -> list[str
         extractor.close()
 
 
+def _is_legacy_content_dir(path) -> bool:
+    """判断 ``<exe 同级>/content`` 是不是旧外部解包工具（wowsunpack/pfsunpack）的产物。
+
+    旧工具把 ``GameParams*.data`` 直接解到 ``content/`` 根下，这也是唯一允许递归
+    删除该目录的依据：解包器 exe 常被放到客户端或自己解包出来的 ``content/`` 旁边，
+    无条件 ``rmtree`` 会把整棵资源树（可能上百 GB）一起删掉。
+    """
+    try:
+        return any((path / name).is_file() for name in _DATA_FILE_NAMES)
+    except OSError:
+        return False
+
+
 def run_extract() -> "_AppTask":
     ctx = app_ctx.ctx
     game_path = ctx.game_path
@@ -93,10 +106,12 @@ def run_extract() -> "_AppTask":
         target_path = get_data_dir()
         _extract_data_files(game_path, latest_bin, target_path)
 
-        # 清理可能残留的旧数据（原外部工具遗留的 content/ 目录）
+        # 清理可能残留的旧数据（原外部工具遗留的 content/ 目录）。
+        # 必须先确认是旧工具产物：本程序可能就放在客户端的 content/ 旁边。
         old_content = get_app_dir() / "content"
-        if old_content.exists():
+        if _is_legacy_content_dir(old_content):
             shutil.rmtree(str(old_content), ignore_errors=True)
+            bus.log_message.emit("🧹 已清理旧版外部工具遗留的 content/ 目录")
 
         return current_ver
 

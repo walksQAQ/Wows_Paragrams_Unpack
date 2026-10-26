@@ -31,6 +31,7 @@ from .parser import PrototypeDatabase, parse_assets_bin
 from .types import (PrototypeType, get_wows_type, model_meta as current_model_meta,
                     set_model_meta, set_wows_type, type_from_magic)
 from .vfs import AssetsBinVfs, VirtualFile
+from utils.path_utils import safe_join
 
 ASSETS_BIN_PATH = "content/assets.bin"
 
@@ -440,6 +441,7 @@ class AssetsBinService:
 
         stats: Dict[str, int] = {}
         count = 0
+        skipped = 0
         for f in self.vfs.all_files():
             if f.prototype_type is None:  # PKG 资源节点：assets.bin 中无记录可导出
                 continue
@@ -450,8 +452,15 @@ class AssetsBinService:
             if max_records is not None and count >= max_records:
                 break
 
+            # 路径来自 assets.bin（外部输入）：含 ..、反斜杠或盘符前缀时，
+            # 直接拼接会把写入带出输出目录
             rel = f.path.lstrip('/')
-            out_path = output_dir / (rel + extension)
+            try:
+                out_path = safe_join(output_dir, rel + extension)
+            except ValueError as e:
+                skipped += 1
+                print(f"[SKIP] 非法输出路径 {f.path}: {e}", file=sys.stderr)
+                continue
             out_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 out_path.write_text(self.decode_path_json(f.path), encoding='utf-8')
@@ -461,6 +470,8 @@ class AssetsBinService:
             except Exception as e:  # 单条失败不中断
                 print(f"[ERROR] 解码失败 {f.path}: {e}", file=sys.stderr)
 
+        if skipped:
+            print(f"[WARN] 跳过 {skipped} 个非法输出路径", file=sys.stderr)
         return stats
 
     # ── 释放 ─────────────────────────────────────────────
