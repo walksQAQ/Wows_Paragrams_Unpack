@@ -58,7 +58,7 @@ class WargamingDetailPanel(DetailPanel):
         if _wg_db and _wg_db._conn and _wg_vc:
             try:
                 _q = ("SELECT c.crew_id, c.person_name, c.is_unique, "
-                      "COALESCE(n.lang_zh, c.person_name, c.crew_id) AS disp, "
+                      "COALESCE(NULLIF(n.lang_zh, ''), c.person_name, c.crew_id) AS disp, "
                       "(SELECT COUNT(*) FROM crew_unique_skills us "
                       " WHERE us.version_code=c.version_code AND us.crew_id=c.crew_id) AS us_cnt, "
                       "EXISTS(SELECT 1 FROM crew_skill_groups g "

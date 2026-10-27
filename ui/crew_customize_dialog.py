@@ -145,9 +145,10 @@ class CrewCustomizeDialog(HoloDialog):
                 cur = db._conn.execute("""
                     SELECT us.skill_key, us.trigger_type, us.max_trigger_num,
                            us.effects_json, us.icon_path, us.sort_index,
-                           c.crew_id, COALESCE(n.lang_zh, c.person_name, c.crew_id) as legend_name,
+                           c.crew_id, COALESCE(NULLIF(n.lang_zh, ''), c.person_name, c.crew_id) as legend_name,
                            us.trigger_achievement, us.trigger_damage_num, us.trigger_damage_type,
-                           us.trigger_ribbon_types, us.trigger_ribbons_num, us.damage_percent_threshold
+                           us.trigger_ribbon_types, us.trigger_ribbons_num, us.damage_percent_threshold,
+                           us.trigger_is_sub_ribbons
                     FROM crew_unique_skills us
                     JOIN crew_basic_info c ON c.version_code=us.version_code AND c.crew_id=us.crew_id
                     LEFT JOIN name_mappings n ON n.id=c.display_name_id
@@ -162,13 +163,12 @@ class CrewCustomizeDialog(HoloDialog):
                     from PySide6.QtWidgets import QRadioButton
                     from models.name_mapping import Mapping as NMAP
                     _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
-                    _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
                     _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
                     _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
 
                     _skip_meta_keys = {'percentTalent', 'uniqueType', 'levelDependent', 'v', 'value'}
 
-                    def _build_trigger_text(sk_row, trig_type, trig_map, rib_map, ach_map):
+                    def _build_trigger_text(sk_row, trig_type, trig_map, ach_map):
                         """生成触发条件文本"""
                         tzh = trig_map.get(trig_type, trig_type or "?")
                         if trig_type == "achievement":
@@ -180,7 +180,8 @@ class CrewCustomizeDialog(HoloDialog):
                                 types = json.loads(sk_row['trigger_ribbon_types']) if isinstance(sk_row['trigger_ribbon_types'], str) else (sk_row['trigger_ribbon_types'] or [])
                             except Exception:
                                 types = []
-                            rnames = [rib_map.get(str(t), str(t)) for t in types]
+                            rnames = [NMAP.ribbon_name(t, is_sub=bool(sk_row['trigger_is_sub_ribbons']))
+                                      for t in types]
                             num = sk_row['trigger_ribbons_num'] or ""
                             return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
                         elif trig_type == "damage":
@@ -240,7 +241,7 @@ class CrewCustomizeDialog(HoloDialog):
                         """构建天赋 tooltip"""
                         lines = ['<div style="font-size:12px; line-height:1.5;">']
                         tt = talent_row['trigger_type'] or ""
-                        desc = _build_trigger_text(talent_row, tt, _trigger_map, _ribbon_map, _achievement_map)
+                        desc = _build_trigger_text(talent_row, tt, _trigger_map, _achievement_map)
                         lines.append(f'<div style="color:{theme["gold"]}; font-weight:bold; margin-bottom:4px;">▸ {desc}</div>')
                         try:
                             eff = json.loads(talent_row['effects_json']) if talent_row['effects_json'] else {}
@@ -287,7 +288,7 @@ class CrewCustomizeDialog(HoloDialog):
                                 eff_lines = _format_talent_effects_text(eff, _mod_map, self._ship_type_en)
                                 eff_desc_lines.extend(eff_lines)
                             # 触发条件
-                            trig_text = _build_trigger_text(t, t.get('trigger_type',''), _trigger_map, _ribbon_map, _achievement_map)
+                            trig_text = _build_trigger_text(t, t.get('trigger_type',''), _trigger_map, _achievement_map)
                             # 行容器
                             row = QWidget()
                             hl = QHBoxLayout(row)
@@ -413,7 +414,6 @@ class CrewCustomizeDialog(HoloDialog):
         from services.database_service import get_db
         from models.name_mapping import Mapping as NMAP
         _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
-        _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
         _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
         _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
         _skip_meta_keys = {'percentTalent', 'uniqueType', 'levelDependent', 'v', 'value'}
@@ -426,7 +426,8 @@ class CrewCustomizeDialog(HoloDialog):
                 aname = _achievement_map.get(ach, ach)
                 return f"获得勋章「{aname}」时触发" if aname else tzh
             elif tt == 'ribbons':
-                rnames = [(_ribbon_map.get(r, r)) for r in json.loads(row['trigger_ribbon_types'] or '[]')]
+                rnames = [NMAP.ribbon_name(r, is_sub=bool(row['trigger_is_sub_ribbons']))
+                          for r in json.loads(row['trigger_ribbon_types'] or '[]')]
                 num = row['trigger_ribbons_num'] or ''
                 return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
             elif tt == 'damage':
@@ -490,7 +491,10 @@ class CrewCustomizeDialog(HoloDialog):
         if db and db._conn:
             try:
                 cur = db._conn.execute("""
-                    SELECT skill_key, trigger_type, max_trigger_num, effects_json, icon_path
+                    SELECT skill_key, trigger_type, max_trigger_num, effects_json, icon_path,
+                           trigger_achievement, trigger_damage_num, trigger_damage_type,
+                           damage_percent_threshold, trigger_ribbon_types, trigger_ribbons_num,
+                           trigger_is_sub_ribbons
                     FROM crew_unique_skills
                     WHERE version_code=? AND crew_id=?
                     ORDER BY sort_index

@@ -16,6 +16,7 @@ from utils.artillery_dpm import dpm_items, refresh_dpm_items
 from utils.consumable_display import (
     consumable_display_refs, icon_key_from_extra, title_key_from_extra,
 )
+from utils.loc_status import BLANK as LOC_BLANK, BLANK_MARK, loc_state
 from utils.path_utils import get_data_dir
 
 
@@ -391,8 +392,10 @@ class LestaShipPresenter(LestaBasePresenter):
             return None
 
         ship_name = self.resolve_name_by_id(basic['name_mapping_id'], 'ship', basic['ship_index']) or ship_id
+        # 键在、但语言文件里原值为空（未翻译）→ 名称后打标记；键不存在时不打（那是"缺失"）
+        loc_blank = loc_state(conn, 'ship', basic['ship_index'] or '', basic['name_mapping_id']) == LOC_BLANK
         items = [
-            self.make_item("舰船名称", ship_name, 0),
+            self.make_item("舰船名称", f"{ship_name}  {BLANK_MARK}" if loc_blank else ship_name, 0),
             self.make_item("编号", basic['ship_index'] or ship_id.split('_')[0], 1),
             self.make_item("舰船 ID", str(basic['ship_id_num'] or ""), 2),
         ]
@@ -1104,7 +1107,7 @@ class LestaShipPresenter(LestaBasePresenter):
                         cond_parts = []
                         if atype == "RibbonActivator":
                             ribbons = act.get("subRibbons", [])
-                            rnames = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
+                            rnames = [NM.SUBRIBBON_TYPE_MAP.get(str(rid), str(rid)) for rid in ribbons] if ribbons else []
                             req = act.get("requiredCount", 1)
                             ribbon_str = "/".join(rnames) if rnames else ""
                             if ribbon_str:
@@ -1144,7 +1147,7 @@ class LestaShipPresenter(LestaBasePresenter):
                     elif atype == "RibbonActivator":
                         ribbons = act.get("subRibbons", [])
                         if ribbons and isinstance(ribbons, list):
-                            names = [NM.RIBBON_MAP.get(str(rid), str(rid)) for rid in ribbons]
+                            names = [NM.SUBRIBBON_TYPE_MAP.get(str(rid), str(rid)) for rid in ribbons]
                             cond_parts.append(f"勋带: {', '.join(names)}")
                     elif atype == "PotentialDamageActivator":
                         pds = act.get("potentialDamageShift", 0)

@@ -1579,13 +1579,14 @@ _ability_str(raw_data.get("PlaneAbilities"), 4),
                     icon_path = pic_path(f"talents/{fname}")
             except Exception:
                 pass
-            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT OR REPLACE INTO crew_unique_skills (version_code, crew_id, skill_key, sort_index, trigger_type, max_trigger_num, trigger_achievement, trigger_damage_num, trigger_damage_type, damage_percent_threshold, trigger_ribbons_num, trigger_ribbon_types, trigger_is_sub_ribbons, trigger_allowed_ships, effects_json, icon_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (version_code, crew_id, sk, _v(sv.get("sortIndex"), 0),
                           sv.get("triggerType"), sv.get("maxTriggerNum"),
                           sv.get("triggerAchievement"), sv.get("triggerDamageNum"),
                           sv.get("triggerDamageType"), sv.get("damagePercentThreshold"),
                           sv.get("triggerRibbonsNum"),
                           str(sv.get("triggerRibbonsTypes", [])),
+                          _bn(sv.get("triggerIsSubRibbons")),
                           str(sv.get("triggerAllowedShips") or sv.get("triggerAllowedShipTypes") or ""),
                           _json_dumps(eff), icon_path))
 
