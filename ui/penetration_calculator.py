@@ -901,6 +901,8 @@ class PenetrationCalculatorDialog(HoloDialog):
         self.ship_cb.currentIndexChanged.connect(self._reload_guns)
         self._ship_completer.activated.connect(self._on_completer_activated)
         # 双保险：completer popup 的点击/回车也直接选中（QCompleter 内部转发可能不完全）
+        # popup 是独立顶层窗口，必须自己补主题底色，否则黑底 + 深色文字不可读
+        theme.style_popup_view(self._ship_completer.popup())
         self._ship_completer.popup().activated.connect(self._on_completer_index)
         self._ship_completer.popup().clicked.connect(self._on_completer_index)
         self.gun_cb.currentIndexChanged.connect(self._on_gun_changed)

@@ -10,6 +10,10 @@
     - ``_special`` —— 特种（**金月桂穗 + 银舰种剪影**）
 
   除可研发与加值外**一律按特种显示**（含分组未知的船）。
+  **测试 / demo / 未上线 / 已移除**船（``disabled``、``unavailable``、``demoWithoutStats``、
+  ``demoWithoutStatsPrem``、``preserved``）不属于这两类，一律按特种显示 —— 它们要么是
+  没数据的开发船，要么是已被替换的旧版本（旧航母/旧潜艇原本还是科技树船），
+  按加值（金币船）画会让人以为是可以买到的金币船。
 * 等级 = 罗马数字文本（I…X）；超级战舰（11 级）用 ★ 图标 ``icon_tier_special``。
 
 资源为客户端原生 SVG，放在 ``resources/pictures/ui/ship_badges/``。
@@ -41,12 +45,20 @@ CLASS_ICON_NAME: dict[str, str] = {
 #: 船型分组 → 图标后缀
 _ELITE_GROUPS = frozenset({
     "start", "upgradeable", "upgradeableExclusive", "upgradeableUltimate",
-    "superShip", "event", "earlyAccess", "demoWithoutStats",
+    "superShip", "event", "earlyAccess",
     "coopOnly", "pveOnly", "notForBattle", "peculiar",
 })
 _PREMIUM_GROUPS = frozenset({
-    "special", "premium", "demoWithoutStatsPrem", "preserved",
-    "unavailable", "disabled",
+    "special", "premium",
+})
+#: 测试 / demo / 未上线 / 已移除船的分组：都不是「可以买到的金币船」，一律落到
+#: ``special``（金月桂穗 + 银舰种剪影）。
+#: - ``disabled`` / ``unavailable`` / ``demoWithoutStats*``：没数据的开发船；
+#: - ``preserved``：已移除（被新版本替换掉的旧船，如 中途岛（旧）/ 企业（旧）），
+#:   其中旧航母/旧潜艇原本还是科技树船，画成金币船更不对。
+_TEST_GROUPS = frozenset({
+    "disabled", "unavailable", "demoWithoutStats", "demoWithoutStatsPrem",
+    "preserved",
 })
 
 #: 船型分组 → 中文类型名（供 tooltip / 文本显示）
@@ -61,8 +73,12 @@ def group_type(group: str | None) -> str:
     """船型分组 → ``"elite"`` / ``"premium"`` / ``"special"``。
 
     只有可研发与加值保留各自外观，**其余（含分组未知）一律按特种**。
+    测试 / demo / 未上线 / 已移除船（:data:`_TEST_GROUPS`）也按特种 —— 它们要么没有
+    正式数据，要么已被新版本替换，画成「金穗金剪影」会被当成可购买的金币船。
     """
     g = (group or "").strip()
+    if g in _TEST_GROUPS:
+        return "special"
     if g in _ELITE_GROUPS:
         return "elite"
     if g in _PREMIUM_GROUPS:

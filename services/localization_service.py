@@ -59,7 +59,9 @@ def import_text_to_db(db=None) -> dict:
                 crew_items = []
                 for pname in all_names:
                     m = re.search(rf'msgid "IDS_{re.escape(pname.upper())}"\s+msgstr "(.*?)"', raw_po)
-                    if m and m.group(1) and not m.group(1).startswith("IDS_"):
+                    # 只有空白/原样回填 msgid 的条目视为"未翻译"：不写库（行已由分析入库，
+                    # 键存在性不受影响），更不能把已有的中文名覆盖成空白
+                    if m and m.group(1).strip() and not m.group(1).startswith("IDS_"):
                         crew_items.append(("crew", f"IDS_{pname.upper()}", m.group(1)))
                 bus.log_message.emit(f"🌐 PO 中匹配到 {len(crew_items)} 个舰长翻译")
                 if crew_items:
@@ -108,11 +110,20 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
 
     stats = {}
 
+    def _value(v: str) -> str:
+        """译文可用性归一化：不可用（只有空白，或 msgstr 直接回填 msgid 原文）一律写空串。
+
+        ⚠️ 这里**不能**把不可用的键整条丢掉：``name_mappings`` 里"键存在但译文为空白"
+        与"键根本不存在"是两件不同的事（前者只算未翻译，后者才叫本地化缺失）。
+        """
+        v = v or ""
+        return v if v.strip() and not v.startswith("IDS_") else ""
+
     _Q = r'"((?:[^"\\]|\\.)*)"'  # 匹配带转义引号的引号字符串
 
     # 消耗品
     pat = re.compile(r'msgid "IDS_DOCK_CONSUME_TITLE_((?:P[XYC]\d{3}|[A-Z0-9]+)_[A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["consumable_names"] = {"path": save(data, "consumable_names.json"), "count": len(data)}
 
     # 舰船名
@@ -126,60 +137,60 @@ def _extract_mappings(po_path: str, out_dir: str) -> dict:
             continue
         if cur:
             m = re.match(r'^msgstr\s+"(.*)"$', line)
-            if m and m.group(1) and not m.group(1).isdigit():
-                ship_map[cur] = m.group(1)
+            if m:
+                ship_map[cur] = _value(m.group(1))
             cur = None
     stats["ship_names"] = {"path": save(ship_map, "ship_names.json"), "count": len(ship_map)}
 
     # 火炮
     pat = re.compile(r'msgid "IDS_(P[A-Z]G[A-Z]+.*?)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_DOCK")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["guns_names"] = {"path": save(data, "guns_names.json"), "count": len(data)}
 
     # 弹药
     pat = re.compile(r'msgid "IDS_(P[A-Z]P[A-Z]+\d+\S*?)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["ammo_names"] = {"path": save(data, "ammo_names.json"), "count": len(data)}
 
     # 升级品
     pat = re.compile(r'msgid "IDS_(?:TITLE_|MODERNIZATION_)?(P[CU]M\d{3}[A-Z0-9_]*?)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["modernization_names"] = {"path": save(data, "modernization_names.json"), "count": len(data)}
 
     # 飞机
     pat = re.compile(r'msgid "IDS_(P[A-Z]A[BDFMLSX][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["plane_names"] = {"path": save(data, "plane_names.json"), "count": len(data)}
 
     # 狂暴模式
     pat = re.compile(r'msgid\s+"(IDS_DOCK_RAGE_MODE_TITLE_.*?)"\s+msgstr\s+' + _Q, re.MULTILINE)
-    data = {k: v for k, v in pat.findall(raw) if v.strip()}
+    data = {k: _value(v) for k, v in pat.findall(raw)}
     stats["rage_mode_names"] = {"path": save(data, "rage_mode_names.json"), "count": len(data)}
 
     # 鱼雷发射管分组名称（如 IDS_SHIP_PARAM_TORPEDO_GUNS_GROUP_BOW）
     pat = re.compile(r'msgid "(IDS_SHIP_PARAM_TORPEDO_GUNS_GROUP_[A-Z_]+)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k: v for k, v in pat.findall(raw) if v.strip()}
+    data = {k: _value(v) for k, v in pat.findall(raw)}
     stats["torpedo_group_names"] = {"path": save(data, "torpedo_group_names.json"), "count": len(data)}
 
     # 信号旗（WG 服 IDS_PCEFxxx_*_SIGNALFLAG 及 _DESCRIPTION）
     pat = re.compile(r'msgid "IDS_(PCEF\d+_[A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["signal_flag_names"] = {"path": save(data, "signal_flag_names.json"), "count": len(data)}
 
     # 舰船升级键（ShipUpgradeInfo 中的 upgrade_key，如 PAUH941_MIDWAY_1945）
     # 格式: P[国籍]U[槽位类型][编号]_[名称]，[A-Z]匹配任意国籍
     pat = re.compile(r'msgid "IDS_(P[A-Z]U[A-Z][A-Z0-9_]*)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.upper(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.upper(): _value(v) for k, v in pat.findall(raw)}
     stats["module_upgrade_names"] = {"path": save(data, "module_upgrade_names.json"), "count": len(data)}
 
     # 舰长技能标题（IDS_SKILL_XXX，排除 IDS_SKILL_DESC_XXX）
     pat = re.compile(r'msgid "IDS_SKILL_(?!DESC_)([A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.lower(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.lower(): _value(v) for k, v in pat.findall(raw)}
     stats["skill_names"] = {"path": save(data, "skill_names.json"), "count": len(data)}
 
     # 舰长技能描述（IDS_SKILL_DESC_XXX）
     pat = re.compile(r'msgid "IDS_SKILL_DESC_([A-Z0-9_]+)"\s+msgstr ' + _Q, re.MULTILINE)
-    data = {k.lower(): v for k, v in pat.findall(raw) if v.strip() and not v.startswith("IDS_")}
+    data = {k.lower(): _value(v) for k, v in pat.findall(raw)}
     stats["skill_descriptions"] = {"path": save(data, "skill_descriptions.json"), "count": len(data)}
 
     return stats

@@ -62,13 +62,11 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 - 三态靠亮度分档 + 亮色描边表达，不靠把底色刷亮。
 - 相关 token：`icon_btn_bg` / `icon_btn_bg_hover` / `icon_btn_checked` / `icon_btn_border` / `icon_btn_border_hi` / `icon_btn_text` / `icon_btn_text_hi`。
 
----
+### 2.6 模型查看器左栏（部件列表 / 装甲结构）
 
-## 3. 版权红线
-
-- **不内置任何官方美术素材**（游戏角色立绘、官方宣传图、同人图等）。
-- **也不要自己绘制"看起来像"的替代品**去冒充官方立绘；界面里只用抽象的几何结构（网格、切角、细线轮廓）。
-- 需要角色插画时由用户自行准备，且不纳入版本库。
+- 左栏是 `QStackedWidget`，两块列表**互斥显示**：`PartsTreePanel`（模型部件）+ `ArmorTreePanel`（装甲结构），由右栏「显示船体 / 显示装甲」切换（两者本就互斥，`_show_side_page` 负责翻页）。
+- **不要**把装甲结构树塞回右栏：右栏是固定 330px 宽的控件堆栈，多一个 `stretch=1` 的列表会把其它分组挤成缝、列表本身只剩几行。
+- 右栏布局末尾必须保留 `addStretch(1)`，否则隐藏/新增控件会让各分组之间冒出随机空隙。
 
 ---
 
@@ -80,6 +78,7 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 | `QPen(col, w, cap=...)` | PySide6 非法，必须用 `QPen(col, w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap)` |
 | `WA_StyledBackground` | 纯 `QWidget` 子类必须设置，否则 QSS 的 `background-color` 静默不绘制 |
 | 内联样式优先级 | `widget.setStyleSheet()` > `app.setStyleSheet()`；`QPalette.Highlight` 又压过 QSS 的 `::item:selected` |
+| 弹出列表必须自带不透明底 | 全局 QSS 为了让列表融进面板把 `QListView` 设成 `transparent`；`QCompleter` 的 popup 是**独立顶层窗口**，透明 = 什么都不绘制 = 黑块 + 深色文字不可读。新建 completer 后必须调 `theme.style_popup_view(completer.popup())` |
 | 父控件绘制会被子控件覆盖 | 装饰必须画在内容区之外的空带里，或退回背景层 |
 | 切角是斜的 | 内容四角必须满足 `x + y >= 2*MARGIN + chamfer`，否则控件从切掉的角穿出；用 `SciFiPanel.content_margins()` |
 | `apply_theme()` 不广播 | `main.apply_theme()` 单独调用不会发 `theme_changed`，自绘控件缓存会滞留旧色；只有 `application.set_theme_mode()` 会广播 |
@@ -94,6 +93,10 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 | Qt 对象被 GC | 冒烟脚本里窗口必须用列表持有引用，否则 C++ 析构可能崩溃（`0xC0000409`） |
 | 中文乱码 | PowerShell 内联 here-string 经管道传给 Python 会变 `?`；复杂脚本写成 UTF-8 `.py` 文件再执行 |
 | 启动闪小窗 | 自绘控件在 `__init__` 里对**还没有父控件**的自己调 `setVisible(True)`，会让它先变成一个独立的顶层窗口（12×12 闪一下）。构造期只在需要隐藏时 `setVisible(False)`，显示交给布局；给控件设显隐要放在 `layout.addWidget()` 之后 |
+| D3D 视口鼠标悬停没反应 | `D3DViewportAdapter`（原生子窗口 + `WA_PaintOnScreen`）不会自动收到「无按键移动」：Qt 默认只在按住鼠标时发 `mouseMoveEvent`，所以装甲厚度提示 / 悬停高亮全军覆没而**点击选中仍然正常**。`D3DViewportAdapter.__init__` 里必须 `setMouseTracking(True)` |
+| 加载遮罩不能叠在 D3D 面上 | D3D 视口（`RenderView`）是 `WA_PaintOnScreen` 原生子窗口，Qt 自绘控件叠在它上面无法可靠合成：进度文字会留鬼影，上传早在 0.1s 内结束、屏幕上却一直停在旧百分比（`正在上传到 GPU 172/215（80%）`，实测被当成卡死）。D3D 后端不叠遮罩：加载文字写右侧面板状态区，上传进度走面板进度条（`RenderView.scene_upload` → `GeometryViewerDialog._on_scene_upload`）；遮罩只给 OpenGL 后端用 |
+| 重载期间别先清场景 | 3D 查看器加载/重载**不要**先 `viewport.clear_scene()`：解析一艘船几十秒，渲染区整段全黑，看起来像卡死。保留上一帧模型，新场景上传时一次换掉；只有加载失败/关闭时才清 |
+| 「本地化缺失」口径 | 只认「语言文件里**没有该键**」。键存在但译文为空/只有一个空格/原样回填 `IDS_xxx` 只算"未翻译"，**不算**缺失——这类条目在列表/详情名称后标「⚠ 未翻译」，由 `utils/loc_status.py` 统一文案与判定。语言文件侧仍以 `lang_zh=''` 写进 `name_mappings`（保留键存在性、不覆盖已有译名），读取侧（Python 真值判断、SQL 一律 `COALESCE(NULLIF(lang_zh,''), ...)`）自动回退。判断缺失用 `nm.id IS NULL`，不要用 `TRIM(lang_zh)=''` |
 
 ---
 

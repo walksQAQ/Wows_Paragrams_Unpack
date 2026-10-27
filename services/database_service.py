@@ -447,11 +447,15 @@ class DatabaseManager:
         except Exception:
             pass
 
-        # ── 迁移：补齐 crew_unique_skills 缺少的 icon_path 列 ──
+        # ── 迁移：补齐 crew_unique_skills 缺少的列 ──
         try:
             existing = {r[1] for r in self._conn.execute("PRAGMA table_info(crew_unique_skills)").fetchall()}
             if "icon_path" not in existing:
                 self._add_column("crew_unique_skills", "icon_path", "TEXT DEFAULT ''")
+                self._conn.commit()
+            # 勋带枚举区分父/子两套，需要记录 GameParams 的 triggerIsSubRibbons
+            if "trigger_is_sub_ribbons" not in existing:
+                self._add_column("crew_unique_skills", "trigger_is_sub_ribbons", "INTEGER DEFAULT 0")
                 self._conn.commit()
         except Exception:
             pass
@@ -1132,7 +1136,9 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             pass
         try:
-            mc = conn.execute("SELECT COUNT(*) FROM name_mappings").fetchone()[0]
+            # 只统计真正有译名的条目：lang_zh='' 的行代表"键存在、译文为空"（见 import_name_mappings）
+            mc = conn.execute(
+                "SELECT COUNT(*) FROM name_mappings WHERE TRIM(COALESCE(lang_zh,''))<>''").fetchone()[0]
         except sqlite3.OperationalError:
             mc = 0
         return {"total_entities": total, "db_file_size_mb": self.db_size_mb,
@@ -1141,7 +1147,7 @@ class DatabaseManager:
     # ── 本地化 ─────────────────────────────────────────────
 
     def get_all_name_mappings(self, category: str = "") -> dict[str, str]:
-        """全部名称映射。空白值（上游用一个空格表示「未翻译」）不返回，让调用方走兜底。"""
+        """全部名称映射。空白值（``lang_zh=''``：键存在但译文为空）不返回，让调用方走兜底。"""
         try:
             if category:
                 cur = self._conn.execute(
@@ -1156,7 +1162,8 @@ class DatabaseManager:
     def ship_name_gaps(self, version_code: str = "", limit: int = 12) -> tuple[int, int, list[str]]:
         """舰船中文名覆盖统计：返回 (有名字的船数, 舰船总数, 前 limit 个缺名 ship_index)。
 
-        空白/纯空格的名字视为缺失（上游语言文件常用一个空格表示「未翻译」）。
+        口径：``name_mappings`` 里**没有该键的行**才算缺失；键存在但 ``lang_zh`` 为空
+        （语言文件里只填了空格/原文）不算缺失，只是没有可用译名。
         保留为只读诊断工具（当前界面不调用）。
         """
         version_code = self._resolve_vc(version_code)
@@ -1164,7 +1171,7 @@ class DatabaseManager:
             return 0, 0, []
         sql = (
             "SELECT COUNT(*) AS total, "
-            "SUM(CASE WHEN TRIM(COALESCE(nm.lang_zh,'')) <> '' THEN 1 ELSE 0 END) AS named "
+            "SUM(CASE WHEN nm.id IS NOT NULL THEN 1 ELSE 0 END) AS named "
             "FROM ship_basic_info b "
             "LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name=b.ship_index "
             "WHERE b.version_code=?"
@@ -1176,7 +1183,7 @@ class DatabaseManager:
             gaps = [r["ship_index"] for r in self._conn.execute(
                 "SELECT b.ship_index AS ship_index FROM ship_basic_info b "
                 "LEFT JOIN name_mappings nm ON nm.category='ship' AND nm.key_name=b.ship_index "
-                "WHERE b.version_code=? AND TRIM(COALESCE(nm.lang_zh,''))='' "
+                "WHERE b.version_code=? AND nm.id IS NULL "
                 "ORDER BY b.ship_index LIMIT ?", (version_code, limit)).fetchall()]
             return named, total, gaps
         except sqlite3.OperationalError:
@@ -1221,6 +1228,10 @@ class DatabaseManager:
         ship / consumable / rage_mode 三类整批失败（且旧代码把异常 `except: continue`
         吞掉、还把 JSON 删了），表现为"点了加载文本，船名/消耗品名/战斗指令名永远不更新"。
         UPSERT 只改 ``lang_zh``、``id`` 不变，既避免外键冲突，也不会让已有引用悬空。
+
+        ⚠️ 键存在性也要写库：语言文件里"键在、译文是空格/原样回填 msgid"的条目，
+        以 ``lang_zh=''`` 入库（不覆盖已有译名，读取侧一律回退）。这样「本地化缺失」
+        才只等于**键不存在**，而不是"译文恰好是空白"。
         """
         stats: dict[str, int] = {}
         errors: dict[str, str] = {}
@@ -1229,14 +1240,15 @@ class DatabaseManager:
             if not fp.exists():
                 continue
             try:
-                # 上游用单个空格表示「未翻译」：不写库，也不覆盖已有译名
-                items = [(cat, k, _unescape_po_str(v))
-                         for k, v in json.loads(fp.read_text(encoding="utf-8")).items()
-                         if (v or "").strip()]
+                # 空白译文写空串（保留键存在性）；已有非空译名不会被它覆盖
+                items = [(cat, k, _unescape_po_str(v) if (v or "").strip() else "")
+                         for k, v in json.loads(fp.read_text(encoding="utf-8")).items()]
                 if items:
                     self._conn.executemany(
                         "INSERT INTO name_mappings (category, key_name, lang_zh) VALUES (?,?,?) "
-                        "ON CONFLICT(category, key_name) DO UPDATE SET lang_zh=excluded.lang_zh",
+                        "ON CONFLICT(category, key_name) DO UPDATE SET lang_zh=excluded.lang_zh "
+                        "WHERE TRIM(COALESCE(name_mappings.lang_zh,''))='' "
+                        "   OR TRIM(COALESCE(excluded.lang_zh,''))<>''",
                         items)
                     self._conn.commit()
                     stats[fn] = len(items)

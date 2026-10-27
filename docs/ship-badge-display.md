@@ -37,9 +37,15 @@
 
 | 船型 | `group_status_key` |
 |---|---|
-| 可研发 | `start`、`upgradeable`、`upgradeableExclusive`、`upgradeableUltimate`、`superShip`、`event`、`earlyAccess`、`demoWithoutStats`、`coopOnly`、`pveOnly`、`notForBattle`、`peculiar` |
-| 加值 | `special`、`premium`、`demoWithoutStatsPrem`、`preserved`、`unavailable`、`disabled` |
-| 特种 | 上述两组之外的一切（如 `ultimate`、`specialUnsellable`、`clan`） |
+| 可研发 | `start`、`upgradeable`、`upgradeableExclusive`、`upgradeableUltimate`、`superShip`、`event`、`earlyAccess`、`coopOnly`、`pveOnly`、`notForBattle`、`peculiar` |
+| 加值 | `special`、`premium` |
+| 特种 | 上述两组之外的一切（如 `ultimate`、`specialUnsellable`、`clan`），**外加测试 / demo / 未上线 / 已移除船**：`disabled`、`unavailable`、`demoWithoutStats`、`demoWithoutStatsPrem`、`preserved`（`utils/ship_badge.py::_TEST_GROUPS`） |
+
+> **测试船 / 已移除船一律按特种显示**。这些分组都不是「可以买到的金币船」：
+> `demoWithoutStatsPrem` 的忒修斯 / 北达科他 / 德·格拉斯'56、`disabled` 的
+> `*_Test` / `*EM` / `*ZB`、`unavailable` 的 Lukodrager 系列，以及 `preserved`
+> 的 45 艘「（旧）」船（中途岛（旧）/ 白龙（旧）/ 企业（旧）/ 塞班（旧）…，其中旧航母、
+> 旧潜艇原本还是科技树船）。画成「金穗 + 金剪影」会被误认为可购买的金币船。
 
 实测对照（可研发 / 加值 / 特种）：
 大和·中途岛等科技树船 → `upgradeable`；武藏·密苏里·阿拉斯加·企业 → `special`；

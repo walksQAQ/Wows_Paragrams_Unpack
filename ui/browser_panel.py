@@ -2,7 +2,8 @@
 BrowserPanel —— 文件列表面板（300px 固定宽度）。
 
 支持按国籍/舰种/等级多选筛选舰船，按本地化舰名或编号搜索。
-可切换「本地化缺失」筛选，只显示名称回退到数据文件名（无中文译名）的舰船。
+可切换「本地化缺失」筛选，只显示语言文件里没有对应键、名称回退到数据文件名的舰船；
+键存在但原值为空的条目不进该筛选，改在名称后标「⚠ 未翻译」（见 utils/loc_status.py）。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from app.signals import bus
 from utils.theme import theme
 from utils.path_utils import get_split_dir
 from utils import ship_badge
+from utils.loc_status import BLANK_HINT, BLANK_MARK
 from services.database_service import get_db
 
 
@@ -152,10 +154,11 @@ class BrowserPanel(QWidget):
         theme.bind(self.btn_reset,
                    "QPushButton { font-size: 13px; font-weight: bold; padding: 0; }")
 
-        # 本地化缺失筛选：只显示无中文译名、名称回退到数据文件名的舰船
+        # 本地化缺失筛选：只看语言文件里有没有该键（译文是空白不算缺失）
         self.btn_missing_loc = QPushButton("⚠ 本地化缺失")
         self.btn_missing_loc.setCheckable(True)
-        self.btn_missing_loc.setToolTip("只显示本地化完全缺失、名称回退到数据文件名的舰船")
+        self.btn_missing_loc.setToolTip("只显示语言文件中没有对应键、名称回退到数据文件名的舰船\n"
+                                        "键存在但原值为空的不会列在这里，改在名词后标「⚠ 未翻译」")
         self.btn_missing_loc.setVisible(False)
         # 普通态继承统一按钮样式，只在「已启用筛选」这个语义状态下改成警告色
         theme.bind(self.btn_missing_loc, """
@@ -189,6 +192,9 @@ class BrowserPanel(QWidget):
         self.file_list.setFont(_fnt)
         # 舰船条目左侧是「舰种 + 等级」徽章图标（见 utils/ship_badge.py）
         self.file_list.setIconSize(ship_badge.icon_box(SHIP_BADGE_SIZE))
+        # 长名（多为回退的数据文件名）换行显示：否则右侧会被裁掉，
+        # 行尾的「⚠ 未翻译」标记也跟着看不见
+        self.file_list.setWordWrap(True)
         theme.bind(self.file_list, """
             QListWidget {
                 background-color: transparent;
@@ -294,15 +300,20 @@ class BrowserPanel(QWidget):
         vc = db.get_latest_version_code() or ""
 
         # 名称解析与详情面板一致：name_mapping_id → (category='ship', ship_index)；
-        # 两者皆无有效译名时回退 entity_id（数据文件名），并标记 loc_missing 供筛选。
+        # 两者皆无可用译名时回退 entity_id（数据文件名）。
+        # loc_missing 只认「语言文件里没有该键」（两处映射都没有行）；
+        # loc_blank 是「键在、但原值为空」（纯空白/原样回填 msgid）——不算缺失，但要打标记。
         rows = db._conn.execute("""
             SELECT e.entity_id,
                    COALESCE(NULLIF(TRIM(nmd.lang_zh), ''),
                             NULLIF(TRIM(nm.lang_zh), ''),
                             e.entity_id) AS display_name,
-                   CASE WHEN NULLIF(TRIM(nmd.lang_zh), '') IS NULL
-                             AND NULLIF(TRIM(nm.lang_zh), '') IS NULL
+                   CASE WHEN nmd.id IS NULL AND nm.id IS NULL
                         THEN 1 ELSE 0 END AS loc_missing,
+                   CASE WHEN COALESCE(NULLIF(TRIM(nmd.lang_zh), ''),
+                                      NULLIF(TRIM(nm.lang_zh), '')) IS NULL
+                             AND (nmd.id IS NOT NULL OR nm.id IS NOT NULL)
+                        THEN 1 ELSE 0 END AS loc_blank,
                    e.nation, b.shiptype, b.tier, b.group_status_key
             FROM entity_registry e
             LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
@@ -333,7 +344,9 @@ class BrowserPanel(QWidget):
         vc = db.get_latest_version_code() or ""
         rows = db._conn.execute("""
             SELECT e.entity_id,
-                   COALESCE(nm.lang_zh, c.person_name, e.entity_id) AS display_name, e.nation,
+                   COALESCE(NULLIF(nm.lang_zh, ''), c.person_name, e.entity_id) AS display_name, e.nation,
+                   CASE WHEN nm.id IS NOT NULL AND TRIM(COALESCE(nm.lang_zh, ''))=''
+                        THEN 1 ELSE 0 END AS loc_blank,
                    c.is_unique, c.is_elite, c.is_person, c.is_animated
             FROM entity_registry e
             LEFT JOIN crew_basic_info c ON c.version_code=e.version_code AND c.crew_id = e.entity_id
@@ -377,7 +390,9 @@ class BrowserPanel(QWidget):
             nm_cat = ETYPE_NM_CAT.get(etype, etype)
             rows = db._conn.execute(f"""
                 SELECT e.entity_id,
-                       COALESCE(nm.lang_zh, e.entity_id) AS display_name
+                       COALESCE(NULLIF(nm.lang_zh, ''), e.entity_id) AS display_name,
+                       CASE WHEN nm.id IS NOT NULL AND TRIM(COALESCE(nm.lang_zh, ''))=''
+                            THEN 1 ELSE 0 END AS loc_blank
                 FROM entity_registry e
                 LEFT JOIN name_mappings nm ON nm.category=? AND nm.key_name = e.entity_id
                 WHERE e.version_code=? AND e.entity_type=?
@@ -435,7 +450,9 @@ class BrowserPanel(QWidget):
 
             # 条目文本只放船名（纯文本，便于 Ctrl+C / 复制不带图标）；
             # 舰种/类型/等级以徽章图标呈现（与游戏内一致：[舰种标][等级] 船名）
-            item = QListWidgetItem(dname)
+            # 键存在但原值为空（loc_blank）的追加标记，与「键不存在」（直接显示文件名、无标记）区分开
+            loc_blank = bool(ent.get("loc_blank"))
+            item = QListWidgetItem(f"{dname}  {BLANK_MARK}" if loc_blank else dname)
             item.setData(Qt.UserRole, eid)
             if self._current_folder == "Ship":
                 badge = ship_badge.build_badge_icon(
@@ -446,6 +463,9 @@ class BrowserPanel(QWidget):
                 tip = ship_badge.type_label(
                     ent.get("shiptype"), ent.get("tier"), ent.get("group_status_key"))
                 item.setToolTip(f"{tip}｜{eid}" if tip else eid)
+            if loc_blank:
+                base = item.toolTip()
+                item.setToolTip(f"{base}\n{BLANK_HINT}" if base else BLANK_HINT)
             self.file_list.addItem(item)
 
     def _on_filter_changed(self):

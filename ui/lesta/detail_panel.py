@@ -402,7 +402,7 @@ class LestaDetailPanel(DetailPanel):
                 cur = _db._conn.execute("""
                     SELECT c.crew_id, c.nation, c.is_unique, c.is_person, c.is_elite,
                            c.skills_container,
-                           COALESCE(n.lang_zh, c.person_name, c.crew_id) as disp,
+                           COALESCE(NULLIF(n.lang_zh, ''), c.person_name, c.crew_id) as disp,
                            (SELECT COUNT(*) FROM crew_unique_skills us
                             WHERE us.version_code=c.version_code AND us.crew_id=c.crew_id) as unique_skill_count
                     FROM crew_basic_info c
@@ -550,7 +550,6 @@ class LestaDetailPanel(DetailPanel):
         from models.name_mapping import Mapping as _NM
         _MODIFIER_MAP = getattr(_NM, 'MODIFIER_MAP', {})
         _MM = _MODIFIER_MAP
-        _RIBBON_NAMES = getattr(_NM, 'RIBBON_MAP_CREW', {})
 
         def _format_trigger_cond(ttype: str, divider: float, trigger: dict | None = None) -> str:
             """格式化触发条件描述（trigger 可选，用于补充具体细节，避免重复显示）"""
@@ -579,7 +578,8 @@ class LestaDetailPanel(DetailPanel):
                 _rib_types = _tr.get("triggerRibbonsTypes", [])
                 _rib_num = _tr.get("triggerRibbonsNum", 1)
                 _dur = _tr.get("duration", 0)
-                _rib_labels = [_RIBBON_NAMES.get(str(t), f"勋带{t}") for t in _rib_types]
+                _rib_labels = [_NM.ribbon_name(t, is_sub=bool(_tr.get("triggerIsSubRibbons")))
+                               for t in _rib_types]
                 if _rib_labels:
                     _cond = "获得" + "、".join(_rib_labels)
                     if _rib_num > 1:
@@ -1082,7 +1082,7 @@ class LestaDetailPanel(DetailPanel):
                                effects_json, icon_path,
                                trigger_achievement, trigger_damage_num,
                                trigger_damage_type, trigger_ribbon_types, trigger_ribbons_num,
-                               damage_percent_threshold
+                               trigger_is_sub_ribbons, damage_percent_threshold
                         FROM crew_unique_skills
                         WHERE version_code=? AND crew_id=?
                         ORDER BY sort_index
@@ -1092,12 +1092,11 @@ class LestaDetailPanel(DetailPanel):
                         from models.name_mapping import Mapping as NMAP
                         # 取MODIFIER_MAP方便效果翻译
                         _mod_map = getattr(NMAP, 'MODIFIER_MAP', {})
-                        _ribbon_map = getattr(NMAP, 'RIBBON_MAP', {})
                         _trigger_map = getattr(NMAP, 'TRIGGER_TYPE_MAP', {})
                         _achievement_map = getattr(NMAP, 'ACHIEVEMENT_MAP', {})
                         _damage_map = getattr(NMAP, 'DAMAGE_TYPE_MAP', {})
 
-                        def _build_trigger_desc(sk_row, trig_type, trig_map, rib_map):
+                        def _build_trigger_desc(sk_row, trig_type, trig_map):
                             """构建触发条件说明"""
                             tzh = trig_map.get(trig_type, trig_type or "?")
                             if trig_type == "achievement":
@@ -1110,7 +1109,8 @@ class LestaDetailPanel(DetailPanel):
                                     types = json.loads(sk_row['trigger_ribbon_types']) if isinstance(sk_row['trigger_ribbon_types'], str) else (sk_row['trigger_ribbon_types'] or [])
                                 except Exception:
                                     types = []
-                                rnames = [rib_map.get(str(t), str(t)) for t in types]
+                                rnames = [NMAP.ribbon_name(t, is_sub=bool(sk_row['trigger_is_sub_ribbons']))
+                                          for t in types]
                                 num = sk_row['trigger_ribbons_num'] or ""
                                 return f"获得 {num} 个{'/'.join(rnames)} 勋带触发"
                             elif trig_type == "damage":
@@ -1210,7 +1210,7 @@ class LestaDetailPanel(DetailPanel):
 
                             # 触发条件
                             trigger_line = _build_trigger_desc(
-                                sk, ttype, _trigger_map, _ribbon_map
+                                sk, ttype, _trigger_map
                             )
                             tip_lines.append(
                                 f'<div style="color:{theme["gold"]}; font-weight:bold; '
