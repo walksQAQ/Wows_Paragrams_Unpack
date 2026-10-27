@@ -74,6 +74,7 @@ SKINS = {
 | `SciFiButton` | `ui/widgets/scifi_button.py` | 斜切薄片按钮（工具栏专用） |
 | `HoloDialog` / `HoloWindow` | `ui/widgets/dialog_style.py` | 带切角外框的对话框 / 独立工具窗口基类 |
 | `SkinArtSlot` | `ui/widgets/skin_art.py` | 角色主题右侧的**立绘预留位**（只占空间与画虚线框，不含任何内容） |
+| `PartsTreePanel` | `ui/widgets/parts_tree.py` | 两个 3D 查看器左侧的**模型部件纵列**：按分组列出全部渲染网格，逐条勾选显隐（一对一绑定网格 key）；行内第一行是**形状 / 模型名**、第二行是**顶点格式串**（自绘 delegate 按宽度换行，无横向滚动条） |
 
 自绘控件统一在 `bus.theme_changed` 时清缓存并重绘。
 

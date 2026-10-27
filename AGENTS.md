@@ -86,6 +86,9 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 | `compileall` 触发 qrc 重建 | `resources/__pycache__` 曾被打进资源包；`.pyc` 与缓存目录已在 qrc 生成脚本里排除 |
 | 子进程约束 | spawn 下 worker 必须是模块级函数、参数可 pickle、子进程内无 Qt 事件循环；打包必须 `multiprocessing.freeze_support()` |
 | 输出路径必须校验落点 | `.idx`/`.pkg` 条目名与游戏数据字段都是外部输入，可直接 `Path / name` 或 `os.path.join` 会被 `../`、反斜杠、盘符前缀带出输出目录（任意文件写入）。一律用 `utils.path_utils.safe_join(base, *parts)`，越界抛 `ValueError` |
+| 部件树 key 必须与后端一致 | `hull:i` / `mount:i` 由 `GeometryViewport.set_scene` 与 `renderer/scene.py::build_scene` 按**生成顺序**分配，左侧 `PartsTreePanel` 与两套后端共用这套 key；改生成顺序或再跳过某类网格会让勾选错位/指向不存在的网格（损坏网格改为「默认隐藏」而不是丢弃） |
+| 网格 key 不能被贴图 key 覆盖 | `renderer/scene.py::_build_mesh` 内部的局部变量 `key` 是**贴图** key（`t12` 之类）。新增参数误命名成 `key` 会让全部网格 key 变成贴图 key ⇒ 大量重名 ⇒ DLL 同名网格就地替换（模型炸开/错乱、`set_mesh_visible` 全失效）。显式网格 key 参数必须叫 `mesh_key`，并统一经 `_KeyGen.take()` 去重 |
+| `ItemIsAutoTristate` 会向下传染 | 部件树的父行**不能**加 `Qt.ItemIsAutoTristate`：程序里把父项设成 `PartiallyChecked` 时 Qt 会把它写给所有子项 ⇒ 取消任意一行都会让"隐藏集合"变成全集（整个模型消失）。级联与父项汇总由 `PartsTreePanel` 手工处理 |
 | 递归删除必须先认目录 | `rmtree` 的目标若由「exe 同级 / 数据目录」推出来，删除前要确认它确实是本程序的产物（例：旧工具的 `content/` 根下必有 `GameParams*.data`）。否则把解包器 exe 放进客户端或 `res_unpack/` 旁边，一次「加载数据」就会连带删掉整棵 `content/` 资源树 |
 | 解包落点必须收进 `res_unpack` | 客户端目录内只能落在 `<客户端>/res_unpack/`：客户端根自动改指，客户端内其它位置直接拒绝；另一个客户端（根或子目录）一律拒绝；普通目录自动套一层 `res_unpack`。规则集中在 `ui/unpacker_dialog.py::_resolve_output_dir`。判「是不是客户端根」只看目录自身（主程序名，或 `res_packages/` + `bin/` 并存），**不能**用 `detect_wows_type` 的递归探测——`res_unpack/` 里解包出的 `bin/` 会让它把自己的产物误判成客户端 |
 | Qt 对象被 GC | 冒烟脚本里窗口必须用列表持有引用，否则 C++ 析构可能崩溃（`0xC0000409`） |

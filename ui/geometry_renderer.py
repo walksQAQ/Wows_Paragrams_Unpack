@@ -817,9 +817,13 @@ class GpuMesh:
                  shape_names: list | None = None,
                  node_names: list | None = None,
                  instance_matrices: list | None = None,
-                 tex_cache: dict | None = None):
+                 tex_cache: dict | None = None,
+                 key: str | None = None):
         self.name = name
         self.kind = kind
+        #: 稳定网格 key（``hull:i`` / ``mount:i``，与 set_scene 的生成顺序一致）：
+        #: 部件树按它一对一开关可见性；缺省时退化为 kind:name（同名会重复）。
+        self.key = str(key) if key else f"{kind}:{name}"
         #: 材质贴图集 {键: (vfs_path, bytes)}，供诊断/后续复用
         self.material_textures = material_textures or {}
         #: GL 纹理去重缓存（共享图集只上传一次；release 不删除缓存中的纹理）
@@ -1021,6 +1025,9 @@ class GeometryViewport(QOpenGLWidget):
         self._fs_program = 0
         self._fs_uniforms = {}
         self._meshes: list[GpuMesh] = []
+        self._mesh_gpu: list[GpuMesh] = []   # 全部已上传网格（含被隐藏的）
+        #: 被部件树取消勾选而隐藏的网格 key（空 = 全部可见）
+        self._hidden_mesh_keys: set[str] = set()
         self._mesh_specs: list[dict] = []
         self._scene_bounds = None
         self._show_hull = True
@@ -1092,12 +1099,17 @@ class GeometryViewport(QOpenGLWidget):
     # ── 场景设置 ─────────────────────────────────────────
 
     def set_scene(self, ship_geometry, show_hull: bool = True, show_armor: bool = True,
-                  armor_scene=None):
+                  armor_scene=None, hidden_meshes=None):
         """加载舰船场景：舰体分段 + 挂载模型（各自独立贴图/变换）+ 装甲。
 
         armor_scene：ArmorScene 聚合场景（重构后装甲渲染/拾取数据源）。
         传入时装甲改由场景渲染（跳过逐 ArmorMesh 的 spec 路径）。
+
+        hidden_meshes：默认隐藏的网格 key 集合（``hull:i`` / ``mount:i``，
+        与左侧部件树一对一）。损坏/残骸（crack）网格不再直接丢弃，由调用方
+        放进该集合即可默认不显示、又能在部件树里手动打开。
         """
+        self._hidden_mesh_keys = set(hidden_meshes or ())
         # 新场景：重置贴图去重缓存（避免跨场景 id() 复用命中陈旧纹理；
         # 场景内共享图集仍只上传一次）
         self._gl_tex_cache = {}
@@ -1105,11 +1117,8 @@ class GeometryViewport(QOpenGLWidget):
         if ship_geometry is not None:
             tex = ship_geometry.texture_dds if ship_geometry.texture_dds else None
             white = (1.0, 1.0, 1.0, 1.0)
-            for hm in ship_geometry.hull_meshes:
+            for _i, hm in enumerate(ship_geometry.hull_meshes):
                 # 按材质拆分的分段使用自己的贴图（如 DeckHouse），否则用舰体默认贴图
-                # crack/damage 损伤网格不显示（导出保留用）
-                if getattr(hm, "is_crack", False):
-                    continue
                 has_color = getattr(hm, "has_color", True)
                 mtexs = getattr(hm, "material_textures", None) or {}
                 # 稀疏材质：No-albedo 但声明了 normal 的 mesh → 法线叠加层，主贴图绑定其
@@ -1120,6 +1129,7 @@ class GeometryViewport(QOpenGLWidget):
                 else:
                     hm_tex = getattr(hm, "texture_dds", None) or tex
                 specs.append({
+                    "key": f"hull:{_i}",
                     "name": hm.name, "kind": "hull",
                     "positions": hm.positions, "normals": hm.normals, "uvs": hm.uvs,
                     "colors": np.full((hm.positions.shape[0], 4), white, dtype=np.float32),
@@ -1135,10 +1145,7 @@ class GeometryViewport(QOpenGLWidget):
                     "node_names": getattr(hm, "node_names", None),
                     "instance_matrices": getattr(hm, "instance_matrices", None),
                 })
-            for mm in ship_geometry.mounts:
-                # crack/damage 损伤网格不显示（导出保留用）
-                if getattr(mm, "is_crack", False):
-                    continue
+            for _j, mm in enumerate(ship_geometry.mounts):
                 has_color = getattr(mm, "has_color", True)
                 mtexs = getattr(mm, "material_textures", None) or {}
                 # 稀疏材质：No-albedo 但声明 normal → 法线叠加层（同船体）。
@@ -1148,6 +1155,7 @@ class GeometryViewport(QOpenGLWidget):
                 else:
                     mm_tex = mm.texture_dds if mm.texture_dds else tex
                 specs.append({
+                    "key": f"mount:{_j}",
                     "name": mm.name, "kind": "mount",
                     "positions": mm.positions, "normals": mm.normals, "uvs": mm.uvs,
                     "colors": np.full((mm.positions.shape[0], 4), white, dtype=np.float32),
@@ -1194,11 +1202,11 @@ class GeometryViewport(QOpenGLWidget):
         self.update()
 
     def _build_meshes(self):
-        for m in self._meshes:
+        for m in self._mesh_gpu:
             m.release()
         # ★ mesh 重建时同步释放 debug 点位缓存（旧指纹失效）
         self._release_marker_resources()
-        self._meshes = []
+        self._mesh_gpu = []
         for spec in self._mesh_specs:
             # 解析空间 → 渲染空间（右手系，与 glTF 同构）变换。
             # ⚠️ 与导出服务共用 prepare_render_mesh（models/geometry_transform.py），
@@ -1226,8 +1234,10 @@ class GeometryViewport(QOpenGLWidget):
                 node_names=spec.get("node_names"),
                 instance_matrices=spec.get("instance_matrices"),
                 tex_cache=self._gl_tex_cache,
+                key=spec.get("key"),
             )
-            self._meshes.append(mesh)
+            self._mesh_gpu.append(mesh)
+        self._apply_hidden_meshes()
 
         # ── 装甲场景聚合网格（重构后路径） ──
         self._release_armor_gpu()
@@ -1268,10 +1278,33 @@ class GeometryViewport(QOpenGLWidget):
 
     def clear_scene(self):
         self._mesh_specs = []
+        # _mesh_gpu 不在这里丢弃：GPU 缓冲由下一次 _build_meshes 统一 release
+        # （清空后列表本身为空 ⇒ paintGL 不再绘制任何网格）
+        self._meshes = []
+        self._hidden_mesh_keys = set()
         self._scene_bounds = None
         self._armor_scene = None
         self._needs_rebuild = True
         self.update()
+
+    # ── 网格显隐（左侧部件树）─────────────────────────────
+
+    def set_hidden_meshes(self, keys):
+        """按网格 key 隐藏（空/None = 全部显示）。
+
+        只切换可见列表，不重建 GPU 缓冲，也不重置相机。
+        """
+        keys = set(keys or ())
+        if keys == self._hidden_mesh_keys:
+            return
+        self._hidden_mesh_keys = keys
+        self._apply_hidden_meshes()
+        self.update()
+
+    def _apply_hidden_meshes(self):
+        """按 _hidden_mesh_keys 重算可见网格列表（paintGL 各 pass 都遍历它）。"""
+        hidden = self._hidden_mesh_keys
+        self._meshes = [m for m in self._mesh_gpu if m.key not in hidden]
 
     # ── 显示选项 ─────────────────────────────────────────
 
