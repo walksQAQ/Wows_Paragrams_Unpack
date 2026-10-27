@@ -697,6 +697,18 @@ class RenderView(QWidget):
 - 查看器面板上显示当前后端标识；D3D11 下把「尚未支持」的功能清单汇总提示**一次**
   （`unsupported_summary()`，不静默降级）。
 
+**加载/上传进度不进渲染面**：D3D 视口是 `WA_PaintOnScreen` 的原生子窗口，
+Qt 自绘控件叠在它上面无法可靠合成（实测：进度文字留鬼影、上传早在 0.1s 内结束但
+屏幕上一直停在旧百分比，被当成卡死）。因此 D3D 后端**不用**遮罩覆盖渲染区：
+
+- 加载阶段的文字 → 右侧面板的状态区（`stats_label`）；
+- GPU 上传的量化进度 → 右侧面板进度条（`RenderView.scene_upload(done, total)` →
+  `GeometryViewerDialog._on_scene_upload`；`total <= 0` 表示结束）；
+- 文字版 `scene_progress` 仍然照旧发（日志节流 + OpenGL 后端的遮罩）。
+
+另外 `GeometryViewerDialog` 加载/重载时**不先清空场景**：解析一艘船要几十秒，
+保留上一帧模型到新场景上传完成，避免渲染区整段全黑。
+
 ---
 
 ## 九、分阶段实施计划

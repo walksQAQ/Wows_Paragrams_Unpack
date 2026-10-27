@@ -54,6 +54,9 @@ class D3DViewportAdapter(RenderView):
         #: 部件树隐藏的网格 key（hull:i / mount:i）与已下发给 DLL 的集合
         self._hidden_meshes: set[str] = set()
         self._applied_hidden: set[str] = set()
+        # 悬停拾取依赖「无按键移动」的 mouseMoveEvent：Qt 默认只在按住鼠标时才发，
+        # 不打开 tracking 就会表现为「鼠标放到装甲上没有反应」（无厚度提示/无悬停高亮）。
+        self.setMouseTracking(True)
         # 分片上传：途中设的装甲可见掩码/高亮会被 DLL 忽略（网格还没建）⇒ 传完再套一次
         self.scene_progress.connect(self._reapply_visible_tris)
 

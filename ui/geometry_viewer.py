@@ -21,7 +21,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox, QCompleter,
     QPushButton, QCheckBox, QWidget, QProgressBar, QFileDialog, QMessageBox,
-    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QSlider, QSplitter, QToolTip,
+    QSlider, QSplitter, QStackedWidget, QToolTip,
 )
 
 from app.signals import bus
@@ -32,6 +32,7 @@ from utils.path_utils import get_data_dir, is_debug_build
 from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
+from ui.widgets.armor_tree import ArmorTreePanel
 from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
 from ui.widgets.parts_tree import PartEntry, PartsTreePanel
 
@@ -176,10 +177,14 @@ class GeometryViewerDialog(HoloDialog):
     #: 后台导出进度（0..100, 消息）→ 主线程更新导出进度条
     export_progress_changed = Signal(float, str)
 
+    #: 默认窗口尺寸（首次打开、或旧配置里存的窗口比默认窄时套用）
+    DEFAULT_WIDTH = 1480
+    DEFAULT_HEIGHT = 840
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("3D 模型查看器")
-        self.resize(1240, 840)
+        self.resize(self.DEFAULT_WIDTH, self.DEFAULT_HEIGHT)
         self.setMinimumSize(960, 560)
 
         self._settings = QSettings("walksQAQ", "WowsParagrams")
@@ -188,12 +193,12 @@ class GeometryViewerDialog(HoloDialog):
         self._loading = False
         self._current_geom = None
         self._armor_scene = None
-        self._plate_items = {}
         #: 详情面板入口：尚未拿到舰船列表前先挂起，列表就绪后自动载入
         self._pending_ship_id = None
         #: 独立皮肤模式：由「独立涂装」工具直接载入无归属皮肤（合成 ShipInfo）
         self._skin_mode = False
         self._restored_geometry = self._restore_geometry()
+        self._ensure_default_width()
 
         # ── 生命周期 / 取消状态 ──
         self._closed = False          # 关闭标记：关闭后丢弃一切过期任务回调
@@ -201,6 +206,8 @@ class GeometryViewerDialog(HoloDialog):
         self._loading_ships = False   # 舰船列表后台任务进行中
         self._ships_task = None       # 舰船列表任务句柄（可取消）
         self._load_task = None        # 舰船模型加载任务句柄（可取消）
+        #: 正在解析/已显示的那艘船（game_key）：重复点「查看」同一艘时不用重来
+        self._active_ship_key = ""
         # ── 导出状态 ──
         self._exporting = False       # 导出进行中
         self._export_task = None      # 导出任务句柄（可取消）
@@ -214,6 +221,9 @@ class GeometryViewerDialog(HoloDialog):
         # D3D 后端：场景分片上传的进度显示到加载遮罩（避免「看着像卡死」）
         if hasattr(self.viewport, "scene_progress"):
             self.viewport.scene_progress.connect(self._on_scene_upload_progress)
+        # D3D 后端不叠遮罩（见 _overlay_usable）：上传进度走右侧面板进度条
+        if hasattr(self.viewport, "scene_upload"):
+            self.viewport.scene_upload.connect(self._on_scene_upload)
 
         # 舰船列表后台加载（保存句柄，关闭时可取消）
         self._start_ships_load()
@@ -240,16 +250,35 @@ class GeometryViewerDialog(HoloDialog):
             f"⚠️ {text}（D3D11 后端仍在开发中；设 {VIEWPORT_BACKEND_ENV}=0 可回退 OpenGL）")
 
     def _on_scene_upload_progress(self, text: str) -> None:
-        """D3D：场景「上传到 GPU」进度（空串 = 已结束）。
+        """场景「上传到 GPU」进度（空串 = 已结束）。
 
-        大船首次上传纹理/网格耗时较长，这里用遮罩给出进度，避免看起来像卡死。
+        ⚠️ 只用于能把 Qt 控件可靠叠在渲染面上的后端（OpenGL）。D3D 视口是原生
+        子窗口，遮罩会残留旧文字（见 ``_overlay_usable``）⇒ D3D 走
+        :meth:`_on_scene_upload`，进度显示在右侧面板。
         """
-        if self._closed:
+        if self._closed or not getattr(self, "_overlay_usable", True):
             return
         if text:
             self._set_loading_overlay(True, text)
         else:
             self._set_loading_overlay(False)
+
+    def _on_scene_upload(self, done: int, total: int) -> None:
+        """D3D：GPU 上传的量化进度 → 右侧面板进度条（``total <= 0`` = 结束）。
+
+        上传本身只要 0.1~0.4s，但**绝不能再画在渲染面上**：那正是「卡在
+        上传到 GPU 80%」的来源（遮罩不重绘，百分比永远停在上一次的旧值）。
+        """
+        if self._closed or getattr(self, "_overlay_usable", True):
+            return
+        if total <= 0 or done >= total:
+            # 解析还没结束（船体预览那次上传）时不要抢走进度条，它还在显示解析进度
+            if not self._loading:
+                self.progress.setVisible(False)
+            return
+        self.progress.setVisible(True)
+        self.progress.setValue(int(done * 100 / total))
+        self.progress.setFormat(f"上传到 GPU {done}/{total}  %p%")
 
     # ── UI 构建 ──────────────────────────────────────────
 
@@ -267,6 +296,11 @@ class GeometryViewerDialog(HoloDialog):
         # 后端选择：源码模式默认 D3D11（见 resolve_viewport_backend）
         self._backend, self._backend_note = resolve_viewport_backend()
         self._backend_gaps_logged = False
+        # 遮罩能否盖在渲染面上：D3D 视口是 WA_PaintOnScreen 的**原生子窗口**，
+        # Qt 自绘控件叠在它上面无法可靠合成（实测：进度文字留下鬼影，上传早已
+        # 在 0.1s 内结束、屏幕上却一直停在旧百分比 ⇒ 用户以为卡死）。
+        # ⇒ D3D 后端不往渲染面叠控件，加载/上传进度一律走右侧面板。
+        self._overlay_usable = self._backend != "d3d"
         if self._backend == "d3d":
             # 新渲染后端（D3D11）：见 todo_list/New_function_of_d3d11_renderer.md
             from renderer.qt_viewport import D3DViewportAdapter
@@ -306,13 +340,22 @@ class GeometryViewerDialog(HoloDialog):
             "border-radius:6px; padding:5px 12px;")
         _lo.addWidget(self.loading_label, 0, Qt.AlignCenter)
         _vc.addWidget(self.loading_overlay, 0, 0)
-        # ── 左侧：模型部件纵列（舰体分段 + 挂载，逐网格勾选显隐）──
-        # 放进 QSplitter：可拖动分隔条调宽度（面板内还有横向滚动条看长名称）
+        # ── 左侧：模型部件 / 装甲结构 两套列表（同一栏位切换）──
+        # 同一时刻只显示一套：显示船体 = 部件列表，显示装甲 = 装甲板块列表。
+        # 装甲树以前挤在右栏最下方（stretch 抢不到高度、只有几行可见），
+        # 合并到左栏后两块列表都能占满整列高度。
         self.parts_panel = PartsTreePanel("模型部件", 400)
+        self.armor_panel = ArmorTreePanel("装甲结构", 400)
+        self.side_stack = QStackedWidget()
+        self.side_stack.setObjectName("ModelSide")
+        self.side_stack.setMinimumWidth(PartsTreePanel.MIN_WIDTH)
+        self.side_stack.setMaximumWidth(PartsTreePanel.MAX_WIDTH)
+        self.side_stack.addWidget(self.parts_panel)
+        self.side_stack.addWidget(self.armor_panel)
         self.body_split = QSplitter(Qt.Horizontal)
         self.body_split.setChildrenCollapsible(False)
         self.body_split.setHandleWidth(6)
-        self.body_split.addWidget(self.parts_panel)
+        self.body_split.addWidget(self.side_stack)
         self.body_split.addWidget(self.view_container)
         self.body_split.setStretchFactor(0, 0)
         self.body_split.setStretchFactor(1, 1)
@@ -402,9 +445,9 @@ class GeometryViewerDialog(HoloDialog):
 
         # ── 显示选项 ──
         self._add_section_title(pl, "显示", sec_style)
-        self.cb_hull = QCheckBox("显示船体")
+        self.cb_hull = QCheckBox("显示船体（左侧：模型部件）")
         self.cb_hull.setChecked(True)
-        self.cb_armor = QCheckBox("显示装甲（厚度着色）")
+        self.cb_armor = QCheckBox("显示装甲（左侧：装甲结构）")
         # 默认关闭装甲叠加：先显示干净的贴图船体
         self.cb_armor.setChecked(False)
         self.cb_wire = QCheckBox("线框叠加")
@@ -486,25 +529,7 @@ class GeometryViewerDialog(HoloDialog):
         op_row.addWidget(self.opacity_value)
         pl.addLayout(op_row)
 
-        # ── 装甲结构树（Zone → 部件 → 板块，三态 checkbox 级联显隐） ──
-        self._add_section_title(pl, "装甲结构", sec_style)
-        tree_row = QHBoxLayout()
-        self.btn_all = QPushButton("全选")
-        self.btn_none = QPushButton("全不选")
-        tree_row.addWidget(self.btn_all)
-        tree_row.addWidget(self.btn_none)
-        tree_row.addStretch(1)
-        pl.addLayout(tree_row)
-
-        self.armor_tree = QTreeWidget()
-        self.armor_tree.setColumnCount(1)
-        self.armor_tree.setHeaderHidden(True)
-        self.armor_tree.setRootIsDecorated(True)
-        self.armor_tree.setUniformRowHeights(True)
-        theme.bind(self.armor_tree,
-                   "QTreeWidget { background:@input_bg@; color:@text@; border:1px solid @border@; border-radius:4px; font-size:12px; }"
-                   "QHeaderView::section { background:@panel_bg@; color:@text_muted@; border:none; border-bottom:1px solid @border@; padding:2px 4px; font-size:11px; }")
-        pl.addWidget(self.armor_tree, stretch=1)
+        # ── 装甲结构树已并入左栏（与模型部件共用同一栏位切换），此处不再放列表 ──
 
         # ── 选中信息 ──
         self._add_section_title(pl, "选中信息", sec_style)
@@ -572,6 +597,9 @@ class GeometryViewerDialog(HoloDialog):
         hint.setWordWrap(True)
         theme.bind(hint, "color:@text_hint@; font-size:11px; background:transparent; border:none;")
         pl.addWidget(hint)
+        # 右栏内容固定从顶部排布：多出的高度留白在底部，不再把各分组撑出空隙
+        # （装甲列表搬到左栏后，右栏失去了原先吃 stretch 的列表控件）
+        pl.addStretch(1)
 
         body.addWidget(panel)
 
@@ -588,11 +616,10 @@ class GeometryViewerDialog(HoloDialog):
         self.cb_wire.toggled.connect(lambda v: self.viewport.set_view_options(wireframe=v))
         self.cb_edges.toggled.connect(lambda v: self.viewport.set_armor_display(show_edges=v))
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        self.btn_all.clicked.connect(lambda: self._set_all_tree_checked(True))
-        self.btn_none.clicked.connect(lambda: self._set_all_tree_checked(False))
         self.btn_legend.clicked.connect(self._toggle_legend)
-        self.armor_tree.itemChanged.connect(self._on_tree_item_changed)
-        self.armor_tree.itemSelectionChanged.connect(self._on_tree_selection)
+        # 左栏装甲列表：勾选显隐 / 选中板块 → 3D 高亮
+        self.armor_panel.visible_tris_changed.connect(self._on_armor_visibility_changed)
+        self.armor_panel.plate_selected.connect(self._on_armor_plate_selected)
         # 模型导出（渲染 / 装甲 分开）
         self.btn_export_render.clicked.connect(lambda: self._start_export(False))
         self.btn_export_armor.clicked.connect(lambda: self._start_export(True))
@@ -620,11 +647,22 @@ class GeometryViewerDialog(HoloDialog):
 
     # ── 显示开关 ─────────────────────────────────────────
 
+    #: 左栏栏位索引：0 = 模型部件（船体），1 = 装甲结构（装甲板块）
+    _SIDE_PARTS = 0
+    _SIDE_ARMOR = 1
+
+    def _show_side_page(self, idx: int) -> None:
+        """切换左栏列表：船体 → 模型部件，装甲 → 装甲结构。"""
+        if self.side_stack.currentIndex() != idx:
+            self.side_stack.setCurrentIndex(idx)
+
     def _on_hull_toggled(self, v: bool):
-        """显示船体/装甲互斥：勾选船体时取消装甲。"""
+        """显示船体/装甲互斥：勾选船体时取消装甲，左栏切回部件列表。"""
         if v:
             self.cb_armor.setChecked(False)
         self.viewport.set_view_options(show_hull=v)
+        if v:
+            self._show_side_page(self._SIDE_PARTS)
 
     def _on_env_strength_changed(self, v: int):
         """环境亮度：原版路径下=环境反射强度；Studio 模式=IBL 强度；0 = 关闭。"""
@@ -647,7 +685,7 @@ class GeometryViewerDialog(HoloDialog):
             setter(lighting_mode=1 if idx == 1 else 0)
 
     def _on_armor_toggled(self, v: bool):
-        """装甲显示开关：启用时取消船体。"""
+        """装甲显示开关：启用时取消船体，并把左栏切到装甲结构列表。"""
         if v:
             self.cb_hull.setChecked(False)
         else:
@@ -656,123 +694,19 @@ class GeometryViewerDialog(HoloDialog):
             self.viewport._hover_tri = None
             QToolTip.hideText()
         self.viewport.set_view_options(show_armor=v)
+        self._show_side_page(self._SIDE_ARMOR if v else self._SIDE_PARTS)
 
-    # ── 装甲结构树 ───────────────────────────────────────
+    # ── 装甲结构列表（左栏）────────────────────────────────
 
-    def _build_armor_tree(self):
-        """由 ArmorScene 构建 Zone→部件→板块 三级树（checkbox 级联显隐）。"""
-        tree = self.armor_tree
-        tree.blockSignals(True)
-        tree.clear()
-        self._plate_items = {}
-        sc = self._armor_scene
-        n_hidden = 0
-        if sc is not None and sc.tri_count:
-            for zone in sorted(sc.zones):
-                parts = sc.zones[zone]
-                zitem = QTreeWidgetItem([zone_display(zone)])
-                zitem.setData(0, Qt.UserRole, ("zone", zone))
-                zitem.setFlags(zitem.flags() | Qt.ItemIsAutoTristate | Qt.ItemIsUserCheckable)
-                for part in sorted(parts):
-                    tris_part = parts[part]
-                    pitem = QTreeWidgetItem([part])
-                    pitem.setData(0, Qt.UserRole, ("part", zone, part))
-                    pitem.setFlags(pitem.flags() | Qt.ItemIsAutoTristate | Qt.ItemIsUserCheckable)
-                    for tenths in sorted(tris_part):
-                        tris = tris_part[tenths]
-                        key = (zone, part, tenths)
-                        hidden = any(sc.tri_info[t].hidden for t in tris)
-                        if hidden:
-                            n_hidden += len(tris)
-                        mm = tenths / 10.0
-                        color = sc.tri_info[tris[0]].color
-                        citem = QTreeWidgetItem([f"{mm:g} mm"])
-                        citem.setData(0, Qt.UserRole, ("plate", key))
-                        citem.setFlags(citem.flags() | Qt.ItemIsUserCheckable)
-                        st = Qt.Unchecked if hidden else Qt.Checked
-                        citem.setCheckState(0, st)
-                        self._swatch(citem, color)
-                        self._plate_items[key] = citem
-                        pitem.addChild(citem)
-                    pitem.setCheckState(0, self._children_state(pitem))
-                    zitem.addChild(pitem)
-                zitem.setCheckState(0, self._children_state(zitem))
-                tree.addTopLevelItem(zitem)
-        tree.blockSignals(False)
-        self._apply_tree_visibility()
-        return n_hidden
-
-    @staticmethod
-    def _children_state(item):
-        """由子节点勾选状态汇总父节点状态（全勾/全不勾/部分）。"""
-        states = [item.child(i).checkState(0) for i in range(item.childCount())]
-        if not states or all(s == Qt.Checked for s in states):
-            return Qt.Checked
-        if all(s == Qt.Unchecked for s in states):
-            return Qt.Unchecked
-        return Qt.PartiallyChecked
-
-    @staticmethod
-    def _swatch(item, color):
-        """板块节点厚度色块（取装甲颜色前 3 分量）。"""
-        r, g, b = int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)
-        item.setBackground(0, QColor(r, g, b, 64))
-
-    def _on_tree_item_changed(self, item, column):
-        """checkbox 变化：级联子节点 + 重算可见掩码。"""
-        tree = self.armor_tree
-        tree.blockSignals(True)
-        st = item.checkState(0)
-        for i in range(item.childCount()):
-            self._cascade_check(item.child(i), st)
-        # 向上同步父节点状态
-        p = item.parent()
-        while p is not None:
-            p.setCheckState(0, self._children_state(p))
-            p = p.parent()
-        tree.blockSignals(False)
-        self._apply_tree_visibility()
-
-    def _cascade_check(self, item, st):
-        item.setCheckState(0, st)
-        for i in range(item.childCount()):
-            self._cascade_check(item.child(i), st)
-
-    def _set_all_tree_checked(self, checked: bool):
-        tree = self.armor_tree
-        tree.blockSignals(True)
-        st = Qt.Checked if checked else Qt.Unchecked
-        for i in range(tree.topLevelItemCount()):
-            self._cascade_check(tree.topLevelItem(i), st)
-        tree.blockSignals(False)
-        self._apply_tree_visibility()
-
-    def _apply_tree_visibility(self):
-        """按树的勾选状态重建可见三角形掩码 → 视口。"""
-        sc = self._armor_scene
-        if sc is None or not sc.tri_count:
+    def _on_armor_visibility_changed(self, mask):
+        """左栏装甲列表勾选变化 → 可见三角形掩码 → 视口。"""
+        if mask is None or not getattr(mask, "size", 0):
             return
-        import numpy as np
-        vis = np.zeros(sc.tri_count, dtype=bool)
-        it = QTreeWidgetItemIterator(self.armor_tree)
-        while it.value() is not None:
-            item = it.value()
-            data = item.data(0, Qt.UserRole)
-            if data and data[0] == "plate" and item.checkState(0) == Qt.Checked:
-                for t in sc.tris_for_plate(data[1]):
-                    vis[t] = True
-            it += 1
-        self.viewport.set_visible_tris(vis)
+        self.viewport.set_visible_tris(mask)
 
-    def _on_tree_selection(self):
-        """树选中 → 3D 高亮（仅板块级）。"""
-        items = self.armor_tree.selectedItems()
-        key = None
-        if items:
-            data = items[0].data(0, Qt.UserRole)
-            if data and data[0] == "plate":
-                key = data[1]
-        if key == self.viewport._selected_plate:
+    def _on_armor_plate_selected(self, key):
+        """列表选中 → 3D 高亮（仅板块级）。"""
+        if key == getattr(self.viewport, "_selected_plate", None):
             return
         from ui.geometry_renderer import HIGHLIGHT_SELECT
         self.viewport._hl_color = HIGHLIGHT_SELECT
@@ -802,11 +736,11 @@ class GeometryViewerDialog(HoloDialog):
         QToolTip.showText(global_pos, "<br>".join(lines), self.viewport)
 
     def _on_viewport_select(self, key):
-        """3D 点击选中 → 树定位 + 信息面板。"""
+        """3D 点击选中 → 左栏装甲列表定位 + 信息面板。"""
         from ui.geometry_renderer import HIGHLIGHT_SELECT
         self.viewport._hl_color = HIGHLIGHT_SELECT
         self._update_sel_label(key)
-        self._sync_tree_to_plate(key)
+        self.armor_panel.select_plate(key)
         self._report_backend_unsupported()
 
     def _update_sel_label(self, key):
@@ -822,31 +756,6 @@ class GeometryViewerDialog(HoloDialog):
         if info is not None and len(info.layers) > 1:
             txt += f"\n层堆叠：{'、'.join(f'{l:g}' for l in info.layers)} mm"
         self.sel_label.setText(txt)
-
-    def _sync_tree_to_plate(self, key):
-        """展开并选中树中对应板块节点（3D→树联动）。"""
-        tree = self.armor_tree
-        tree.blockSignals(True)
-        tree.clearSelection()
-        target = self._plate_items.get(key) if hasattr(self, "_plate_items") else None
-        if target is None:
-            # 按数据查找
-            it = QTreeWidgetItemIterator(tree)
-            while it.value() is not None:
-                data = it.value().data(0, Qt.UserRole)
-                if data and data[0] == "plate" and data[1] == key:
-                    target = it.value()
-                    break
-                it += 1
-        if target is not None:
-            p = target.parent()
-            while p is not None:
-                p.setExpanded(True)
-                p = p.parent()
-            tree.setCurrentItem(target)
-            tree.scrollToItem(target)
-            target.setSelected(True)
-        tree.blockSignals(False)
 
     # ── 舰船列表 ─────────────────────────────────────────
 
@@ -889,6 +798,8 @@ class GeometryViewerDialog(HoloDialog):
             completer.setCaseSensitivity(Qt.CaseInsensitive)
             completer.setFilterMode(Qt.MatchContains)
             self.ship_combo.setCompleter(completer)
+            # completer popup 是独立顶层窗口，必须自己补主题底色（否则黑底深字不可读）
+            theme.style_popup_view(completer.popup())
             self.ship_status.setText(f"共 {len(self._ships)} 艘舰船（可搜索）")
             # 默认不选中任何舰船：由用户搜索/选择后手动点「加载」
             self.ship_combo.setCurrentIndex(-1)
@@ -921,6 +832,13 @@ class GeometryViewerDialog(HoloDialog):
         舰船列表尚在后台加载时挂起请求，列表就绪后自动载入。
         """
         if not ship_id:
+            return
+        # 这艘船已经在解析/已经显示：不要再从头来一遍。
+        # 解析一艘船要几十秒（实测 ~2 分钟），重复点「查看」会取消当前任务、
+        # 把进度条重新推到 0 再来一遍，用户会以为程序卡死。
+        if (not self._skin_mode and not self._closed
+                and self._active_ship_key == ship_id):
+            self._pending_ship_id = None
             return
         if self._skin_mode:
             # 退出「独立皮肤」模式：丢弃合成舰船，重新拉取真实舰船列表
@@ -1015,23 +933,28 @@ class GeometryViewerDialog(HoloDialog):
             self._on_load()
 
     def _reset_viewer_data(self):
-        """清空当前查看数据（模型 + 涂装 + 装甲 + 状态），切船/关闭时调用。"""
+        """清空当前查看数据（涂装 + 装甲 + 状态），切船/关闭时调用。
+
+        ⚠️ **不清空 3D 场景**：解析一艘船要几十秒，把画面留在上一帧模型上，
+        等新场景上传时一次换掉。之前先 ``clear_scene()`` 会让渲染区整段时间全黑，
+        看起来就像卡死（用户实测反馈）。
+        """
         if self._load_task is not None:
             self._load_task.cancel()
             self._load_task = None
         self._load_generation += 1
         self._loading = False
+        self._active_ship_key = ""
         self.btn_load.setEnabled(True)
         self.camo_combo.setEnabled(True)
         self._current_geom = None
         self._armor_scene = None
-        self._plate_items = {}
+        self.armor_panel.clear()
         self._camo_infos = []
         self.camo_combo.blockSignals(True)
         self.camo_combo.clear()
         self.camo_combo.blockSignals(False)
         self.parts_panel.set_entries([])
-        self.viewport.clear_scene()
         self.progress.setVisible(False)
         self.stats_label.setText(
             "未加载模型（请选择涂装后点击「加载」）" if CAMO_SWITCHER_ENABLED
@@ -1066,7 +989,20 @@ class GeometryViewerDialog(HoloDialog):
         return None
 
     def _set_loading_overlay(self, show: bool, text: str = ""):
-        """显示/隐藏渲染区之上的转圈加载覆盖层。"""
+        """显示/隐藏渲染区之上的转圈加载覆盖层。
+
+        ⚠️ D3D 后端做不到这件事：视口是 ``WA_PaintOnScreen`` 原生子窗口，Qt 的
+        非原生控件叠在上面不会被可靠合成 —— 实测进度文字会留下鬼影，上传早在
+        0.1s 内结束、屏幕上却永远停在「上传到 GPU 172/215（80%）」，看起来像卡死。
+        所以 D3D 后端只把文字写进右侧面板状态区，进度由
+        :meth:`_on_scene_upload` 驱动进度条；遮罩只给 OpenGL 后端用。
+        """
+        if not getattr(self, "_overlay_usable", True):
+            if text:
+                self.stats_label.setText(text)
+            if not show and not self._loading:
+                self.progress.setVisible(False)
+            return
         if text:
             self.loading_label.setText(text)
         if show:
@@ -1092,11 +1028,11 @@ class GeometryViewerDialog(HoloDialog):
             if scheme.model_folder:
                 from dataclasses import replace as dc_replace
                 ship = dc_replace(ship, model_folder=scheme.model_folder)
-        # 重新加载：先清空上一次渲染记录，避免残留旧场景
-        self.viewport.clear_scene()
+        # 重新加载：清空上一次的查看记录（涂装/装甲/部件树），但**保留当前画面**：
+        # 解析要几十秒，渲染区先留着上一帧模型，新场景上传时一次换掉（见 _reset_viewer_data）。
         self._current_geom = None
         self._armor_scene = None
-        self._plate_items = {}
+        self.armor_panel.clear()
         self._set_loading_overlay(False)
         # 取消旧加载任务（若仍在运行），并让旧回调因代数不匹配而失效
         if self._load_task is not None:
@@ -1104,6 +1040,7 @@ class GeometryViewerDialog(HoloDialog):
         self._load_generation += 1
         gen = self._load_generation
         self._loading = True
+        self._active_ship_key = ship.game_key
         self.btn_load.setEnabled(False)
         self.camo_combo.setEnabled(False)
         self.progress.setVisible(True)
@@ -1308,7 +1245,7 @@ class GeometryViewerDialog(HoloDialog):
             show_edges=self.cb_edges.isChecked())
         # 涂装下拉框在切船/打开时已按该舰填充，这里不再重建（保持用户当前选择）
         # 构建三级结构树（hidden 板默认不勾选）
-        n_hidden = self._build_armor_tree()
+        n_hidden = self.armor_panel.set_scene(self._armor_scene)
         self.sel_label.setText("未选中（点击装甲板块选中）")
         st = geom.stats or {}
         total_v = sum(h.vertex_count for h in geom.hull_meshes)
@@ -1362,6 +1299,9 @@ class GeometryViewerDialog(HoloDialog):
         self.progress.setVisible(False)
         self._set_loading_overlay(False)
         self.stats_label.setText(f"加载失败: {err}")
+        # 失败时不能留上一艘船的画面呆在这（部件树已清空、状态写着失败）
+        self.viewport.clear_scene()
+        self._active_ship_key = ""
         bus.log_message.emit(f"❌ 3D 加载失败: {err}")
         # 加载失败也要兑现挂起请求，避免按钮点击被吞掉
         self._try_load_pending()
@@ -1677,7 +1617,7 @@ class GeometryViewerDialog(HoloDialog):
         self.viewport.clear_scene()
         self._current_geom = None
         self._armor_scene = None
-        self._plate_items = {}
+        self.armor_panel.clear()
         super().closeEvent(event)
 
     def _save_geometry(self):
@@ -1695,3 +1635,24 @@ class GeometryViewerDialog(HoloDialog):
         except Exception:  # noqa: BLE001
             pass
         return False
+
+    def _ensure_default_width(self) -> None:
+        """默认宽度兜底：旧配置里存的窗口比 :attr:`DEFAULT_WIDTH` 窄时自动加宽。
+
+        只改宽度（保持位置与高度），并夹到当前屏幕可用区域内；
+        用户自己调得比默认更宽时不做任何改动。
+        """
+        from PySide6.QtWidgets import QApplication
+
+        if self.width() >= self.DEFAULT_WIDTH:
+            return
+        screen = (QApplication.screenAt(self.frameGeometry().center())
+                  or self.screen() or QApplication.primaryScreen())
+        avail = screen.availableGeometry() if screen is not None else None
+        width = self.DEFAULT_WIDTH if avail is None else min(self.DEFAULT_WIDTH, avail.width())
+        if width <= self.width():
+            return
+        x = self.x()
+        if avail is not None and x + width > avail.right() + 1:
+            x = max(avail.left(), avail.right() + 1 - width)
+        self.setGeometry(x, self.y(), width, self.height())

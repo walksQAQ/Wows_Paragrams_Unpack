@@ -47,6 +47,12 @@ class RenderView(QWidget):
     #: 场景「上传到 GPU」进度文本（空串 = 已结束，上层据此隐藏进度遮罩）。
     scene_progress = Signal(str)
 
+    #: 场景上传的量化进度 ``(已完成项数, 总项数)``；``(0, 0)`` = 已结束。
+    #: 给**不能**把 Qt 控件叠在渲染面之上的上层用（D3D 视口是原生子窗口）：
+    #: 文本进度 :attr:`scene_progress` 仍照旧（日志 / OpenGL 遮罩），
+    #: 这条信号用于驱动面板里的进度条。
+    scene_upload = Signal(int, int)
+
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -301,6 +307,7 @@ class RenderView(QWidget):
         """增量上传统计 → 信号给上层（GUI 显示进度）+ 日志（便于只读日志定位慢点）。"""
         if stage == "done":
             self.scene_progress.emit("")
+            self.scene_upload.emit(0, 0)
             self._upload_log_pct = -10
             self._upload_log_t = 0.0
             if self._scene is not None and (self._scene.texture_count or self._scene.mesh_count):
@@ -319,6 +326,7 @@ class RenderView(QWidget):
             self._upload_log_pct = pct
             self._upload_log_t = elapsed
             bus.log_message.emit(f"⏱️ 3D: 上传到 GPU {done}/{total}（{pct}%，{elapsed:.1f}s）")
+        self.scene_upload.emit(done, total)
         self.scene_progress.emit(f"正在上传到 GPU... {done}/{total}（{pct}%）")
 
     def _apply_view_options(self) -> None:

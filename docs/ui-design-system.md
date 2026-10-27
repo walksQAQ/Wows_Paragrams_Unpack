@@ -75,6 +75,7 @@ SKINS = {
 | `HoloDialog` / `HoloWindow` | `ui/widgets/dialog_style.py` | 带切角外框的对话框 / 独立工具窗口基类 |
 | `SkinArtSlot` | `ui/widgets/skin_art.py` | 角色主题右侧的**立绘预留位**（只占空间与画虚线框，不含任何内容） |
 | `PartsTreePanel` | `ui/widgets/parts_tree.py` | 两个 3D 查看器左侧的**模型部件纵列**：按分组列出全部渲染网格，逐条勾选显隐（一对一绑定网格 key）；行内第一行是**形状 / 模型名**、第二行是**顶点格式串**（自绘 delegate 按宽度换行，无横向滚动条） |
+| `ArmorTreePanel` | `ui/widgets/armor_tree.py` | 模型查看器左栏的**装甲结构纵列**：装甲区 → 部件 → 厚度板块三级，逐板块勾选显隐（直接映射成视口可见三角形掩码）。与 `PartsTreePanel` 共用同一栏位（`QStackedWidget`），由右栏「显示船体 / 显示装甲」切换 |
 
 自绘控件统一在 `bus.theme_changed` 时清缓存并重绘。
 
