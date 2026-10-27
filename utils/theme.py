@@ -466,6 +466,36 @@ def detect_dark_mode(mode: str = "auto") -> bool:
     return False
 
 
+# 弹出型条目视图（QCompleter 的 popup 等）的 objectName 与专属样式。
+# 全局 QSS 为了让列表融进半透明面板，把 QListView 设成 transparent 底；但弹出列表
+# 是**独立顶层窗口**，透明 = 什么都不绘制 = 系统合成出来的黑块，深色文字直接不可读。
+# 因此弹出列表必须自带不透明面板底（内联样式优先级高于全局 QSS，见 theme.bind）。
+POPUP_VIEW_NAME = "ThemedPopupView"
+
+POPUP_VIEW_QSS = """
+QListView#ThemedPopupView {
+    background: @panel_bg@;
+    color: @text@;
+    border: 1px solid @line_strong@;
+    outline: 0;
+    padding: 2px;
+}
+QListView#ThemedPopupView::item {
+    padding: 4px 8px;
+    border-left: 2px solid transparent;
+}
+QListView#ThemedPopupView::item:hover {
+    background: @hover_bg@;
+    color: @text@;
+}
+QListView#ThemedPopupView::item:selected {
+    background: @hover_bg@;
+    color: @text@;
+    border-left: 2px solid @accent@;
+}
+"""
+
+
 class _Theme:
     """当前主题单例：持有深浅标志、皮肤与颜色表，提供 qss() 占位符替换。
 
@@ -549,6 +579,17 @@ class _Theme:
         except Exception:  # noqa: BLE001
             pass
         return rendered
+
+    def style_popup_view(self, view) -> None:
+        """给弹出型条目视图（QCompleter 的 popup 等）套上不透明主题底色。
+
+        popup 是独立顶层窗口，全局 QSS 的 `QListView { background: transparent }`
+        在这里等于不绘制任何底色 → 黑块 + 深色文字不可读（见 :data:`POPUP_VIEW_QSS`）。
+        """
+        if view is None:
+            return
+        view.setObjectName(POPUP_VIEW_NAME)
+        self.bind(view, POPUP_VIEW_QSS)
 
     def apply_bindings(self) -> None:
         """重新应用所有已绑定控件的内联样式（主题切换后调用）。"""
