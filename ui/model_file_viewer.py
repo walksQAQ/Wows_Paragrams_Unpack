@@ -31,7 +31,7 @@ from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPainterPat
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar,
-    QPushButton, QVBoxLayout, QWidget,
+    QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app.signals import bus
@@ -39,6 +39,7 @@ from services.geometry_service import HullMesh, ShipGeometry
 from services.tool_tasks import parse_geometry_bytes, parse_geometry_file
 from ui.geometry_viewer import _Spinner, resolve_viewport_backend
 from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
+from ui.widgets.parts_tree import PartEntry, PartsTreePanel
 from ui.widgets.scifi_panel import SciFiPanel, _LIVE as _LIVE_WIDGETS, _with_alpha
 from utils.threading_utils import run_async
 from utils.tool_process import run_in_tool_process
@@ -149,6 +150,37 @@ def _shape_stem(entry) -> str:
     return name[:-len(".vertices")] if name.endswith(".vertices") else name
 
 
+def _strip_vertices(shape_name: str) -> str:
+    """形状名去掉 ``.vertices`` 后缀（部件树标题用）。"""
+    return (shape_name[:-len(".vertices")]
+            if shape_name.endswith(".vertices") else shape_name)
+
+
+def _is_lod_shape(shape: str) -> bool:
+    """低模 LOD（`_lod` 命名的渲染集）：不是同一级模型，加载阶段就丢弃。"""
+    return "_lod" in (shape or "").lower()
+
+
+def _is_damage_mesh(shape: str, material: str, entry) -> bool:
+    """损坏 / 残骸网格：crack 形状名、crack 材质，或渲染集被标 damage。
+
+    ⚠️ 渲染集的 ``damage`` 标记同时覆盖 LOD 低模（`_section_render_sets` 里
+    ``'_lod' in shape`` 也置 damage），所以 LOD 名一律不算损坏，只按名字/材质判。
+    """
+    s = (shape or "").lower()
+    m = (material or "").lower()
+    if "_crack_" in s or "crack" in m:
+        return True
+    if _is_lod_shape(s):
+        return False
+    return bool((entry or {}).get("damage"))
+
+
+def _is_wire_mesh(material: str) -> bool:
+    """wire 线框辅助网格：按普通网格处理（默认显示），仅用于标注。"""
+    return "wire" in (material or "").lower()
+
+
 def _bound_node(entry) -> str:
     """渲染集绑定的 visual 节点名（第一个），无则空串。"""
     nodes = (entry or {}).get("nodes") or []
@@ -195,14 +227,37 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
             bus.log_message.emit(f"⚠️ 模型文件查看器：材质加载不可用: {exc}")
     geom = ShipGeometry(game_key=name, display_name=name, model_folder="")
     skipped = 0
+    lod_dropped = 0
+    lod_fallback = False
+    # 先分类：主模型图元 / LOD 低模图元（LOD 默认不渲染，但如果文件里**只有**
+    # 低模——部分舰船的 `<舰名>.geometry` 就是纯 LOD 占位——则回退显示，不报错）
+    main_prims: list[tuple[int, object]] = []
+    lod_prims: list[tuple[int, object]] = []
     for i, prim in enumerate(parsed.primitives):
         indices = prim.indices
         positions = np.asarray(prim.positions, dtype=np.float32)
         if indices is None or indices.size < 3 or positions.size == 0:
             skipped += 1
             continue
-        normals = _ensure_normals(positions, prim.normals, indices)
         entry = rs_by_mid.get(prim.mapping_id)
+        if _is_lod_shape(_shape_stem(entry)):
+            lod_prims.append((i, prim))
+        else:
+            main_prims.append((i, prim))
+    if not main_prims and lod_prims:
+        main_prims, lod_prims = lod_prims, []
+        lod_fallback = True
+    lod_dropped = len(lod_prims)
+
+    for i, prim in main_prims:
+        indices = prim.indices
+        positions = np.asarray(prim.positions, dtype=np.float32)
+        entry = rs_by_mid.get(prim.mapping_id)
+        stem = _shape_stem(entry)
+        material = str((entry or {}).get("material") or "")
+        damaged = _is_damage_mesh(stem, material, entry)
+        is_wire = _is_wire_mesh(material)
+        normals = _ensure_normals(positions, prim.normals, indices)
         hm = HullMesh(
             name=f"{name}#{i}",
             positions=positions,
@@ -225,6 +280,11 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
             vertex_count=int(positions.shape[0]),
             has_color=True,
             tech_family="pbs",
+            # 顶点格式串原样保留（部件树展示用）
+            format_name=getattr(prim, "format_name", "") or "",
+            # 损坏/残骸网格：照常加载，但默认在部件树里不勾选（取消隐藏即可查看）
+            is_crack=damaged,
+            is_wire=is_wire,
             # 渲染集元数据（assets.bin 实时）；有材质时下方 apply_live_material
             # 会覆盖 texture_path / tech_family / has_color 并填好贴图与分块参数
             material=((entry or {}).get("material") or None),
@@ -267,7 +327,11 @@ def geometry_from_parsed(name: str, parsed, file_path: str = "",
         note = "本地文件模式：无法加载顶点组/权重与材质数据"
     elif not load_materials:
         note = "已关闭材质加载（白模显示）"
+    elif lod_fallback:
+        note = "该文件只有 LOD 低模，已按低模显示"
     geom.stats = {"file_path": file_path, "skipped_primitives": skipped,
+                  "lod_primitives": lod_dropped,
+                  "lod_fallback": lod_fallback,
                   "skeleton": sk_info, "source": source,
                   "load_materials": bool(load_materials and not drop_skin),
                   "note": note}
@@ -568,8 +632,8 @@ class ModelFileViewerDialog(HoloDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("模型文件查看器")
-        self.resize(1240, 820)
-        self.setMinimumSize(760, 520)
+        self.resize(1400, 820)
+        self.setMinimumSize(960, 560)
 
         self._settings = QSettings("walksQAQ", "WowsParagrams")
         self._closed = False
@@ -609,6 +673,18 @@ class ModelFileViewerDialog(HoloDialog):
         body = QHBoxLayout()
         body.setSpacing(8)
         root.addLayout(body, stretch=1)
+
+        # ── 左侧：模型网格纵列（逐网格勾选显隐，与渲染网格一对一）──
+        # 放进 QSplitter：可拖动分隔条调宽度（面板内还有横向滚动条看长名称）
+        self.parts_panel = PartsTreePanel("模型网格", 400)
+        self.body_split = QSplitter(Qt.Horizontal)
+        self.body_split.setChildrenCollapsible(False)
+        self.body_split.setHandleWidth(6)
+        self.body_split.addWidget(self.parts_panel)
+        self.body_split.setStretchFactor(0, 0)
+        self.body_split.setStretchFactor(1, 1)
+        theme.bind(self.body_split,
+                   "QSplitter::handle { background: transparent; }")
 
         # ── 左侧：3D 视口（金属全息框 + 晶体切面）──
         self._backend, self._backend_note = resolve_viewport_backend()
@@ -650,7 +726,9 @@ class ModelFileViewerDialog(HoloDialog):
         self.loading_overlay.setVisible(False)
         grid.addWidget(self.loading_overlay, 0, 0)
         vf_layout.addWidget(self.view_container)
-        body.addWidget(self.viewport_frame, stretch=1)
+        self.body_split.addWidget(self.viewport_frame)
+        self.body_split.setSizes([self.parts_panel.preferred_width, 860])
+        body.addWidget(self.body_split, stretch=1)
 
         # ── 右侧控制面板（独立全息金属框）──
         self.side_frame = SciFiPanel(chamfer=12, accent="holo_ice", hud_corners=False)
@@ -733,6 +811,7 @@ class ModelFileViewerDialog(HoloDialog):
         self.btn_local.clicked.connect(self._open_local)
         self.btn_game.clicked.connect(self._pick_from_game)
         self.btn_export.clicked.connect(self._start_export)
+        self.parts_panel.hidden_changed.connect(self.viewport.set_hidden_meshes)
         self.cb_wire.toggled.connect(
             lambda v: self.viewport.set_view_options(wireframe=v))
 
@@ -954,6 +1033,7 @@ class ModelFileViewerDialog(HoloDialog):
         self._load_gen += 1
         gen = self._load_gen
         self.viewport.clear_scene()
+        self.parts_panel.set_entries([])
         self._current_geom = None
         self._current_source = ""
         self._current_vfs_path = ""
@@ -1013,9 +1093,10 @@ class ModelFileViewerDialog(HoloDialog):
         _src = (geom.stats or {}).get("source", "client")
         self._current_source = _src
         self._current_vfs_path = path0 if _src == "client" else ""
+        hidden = self._refresh_parts(geom)
         try:
             self.viewport.set_scene(geom, show_hull=True, show_armor=False,
-                                    armor_scene=None)
+                                    armor_scene=None, hidden_meshes=hidden)
             self.viewport.set_view_options(wireframe=self.cb_wire.isChecked())
         except Exception as exc:  # noqa: BLE001
             self._set_busy("")
@@ -1032,6 +1113,11 @@ class ModelFileViewerDialog(HoloDialog):
         parts = [p for p in path.replace("\\", "/").split("/") if p]
         short = "/".join(parts[-2:]) if len(parts) > 2 else path
         extra = f"\n跳过：{skipped} 个非三角形图元" if skipped else ""
+        lod_n = int((geom.stats or {}).get("lod_primitives", 0))
+        if lod_n:
+            extra += f"\nLOD 低模：{lod_n} 个已忽略"
+        elif (geom.stats or {}).get("lod_fallback"):
+            extra += "\n提示：该文件只有 LOD 低模，已按低模显示"
         stats = geom.stats or {}
         sk = stats.get("skeleton") or {}
         src = stats.get("source", "client")
@@ -1060,7 +1146,7 @@ class ModelFileViewerDialog(HoloDialog):
             f"包围盒：{size[0]:.2f} × {size[1]:.2f} × {size[2]:.2f}\n"
             f"{src_line}\n"
             f"{mat_line}\n"
-            f"{sk_line}")
+            f"{sk_line}{extra}")
         self.info_label.setToolTip(path)
         bus.log_message.emit(
             f"✅ 模型文件查看器：{os.path.basename(path)} 加载完成"
@@ -1072,9 +1158,50 @@ class ModelFileViewerDialog(HoloDialog):
         self._load_task = None
         self._parse_task = None
         self._set_busy("")
+        self.parts_panel.set_entries([])
         self.info_label.setText("未加载模型")
         bus.log_message.emit(f"❌ 模型文件查看器：加载失败: {err}")
         QMessageBox.warning(self, "加载失败", f"无法加载该模型文件：\n{err}")
+
+    # ── 左侧部件树（逐网格显隐）────────────────────────────
+
+    def _refresh_parts(self, geom) -> set[str]:
+        """按当前几何重建左侧纵列，返回默认隐藏的网格 key 集合。"""
+        return self.parts_panel.set_entries(self._parts_entries(geom))
+
+    def _parts_entries(self, geom) -> list[PartEntry]:
+        """ShipGeometry 的每个 hull 网格 → 一行（平铺，标题用形状名）。
+
+        key 与视口 spec 顺序一致；LOD 低模已在解析阶段丢弃，损坏 / 残骸网格
+        照常列出但默认不勾选。
+        """
+        out: list[PartEntry] = []
+        for i, hm in enumerate(geom.hull_meshes):
+            stem = _strip_vertices(hm.shape_names[0]) if hm.shape_names else ""
+            material = hm.material or ""
+            tris = int(hm.indices.size // 3)
+            label = stem or material or f"网格 #{i}"
+            detail = [f"网格 {i}：{label}",
+                      f"形状：{stem or '—'}",
+                      f"顶点格式：{hm.format_name or '—'}",
+                      f"材质：{material or '—'}",
+                      f"三角形：{tris:,}",
+                      f"贴图：{hm.texture_path or '—'}"]
+            if getattr(hm, "is_crack", False):
+                detail.append("类型：损坏 / 残骸变体（默认不显示）")
+            if getattr(hm, "is_wire", False):
+                detail.append("类型：wire 线框网格")
+            out.append(PartEntry(
+                key=f"hull:{i}",
+                label=label,
+                group="",
+                checked=not getattr(hm, "is_crack", False),
+                badge=f"{tris:,} 面",
+                detail="\n".join(detail),
+                format_name=hm.format_name or "",
+                crack=bool(getattr(hm, "is_crack", False)),
+            ))
+        return out
 
     # ── 模型导出（GLB）────────────────────────────────────
 
@@ -1161,7 +1288,18 @@ class ModelFileViewerDialog(HoloDialog):
 
     def showEvent(self, event):
         self._closed = False
+        self._init_split_sizes()
         super().showEvent(event)
+
+    def _init_split_sizes(self) -> None:
+        """首次显示时把左侧纵列设成偏好宽度（后续拖动由用户自己决定）。"""
+        if getattr(self, "_split_ready", False):
+            return
+        self._split_ready = True
+        w = self.parts_panel.preferred_width
+        total = self.body_split.width()
+        if total > w + 240:
+            self.body_split.setSizes([w, total - w])
 
     def closeEvent(self, event):
         self._closed = True

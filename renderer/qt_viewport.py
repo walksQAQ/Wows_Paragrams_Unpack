@@ -51,11 +51,19 @@ class D3DViewportAdapter(RenderView):
         self._armor_scene = None        # 拾取/高亮用（ArmorScene）
         self._press_pos = None          # 左键按下位置（区分点击与拖拽相机）
         self._last_pick_time = 0.0      # 悬停拾取节流
+        #: 部件树隐藏的网格 key（hull:i / mount:i）与已下发给 DLL 的集合
+        self._hidden_meshes: set[str] = set()
+        self._applied_hidden: set[str] = set()
         # 分片上传：途中设的装甲可见掩码/高亮会被 DLL 忽略（网格还没建）⇒ 传完再套一次
         self.scene_progress.connect(self._reapply_visible_tris)
 
     def _reapply_visible_tris(self, text: str) -> None:
-        """场景提交完成后：重套装甲可见掩码 + 高亮层可见性。"""
+        """场景提交（分片上传）过程中：尽早重套隐藏网格/装甲掩码/高亮状态。
+
+        上传期间 DLL 会忽略尚不存在的 key，所以隐藏集合每个进度回调都重发一遍
+        （隐藏项通常只有几个）—— 否则损坏/残骸网格会先「闪」到上传结束才隐藏。
+        """
+        self._apply_mesh_visibility()
         if text:
             return
         if self._visible_tris is not None:
@@ -73,20 +81,54 @@ class D3DViewportAdapter(RenderView):
     # ------------------------------------------------------------ 场景
 
     def set_scene(self, ship_geometry, show_hull: bool = True, show_armor: bool = True,
-                  armor_scene=None) -> None:
+                  armor_scene=None, hidden_meshes=None) -> None:
         self._armor_indices = self._collect_armor_indices(armor_scene)
         self._armor_scene = armor_scene
         self._hover_tri = None
         self._selected_plate = None
+        # 隐藏集合要在网格上传前定好：上传途中 DLL 会忽略尚不存在的 key，
+        # 之后由每个上传进度回调（_reapply_visible_tris）持续补发。
+        self._hidden_meshes = set(hidden_meshes or ())
+        self._applied_hidden = set()
         self.set_ship(ship_geometry, armor_scene)
         self.set_view_options(show_hull=show_hull, show_armor=show_armor)
+        self._apply_mesh_visibility()
 
     def clear_scene(self) -> None:
         self._armor_indices = None
         self._armor_scene = None
         self._hover_tri = None
         self._selected_plate = None
+        self._hidden_meshes = set()
+        self._applied_hidden = set()
         super().clear_scene()
+
+    # ------------------------------------------------------------ 部件树显隐
+
+    def set_hidden_meshes(self, keys) -> None:
+        """按网格 key 隐藏（空/None = 全部显示），与旧 GL 视口同名同义。"""
+        keys = set(keys or ())
+        if keys == self._hidden_meshes:
+            return
+        self._hidden_meshes = keys
+        self._apply_mesh_visibility()
+
+    def _apply_mesh_visibility(self) -> None:
+        """把隐藏集合下发到 DLL（网格尚未上传时报错，交给上传完成回调重试）。"""
+        renderer = self.renderer
+        if renderer is None:
+            return
+        for key in sorted(self._applied_hidden - self._hidden_meshes):
+            try:
+                renderer.set_mesh_visible(key, True)
+            except Exception:  # noqa: BLE001 - key 不存在（几何为空/未上传）
+                pass
+        for key in sorted(self._hidden_meshes):
+            try:
+                renderer.set_mesh_visible(key, False)
+            except Exception:  # noqa: BLE001 - key 不存在（几何为空/未上传）
+                pass
+        self._applied_hidden = set(self._hidden_meshes)
 
     @staticmethod
     def _collect_armor_indices(armor_scene):

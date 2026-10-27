@@ -21,7 +21,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox, QCompleter,
     QPushButton, QCheckBox, QWidget, QProgressBar, QFileDialog, QMessageBox,
-    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QSlider, QToolTip,
+    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QSlider, QSplitter, QToolTip,
 )
 
 from app.signals import bus
@@ -33,17 +33,46 @@ from utils.mem_info import memory_suffix
 from models.collision_materials import ARMOR_COLOR_SCALE, zone_display
 
 from ui.widgets.dialog_style import PRIMARY_BTN_QSS, HoloDialog
+from ui.widgets.parts_tree import PartEntry, PartsTreePanel
 
 
 #: 舰船下拉里徽章图标边长（px）
 SHIP_BADGE_SIZE = 18
-
 #: 3D 视口后端开关（环境变量）：``1``/``d3d`` 强制 D3D11，``0``/``gl`` 强制 OpenGL。
 VIEWPORT_BACKEND_ENV = "WSR_USE_D3D_VIEWER"
 
 #: 涂装切换器（查看舰船不同皮肤）开关：源码/调试模式默认启用，发布版关闭。
 #: 发布版屏蔽涂装入口（标题/下拉/加载按钮），改为自动加载默认（无涂装）模型。
 CAMO_SWITCHER_ENABLED: bool = is_debug_build()
+
+
+def _strip_vertices(shape_name: str) -> str:
+    """渲染集形状名去掉 ``.vertices`` 后缀（`BowShape.vertices` → `BowShape`）。"""
+    return shape_name[:-len(".vertices")] if shape_name.endswith(".vertices") else shape_name
+
+
+#: 合并进同一网格的「附加形状」标记 → 排序权重（越大越靠后，主形状永远在前）
+_SHAPE_MARKERS = (("_patch_", 1), ("_hide", 2), ("_in", 3))
+
+
+def _shape_rank(shape_name: str) -> int:
+    """形状名排序权重：主形状 0 → patch 1 → hide 2 → in 3。
+
+    同一材质的多个形状会被合并成一个网格，合并顺序来自图元出现顺序，不保证
+    主形状在前（有船的第一个图元就是 patch 补片）。这里按语义排序，让行标题
+    显示真正的主体形状，附加形状用 ``+N`` 表示。
+    """
+    low = shape_name.lower()
+    for marker, rank in _SHAPE_MARKERS:
+        if marker in low:
+            return rank
+    return 0
+
+
+def _sorted_shapes(shape_names) -> list[str]:
+    """去 ``.vertices`` 并按「主形状优先」排序的形状名列表。"""
+    shapes = [_strip_vertices(s) for s in (shape_names or []) if s]
+    return sorted(shapes, key=lambda s: (_shape_rank(s), len(s), s))
 
 
 def resolve_viewport_backend() -> tuple[str, str]:
@@ -151,7 +180,7 @@ class GeometryViewerDialog(HoloDialog):
         super().__init__(parent)
         self.setWindowTitle("3D 模型查看器")
         self.resize(1240, 840)
-        self.setMinimumSize(760, 520)
+        self.setMinimumSize(960, 560)
 
         self._settings = QSettings("walksQAQ", "WowsParagrams")
         self._service = None
@@ -277,7 +306,20 @@ class GeometryViewerDialog(HoloDialog):
             "border-radius:6px; padding:5px 12px;")
         _lo.addWidget(self.loading_label, 0, Qt.AlignCenter)
         _vc.addWidget(self.loading_overlay, 0, 0)
-        body.addWidget(self.view_container, stretch=1)
+        # ── 左侧：模型部件纵列（舰体分段 + 挂载，逐网格勾选显隐）──
+        # 放进 QSplitter：可拖动分隔条调宽度（面板内还有横向滚动条看长名称）
+        self.parts_panel = PartsTreePanel("模型部件", 400)
+        self.body_split = QSplitter(Qt.Horizontal)
+        self.body_split.setChildrenCollapsible(False)
+        self.body_split.setHandleWidth(6)
+        self.body_split.addWidget(self.parts_panel)
+        self.body_split.addWidget(self.view_container)
+        self.body_split.setStretchFactor(0, 0)
+        self.body_split.setStretchFactor(1, 1)
+        self.body_split.setSizes([self.parts_panel.preferred_width, 900])
+        theme.bind(self.body_split,
+                   "QSplitter::handle { background: transparent; }")
+        body.addWidget(self.body_split, stretch=1)
         # ── 右侧：控制面板 ──
         panel = QWidget()
         panel.setFixedWidth(330)
@@ -557,6 +599,8 @@ class GeometryViewerDialog(HoloDialog):
         # 3D 拾取回调
         self.viewport.on_hover = self._on_viewport_hover
         self.viewport.on_select = self._on_viewport_select
+        # 左侧部件树 → 逐网格显隐（两套后端同名 API）
+        self.parts_panel.hidden_changed.connect(self.viewport.set_hidden_meshes)
         # 主题切换：徽章按主题着色，需重建下拉条目
         bus.theme_changed.connect(self._on_theme_changed_badges)
 
@@ -986,6 +1030,7 @@ class GeometryViewerDialog(HoloDialog):
         self.camo_combo.blockSignals(True)
         self.camo_combo.clear()
         self.camo_combo.blockSignals(False)
+        self.parts_panel.set_entries([])
         self.viewport.clear_scene()
         self.progress.setVisible(False)
         self.stats_label.setText(
@@ -1124,14 +1169,111 @@ class GeometryViewerDialog(HoloDialog):
         if self._closed or gen != self._load_generation:
             return
         try:
+            hidden = self._refresh_parts(geom)
             self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
-                                    show_armor=False, armor_scene=None)
+                                    show_armor=False, armor_scene=None,
+                                    hidden_meshes=hidden)
             self._set_loading_overlay(False)
             self.stats_label.setText(
                 f"{geom.display_name}（{geom.game_key}）\n船体已就绪，挂载/装甲解析中...")
             bus.log_message.emit("ℹ️ 3D: 船体已就绪，先显示；挂载/装甲继续解析")
         except Exception as exc:  # noqa: BLE001 - 预览失败不影响后续完整加载
             bus.log_message.emit(f"⚠️ 3D: 船体预览失败（不影响完整加载）: {exc}")
+
+    # ── 左侧部件树（逐网格显隐）────────────────────────────
+
+    def _refresh_parts(self, geom) -> set[str]:
+        """按当前几何重建左侧纵列，返回默认隐藏的网格 key 集合。
+
+        key 与视口 ``set_scene`` 生成顺序一致（``hull:i`` / ``mount:i``）：
+        损坏 / 残骸（crack）网格照常列出但默认不勾选；LOD 低模在服务层
+        就已过滤，不会进列表；wire 线框网格按普通部件默认勾选。
+        """
+        return self.parts_panel.set_entries(self._parts_entries(geom))
+
+    def _parts_entries(self, geom) -> list[PartEntry]:
+        """ShipGeometry 的每个渲染网格 → 一行（标题用**形状名**，不用材质名）。
+
+        key 与视口 ``set_scene`` 生成顺序一致（``hull:i`` / ``mount:i``）；
+        损坏 / 残骸网格照常列出但默认不勾选，wire 线框网格按普通部件默认勾选。
+        """
+        from services.geometry_service import COMPONENT_HULL, COMPONENT_OTHER
+
+        out: list[PartEntry] = []
+        stem_prefix = f"{geom.model_folder}_" if geom.model_folder else ""
+        for i, hm in enumerate(geom.hull_meshes):
+            tris = int(hm.indices.size // 3)
+            part, _, mat = hm.name.partition("#")
+            if stem_prefix and part.startswith(stem_prefix):
+                part = part[len(stem_prefix):]
+            shapes = _sorted_shapes(hm.shape_names)
+            # 形状名优先；crack 等无渲染集记录的分片回退到「分段 · Crack(材质族)」
+            mat_tail = mat.replace("__crack__#", "").replace("__wire__#", "")
+            mat_tail = mat_tail.rsplit("_", 1)[-1] if mat_tail else ""
+            if shapes:
+                label = shapes[0]
+            elif getattr(hm, "is_crack", False):
+                label = f"{part} · Crack" + (f" · {mat_tail}" if mat_tail else "")
+            elif part:
+                label = part
+            else:
+                label = mat or f"网格 #{i}"
+            detail = [f"网格：{hm.name}",
+                      f"形状：{', '.join(shapes) or '—'}",
+                      f"顶点格式：{hm.format_name or '—'}",
+                      f"材质：{hm.material or '（默认舰体贴图）'}",
+                      f"三角形：{tris:,}",
+                      f"贴图：{hm.texture_path or '—'}"]
+            if len(shapes) > 1:
+                detail.append(f"合并：同材质的 {len(shapes)} 个形状被合成一个网格")
+            if getattr(hm, "is_crack", False):
+                detail.append("类型：损坏 / 残骸变体（默认不显示）")
+            if getattr(hm, "is_wire", False):
+                detail.append("类型：wire 线框网格")
+            out.append(PartEntry(
+                key=f"hull:{i}",
+                label=label,
+                group=COMPONENT_HULL,
+                checked=not getattr(hm, "is_crack", False),
+                badge=f"{tris:,} 面",
+                detail="\n".join(detail),
+                format_name=hm.format_name or "",
+                crack=bool(getattr(hm, "is_crack", False)),
+            ))
+        name_counts: dict[str, int] = {}
+        for mm in geom.mounts:
+            name_counts[mm.name] = name_counts.get(mm.name, 0) + 1
+        for i, mm in enumerate(geom.mounts):
+            tris = int(mm.indices.size // 3)
+            shapes = _sorted_shapes(mm.shape_names)
+            label = mm.name
+            # 同一模型被拆成多个网格（按材质/形状拆分）时才追加形状名区分
+            if shapes and name_counts.get(mm.name, 0) > 1:
+                label += f" · {shapes[0]}"
+            if getattr(mm, "is_crack", False):
+                label += " · Crack"
+            detail = [f"挂载节点：{mm.name}",
+                      f"形状：{', '.join(shapes) or '—'}",
+                      f"顶点格式：{mm.format_name or '—'}",
+                      f"归属：{getattr(mm, 'component', '') or COMPONENT_OTHER}",
+                      f"模型目录：{mm.model_folder or '—'}",
+                      f"三角形：{tris:,}",
+                      f"贴图：{mm.texture_path or '—'}"]
+            if getattr(mm, "is_crack", False):
+                detail.append("类型：损坏 / 残骸变体（默认不显示）")
+            if getattr(mm, "is_wire", False):
+                detail.append("类型：wire 线框网格")
+            out.append(PartEntry(
+                key=f"mount:{i}",
+                label=label,
+                group=getattr(mm, "component", "") or COMPONENT_OTHER,
+                checked=not getattr(mm, "is_crack", False),
+                badge=f"{tris:,} 面",
+                detail="\n".join(detail),
+                format_name=mm.format_name or "",
+                crack=bool(getattr(mm, "is_crack", False)),
+            ))
+        return out
 
     def _on_ship_loaded(self, result, gen):
         if self._closed or gen != self._load_generation:
@@ -1155,9 +1297,11 @@ class GeometryViewerDialog(HoloDialog):
         # 船体/装甲互斥：装甲开启时取消船体勾选（保持 UI 与渲染一致）
         if self.cb_armor.isChecked() and self.cb_hull.isChecked():
             self.cb_hull.setChecked(False)
+        hidden = self._refresh_parts(geom)
         self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
                                 show_armor=self.cb_armor.isChecked(),
-                                armor_scene=self._armor_scene)
+                                armor_scene=self._armor_scene,
+                                hidden_meshes=hidden)
         # 同步显示选项到新场景
         self.viewport.set_armor_display(
             opacity=self.opacity_slider.value() / 100.0,
@@ -1311,7 +1455,8 @@ class GeometryViewerDialog(HoloDialog):
         if scheme.origin == "none":
             self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
                                     show_armor=self.cb_armor.isChecked(),
-                                    armor_scene=self._armor_scene)
+                                    armor_scene=self._armor_scene,
+                                    hidden_meshes=self.parts_panel.hidden_keys())
             self.viewport.set_armor_display(opacity=self.opacity_slider.value() / 100.0,
                                             show_edges=self.cb_edges.isChecked())
             bus.log_message.emit("🎨 恢复默认模型")
@@ -1326,7 +1471,8 @@ class GeometryViewerDialog(HoloDialog):
         if n:
             self.viewport.set_scene(geom, show_hull=self.cb_hull.isChecked(),
                                     show_armor=self.cb_armor.isChecked(),
-                                    armor_scene=self._armor_scene)
+                                    armor_scene=self._armor_scene,
+                                    hidden_meshes=self.parts_panel.hidden_keys())
             self.viewport.set_armor_display(opacity=self.opacity_slider.value() / 100.0,
                                             show_edges=self.cb_edges.isChecked())
 
@@ -1478,9 +1624,20 @@ class GeometryViewerDialog(HoloDialog):
     def showEvent(self, event):
         # 重新显示：清除关闭状态，按需重载舰船列表/兑现挂起请求
         self._closed = False
+        self._init_split_sizes()
         self._start_ships_load()
         self._try_load_pending()
         super().showEvent(event)
+
+    def _init_split_sizes(self) -> None:
+        """首次显示时把左侧纵列设成偏好宽度（后续拖动由用户自己决定）。"""
+        if getattr(self, "_split_ready", False):
+            return
+        self._split_ready = True
+        w = self.parts_panel.preferred_width
+        total = self.body_split.width()
+        if total > w + 240:
+            self.body_split.setSizes([w, total - w])
 
     def closeEvent(self, event):
         self._closed = True

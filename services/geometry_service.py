@@ -286,6 +286,8 @@ class HullMesh:
     #: i_count), ...]，与 `_merge_hull` 的合并顺序一致。GLB 导出据此把合并网格
     #: 重新拆成 .visual 的每个 renderSet（一个 Shape 一个网格对象）。
     shape_spans: list = field(default_factory=list)
+    #: 顶点格式串（原样，如 ``set3/xyznuvtpcencd``；多格式合并时用 " / " 连接）
+    format_name: str = ""
 
 
 @dataclass
@@ -342,6 +344,8 @@ class MountMesh:
     instance_labels: list = field(default_factory=list)
     #: 按 shape 切片的区间（同 HullMesh.shape_spans）。
     shape_spans: list = field(default_factory=list)
+    #: 顶点格式串（原样，如 ``set3/xyznuvtpcencd``；多格式合并时用 " / " 连接）
+    format_name: str = ""
 
     def bounds_in_world(self) -> tuple[np.ndarray, np.ndarray]:
         """本地包围盒经 model_matrix 变换后的世界包围盒。"""
@@ -1011,18 +1015,20 @@ class GeometryService:
                 groups = self._split_primitives_by_material(parsed.primitives, ship_rs, sdict,
                                                             geom_path=e.path, instancing=True)
                 if groups:
-                    for mat_key, g in groups.items():
+                    for _mat_key, g in groups.items():
                         if not g.get('prims'):
                             continue
                         inst = list(g.get('instance_matrices') or [])
-                        # __inst__# 组：真实材质在 g['material']，带逐节点实例矩阵
-                        if isinstance(mat_key, str) and mat_key.startswith('__inst__#'):
-                            real = g.get('material')
-                            base = part_name if real is None else f"{part_name}#{real}"
-                        else:
-                            real = mat_key
-                            base = part_name if mat_key is None else f"{part_name}#{mat_key}"
-                        # 同一材质的蒙皮分片可能用不同骨骼调色板 → 必须拆成多个网格，
+                        real = g.get('material')
+                        # 每个形状一个网格（同材质也不合并）→ 名字带上形状名便于区分
+                        shape = (g.get('shape_names') or [''])[0]
+                        base = part_name if real is None else f"{part_name}#{real}"
+                        if shape:
+                            base = f"{base}#{shape}"
+                        elif g.get('crack'):
+                            # 无形状名的损伤分片：名字里保留 crack 标记（导出/调试可辨识）
+                            base = f"{part_name}#__crack__#{real or 'crack'}"
+                        # 同一形状的蒙皮分片可能用不同骨骼调色板 → 必须拆成多个网格，
                         # 否则合并后顶点组索引按别人的调色板翻译（权重绑错骨骼）。
                         subs = self._palette_subgroups(g['prims'])
                         for si, sub in enumerate(subs, 1):
@@ -1033,10 +1039,8 @@ class GeometryService:
                                                   instance_matrices=inst)
                             if real is not None:
                                 hm.material = real
-                            if mat_key == '__wire__' or mat_key == 'WIRE':
-                                hm.is_wire = True
-                            if isinstance(mat_key, str) and mat_key.startswith('__crack__'):
-                                hm.is_crack = True
+                            hm.is_wire = bool(g.get('wire'))
+                            hm.is_crack = bool(g.get('crack'))
                             if real is not None:
                                 # 完整材质信息：技术族 + 贴图集 + INDEXED 分块参数（fx 区分渲染）
                                 # ★ 只认 mfm 声明的贴图属性；未声明颜色贴图 → 无色（不按名补全）
@@ -1182,6 +1186,7 @@ class GeometryService:
                 skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                 shape_names=hm.shape_names, node_names=hm.node_names,
                 shape_spans=hm.shape_spans,
+                format_name=hm.format_name,
                 instance_labels=[str(_label) for (_label, _mtx, _amtx) in group_items],
             )
             geom.mounts.append(mm)
@@ -1254,6 +1259,7 @@ class GeometryService:
                 skin_bones=rep.skin_bones, skin_bind=rep.skin_bind,
                 shape_names=rep.shape_names, node_names=rep.node_names,
                 shape_spans=rep.shape_spans,
+                format_name=rep.format_name,
                 instance_matrices=mats,
                 instance_labels=labels,
             )
@@ -1864,6 +1870,7 @@ class GeometryService:
                     skin_bones=hm.skin_bones, skin_bind=hm.skin_bind,
                     shape_names=hm.shape_names, node_names=hm.node_names,
                     shape_spans=hm.shape_spans,
+                    format_name=hm.format_name,
                     instance_labels=[mp_name],
                 )
                 geom.mounts.append(mm)
@@ -2106,25 +2113,29 @@ class GeometryService:
             if parsed.primitives:
                 groups = self._split_primitives_by_material(parsed.primitives, mount_rs, sdict,
                                                             geom_path=e.path)
-                for mat, g in groups.items():
+                for _mat_key, g in groups.items():
                     # 保留所有分组（含 None 组：shape 无渲染集材质时用默认/文件名约定贴图，
                     # 如指挥仪 ControlTowerShape —— 否则指挥仪/雷达等会整组丢失不显示）
                     if not g.get('prims'):
                         continue
+                    mat = g.get('material')
                     mfm = g.get('mfm') or ''
-                    # 同一材质的蒙皮分片可能用不同骨骼调色板 → 拆成多个网格，
+                    # 同一形状的蒙皮分片可能用不同骨骼调色板 → 拆成多个网格，
                     # 保证每个网格的顶点组索引只对应自己那份调色板。
                     subs = self._palette_subgroups(g['prims'])
+                    shape = (g.get('shape_names') or [''])[0]
                     for si, sub in enumerate(subs, 1):
                         base = f"{folder}|{mat or 'default'}"
+                        if shape:
+                            base = f"{base}#{shape}"
                         hm = self._merge_hull(base if len(subs) == 1 else f"{base}#bones{si}",
                                               sub,
                                               shape_names=g.get('shape_names', []),
                                               node_names=g.get('node_names', []),
                                               instance_matrices=g.get('instance_matrices') or [])
                         hm.material = mat
-                        hm.is_wire = (mat == '__wire__' or mat == 'WIRE')
-                        hm.is_crack = bool(g.get('damage'))
+                        hm.is_wire = bool(g.get('wire'))
+                        hm.is_crack = bool(g.get('crack'))
                         hm.skinned_applied = bool(g.get('skinned_applied'))
                         if mfm:
                             # ★ 只认 mfm 声明的贴图属性（indexed→albedoArray，否则 diffuseMap）；
@@ -2349,16 +2360,17 @@ class GeometryService:
                                       sdict: dict | None = None,
                                       geom_path: str | None = None,
                                       instancing: bool = False) -> dict:
-        """按渲染集索引把 primitives 分组：{material_key: {material, mfm, prims}}。
+        """按渲染集把 primitives 分组：{分组键: {material, mfm, prims, crack, wire}}。
 
         - 用 murmur3(shape.vertices) == primitive.mapping_id 连接渲染集与几何
-        - **damage/crack 渲染集**（crack/patch 等损伤网格）保留到 `__crack__` 组
-          （查看器不显示，GLB 导出保留用；带 crack mfm）
+        - **一个形状 = 一个分组 = 一个网格**（同材质的不同 shape 也**不合并**，
+          这样部件树里能逐形状单独开关、也能单独导出）
+        - **damage/crack 渲染集**（crack/patch 等损伤网格）保留到 crack 组
+          （查看器默认不显示，GLB 导出保留用；带 crack mfm）
         - LOD 低模仍跳过（不同 LOD 级，非 crack）
         - 匹配到材质的按材质分组；未匹配的归 None（用舰体默认贴图）
         - sdict 兜底：无渲染集匹配的 primitive 用字符串表反查 shape 名，
-          LOD 低模跳过；`_crack_`/Crack 名归 `__crack__` 组
-        - 多个 shape 同材质（如 Hull 本体 + DeckHouse）自动合并
+          LOD 低模跳过；`_crack_`/Crack 名归 crack 组
         """
         mat_by_mid: dict = {}
         damage_mids: set = set()
@@ -2405,12 +2417,23 @@ class GeometryService:
 
         def _new_group(mat: str, mfm: str, damage: bool = False) -> dict:
             return {'material': mat, 'mfm': mfm, 'prims': [],
-                    'shape_names': [], 'node_names': [], 'damage': damage}
+                    'shape_names': [], 'node_names': [], 'damage': damage,
+                    'crack': bool(damage),
+                    'wire': mat in ('__wire__', 'WIRE')}
 
-        def _crack_group(mat: str, mfm: str) -> dict:
-            """damage/crack 网格组（按材质分键，避免多种 crack 材质混入同一网格）。"""
-            key = f"__crack__#{mat}" if mat else "__crack__"
-            return groups.setdefault(key, _new_group(mat, mfm, damage=True))
+        def _gkey(kind: str, mat: str, mid: int) -> tuple:
+            """分组键：**每个形状（mapping_id）单独一组**，同材质也不合并。
+
+            ★ 同一材质的多个 shape 曾经被合并成一个网格（少几次 draw call），但那样
+            部件树里一行会装好几个形状、无法单独开关某一块；这里按
+            (材质, 形状) 分组，一个形状 = 一个网格。
+            """
+            return (kind, mat, int(mid))
+
+        def _crack_group(mat: str, mfm: str, mid: int) -> dict:
+            """damage/crack 网格组（按 (材质, 形状) 分键）。"""
+            return groups.setdefault(_gkey('__crack__', mat, mid),
+                                     _new_group(mat, mfm, damage=True))
 
         def _add_names(g: dict, p, rs=None) -> None:
             """收集该 primitive 的形状名（sdict 反查）与**全部**骨骼节点名到分组，供调试标签用。"""
@@ -2434,7 +2457,7 @@ class GeometryService:
                 if '_lod' in _sname.lower():
                     continue
                 mat, mfm = mat_by_mid.get(p.mapping_id, ('', ''))
-                _crack_group(mat, mfm)['prims'].append(p)
+                _crack_group(mat, mfm, p.mapping_id)['prims'].append(p)
                 continue
             entry = mat_by_mid.get(p.mapping_id)
             if entry is None:
@@ -2444,7 +2467,7 @@ class GeometryService:
                     if '_lod' in _name:
                         continue
                     if '_crack_' in _name or 'Crack' in _name:
-                        _crack_group('', '')['prims'].append(p)
+                        _crack_group('', '', p.mapping_id)['prims'].append(p)
                         continue
                     # 模糊兜底：归一化 shape 名匹配渲染集（游戏数据笔误，
                     # 如 JGA180 视觉写 TurretShapeff.vertices、几何是 TurretShape.vertices）
@@ -2453,7 +2476,8 @@ class GeometryService:
                         if fuz is not None:
                             mat = fuz.get('material') or ''
                             mfm = fuz.get('mfm') or ''
-                            g = groups.setdefault(mat, _new_group(mat, mfm))
+                            g = groups.setdefault(_gkey('', mat, p.mapping_id),
+                                                  _new_group(mat, mfm))
                             applied = self._apply_skinning(p, fuz)
                             if applied:
                                 g['prims'].append(p)
@@ -2463,7 +2487,7 @@ class GeometryService:
                                 bake, instmats = self._rigid_instance_matrices(p, fuz)
                                 if instmats:
                                     ig = groups.setdefault(
-                                        f"__inst__#{mat}#{p.mapping_id}",
+                                        _gkey('__inst__', mat, p.mapping_id),
                                         _new_group(mat, mfm))
                                     ig['prims'].append(p)
                                     ig['instance_matrices'] = instmats
@@ -2486,12 +2510,13 @@ class GeometryService:
                                     g['prims'].append(p)
                                 _add_names(g, p, fuz)
                             continue
-                groups.setdefault(None, _new_group(None, ''))['prims'].append(p)
+                groups.setdefault(_gkey('', None, p.mapping_id),
+                                  _new_group(None, ''))['prims'].append(p)
             else:
                 mat, mfm = entry
                 rs = _rs_for(p.mapping_id)
                 applied = self._apply_skinning(p, rs)
-                g = groups.setdefault(mat, _new_group(mat, mfm))
+                g = groups.setdefault(_gkey('', mat, p.mapping_id), _new_group(mat, mfm))
                 if applied:
                     g['prims'].append(p)
                     g['skinned_applied'] = True
@@ -2501,7 +2526,7 @@ class GeometryService:
                         bake, instmats = self._rigid_instance_matrices(p, rs)
                         if instmats:
                             ig = groups.setdefault(
-                                f"__inst__#{mat}#{p.mapping_id}", _new_group(mat, mfm))
+                                _gkey('__inst__', mat, p.mapping_id), _new_group(mat, mfm))
                             ig['prims'].append(p)
                             ig['instance_matrices'] = instmats
                             ig['skinned_applied'] = True
@@ -3268,6 +3293,8 @@ class GeometryService:
             node_names=list(dict.fromkeys(node_names or [])),
             instance_matrices=list(instance_matrices or []),
             shape_spans=shape_spans,
+            format_name=" / ".join(sorted({p.format_name for p in primitives
+                                           if getattr(p, "format_name", "")})),
         )
 
     @staticmethod

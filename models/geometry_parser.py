@@ -125,6 +125,8 @@ class MeshPrimitive:
     #: GLB 导出按它命名网格/空物体（对齐 BigWorld 插件的导入样式）。
     shape_name: str = ""
     node_name: str = ""
+    #: 顶点格式串，原样保留（如 ``set3/xyznuvtpcencd``）——部件树里展示给用户看
+    format_name: str = ""
 
 
 @dataclass
@@ -687,4 +689,5 @@ def _build_primitives(geom: ParsedGeometry, cancel_event=None):
             is_skinned=is_skinned,
             bone_indices=bone_indices,
             bone_weights=bone_weights,
+            format_name=vb.format_name,
         ))

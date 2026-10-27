@@ -201,7 +201,14 @@ class _KeyGen:
         self.duplicates = 0
 
     def __call__(self, kind: int, name: str) -> str:
-        base = f"{kind}:{name or 'mesh'}"
+        return self.take(f"{kind}:{name or 'mesh'}")
+
+    def take(self, base: str) -> str:
+        """占用 ``base``（重名时加 ``#2``、``#3``…）并返回最终唯一 key。
+
+        显式 key（``hull:i`` / ``mount:i``）也必须走这里：DLL 遇到同名 key 会
+        **就地替换**网格，一旦重名就是大面积消失/错乱且不报错。
+        """
         key = base
         n = 1
         while key in self._used:
@@ -214,13 +221,15 @@ class _KeyGen:
 
 
 def _build_mesh(
-    m, kind: int, pool: _TexturePool, default_dds: bytes | None, keygen: _KeyGen
+    m, kind: int, pool: _TexturePool, default_dds: bytes | None, keygen: _KeyGen,
+    mesh_key: str | None = None,
 ) -> MeshSpec | None:
-    if getattr(m, "is_crack", False):
-        return None          # 损伤网格不显示（与旧渲染器一致）
-    if getattr(m, "is_wire", False):
-        return None          # 线框辅助网格需要 GL_LINES 路径，暂不参与实体渲染
+    """构建一个网格描述。
 
+    mesh_key：显式网格 key（``hull:i`` / ``mount:i``，左侧部件树按它开关显隐）。
+    ⚠️ 不能叫 ``key``：函数体内 ``key`` 是**贴图** key 的局部变量，同名会把它覆盖成
+    ``t12`` 之类的贴图 key → 网格 key 重名 → DLL 里同名网格互相替换（模型错乱）。
+    """
     positions = np.asarray(m.positions, dtype=np.float32)
     if positions.size == 0:
         return None
@@ -321,7 +330,7 @@ def _build_mesh(
         instance_matrices = np.ascontiguousarray(arr.reshape(-1, 16), dtype=np.float32)
 
     return MeshSpec(
-        key=keygen(kind, str(getattr(m, "name", "mesh"))),
+        key=keygen.take(mesh_key or f"{kind}:{getattr(m, 'name', 'mesh') or 'mesh'}"),
         kind=kind,
         family=family,
         vertices=vdata,
@@ -414,9 +423,13 @@ def build_scene(geometry, armor_scene=None) -> tuple[list[TextureSpec], list[Mes
     meshes: list[MeshSpec] = []
     if geometry is not None:
         default_dds = getattr(geometry, "texture_dds", None)
-        for kind, items in ((MESH_HULL, geometry.hull_meshes), (MESH_MOUNT, geometry.mounts)):
-            for item in items:
-                spec = _build_mesh(item, kind, pool, default_dds, keygen)
+        # key 与旧查看器（GeometryViewport）一致：hull:i / mount:i = set_scene 的
+        # 生成顺序，左侧部件树据此一对一开关可见性。
+        for kind, prefix, items in ((MESH_HULL, "hull", geometry.hull_meshes),
+                                    (MESH_MOUNT, "mount", geometry.mounts)):
+            for i, item in enumerate(items):
+                spec = _build_mesh(item, kind, pool, default_dds, keygen,
+                                   mesh_key=f"{prefix}:{i}")
                 if spec is not None:
                     meshes.append(spec)
     meshes.extend(_build_armor(armor_scene))
