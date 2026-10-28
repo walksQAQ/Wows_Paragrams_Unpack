@@ -40,3 +40,4 @@ _archive/shaders.py
 /_dec_*.c
 /_ghidra_*.txt
 unpacked/
+_archive/anim_exporter/
