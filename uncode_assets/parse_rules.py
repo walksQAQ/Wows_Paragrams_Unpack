@@ -37,9 +37,9 @@ RULE_LEGACY = "legacy"
 #: UI 文案
 RULE_LABELS = {
     RULE_AUTO: "自动",
-    RULE_LESTA: "Lesta（26.10）",
-    RULE_WARGAMING: "Wargaming（15.9）",
-    RULE_WG_OLD: "Wargaming（12/7 - 14.0）",
+    RULE_LESTA: "Lesta（12.7+/26.10+）",
+    RULE_WARGAMING: "Wargaming（14.1+/15.9+）",
+    RULE_WG_OLD: "Wargaming（12.7 - 14.0）",
     RULE_LEGACY: "远古版本（<12.7）",
 }
 
