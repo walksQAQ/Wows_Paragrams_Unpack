@@ -23,6 +23,7 @@ __about__.py
 test_extract/
 todo_list/*.js
 model_test/
+_archive/animExporter/
 
 _decompile/
 docs/korabli-pyc-format.md
@@ -40,4 +41,3 @@ _archive/shaders.py
 /_dec_*.c
 /_ghidra_*.txt
 unpacked/
-_archive/anim_exporter/
