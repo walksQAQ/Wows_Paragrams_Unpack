@@ -197,6 +197,12 @@ class GeometryViewerDialog(HoloDialog):
         self._pending_ship_id = None
         #: 独立皮肤模式：由「独立涂装」工具直接载入无归属皮肤（合成 ShipInfo）
         self._skin_mode = False
+        #: 舰载机模式：只载入飞机模型（详情面板「舰载机」卡片的 3D 按钮）
+        self._aircraft_only = False
+        #: 舰载机模式的载入请求 {ship_id, plane_id, display_name}
+        self._aircraft_request: dict | None = None
+        #: 当前选中船只有多少种「完全体」舰载机（决定是否显示载入开关）
+        self._ship_aircraft_n = 0
         self._restored_geometry = self._restore_geometry()
         self._ensure_default_width()
 
@@ -458,6 +464,17 @@ class GeometryViewerDialog(HoloDialog):
             theme.bind(cb, cb_style)
             pl.addWidget(cb)
 
+        # 舰载机（只有带舰载机数据的舰船才显示）：完全体口径，排在船体左舷外侧
+        self.cb_aircraft = QCheckBox("载入舰载机（完全体）")
+        self.cb_aircraft.setChecked(True)
+        self.cb_aircraft.setToolTip(
+            "把该舰的舰载机模型（每种机队取最高型号）连同弹药（火箭弹 / 炸弹 / 鱼雷）\n"
+            "按骨架里的飞行甲板停机位（HP_Deck_NN）摆放；没有停机位的船排在船体上方。\n"
+            "切换后会重新加载整艘船（需要重新解析模型）")
+        theme.bind(self.cb_aircraft, cb_style)
+        self.cb_aircraft.setVisible(False)
+        pl.addWidget(self.cb_aircraft)
+
         # ── 渲染风格（游戏原版 / Studio PBR）与环境光参数 ──
         # 仅 D3D11 后端有效（GL 视口没有 set_render_style）⇒ 整体装进容器，
         # GL 模式下隐藏，避免出现"点了没反应"的控件。
@@ -609,6 +626,7 @@ class GeometryViewerDialog(HoloDialog):
         self.ship_combo.activated.connect(self._on_ship_changed)
         self.camo_combo.currentIndexChanged.connect(self._on_camo_changed)
         self.cb_hull.toggled.connect(self._on_hull_toggled)
+        self.cb_aircraft.toggled.connect(self._on_aircraft_toggled)
         self.style_combo.currentIndexChanged.connect(self._on_style_changed)
         self.env_slider.valueChanged.connect(self._on_env_strength_changed)
         self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
@@ -663,6 +681,14 @@ class GeometryViewerDialog(HoloDialog):
         self.viewport.set_view_options(show_hull=v)
         if v:
             self._show_side_page(self._SIDE_PARTS)
+
+    def _on_aircraft_toggled(self, v: bool):
+        """舰载机显示开关：机载网格在解析时生成 ⇒ 需要重新加载整艘船。"""
+        if self._loading or self._aircraft_only or self._current_geom is None:
+            return
+        bus.log_message.emit(
+            f"ℹ️ 3D: 舰载机{'载入' if v else '不载入'}，重新解析模型...")
+        self._on_load()
 
     def _on_env_strength_changed(self, v: int):
         """环境亮度：原版路径下=环境反射强度；Studio 模式=IBL 强度；0 = 关闭。"""
@@ -897,6 +923,72 @@ class GeometryViewerDialog(HoloDialog):
         self.activateWindow()
         self._on_load()
 
+    def open_aircraft(self, ship_id: str, plane_id: str = "",
+                      display_name: str = "") -> None:
+        """外部入口（详情面板「舰载机」卡片的 3D 按钮）：只看飞机模型。
+
+        plane_id 为空 → 载入该舰「完全体」全部机型；否则只载入指定机型。
+        飞机模型不进船体（独立横排），无需舰船列表就绪。
+        """
+        if not ship_id and not plane_id:
+            return
+        self._aircraft_request = {
+            "ship_id": ship_id,
+            "plane_id": plane_id,
+            "display_name": display_name,
+        }
+        if not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        self._on_load_aircraft()
+
+    def _on_load_aircraft(self) -> None:
+        """载入舰载机（只含飞机网格）：与舰船加载共用进度/错误/显示流程。"""
+        req = self._aircraft_request
+        if not req:
+            return
+        self._aircraft_only = True
+        self._current_geom = None
+        self._armor_scene = None
+        self.armor_panel.clear()
+        self._set_loading_overlay(False)
+        if self._load_task is not None:
+            self._load_task.cancel()
+        self._load_generation += 1
+        gen = self._load_generation
+        self._loading = True
+        self._active_ship_key = f"aircraft:{req['ship_id']}:{req['plane_id']}"
+        self.btn_load.setEnabled(False)
+        self.camo_combo.setEnabled(False)
+        self.cb_aircraft.setVisible(False)
+        self.cb_aircraft.setChecked(False)
+        self.cb_armor.setChecked(False)
+        self.cb_armor.setEnabled(False)
+        self.progress.setVisible(True)
+        self.progress.setValue(0)
+        label = req["display_name"] or req["plane_id"] or req["ship_id"]
+        self.stats_label.setText(f"正在加载舰载机 {label} ...")
+        self._set_loading_overlay(True, f"正在加载舰载机 {label} ...")
+
+        def _work(cancel_event):
+            geom = self._get_service().load_aircraft(
+                req["ship_id"],
+                plane_ids=[req["plane_id"]] if req["plane_id"] else None,
+                display_name=label,
+                progress_cb=lambda p, m: self._on_progress(p, m, gen),
+                cancel_event=cancel_event,
+            )
+            from models.armor_scene import ArmorScene
+            return geom, ArmorScene.build(geom.armor_meshes, cancel_event=cancel_event)
+
+        self._load_task = run_async(
+            _work,
+            on_finished=lambda r: self._on_ship_loaded(r, gen),
+            on_error=lambda e: self._on_ship_error(e, gen),
+            cancel_event=threading.Event(),
+        )
+
     def _try_load_pending(self):
         """舰船列表就绪后，定位到挂起的舰船并准备（源码模式等用户选涂装；发布版自动加载）。"""
         if self._closed:
@@ -925,12 +1017,29 @@ class GeometryViewerDialog(HoloDialog):
         self.ship_combo.blockSignals(False)
         self._reset_viewer_data()
         self._populate_camos(ship)
+        self._update_aircraft_option(ship)
         if CAMO_SWITCHER_ENABLED:
             self.stats_label.setText(
                 f"已选择 {ship.display_name}（{ship.game_key}）：选择涂装后点击「加载」")
         else:
             self.stats_label.setText(f"已选择 {ship.display_name}（{ship.game_key}）")
             self._on_load()
+
+    def _update_aircraft_option(self, ship) -> None:
+        """有舰载机数据的舰船才显示「载入舰载机」开关（完全体：每种机队最高型号）。"""
+        n = 0
+        try:
+            n = len(self._get_service().aircraft_for_ship(ship.game_key, elite=True))
+        except Exception as exc:  # noqa: BLE001 - 查询失败只是不显示开关
+            bus.log_message.emit(f"⚠️ 3D: 舰载机数据查询失败: {exc}")
+        self.cb_aircraft.blockSignals(True)
+        self._ship_aircraft_n = n
+        self.cb_aircraft.setText(
+            f"载入舰载机（完全体 {n} 型）" if n else "载入舰载机（完全体）")
+        self.cb_aircraft.setVisible(n > 0)
+        # 有舰载机数据的舰船默认勾选（完全体：每种机队最高型号）
+        self.cb_aircraft.setChecked(n > 0)
+        self.cb_aircraft.blockSignals(False)
 
     def _reset_viewer_data(self):
         """清空当前查看数据（涂装 + 装甲 + 状态），切船/关闭时调用。
@@ -947,6 +1056,11 @@ class GeometryViewerDialog(HoloDialog):
         self._active_ship_key = ""
         self.btn_load.setEnabled(True)
         self.camo_combo.setEnabled(True)
+        # 退出舰载机模式（切船/关闭时应回到普通舰船查看）
+        self._aircraft_only = False
+        self._aircraft_request = None
+        self._ship_aircraft_n = 0
+        self.cb_armor.setEnabled(True)
         self._current_geom = None
         self._armor_scene = None
         self.armor_panel.clear()
@@ -1046,6 +1160,9 @@ class GeometryViewerDialog(HoloDialog):
         self.progress.setVisible(True)
         self.progress.setValue(0)
         label = scheme.display_name if scheme is not None else "无涂装"
+        # 主线程读取控件状态（后台线程不得触碰 Qt）
+        with_aircraft = bool(self.cb_aircraft.isChecked()
+                             and getattr(self, "_ship_aircraft_n", 0) > 0)
         self.stats_label.setText(f"正在加载 {ship.display_name}（{label}）...")
         self._set_loading_overlay(True, f"正在加载 {ship.display_name}（{label}）...")
 
@@ -1058,6 +1175,8 @@ class GeometryViewerDialog(HoloDialog):
                 skin=skin,
                 # 船体/装甲解析完就先丢给主线程显示（挂载继续解析）
                 partial_cb=lambda g: self.partial_ready.emit((g, gen)),
+                # 完全体舰载机（每种机队取最高型号）排在船体左舷外侧
+                aircraft=with_aircraft,
             )
             # 材质涂装：模型加载完成后直接套上，再交给 set_scene 展示
             if scheme is not None and scheme.origin == "mat" and scheme.entry:
@@ -1125,8 +1244,32 @@ class GeometryViewerDialog(HoloDialog):
         key 与视口 ``set_scene`` 生成顺序一致（``hull:i`` / ``mount:i``）：
         损坏 / 残骸（crack）网格照常列出但默认不勾选；LOD 低模在服务层
         就已过滤，不会进列表；wire 线框网格按普通部件默认勾选。
+        舰载机分组括号里显示**架数 / 弹药数**（网格行数会让人误以为只有一架）。
         """
-        return self.parts_panel.set_entries(self._parts_entries(geom))
+        return self.parts_panel.set_entries(self._parts_entries(geom),
+                                            group_texts=self._aircraft_group_texts(geom))
+
+    @staticmethod
+    def _aircraft_group_texts(geom) -> dict[str, str]:
+        """舰载机分组路径 → 括号文字（``N 架`` / ``N 枚``）。"""
+        planes: dict[str, int] = {}
+        ammo: dict[str, int] = {}
+        for mm in geom.mounts:
+            group = getattr(mm, "part_group", "")
+            if not group:
+                continue
+            depth = len([p for p in group.split("/") if p])
+            n = len(mm.instance_matrices) or 1
+            bucket = planes if depth == 2 else ammo if depth >= 3 else None
+            if bucket is not None:
+                bucket[group] = max(bucket.get(group, 0), n)
+        texts = {g: f"{n} 架" for g, n in planes.items()}
+        texts.update({g: f"{n} 枚" for g, n in ammo.items()})
+        total = sum(planes.values())
+        if total:
+            from services.geometry_service import COMPONENT_AIRCRAFT
+            texts[COMPONENT_AIRCRAFT] = f"{total} 架"
+        return texts
 
     def _parts_entries(self, geom) -> list[PartEntry]:
         """ShipGeometry 的每个渲染网格 → 一行（标题用**形状名**，不用材质名）。
@@ -1134,7 +1277,8 @@ class GeometryViewerDialog(HoloDialog):
         key 与视口 ``set_scene`` 生成顺序一致（``hull:i`` / ``mount:i``）；
         损坏 / 残骸网格照常列出但默认不勾选，wire 线框网格按普通部件默认勾选。
         """
-        from services.geometry_service import COMPONENT_HULL, COMPONENT_OTHER
+        from services.geometry_service import (COMPONENT_AIRCRAFT, COMPONENT_HULL,
+                                               COMPONENT_OTHER)
 
         out: list[PartEntry] = []
         stem_prefix = f"{geom.model_folder}_" if geom.model_folder else ""
@@ -1183,10 +1327,16 @@ class GeometryViewerDialog(HoloDialog):
         for i, mm in enumerate(geom.mounts):
             tris = int(mm.indices.size // 3)
             shapes = _sorted_shapes(mm.shape_names)
-            label = mm.name
-            # 同一模型被拆成多个网格（按材质/形状拆分）时才追加形状名区分
-            if shapes and name_counts.get(mm.name, 0) > 1:
-                label += f" · {shapes[0]}"
+            part_group = getattr(mm, "part_group", "")
+            if part_group:
+                # 分组路径已表明机型 / 弹药 ⇒ 行标题直接用形状名，不再重复机型
+                label = shapes[0] if shapes else (
+                    getattr(mm, "material", "") or "机体（默认材质）")
+            else:
+                label = mm.name
+                # 同一模型被拆成多个网格（按材质/形状拆分）时才追加形状名区分
+                if shapes and name_counts.get(mm.name, 0) > 1:
+                    label += f" · {shapes[0]}"
             if getattr(mm, "is_crack", False):
                 label += " · Crack"
             detail = [f"挂载节点：{mm.name}",
@@ -1196,14 +1346,21 @@ class GeometryViewerDialog(HoloDialog):
                       f"模型目录：{mm.model_folder or '—'}",
                       f"三角形：{tris:,}",
                       f"贴图：{mm.texture_path or '—'}"]
+            if part_group:
+                detail.append(f"分组：{' / '.join(part_group.split('/'))}")
             if getattr(mm, "is_crack", False):
                 detail.append("类型：损坏 / 残骸变体（默认不显示）")
             if getattr(mm, "is_wire", False):
                 detail.append("类型：wire 线框网格")
+            if len(mm.instance_matrices) > 1:
+                detail.append(f"实例：{len(mm.instance_matrices)} 处"
+                              f"（同一份几何多位置绘制）")
+            # 分组路径（"/" 多级）：舰载机 → 机型 → 弹药；其余按归属单级分组
+            group = part_group or getattr(mm, "component", "") or COMPONENT_OTHER
             out.append(PartEntry(
                 key=f"mount:{i}",
                 label=label,
-                group=getattr(mm, "component", "") or COMPONENT_OTHER,
+                group=group,
                 checked=not getattr(mm, "is_crack", False),
                 badge=f"{tris:,} 面",
                 detail="\n".join(detail),
@@ -1247,6 +1404,8 @@ class GeometryViewerDialog(HoloDialog):
         # 构建三级结构树（hidden 板默认不勾选）
         n_hidden = self.armor_panel.set_scene(self._armor_scene)
         self.sel_label.setText("未选中（点击装甲板块选中）")
+        if not self._aircraft_only:
+            self.cb_armor.setEnabled(True)
         st = geom.stats or {}
         total_v = sum(h.vertex_count for h in geom.hull_meshes)
         total_t = sum(h.indices.size // 3 for h in geom.hull_meshes)
@@ -1254,9 +1413,16 @@ class GeometryViewerDialog(HoloDialog):
         known_t = sum(sum(1 for t in a.triangles if t.thickness_mm > 0) for a in geom.armor_meshes)
         mounts_n = len(geom.mounts)
         mounts_v = sum(m.vertex_count for m in geom.mounts)
+        aircraft_n = int(st.get("aircraft", 0) or 0)
+        aircraft_inst = int(st.get("aircraft_instances", 0) or 0)
+        aircraft_ammo = int(st.get("aircraft_ammo", 0) or 0)
+        aircraft_names = st.get("aircraft_names") or []
         deck_n = st.get("deck_equipment", 0)
         sub_n = st.get("sub_equipment", 0)
         hp_n = mounts_n - deck_n - sub_n
+        if aircraft_n:
+            hp_n = max(0, hp_n - len([m for m in geom.mounts
+                                      if getattr(m, "component", "") == "舰载机"]))
         warns = len(st.get("warnings", []))
         tex_info = "贴图：已加载" if geom.texture_dds else "贴图：未找到"
         # 装甲结构统计（板块/部件/zone 数）
@@ -1268,24 +1434,42 @@ class GeometryViewerDialog(HoloDialog):
             struct_info = f"结构：{n_zones} 装甲区 / {n_parts} 部件 / {n_plates} 板块（边界线 {sc.edge_positions.shape[0] // 2:,}）"
         else:
             struct_info = "结构：无装甲数据"
-        self.stats_label.setText(
-            f"舰船：{geom.display_name}（{geom.game_key}）\n"
-            f"模型：{geom.model_folder}\n"
-            f"船体：{total_v:,} 顶点 / {total_t:,} 三角形\n"
-            f"挂载：{mounts_n} 个（HP {hp_n} + 甲板设备 {deck_n} + 部件子设备 {sub_n}，{mounts_v:,} 顶点）\n"
-            f"装甲：{armor_t:,} 三角形（厚度已知 {known_t:,}，隐藏板 {n_hidden:,}）\n"
-            f"{struct_info}\n"
-            f"{tex_info}\n"
-            f"包围盒：{geom.bounds_size[0]:.1f} × {geom.bounds_size[1]:.1f} × {geom.bounds_size[2]:.1f}\n"
-            + (f"⚠️ 警告 {warns} 条（见日志）" if warns else "")
-        )
+        if self._aircraft_only:
+            self.stats_label.setText(
+                f"舰载机：{geom.display_name}\n"
+                f"机型：{aircraft_n} 型（{'、'.join(aircraft_names) or '—'}）\n"
+                f"弹药：{aircraft_ammo} 种挂载\n"
+                f"网格：{mounts_n} 个 / {mounts_v:,} 顶点\n"
+                f"包围盒：{geom.bounds_size[0]:.2f} × {geom.bounds_size[1]:.2f}"
+                f" × {geom.bounds_size[2]:.2f}（模型单位）\n"
+                + (f"⚠️ 警告 {warns} 条（见日志）" if warns else "")
+            )
+        else:
+            self.stats_label.setText(
+                f"舰船：{geom.display_name}（{geom.game_key}）\n"
+                f"模型：{geom.model_folder}\n"
+                f"船体：{total_v:,} 顶点 / {total_t:,} 三角形\n"
+                f"挂载：{mounts_n} 个（HP {hp_n} + 甲板设备 {deck_n} + 部件子设备 {sub_n}，{mounts_v:,} 顶点）\n"
+                + (f"舰载机：{aircraft_n} 型 / {aircraft_inst} 架"
+                   + (f"（含弹药 {aircraft_ammo} 种）" if aircraft_ammo else "")
+                   + f"：{'、'.join(aircraft_names)}\n"
+                   if aircraft_n else "")
+                + f"装甲：{armor_t:,} 三角形（厚度已知 {known_t:,}，隐藏板 {n_hidden:,}）\n"
+                f"{struct_info}\n"
+                f"{tex_info}\n"
+                f"包围盒：{geom.bounds_size[0]:.1f} × {geom.bounds_size[1]:.1f} × {geom.bounds_size[2]:.1f}\n"
+                + (f"⚠️ 警告 {warns} 条（见日志）" if warns else "")
+            )
         # 把加载警告逐条写入日志区（此前只显示"警告 N 条（见日志）"但日志区从未收到内容）
         for w in st.get("warnings", []):
             bus.log_message.emit(f"⚠️ 3D 加载警告: {w}")
         bus.log_message.emit(
             f"✅ 3D: {geom.display_name} 加载完成（船体 {total_t:,} 三角形 / "
             f"挂载 {mounts_n} 个（HP {hp_n} + 甲板设备 {deck_n} + 部件子设备 {sub_n}） / "
-            f"装甲 {armor_t:,}）")
+            f"装甲 {armor_t:,}"
+            + (f" / 舰载机 {aircraft_n} 型 {aircraft_inst} 架"
+               + (f"（弹药 {aircraft_ammo} 种）" if aircraft_ammo else "")
+               if aircraft_n else "") + "）")
         self.ship_loaded.emit(geom.game_key)
         # 加载期间又收到新的 open_ship 请求 → 现在兑现
         self._try_load_pending()

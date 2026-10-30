@@ -980,10 +980,13 @@ class DetailPanel(QWidget):
         self.stack.setCurrentIndex(0)
 
     def _on_card_action(self, data):
-        """卡片底部按钮分发：加速曲线（dict） / 3D 模型（ship_id 字符串）。"""
+        """卡片底部按钮分发：加速曲线 / 舰载机 3D 模型（dict） / 舰船 3D 模型（ship_id）。"""
         if isinstance(data, dict) and data.get("kind") == "accel":
             self._open_accel_dialog(data.get("ship_id") or self._current_filename,
                                     data.get("accel_ctx"))
+        elif isinstance(data, dict) and data.get("kind") == "aircraft3d":
+            self._open_aircraft_viewer(data.get("plane_ids"),
+                                       data.get("name") or "")
         else:
             self._open_3d_viewer(data)
 
@@ -1024,6 +1027,20 @@ class DetailPanel(QWidget):
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开射界查看器失败: {exc}")
 
+    def _ensure_3d_viewer(self):
+        """懒创建 3D 模型查看器单实例并前置显示（返回对话框实例）。"""
+        from ui.geometry_viewer import GeometryViewerDialog
+        from utils.window_utils import ensure_dialog_shown
+        viewer = getattr(self, "_geometry_viewer", None)
+        if viewer is None or not getattr(viewer, "_restored_geometry", False):
+            ensure_dialog_shown(self, "_geometry_viewer", GeometryViewerDialog,
+                                self.window())
+        else:
+            viewer.show()
+            viewer.raise_()
+            viewer.activateWindow()
+        return self._geometry_viewer
+
     def _open_3d_viewer(self, ship_id):
         """打开 3D 模型查看器并自动载入当前所选舰船（懒创建单实例）。
 
@@ -1032,17 +1049,21 @@ class DetailPanel(QWidget):
         MainWindow.closeEvent 显式关闭 detail._geometry_viewer 保证。
         """
         try:
-            from ui.geometry_viewer import GeometryViewerDialog
-            from utils.window_utils import ensure_dialog_shown
-            if not getattr(self, "_geometry_viewer", None) or not getattr(self._geometry_viewer, "_restored_geometry", False):
-                ensure_dialog_shown(self, "_geometry_viewer", GeometryViewerDialog, self.window())
-            else:
-                self._geometry_viewer.show()
-                self._geometry_viewer.raise_()
-                self._geometry_viewer.activateWindow()
-            self._geometry_viewer.open_ship(ship_id)
+            self._ensure_3d_viewer().open_ship(ship_id)
         except Exception as exc:
             bus.log_message.emit(f"❌ 打开 3D 查看器失败: {exc}")
+
+    def _open_aircraft_viewer(self, plane_ids, display_name: str = ""):
+        """打开 3D 模型查看器，只载入这型舰载机（详情面板「舰载机」卡片的 3D 按钮）。"""
+        plane_ids = [p for p in (plane_ids or []) if p]
+        if not plane_ids:
+            return
+        ship_id = self._current_filename or ""
+        try:
+            self._ensure_3d_viewer().open_aircraft(
+                ship_id, plane_ids[0], display_name or plane_ids[0])
+        except Exception as exc:
+            bus.log_message.emit(f"❌ 打开舰载机 3D 模型失败: {exc}")
 
     def _build_sub_widget(self, title: str, sub_info: dict) -> QWidget:
         """构建无标签栏的子分类面板，仅显示默认配置内容，顶栏按钮控制切换"""
@@ -1238,12 +1259,29 @@ class DetailPanel(QWidget):
                             tip_parts.append(f"&nbsp;&nbsp;<b>{n}</b>: {display}")
                         else:
                             tip_parts.append(f"&nbsp;&nbsp;{n}")
-                if tip_parts:
-                    card = ShipCardWidget({"label": "", "items": display_items})
-                    card.setToolTip("<br>".join(tip_parts))
+                # 卡片底部动作行：只看这型飞机的 3D 模型（与舰船查看器同一套贴图管线）
+                plane_ids = [p for p in (cfg_data.get("plane_ids") or []) if p]
+                card_action = None
+                if plane_ids:
+                    model_label = next(
+                        (it.get("value", "") for it in items
+                         if it.get("name", "") == "飞机型号"), "") or plane_ids[0]
+                    card_action = {
+                        "label": "3D 模型",
+                        "button": "查看",
+                        "tooltip": f"在 3D 模型查看器里显示 {model_label} 的飞机模型\n"
+                                   "（只含飞机，不含船体；材质贴图与舰船模型相同）",
+                        "data": {"kind": "aircraft3d", "plane_ids": plane_ids,
+                                 "name": model_label},
+                    }
+                if display_items:
+                    card = ShipCardWidget({"label": "", "items": display_items},
+                                          action=card_action)
+                    if tip_parts:
+                        card.setToolTip("<br>".join(tip_parts))
+                    if card_action:
+                        card.action_clicked.connect(self._on_card_action)
                     wl.addWidget(card)
-                elif display_items:
-                    wl.addWidget(ShipCardWidget({"label": "", "items": display_items}))
 
                 # 弹药按钮行
                 if raw_ammo:

@@ -68,6 +68,43 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 - **不要**把装甲结构树塞回右栏：右栏是固定 330px 宽的控件堆栈，多一个 `stretch=1` 的列表会把其它分组挤成缝、列表本身只剩几行。
 - 右栏布局末尾必须保留 `addStretch(1)`，否则隐藏/新增控件会让各分组之间冒出随机空隙。
 
+### 2.7 舰载机模型（3D 查看器）
+
+- **数据口径**：`ship_module_aircraft` 的 `plane_name` 就是 `plane_basic_info.plane_id`；
+  「完全体」= 每个 `plane_type` 取 `module_variant` **最大**的一条（stock → top），见
+  `GeometryService.aircraft_for_ship(ship_id, elite=True)`。
+- **模型目录**：`entity_snapshots`（`entity_type='plane'`）的 `data_json.model` 父目录；
+  目录不存在时回退 `<目录>_proto`（游戏内实际用的共享模型），再按机型编号前缀兜底，
+  见 `plane_model_folder`。少数老机型客户端未随包几何 → 跳过并在日志里给警告。
+- **船模式**：右栏「载入舰载机（完全体 N 型）」开关（有舰载机数据才显示，默认勾选）。
+  摆放**严格照客户端口径**（`AirPlanes/AirplaneUtils.arrangeSquadronsOnDeck` +
+  `pAA084324/DeckLaunchpad.Deck.__init__`，反编译确认）：
+  1. 机队顺序取 `flightControl.squadrons`（如 `['Fighter','Bomber','Dive']`；
+     **Bomber=鱼雷机、Dive=轰炸机**，见 `PLANETYPE_2_CONSUMABLE` 的对应）；
+  2. 每队目标架数 = `arrangeSize`（为 -1 时用 `attackerSize`）；
+  3. 逐**轮次**分配（每轮按机队顺序各加一架），直到用满 `airArmament.deckPlaceCount`
+     ——兰利 8 位 → 3 战斗机 + 2 鱼雷机 + 2 轰炸机（第 8 位空着）；
+  4. 停机位**按机队连续占用**：`HP_Deck_00..` 从**船尾**（`HP_DeckLand` 侧）往船首排，
+     一队占一段（不是几型交替）。
+  实现见 `GeometryService.aircraft_deck_slots()`（没有 `flightControl` 数据时才回退
+  「机型循环填满」）。飞机网格是解析期生成的 ⇒ 切换开关会重新解析整艘船。
+- **朝向**：机型几何与自身骨架同向（`HP_Air_enginelight_*` 在机头 +Z、螺旋桨也在模型
+  +Z），所以**不要**套挂载用的 `Root_BlendBone`——SBU/BTD 的 rb 是 Z 镜像，套上会把
+  机头拧到机尾（停到甲板上就变成机尾朝船首）。船体 **+Z 是船首**
+  （`*_Bow.geometry` 在 +Z，`*_Stern.geometry` 在 -Z），所以不套 rb 正好朝船首起飞方向。
+- **弹药**：`plane_basic_info.bomb_name` 就是这型飞机挂的弹药（火箭弹/炸弹/鱼雷都存这里），
+  模型取该弹药 `entity_snapshots.data_json.model` 的父目录，挂在机型骨架的
+  `HP_Air_rocket_*` / `HP_Air_bomb_*` / `HP_Air_torpedo_*` 节点上
+  （见 `GeometryService.plane_armament`），**每个实例各挂一份**。
+- **部件树层级**：`MountMesh.part_group` 存 `"/"` 分隔的分组路径，最终是
+  「舰载机 → 机型 → 弹药」三级（`PartsTreePanel` 支持多级路径；括号里显示
+  架数/枚数而不是网格行数）。别再把弹药做成和机型并列的一级分组——那样看着
+  像"只有一架带弹"。
+- **飞机模式**：详情面板「舰载机」卡片的 `3D 模型 → 查看` 调
+  `GeometryViewerDialog.open_aircraft(ship_id, plane_id)`，只载入飞机（含弹药）、
+  按机身长度排成一行（部件树按机型分组），退出时通过 `open_ship` / 切船自动复位。
+
+
 ---
 
 ## 4. 常见坑（踩过的）
@@ -96,6 +133,7 @@ PySide6 桌面工具：从《战舰世界 / Korabli》客户端提取并分析�
 | D3D 视口鼠标悬停没反应 | `D3DViewportAdapter`（原生子窗口 + `WA_PaintOnScreen`）不会自动收到「无按键移动」：Qt 默认只在按住鼠标时发 `mouseMoveEvent`，所以装甲厚度提示 / 悬停高亮全军覆没而**点击选中仍然正常**。`D3DViewportAdapter.__init__` 里必须 `setMouseTracking(True)` |
 | 加载遮罩不能叠在 D3D 面上 | D3D 视口（`RenderView`）是 `WA_PaintOnScreen` 原生子窗口，Qt 自绘控件叠在它上面无法可靠合成：进度文字会留鬼影，上传早在 0.1s 内结束、屏幕上却一直停在旧百分比（`正在上传到 GPU 172/215（80%）`，实测被当成卡死）。D3D 后端不叠遮罩：加载文字写右侧面板状态区，上传进度走面板进度条（`RenderView.scene_upload` → `GeometryViewerDialog._on_scene_upload`）；遮罩只给 OpenGL 后端用 |
 | 重载期间别先清场景 | 3D 查看器加载/重载**不要**先 `viewport.clear_scene()`：解析一艘船几十秒，渲染区整段全黑，看起来像卡死。保留上一帧模型，新场景上传时一次换掉；只有加载失败/关闭时才清 |
+| `stretchLastSection` 会吃掉横向滚动条 | `assets.bin` 浏览器文件树（`uncode_assets/gui.py`）的最后一列若用 `stretchLastSection`，列宽之和恒等于视口 ⇒ 横向滚动条永远不出现，长文件名 / 深层目录只能拖中间分隔线才看得全。名称列改由 `_content_column_widths` 按内容（含层级缩进、遍历含折叠节点）算宽、类型列手工补满余量（`_fit_tree_columns`），用户拖分隔线后由 `_on_section_resized` 记住并继续维护类型列 |
 | 「本地化缺失」口径 | 只认「语言文件里**没有该键**」。键存在但译文为空/只有一个空格/原样回填 `IDS_xxx` 只算"未翻译"，**不算**缺失——这类条目在列表/详情名称后标「⚠ 未翻译」，由 `utils/loc_status.py` 统一文案与判定。语言文件侧仍以 `lang_zh=''` 写进 `name_mappings`（保留键存在性、不覆盖已有译名），读取侧（Python 真值判断、SQL 一律 `COALESCE(NULLIF(lang_zh,''), ...)`）自动回退。判断缺失用 `nm.id IS NULL`，不要用 `TRIM(lang_zh)=''` |
 
 ---

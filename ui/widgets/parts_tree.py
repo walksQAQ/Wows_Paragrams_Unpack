@@ -3,6 +3,8 @@
 一行一个**渲染网格**（``PartEntry.key`` 与视口 ``set_scene`` 生成的网格 key
 一一对应，形如 ``hull:3`` / ``mount:12``）：勾选 = 显示，取消 = 隐藏；
 ``group`` 非空时按分组聚合（船体 / 主炮塔 / 防空 …），组行级联子项；
+``group`` 可以是 ``/`` 分隔的**多级路径**（``舰载机/BTD（轰炸机）/AN-M66``），
+按层级逐段建节点，父组行的勾选级联到全部后代；
 ``group`` 为空 = 平铺（模型文件查看器用：一行就是一个形状名）。
 
 行标题由调用方给出，统一使用**模型/形状自己的名字**（不是材质名），并原样附上
@@ -38,7 +40,7 @@ class PartEntry:
 
     key: str                 # 与视口网格 key 一一对应（hull:i / mount:i）
     label: str               # 显示名（模型 / 形状名）
-    group: str               # 分组名（船体 / 主炮塔 / 形状名 …）；空 = 平铺
+    group: str               # 分组路径（"船体" / "舰载机/BTD（轰炸机）/AN-M66"）；空 = 平铺
     checked: bool = True     # 默认是否显示
     badge: str = ""          # 行尾小字（如三角形数）
     detail: str = ""         # tooltip 详细说明
@@ -49,7 +51,7 @@ class PartEntry:
 #: 舰船部件的分组顺序（其余分组按出现顺序排在其后）
 _GROUP_ORDER = (
     "船体", "主炮塔", "副炮塔", "鱼雷发射管", "深弹发射器", "防空",
-    "指挥仪", "测距仪", "雷达", "甲板设备", "其他",
+    "指挥仪", "测距仪", "雷达", "甲板设备", "舰载机", "其他",
 )
 
 
@@ -58,6 +60,19 @@ def _group_rank(name: str) -> int:
         return _GROUP_ORDER.index(name)
     except ValueError:
         return len(_GROUP_ORDER)
+
+
+def _group_path(group: str) -> tuple:
+    """`"舰载机/BTD（轰炸机）/AN-M66"` → 分段元组（空组 → 空元组 = 平铺）。"""
+    return tuple(p for p in str(group or "").split("/") if p)
+
+
+def _first_segment(item: QTreeWidgetItem) -> str:
+    """分组行的首段名（排序用）；网格行返回空串（排在最后）。"""
+    data = item.data(0, Qt.UserRole)
+    if not data or data[0] != "group":
+        return ""
+    return _group_path(data[1])[0] if _group_path(data[1]) else ""
 
 
 class _WrapDelegate(QStyledItemDelegate):
@@ -208,12 +223,18 @@ class PartsTreePanel(QWidget):
 
     # ── 构建 ──────────────────────────────────────────────
 
-    def set_entries(self, entries: list[PartEntry]) -> set[str]:
+    def set_entries(self, entries: list[PartEntry],
+                    group_texts: dict[str, str] | None = None) -> set[str]:
         """按条目重建树，返回默认隐藏的网格 key 集合。
 
         顺序规则（统一在这里做，两个查看器一致）：**crack（损坏/残骸）行排到
-        各自分组的末尾**，其余按名字排序；分组本身仍按 `_GROUP_ORDER`。
+        各自分组的末尾**，其余按名字排序；顶层分组仍按 `_GROUP_ORDER`。
+        `PartEntry.group` 支持 ``/`` 分隔的多级路径，逐段建成嵌套节点。
+
+        group_texts：分组路径 → 括号里的计数文字（如 ``{"舰载机/…/AN-M66": "8 枚"}``）；
+        缺省按该组下的**网格行数**显示（纯分组计数，不代表实例数）。
         """
+        group_texts = group_texts or {}
         entries = sorted(entries or [],
                          key=lambda e: (1 if e.crack else 0, e.label.casefold(), e.key))
         self._defaults = {e.key: bool(e.checked) for e in entries}
@@ -221,12 +242,38 @@ class PartsTreePanel(QWidget):
         self.tree.blockSignals(True)
         self.tree.clear()
 
-        counts: dict[str, int] = {}
+        # 分组路径 → 该节点下的叶子（网格行）数
+        counts: dict[tuple, int] = {}
+        paths: list[tuple] = []
         for e in entries:
-            counts[e.group] = counts.get(e.group, 0) + 1
+            path = _group_path(e.group)
+            paths.append(path)
+            for depth in range(1, len(path) + 1):
+                counts[path[:depth]] = counts.get(path[:depth], 0) + 1
 
-        groups: dict[str, QTreeWidgetItem] = {}
-        for e in entries:
+        nodes: dict[tuple, QTreeWidgetItem] = {}
+
+        def _node(path: tuple) -> QTreeWidgetItem:
+            """取/建该路径的分组行（父节点按需先建）。"""
+            item = nodes.get(path)
+            if item is not None:
+                return item
+            item = QTreeWidgetItem([
+                f"{path[-1]}（{group_texts.get('/'.join(path)) or counts.get(path, 0)}）"])
+            item.setData(0, Qt.UserRole, ("group", "/".join(path)))
+            # ⚠️ 不能加 ItemIsAutoTristate：程序里把父项设成 PartiallyChecked 时，
+            # Qt 会把它传染给**所有**子项 ⇒ 隐藏集合变成全集（点任意一项全部消失）。
+            # 级联与父项状态汇总全部由本类手工处理。
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            parent_path = path[:-1]
+            if parent_path:
+                _node(parent_path).addChild(item)
+            else:
+                self.tree.addTopLevelItem(item)
+            nodes[path] = item
+            return item
+
+        for e, path in zip(entries, paths):
             # 第一行 = 模型名（尽量短）；第二行 = 顶点格式串（原样）+ 面数
             tail = "  ".join(x for x in (e.format_name, e.badge) if x)
             text = f"{e.label}\n{tail}" if tail else e.label
@@ -236,24 +283,28 @@ class PartsTreePanel(QWidget):
             item.setCheckState(0, Qt.Checked if e.checked else Qt.Unchecked)
             if e.detail:
                 item.setToolTip(0, e.detail)
-            if e.group:
-                gitem = groups.get(e.group)
-                if gitem is None:
-                    gitem = QTreeWidgetItem([f"{e.group}（{counts[e.group]}）"])
-                    gitem.setData(0, Qt.UserRole, ("group", e.group))
-                    # ⚠️ 不能加 ItemIsAutoTristate：程序里把父项设成 PartiallyChecked 时，
-                    # Qt 会把它传染给**所有**子项 ⇒ 隐藏集合变成全集（点任意一项全部消失）。
-                    # 级联与父项状态汇总全部由本类手工处理。
-                    gitem.setFlags(gitem.flags() | Qt.ItemIsUserCheckable)
-                    groups[e.group] = gitem
-                gitem.addChild(item)
+            if path:
+                _node(path).addChild(item)
             else:
                 self.tree.addTopLevelItem(item)
 
-        ordered = sorted(groups.values(), key=lambda it: _group_rank(it.data(0, Qt.UserRole)[1]))
-        for gitem in ordered:
-            gitem.setCheckState(0, self._children_state(gitem))
-            self.tree.addTopLevelItem(gitem)
+        # 顶层按 _GROUP_ORDER 排序（首段名决定排序；无分组的行排在最后）
+        tops = [self.tree.takeTopLevelItem(0) for _ in range(self.tree.topLevelItemCount())]
+        tops.sort(key=lambda it: _group_rank(_first_segment(it)))
+        for it in tops:
+            self.tree.addTopLevelItem(it)
+
+        # 组内先网格行、后子分组（如「机型」下先机身形状、再弹药分组），避免
+        # 弹药分组按形状名首字母插到机身前面
+        for node in nodes.values():
+            if node.childCount() < 2:
+                continue
+            kids = [node.takeChild(0) for _ in range(node.childCount())]
+            for kid in [k for k in kids if not k.childCount()] + \
+                       [k for k in kids if k.childCount()]:
+                node.addChild(kid)
+
+        self._refresh_group_states()
         self.tree.blockSignals(False)
         self._building = False
         self._update_summary()
@@ -300,10 +351,7 @@ class PartsTreePanel(QWidget):
                 item.setCheckState(0, Qt.Checked if self._defaults.get(data[1], True)
                                    else Qt.Unchecked)
             it += 1
-        for i in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(i)
-            if top.childCount():
-                top.setCheckState(0, self._children_state(top))
+        self._refresh_group_states()
         self.tree.blockSignals(False)
         self._update_summary()
         self.hidden_changed.emit(self.hidden_keys())
@@ -320,6 +368,18 @@ class PartsTreePanel(QWidget):
             return Qt.Unchecked
         return Qt.PartiallyChecked
 
+    def _refresh_group_states(self) -> None:
+        """自底向上重算**所有层级**分组行的勾选状态（父行按子行汇总）。"""
+        items: list[QTreeWidgetItem] = []
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value() is not None:
+            items.append(it.value())
+            it += 1
+        # 迭代器是深度优先前序 → 倒序即「子先于父」
+        for item in reversed(items):
+            if item.childCount():
+                item.setCheckState(0, self._children_state(item))
+
     def _cascade(self, item: QTreeWidgetItem, st: Qt.CheckState) -> None:
         item.setCheckState(0, st)
         for i in range(item.childCount()):
@@ -333,11 +393,12 @@ class PartsTreePanel(QWidget):
         if item.childCount():
             for i in range(item.childCount()):
                 self._cascade(item.child(i), st)
-        else:
-            parent = item.parent()
-            while parent is not None:
-                parent.setCheckState(0, self._children_state(parent))
-                parent = parent.parent()
+        # 无论点的是分组行还是网格行，都要向上逐级汇总祖先状态
+        # （嵌套分组时父行可能是 PartiallyChecked，不能只算一步）
+        parent = item.parent()
+        while parent is not None:
+            parent.setCheckState(0, self._children_state(parent))
+            parent = parent.parent()
         self.tree.blockSignals(False)
         self._update_summary()
         self.hidden_changed.emit(self.hidden_keys())
