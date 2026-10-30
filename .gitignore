@@ -24,6 +24,7 @@ test_extract/
 todo_list/*.js
 model_test/
 _archive/animExporter/
+_archive/seq_video/
 
 _decompile/
 docs/korabli-pyc-format.md
