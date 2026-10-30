@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit,
     QPushButton, QLabel, QFileDialog, QLineEdit, QStatusBar, QToolBar,
     QHeaderView, QAbstractItemView, QMessageBox, QComboBox, QApplication, QSizePolicy,
-    QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout,
+    QDialog, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QStyle,
 )
 
 from .errors import AssetsBinError
@@ -434,20 +434,28 @@ class AssetsBinViewer(HoloWindow):
         self.tree.setColumnCount(2)
         self.tree.setHeaderLabels(["名称", "类型"])
         hdr = self.tree.header()
-        # 两列都可拖动改宽；最后一列拉伸填满左侧面板（不留空白带）
-        hdr.setStretchLastSection(True)
+        # 两列都可拖动改宽。名称列按内容自适应、类型列吃掉剩余宽度（不留空白带）；
+        # **不能**开 stretchLastSection：最后一列被强制拉满视口后列宽之和恒等于视口，
+        # 横向滚动条永远没有出现的余地，长文件名 / 深层目录就只能靠拖中间分隔线看全。
+        hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         hdr.setMinimumSectionSize(56)
-        # 初始列宽（真正显示后再按面板宽度重新分配，见 _fit_tree_columns）
+        # 初始列宽（真正显示后再按内容与面板宽度重新分配，见 _fit_tree_columns）
         self.tree.setColumnWidth(0, self.NAME_COLUMN_WIDTH)
         self.tree.setColumnWidth(1, self.TYPE_COLUMN_WIDTH)
         self.tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.tree.setAutoScroll(True)
-        # 面板尺寸变化时重新分配列宽；用户手动拖过分隔线后就不再自动分配
-        self._last_fit_name_w = -1
+        # 列宽状态：内容宽度缓存（连同字体/缩进指纹）/ 用户拖动后的名称列宽度 /
+        # 是否正在程序内设置列宽
+        self._content_cols: Optional[tuple[int, int]] = None
+        self._content_key: Optional[tuple[int, int, int]] = None
+        self._user_name_col_w: Optional[int] = None
+        self._fitting_columns = False
+        hdr.sectionResized.connect(self._on_section_resized)
+        # 面板尺寸变化时重新分配列宽
         self.tree.viewport().installEventFilter(self)
         # 支持多选：Ctrl/Shift 选中多个文件后「导出明文」批量导出到文件夹
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -506,6 +514,8 @@ class AssetsBinViewer(HoloWindow):
         if self._worker and self._worker.isRunning():
             return
         self.tree.clear()
+        self._content_cols = None
+        self._user_name_col_w = None
         self.json_view.clear()
         self._current_path = None
         self._current_decoded = None
@@ -609,37 +619,91 @@ class AssetsBinViewer(HoloWindow):
 
     def _build_root(self) -> None:
         self.tree.clear()
+        self._content_cols = None
+        self._user_name_col_w = None
         self._loaded_dirs.clear()
         self._fit_tree_columns()
         self._load_children_of("/")
 
-    def _fit_tree_columns(self) -> None:
-        """按左侧面板当前宽度分配两列：名称列优先，类型列拿剩余空间。
+    def _content_column_widths(self) -> tuple[int, int]:
+        """量出「装得下全部已加载条目」所需的两列宽度（名称列含层级缩进）。
 
-        最后一列由 ``stretchLastSection`` 自动填满，因此面板拉宽时不会留空白带；
-        两列都是 Interactive，用户随时可以拖分隔线改宽度——一旦手动改过名称列宽度，
-        之后面板尺寸变化就不再自动覆盖（见 :meth:`eventFilter`）。
+        遍历全部节点而不是用 ``sizeHintForColumn``：后者只统计已展开的行，
+        折叠着的深层目录不算数，列宽会随展开/折叠忽宽忽窄。结果做缓存，
+        条目增减时置空（见 :meth:`_load_children_of`）。
         """
+        fm = self.tree.fontMetrics()
+        indent = self.tree.indentation()
+        # 字体 / 缩进变了（切换主题会重建 QSS 与字号）缓存就失效，否则列宽会停留在旧字号
+        key = (fm.height(), fm.horizontalAdvance("M"), indent)
+        if self._content_cols is not None and self._content_key == key:
+            return self._content_cols
+        self._content_key = key
+        # 名称列还要放展开箭头 + 单元格内边距，否则箭头会压住首字符；
+        # 两列都留一点富余（实测 Qt 的 sizeHintForColumn 比自己算的多几像素），
+        # 宁可略宽也不要让文字被省略成「…」
+        name_pad = self.tree.style().pixelMetric(
+            QStyle.PixelMetric.PM_IndicatorWidth, None, self.tree) + 10
+        cell_pad = 24
+        name_w = type_w = 0
+        stack = [(self.tree.topLevelItem(i), 1)
+                 for i in range(self.tree.topLevelItemCount())]
+        while stack:
+            item, depth = stack.pop()
+            name_w = max(name_w, fm.horizontalAdvance(item.text(0))
+                         + indent * depth + name_pad)
+            type_w = max(type_w, fm.horizontalAdvance(item.text(1)) + cell_pad)
+            for j in range(item.childCount()):
+                stack.append((item.child(j), depth + 1))
+        self._content_cols = (max(name_w, self.NAME_COLUMN_WIDTH),
+                              max(type_w, self.MIN_TYPE_COLUMN_WIDTH))
+        return self._content_cols
+
+    def _fit_tree_columns(self) -> None:
+        """按内容与面板宽度分配两列：名称列装得下最长/最深的条目，类型列吃掉余量。
+
+        名称列不再被压缩到面板宽度以内——放不下就让它溢出，由横向滚动条解决
+        （列宽之和大于视口时 Qt 才会显示横向滚动条，所以 ``stretchLastSection``
+        必须关掉、由这里手工把类型列补满剩余宽度）。用户拖过名称列分隔线后以
+        用户宽度为准，只继续维护类型列（见 :meth:`_on_section_resized`）。
+        """
+        name_need, type_need = self._content_column_widths()
+        name_w = self._user_name_col_w if self._user_name_col_w is not None else name_need
+        type_w = type_need
         avail = self.tree.viewport().width()
         if avail <= 0:
             avail = self.tree.width()
-        if avail <= 0:
-            name_w = self.NAME_COLUMN_WIDTH
-            type_w = self.TYPE_COLUMN_WIDTH
-        else:
-            name_w = max(self.NAME_COLUMN_WIDTH, int(avail * 0.62))
-            name_w = min(name_w, avail - self.MIN_TYPE_COLUMN_WIDTH)
-            name_w = max(140, name_w)
-            type_w = max(self.MIN_TYPE_COLUMN_WIDTH, avail - name_w)
-        self.tree.setColumnWidth(0, name_w)
-        self.tree.setColumnWidth(1, type_w)
-        self._last_fit_name_w = name_w
+        if avail > name_w:
+            type_w = max(type_w, avail - name_w)
+        self._apply_column_widths(name_w, type_w)
+
+    def _apply_column_widths(self, name_w: int, type_w: int) -> None:
+        """程序内设置两列宽度（``sectionResized`` 里据此区分是不是用户拖动）。"""
+        self._fitting_columns = True
+        try:
+            self.tree.setColumnWidth(0, name_w)
+            self.tree.setColumnWidth(1, type_w)
+        finally:
+            self._fitting_columns = False
+
+    def _on_section_resized(self, index: int, _old: int, new: int) -> None:
+        """用户拖动分隔线：记住名称列宽度，类型列继续补满剩余宽度。"""
+        if index != 0 or self._fitting_columns:
+            return
+        self._user_name_col_w = new
+        avail = self.tree.viewport().width()
+        if avail > new:
+            self._fitting_columns = True
+            try:
+                self.tree.setColumnWidth(
+                    1, max(self.MIN_TYPE_COLUMN_WIDTH, avail - new))
+            finally:
+                self._fitting_columns = False
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt 命名)
         if obj is self.tree.viewport() and event.type() == QEvent.Type.Resize:
-            # 名称列宽度仍等于上次自动分配值 ⇒ 用户没拖过，可以按新宽度重新分配
-            if self.tree.columnWidth(0) == self._last_fit_name_w:
-                self._fit_tree_columns()
+            # 面板宽度变了：名称列保持内容宽度，类型列重新补满
+            self._fit_tree_columns()
         return super().eventFilter(obj, event)
 
     def _node_path(self, item: QTreeWidgetItem) -> str:
@@ -731,6 +795,9 @@ class AssetsBinViewer(HoloWindow):
             item.setToolTip(1, tname)
             parent_item.addChild(item)
             shown += 1
+        # 新条目可能比旧的长/深 ⇒ 内容宽度缓存作废，并按新内容重排列宽
+        self._content_cols = None
+        self._fit_tree_columns()
 
     def _find_dir_item(self, dir_path: str) -> Optional[QTreeWidgetItem]:
         """按路径在树中定位目录节点（沿已展开路径查找）。"""
@@ -856,7 +923,7 @@ class AssetsBinViewer(HoloWindow):
     #: 目录节点在「类型」列的文字
     DIR_LABEL = "文件夹"
 
-    #: 文件树「名称」列默认宽度（未测量到面板宽度时用）
+    #: 文件树「名称」列的最小宽度（内容再短也留这么宽）
     NAME_COLUMN_WIDTH = 260
     #: 文件树「类型」列默认宽度 / 最小可用宽度
     TYPE_COLUMN_WIDTH = 180
