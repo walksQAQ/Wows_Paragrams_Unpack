@@ -1,6 +1,6 @@
 # .geometry 格式规范（MergedGeometryPrototype）
 
-> 来源实现：`models/geometry_parser.py`
+> 来源实现：`models/geometry_parser.py`（读）/ `models/geometry_writer.py`（写）
 > 参考：wows-toolkit（landaire）`.geometry` 逆向
 >
 > 本文件是 `.geometry` 格式的**唯一格式文档**（原为
@@ -37,6 +37,13 @@
 
 `u32 mappingId（murmur3 哈希）/ u16 mergedBufferIndex / u16 packedTexelDensity / u32 itemsOffset / u32 itemsCount`
 
+`mappingId` 就是**形状名字符串的 murmur3_32（seed 0）**，字符串带后缀：
+`.visual` 里的 `<vertices>XShape.vertices</vertices>` → `murmur3("XShape.vertices")`，
+`<primitive>XShape.indices</primitive>` → `murmur3("XShape.indices")`。
+实测（mod 明文 `.visual` + `.geometry` 对拍）：`murmur3("FlatShape.vertices") = 0x6DB21283`、
+`murmur3("FlatShape.indices") = 0x2BF791AA`，与文件里的两个 `mappingId` 完全一致。
+⇒ 只要 `.visual` 与 `.geometry` 用同一套形状名，**不需要任何全局注册表**（`assets.bin`）。
+
 ## A.3 VerticesPrototype（0x20 字节）
 
 `i64 verticesDataPtr / PackedString formatName / u32 sizeInBytes / u16 strideInBytes / u8 isSkinned / u8 isBumped`
@@ -51,6 +58,27 @@
 `import_bw_primitives.py` 的 `iiiww[0]/3` 一致），slot 指向该 renderSet 的
 `<node>` 列表（assets.bin 里就是 `+0x0D nodes_count` / `+0x28` 的 u32 名 ID 数组）
 **按原始顺序**的第 slot 项。调色板顺序绝不能重排（排序后权重会绑到别的骨骼）。
+
+⚠️ **每个顶点最多 3 个骨骼影响，且三个权重之和必须 = 1** —— 这是格式决定的硬上限
+（只有 3 个 u8 索引 + 2 个 u8 权重，第三个权重由 `1-w0-w1` 隐含推出），
+不是导出/导入工具的限制。实测 62 个真实 `.geometry`（1977 个网格、69 个蒙皮网格、
+118,185 个蒙皮顶点）：影响数 1 → 117,897、2 → 272、3 → 16，**4 从未出现**；
+蒙皮顶点格式只有 `set3/xyznuviiiwwtbpc` 与 `set3/xyznuviiiwwr`（都是 `iiiww`）。
+Blender 端把权重裁到 3 个并归一化用 `_archive/animExporter/Tools/权重限3`；
+`.anim`（动画）与顶点组无关，不受这条限制。
+
+⚠️ 这条限制只针对**单个顶点**，**不是**「一个网格只能有 3 个顶点组」：
+调色板长度上限是 **86 个**（`idx = slot × 3` 且 `idx` 为 u8 ⇒ `slot ≤ 85`），
+每个顶点从中各挑 ≤3 个即可。retail 单网格调色板实测中位数 3 根、最大 84 根
+（`assets_data.db` 的 `render_sets`）；合成测试里 12 个顶点组的模型导出、自检全过。
+
+⚠️ 「≤3」是**格式 + 着色器级**上限，绕不过去：两个客户端的 exe 里顶点格式名只有
+`iiiww` 家族（`…iiiwwpc` / `…iiiwwr` / `…iiiwwtpc|tbpc` / `…uv2iiiww…`），
+任何 `iiiwww` / `iiiiwwww` 形式的字符串都不存在，引擎按 D3D11
+`BLENDINDICES` / `BLENDWEIGHT` 语义建输入布局、蒙皮着色器按格式排列预编译。
+需要更高保真（如 MMD 的 BDEF4）时只能在导出侧折中：把超出的影响合并成一根
+**每帧烘焙的辅助骨**（`__blend_k`，`P_H = ΣwᵢPᵢ / Σwᵢ`），矩阵层面等价，
+残差只剩 `.anim` 存不下剪切那点；见 `_archive/animExporter/Tools/anim格式说明.md` §11.2.3。
 
 ## A.4 IndicesPrototype（0x10 字节）
 

@@ -3375,6 +3375,9 @@ class WargamingShipPresenter(WargamingBasePresenter):
                     "items": items,
                     "raw_ammo_types": raw_ammo_types,
                     "raw_consumables": raw_consumables,
+                    # 3D 查看用：该配置的飞机机型 ID（PAAB104_Langley_stock 之类）
+                    "plane_ids": [p.get('plane_name') for p in group if p.get('plane_name')],
+                    "plane_type": ptype,
                 }
                 if is_tactical:
                     config_contents[key]["tactical"] = True

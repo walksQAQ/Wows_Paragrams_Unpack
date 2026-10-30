@@ -54,7 +54,66 @@ COMPONENT_DIRECTOR = "指挥仪"
 COMPONENT_FINDER = "测距仪"
 COMPONENT_RADAR = "雷达"
 COMPONENT_DECK = "甲板设备"
+COMPONENT_AIRCRAFT = "舰载机"
 COMPONENT_OTHER = "其他"
+
+#: 舰载机机型 → 显示名（与详情面板机种标签一致）
+AIRCRAFT_TYPE_LABEL = {
+    "Fighter": "攻击机", "DiveBomber": "轰炸机",
+    "TorpedoBomber": "鱼雷机", "SkipBomber": "弹跳轰炸机",
+    "MineBomber": "水雷轰炸机",
+}
+
+#: 飞机骨架上的**弹药挂点**前缀（按弹药种类）：模型挂在这些节点上
+_AIR_AMMO_BONE_PREFIX = {
+    "Rocket": "HP_Air_rocket_",
+    "Bomb": "HP_Air_bomb_",
+    "Torpedo": "HP_Air_torpedo_",
+}
+
+#: 飞行甲板停机位节点名（航母 / 混合型战舰骨架里按编号一路排开）
+_DECK_MOUNT_RE = re.compile(r"^HP_Deck_(\d+)$")
+
+#: `flightControl.squadrons` 里的机队名 → `ship_module_aircraft.plane_type`
+#: （客户端 `AirplaneConstants.PLANETYPE_2_PARAMSNAME` 的对应关系：
+#:   Bomber 是**鱼雷机**、Dive 是**轰炸机**）
+_SQUADRON_TO_PLANE_TYPE = {
+    "Fighter": "Fighter",
+    "Bomber": "TorpedoBomber",
+    "Dive": "DiveBomber",
+    "Skip": "SkipBomber",
+    "Mine": "MineBomber",
+    "Auxiliary": "Auxiliary",
+}
+
+#: `arrangeSquadronsOnDeck` 里排在**前面**的机队（子类型为 NONE 的那批，如辅助机）
+_DECK_FIRST_PLANE_TYPES = frozenset({"Auxiliary"})
+
+
+def _deck_weight(plane: dict) -> int:
+    """该机型占甲板时的「目标架数」：`arrangeSize`（-1 时用 `attackerSize`）。
+
+    对应客户端 `arrangeSquadronsOnDeck` 里
+    ``sq.attackerSize if sq.arrangeSize == -1 else sq.arrangeSize``。
+    """
+    arr = plane.get("arrange_size")
+    try:
+        arr = int(arr)
+    except (TypeError, ValueError):
+        arr = -1
+    if arr != -1 and arr > 0:
+        return arr
+    try:
+        att = int(plane.get("attacker_size") or 0)
+    except (TypeError, ValueError):
+        att = 0
+    return max(att, 1)
+
+
+def _natural_key(name: str) -> tuple:
+    """自然排序键：`HP_Air_bomb_2` 排在 `HP_Air_bomb_10` 前面。"""
+    return tuple(int(p) if p.isdigit() else p
+                 for p in re.split(r"(\d+)", str(name)))
 
 #: 游戏内装甲查看器隐藏的「通用 Hull 材质」集合（wows-toolkit hidden 语义）：
 #: 原本借鉴 wows-toolkit 把 Hull 区通用材质（Trans/Deck/Belt 等）标记为隐藏，
@@ -229,6 +288,14 @@ def mp_nation(base_id: str) -> str:
     return _MP_NATION_BY_LETTER.get(base_id[:1], "") if base_id else ""
 
 
+def _variant_rank(variant) -> int:
+    """舰载机模块型号序号（"2" → 2）；无法解析返回 0（视为 stock）。"""
+    try:
+        return int(str(variant).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass
 class HullMesh:
     """一个舰体部件网格（顶点/法线/UV/索引，已合并该部件全部 primitive）。
@@ -342,6 +409,9 @@ class MountMesh:
     #: 与 instance_matrices 对应的节点名（HP_/MP_ 挂点名）；GLB 导出用它命名
     #: 每个实例的空物体，缺省时回退到网格名。
     instance_labels: list = field(default_factory=list)
+    #: 部件树分组路径（"/" 分隔，可多级）；空 = 用 component 作单级分组。
+    #: 舰载机用它做成「舰载机/机型/弹药」的层级。
+    part_group: str = ""
     #: 按 shape 切片的区间（同 HullMesh.shape_spans）。
     shape_spans: list = field(default_factory=list)
     #: 顶点格式串（原样，如 ``set3/xyznuvtpcencd``；多格式合并时用 " / " 连接）
@@ -478,6 +548,14 @@ class GeometryService:
         self._geom_folder_index: dict | None = None
         #: 挂载模型加载缓存 {文件夹名: 结果 or None}，跨船复用（多船共享同一炮塔/副炮模型）
         self._mount_model_cache: dict = {}
+        #: 舰载机型号查询缓存 {(ship_id, elite): [机型...]}（DB 数据，跨次复用）
+        self._aircraft_cache: dict = {}
+        #: 飞机机型 → 几何模型目录名（"": 未随包），跨船复用
+        self._plane_folder_cache: dict = {}
+        #: 机型弹药挂载元数据 {(server, plane_id, folder): [{label, folder, bones}]}
+        self._armament_cache: dict = {}
+        #: 舰船甲板配置 {(ship_id): (squadrons, deckPlaceCount)}
+        self._deck_config_cache: dict = {}
         #: 舰体骨架挂点变换缓存 {model_stem: {hp: matrix}}
         self._stem_mount_cache: dict = {}
         #: 骨架骨骼世界矩阵缓存 {stem: {bone_name: (4,4)}}（蒙皮 bind pose 用，跨船复用）
@@ -635,7 +713,8 @@ class GeometryService:
                   cancel_event: threading.Event | None = None,
                   model_replace: dict | None = None,
                   skin: dict | None = None,
-                  partial_cb=None) -> ShipGeometry:
+                  partial_cb=None,
+                  aircraft: bool = False) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型。
 
         model_replace：皮肤变体（origin="model"）的「原始 .model 路径 → 替换路径」映射
@@ -644,12 +723,13 @@ class GeometryService:
         用于整体替换船体模型 + 各挂载模型 + miscFilter 过滤。
         partial_cb：**分阶段交付**回调（在后台线程调用）。船体（+装甲）解析完、挂载还没开始时
         先回传一份几何**快照**，调用方可据此提前出图，不必等挂载全部解析完。
+        aircraft：同时载入该舰「完全体」舰载机模型（每种机队取最高型号），排在船体上方。
         """
         try:
             return self._load_ship_impl(ship, progress_cb=progress_cb,
                                         cancel_event=cancel_event,
                                         model_replace=model_replace, skin=skin,
-                                        partial_cb=partial_cb)
+                                        partial_cb=partial_cb, aircraft=aircraft)
         finally:
             self._clear_per_load_caches()
 
@@ -881,7 +961,8 @@ class GeometryService:
                         cancel_event: threading.Event | None = None,
                         model_replace: dict | None = None,
                         skin: dict | None = None,
-                        partial_cb=None) -> ShipGeometry:
+                        partial_cb=None,
+                        aircraft: bool = False) -> ShipGeometry:
         """加载一艘船的船体网格 + 挂载模型 + 装甲网格 + 碰撞模型（实现）。
 
         - 舰体：模型目录内全部 .geometry 分段（已处于舰船坐标系，直接合并）
@@ -892,6 +973,7 @@ class GeometryService:
         progress_cb(pct: float, message: str) —— 0..100
         cancel_event: 协作式取消事件；在长循环边界检查，取消时抛 TaskCancelled。
         partial_cb: 见 :meth:`load_ship`（船体/装甲就绪时回传快照）
+        aircraft: 见 :meth:`load_ship`（完全体舰载机排在船体上方）
         """
         if progress_cb:
             progress_cb(2, "定位几何文件...")
@@ -1146,6 +1228,27 @@ class GeometryService:
                           cancel_event=cancel_event, model_replace=model_replace,
                           skin_nodes=skin_nodes)
 
+        # ── 舰载机（完全体：每种机队取最高型号）按甲板停机位摆放 ──
+        if aircraft:
+            self._raise_if_cancelled(cancel_event)
+            planes = self._pick_aircraft(ship.game_key, None, True)
+            if planes:
+                if progress_cb:
+                    progress_cb(98, "加载舰载机...")
+                points = self.aircraft_mount_points(ship)
+                # 按游戏口径排停机位（机队顺序 + deckPlaceCount + 每队连续占用）
+                slots = self.aircraft_deck_slots(ship, planes, max_slots=len(points))
+                if slots:
+                    # 没被排上甲板的机型不必解析（贴图很耗时）
+                    on_deck = {p.get("plane_id") for p in slots}
+                    planes = [p for p in planes if p.get("plane_id") in on_deck]
+                self._add_aircraft(geom, planes, extractor, mount_points=points,
+                                   slot_order=slots, over_ship=True,
+                                   progress_base=98.0, progress_span=1.9,
+                                   cancel_event=cancel_event)
+            else:
+                geom.stats["aircraft"] = 0
+
         if progress_cb:
             progress_cb(100, "加载完成")
         return geom
@@ -1212,7 +1315,8 @@ class GeometryService:
         order: list = []
         for mm in geom.mounts:
             key = (getattr(mm, 'model_folder', ''), id(mm.positions),
-                   getattr(mm, 'component', ''), getattr(mm, 'tech_family', 'pbs'))
+                   getattr(mm, 'component', ''), getattr(mm, 'tech_family', 'pbs'),
+                   getattr(mm, 'part_group', ''))
             if key not in groups:
                 groups[key] = [mm, [], []]
                 order.append(key)
@@ -1262,6 +1366,7 @@ class GeometryService:
                 format_name=rep.format_name,
                 instance_matrices=mats,
                 instance_labels=labels,
+                part_group=getattr(rep, 'part_group', ''),
             )
             new_mounts.append(inst)
         geom.mounts = new_mounts
@@ -1439,6 +1544,533 @@ class GeometryService:
         geom.stats["deck_equipment"] = mp_placed
         geom.stats["sub_equipment"] = sub_placed
         geom.stats["unique_mount_models"] = len(model_cache)
+
+    # ── 舰载机（航空母舰 / 搭载水上飞机的舰船）──────────────
+
+    def aircraft_for_ship(self, ship_id: str, elite: bool = True) -> list[dict]:
+        """该舰的舰载机机型列表（DB 驱动，不解析几何）。
+
+        elite=True（完全体）：同一种机队只取**最高型号**（module_variant 最大）；
+        elite=False：返回全部型号。每项：
+        {plane_id, plane_type, type_label, config_group, module_variant, display_name}
+        """
+        if not ship_id:
+            return []
+        key = (app_ctx.ctx.wows_type, ship_id, bool(elite))
+        cached = self._aircraft_cache.get(key)
+        if cached is not None:
+            return cached
+        out: list[dict] = []
+        try:
+            from services.database_service import get_db
+            db = get_db(app_ctx.ctx.wows_type)
+            if db.exists:
+                vc = db.get_latest_version_code() or ""
+                rows = db._conn.execute(
+                    "SELECT a.config_group, a.module_variant, a.plane_type, a.plane_name, "
+                    "p.arrange_size, p.attacker_size "
+                    "FROM ship_module_aircraft a "
+                    "LEFT JOIN plane_basic_info p "
+                    "  ON p.version_code = a.version_code AND p.plane_id = a.plane_name "
+                    "WHERE a.version_code=? AND a.ship_id=? "
+                    "AND COALESCE(a.plane_name,'') <> ''",
+                    (vc, ship_id)).fetchall()
+                names = {str(r[0]).upper(): r[1] for r in db._conn.execute(
+                    "SELECT key_name, lang_zh FROM name_mappings "
+                    "WHERE category='plane'") if r[1]}
+                picked: dict[str, dict] = {}
+                for r in rows:
+                    pid = str(r["plane_name"])
+                    if not elite:
+                        picked[f"{pid}|{r['config_group']}"] = dict(r)
+                        continue
+                    # 完全体：每种机队保留型号号最大的一条（stock → top）
+                    slot = r["plane_type"] or ""
+                    prev = picked.get(slot)
+                    if prev is None or _variant_rank(r["module_variant"]) > _variant_rank(
+                            prev["module_variant"]):
+                        picked[slot] = dict(r)
+                for r in picked.values():
+                    pid = str(r["plane_name"])
+                    out.append({
+                        "plane_id": pid,
+                        "plane_type": r["plane_type"] or "",
+                        "type_label": AIRCRAFT_TYPE_LABEL.get(r["plane_type"] or "", ""),
+                        "config_group": r["config_group"] or "",
+                        "module_variant": r["module_variant"] or "",
+                        "display_name": names.get(pid.upper(), "") or pid,
+                        "arrange_size": r["arrange_size"],
+                        "attacker_size": r["attacker_size"],
+                    })
+        except Exception as exc:  # noqa: BLE001 - 数据缺失不应让查看器崩
+            bus.log_message.emit(f"⚠️ 舰载机数据读取失败（{ship_id}）: {exc}")
+        self._aircraft_cache[key] = out
+        return out
+
+    def plane_model_folder(self, plane_id: str, extractor=None) -> str:
+        """飞机机型 ID → 几何模型目录名（空串 = 客户端未随包该机型模型）。
+
+        路径来源：entity_snapshots.data_json.model（GameParams 原始 model 路径），
+        目录不存在时回退 `<目录>_proto`（游戏内实际使用的共享模型），再按机型编号前缀兜底。
+        """
+        if not plane_id:
+            return ""
+        plane_key = plane_id.upper()
+        cache_key = (app_ctx.ctx.wows_type, plane_key)
+        if cache_key in self._plane_folder_cache:
+            return self._plane_folder_cache[cache_key]
+        folder = self._plane_folder_from_db(plane_key)
+        try:
+            index = self._geometry_folder_index(extractor or self._get_extractor())
+        except Exception:  # noqa: BLE001 - 索引不可用时仍返回空串
+            index = {}
+        if folder and folder not in index:
+            folder = f"{folder}_proto" if f"{folder}_proto" in index else ""
+        if not folder:
+            folder = self._fuzzy_plane_folder(plane_key, index)
+        self._plane_folder_cache[cache_key] = folder
+        return folder
+
+    def _plane_folder_from_db(self, plane_key: str) -> str:
+        """entity_snapshots 里该机型声明的 .model 路径 → 模型目录名。"""
+        path = ""
+        try:
+            from services.database_service import get_db
+            db = get_db(app_ctx.ctx.wows_type)
+            if db.exists:
+                vc = db.get_latest_version_code() or ""
+                row = db._conn.execute(
+                    "SELECT json_extract(data_json,'$.model') FROM entity_snapshots "
+                    "WHERE entity_type='plane' AND UPPER(entity_id)=? AND version_code=? "
+                    "LIMIT 1", (plane_key, vc)).fetchone()
+                if row is None:
+                    row = db._conn.execute(
+                        "SELECT json_extract(data_json,'$.model') FROM entity_snapshots "
+                        "WHERE entity_type='plane' AND UPPER(entity_id)=? LIMIT 1",
+                        (plane_key,)).fetchone()
+                path = (row[0] if row else "") or ""
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 飞机模型路径查询失败（{plane_key}）: {exc}")
+        return self._folder_from_model_path(path) if path else ""
+
+    @staticmethod
+    def _fuzzy_plane_folder(plane_key: str, index: dict) -> str:
+        """兜底：按机型编号（去掉开头的 P，如 AAB705）前缀匹配几何目录名。"""
+        base = plane_key[1:] if plane_key.startswith("P") else plane_key
+        base = base.split("_", 1)[0]
+        if not base:
+            return ""
+        cands = sorted(f for f in index if f.upper().startswith(base))
+        return cands[0] if cands else ""
+
+    def aircraft_mount_points(self, ship: ShipInfo) -> list[tuple[str, np.ndarray]]:
+        """舰体骨架上的舰载机**停机位**（`HP_Deck_NN`，按编号排序）。
+
+        航空母舰 / 混合型战舰的飞行甲板上按编号摆了一串停放点（兰利 8 个、
+        中途岛更多），游戏里就是按这些点停飞机的。返回 game 空间矩阵
+        （与 `_load_mounts` 的 HP 挂点同口径，不含 Root_BlendBone）。
+        没有停机位的船返回空列表（调用方回退到整排布局）。
+        """
+        try:
+            transforms = self._load_mount_transforms(ship)
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 舰载机停机位读取失败（{ship.game_key}）: {exc}")
+            return []
+        points: list[tuple[int, str, np.ndarray]] = []
+        for name, mat in transforms.items():
+            m = _DECK_MOUNT_RE.match(name)
+            if m and mat is not None:
+                points.append((int(m.group(1)), name, mat))
+        points.sort(key=lambda x: x[0])
+        return [(name, mat) for _idx, name, mat in points]
+
+    def _ship_deck_config(self, ship: ShipInfo) -> tuple[list[str], int]:
+        """舰船快照里的甲板配置：``(flightControl.squadrons, airArmament.deckPlaceCount)``。
+
+        `squadrons` 是机队顺序（如 ``['Fighter', 'Bomber', 'Dive']``），
+        `deckPlaceCount` 是飞行甲板上最多摆几架（兰利 8 / 突击者 10 / 中途岛 12）。
+        缺数据返回 ``([], 0)``（调用方回退整排布局）。
+        """
+        cached = self._deck_config_cache.get(ship.game_key)
+        if cached is not None:
+            return cached
+        squadrons: list[str] = []
+        deck_count = 0
+        try:
+            data = self._ship_snapshot(ship) or {}
+            for key, value in data.items():
+                if not isinstance(value, dict):
+                    continue
+                if not squadrons and "FlightControl" in key:
+                    sq = value.get("squadrons")
+                    if isinstance(sq, (list, tuple)):
+                        squadrons = [str(x) for x in sq if x]
+                if "AirArmament" in key:
+                    try:
+                        deck_count = max(deck_count,
+                                         int(value.get("deckPlaceCount") or 0))
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 甲板配置读取失败（{ship.game_key}）: {exc}")
+        self._deck_config_cache[ship.game_key] = (squadrons, deck_count)
+        return squadrons, deck_count
+
+    def aircraft_deck_slots(self, ship: ShipInfo,
+                            planes: list[dict] | None = None,
+                            max_slots: int = 0) -> list[dict]:
+        """按**游戏内口径**排出甲板停机位上的机型顺序（长度 = 实际摆几架）。
+
+        复刻客户端 `AirPlanes.AirplaneUtils.arrangeSquadronsOnDeck` +
+        `DeckLaunchpad.Deck.__init__`：
+
+        1. 机队顺序取 `flightControl.squadrons`（辅助机等子类型为 NONE 的排最前）；
+        2. 每支机队的「目标架数」= `arrangeSize`（为 -1 时用 `attackerSize`）；
+        3. 按 **轮次** 逐架分配，直到用满 `deckPlaceCount`（越靠前的机队在
+           最后一轮先拿到余数）；
+        4. 停机位是**按机队连续占用**的：第 1 队占 `HP_Deck_00..0N`，第 2 队接着排，
+           所以甲板上是「一队一段」，不是几种机型交替。
+        """
+        if planes is None:
+            planes = self._pick_aircraft(ship.game_key, None, True)
+        if not planes:
+            return []
+        squadrons, deck_count = self._ship_deck_config(ship)
+        limit = deck_count or 0
+        if max_slots:
+            limit = min(limit, max_slots) if limit else max_slots
+
+        # 机队 → 机型条目（同一机队名可能映射不到，用 plane_type 直接匹配兜底）
+        by_type: dict[str, dict] = {}
+        for p in planes:
+            by_type.setdefault(p.get("plane_type") or "", p)
+        ordered: list[tuple[dict, int]] = []
+        used: set[str] = set()
+        for name in squadrons:
+            ptype = _SQUADRON_TO_PLANE_TYPE.get(name, name)
+            plane = by_type.get(ptype)
+            if plane is None or plane["plane_id"] in used:
+                continue
+            used.add(plane["plane_id"])
+            ordered.append((plane, _deck_weight(plane)))
+        # 快照没列到的机型（如跳跃轰炸机/水雷机）接在后面，仍按目标架数分配
+        for p in planes:
+            if p["plane_id"] not in used:
+                ordered.append((p, _deck_weight(p)))
+        if not ordered:
+            return []
+
+        # 子类型为 NONE 的机队排在前面（稳定排序，其余保持机队顺序）
+        ordered.sort(key=lambda it: 0 if (it[0].get("plane_type") or "") in
+                     _DECK_FIRST_PLANE_TYPES else 1)
+
+        # 轮次分配：level 1..max(weight)，每轮按机队顺序各放一架
+        counts = [0] * len(ordered)
+        total = 0
+        top = max(w for _p, w in ordered)
+        for level in range(1, top + 1):
+            for i, (_plane, weight) in enumerate(ordered):
+                if weight < level:
+                    continue
+                counts[i] += 1
+                total += 1
+                if limit and total >= limit:
+                    return [p for (p, _w), n in zip(ordered, counts) for _ in range(n)]
+        return [p for (p, _w), n in zip(ordered, counts) for _ in range(n)]
+
+    def plane_armament(self, plane_id: str, plane_folder: str,
+                       extractor=None) -> list[dict]:
+        """该机型的**弹药挂载**元数据（几何另行加载）。
+
+        弹药 ID 取 `plane_basic_info.bomb_name`（火箭弹 / 炸弹 / 鱼雷都存这个字段），
+        模型目录取该弹药 `entity_snapshots.data_json.model` 的父目录，挂点取机型
+        骨架里对应种类的 `HP_Air_rocket_*` / `HP_Air_bomb_*` / `HP_Air_torpedo_*`。
+
+        返回 ``[{label, ammo_id, species, folder, bones: [(bone_name, (4,4))]}]``。
+        """
+        if not plane_id or not plane_folder:
+            return []
+        cache_key = (app_ctx.ctx.wows_type, plane_id.upper(), plane_folder)
+        cached = self._armament_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        out: list[dict] = []
+        try:
+            from services.database_service import get_db
+            db = get_db(app_ctx.ctx.wows_type)
+            if db.exists:
+                vc = db.get_latest_version_code() or ""
+                row = db._conn.execute(
+                    "SELECT bomb_name FROM plane_basic_info "
+                    "WHERE version_code=? AND UPPER(plane_id)=? LIMIT 1",
+                    (vc, plane_id.upper())).fetchone()
+                ammo_id = (row[0] if row else "") or ""
+                if ammo_id:
+                    spec = db._conn.execute(
+                        "SELECT species FROM projectile_basic_info "
+                        "WHERE version_code=? AND UPPER(projectile_id)=? LIMIT 1",
+                        (vc, ammo_id.upper())).fetchone()
+                    species = (spec[0] if spec else "") or ""
+                    prefix = _AIR_AMMO_BONE_PREFIX.get(species, "")
+                    mrow = db._conn.execute(
+                        "SELECT json_extract(data_json,'$.model') FROM entity_snapshots "
+                        "WHERE UPPER(entity_id)=? LIMIT 1",
+                        (ammo_id.upper(),)).fetchone()
+                    folder = self._folder_from_model_path(
+                        (mrow[0] if mrow else "") or "")
+                    if folder:
+                        try:
+                            index = self._geometry_folder_index(
+                                extractor or self._get_extractor())
+                        except Exception:  # noqa: BLE001
+                            index = {}
+                        if folder not in index:
+                            folder = (f"{folder}_proto"
+                                      if f"{folder}_proto" in index else "")
+                    bones: list[tuple[str, np.ndarray]] = []
+                    if folder and prefix:
+                        bones = [(n, m) for n, m in sorted(
+                            self._skeleton_bones_all(plane_folder).items(),
+                            key=lambda kv: _natural_key(kv[0]))
+                            if n.startswith(prefix) and m is not None]
+                    if folder and bones:
+                        out.append({
+                            "label": self._ammo_label(db, ammo_id),
+                            "ammo_id": ammo_id,
+                            "species": species,
+                            "folder": folder,
+                            "bones": bones,
+                        })
+        except Exception as exc:  # noqa: BLE001
+            bus.log_message.emit(f"⚠️ 舰载机弹药解析失败（{plane_id}）: {exc}")
+        self._armament_cache[cache_key] = out
+        return out
+
+    @staticmethod
+    def _ammo_label(db, ammo_id: str) -> str:
+        """弹药显示名：`name_mappings`（category='ammo'）优先，回退弹药 ID。"""
+        try:
+            row = db._conn.execute(
+                "SELECT lang_zh FROM name_mappings "
+                "WHERE category='ammo' AND UPPER(key_name)=? LIMIT 1",
+                (ammo_id.upper(),)).fetchone()
+            name = (row[0] if row else "") or ""
+        except Exception:  # noqa: BLE001
+            name = ""
+        return name.strip() or ammo_id
+
+    def load_aircraft(self, ship_id: str, plane_ids: list[str] | None = None,
+                      elite: bool = True, display_name: str = "",
+                      progress_cb=None,
+                      cancel_event: threading.Event | None = None) -> ShipGeometry:
+        """只载入舰载机模型（一条横排，便于逐型比对）。
+
+        plane_ids 非空时只载入这些机型（忽略 elite 过滤，允许指定 stock 型号）。
+        """
+        try:
+            extractor = self._get_extractor()
+            planes = self._pick_aircraft(ship_id, plane_ids, elite)
+            if not planes:
+                raise RuntimeError(
+                    "该舰没有可显示的舰载机模型（客户端未随包该机型几何）")
+            label = display_name or f"{ship_id} 舰载机"
+            geom = ShipGeometry(game_key=ship_id, display_name=label,
+                                model_folder="Aircraft")
+            placed = self._add_aircraft(geom, planes, extractor, over_ship=False,
+                                        progress_cb=progress_cb,
+                                        cancel_event=cancel_event)
+            if not placed:
+                raise RuntimeError("舰载机几何解析失败（详见日志）")
+            return geom
+        finally:
+            self._clear_per_load_caches()
+
+    def _pick_aircraft(self, ship_id: str, plane_ids: list[str] | None,
+                       elite: bool) -> list[dict]:
+        """按机型 ID 过滤；plane_ids 为空时按 elite 口径取「完全体」全部机型。"""
+        rows = self.aircraft_for_ship(ship_id, elite=elite and not plane_ids)
+        wanted = {str(p).upper() for p in (plane_ids or []) if p}
+        if not wanted:
+            return rows
+        return [r for r in rows if r["plane_id"].upper() in wanted]
+
+    def _add_aircraft(self, geom: ShipGeometry, planes: list[dict], extractor,
+                      mount_points: list[tuple[str, np.ndarray]] | None = None,
+                      slot_order: list[dict] | None = None,
+                      over_ship: bool = False, armament: bool = True,
+                      progress_cb=None, progress_base: float = 0.0,
+                      progress_span: float = 90.0,
+                      cancel_event: threading.Event | None = None) -> int:
+        """把舰载机（含弹药）摆进几何，返回成功摆放的**机型数**。
+
+        slot_order 非空且与 mount_points 配套 → 按游戏口径逐点摆放（第 i 个停机位
+        放 slot_order[i]；不足的点位留空，与游戏一致）。
+        否则 mount_points 非空 → 机型循环填满点位；都不满足 → 整排布局
+        （`over_ship=True` 排在船体上方，否则自成一行）。
+        armament=True 时把弹药（火箭弹 / 炸弹 / 鱼雷）挂到机型骨架的
+        `HP_Air_*` 节点上（每个节点各一份实例）。
+        """
+        if not planes:
+            return 0
+        if geom.bounds_min is not None and geom.bounds_max is not None:
+            bmin = np.asarray(geom.bounds_min, dtype=np.float32)
+            bmax = np.asarray(geom.bounds_max, dtype=np.float32)
+        else:
+            bmin = np.full(3, np.inf, dtype=np.float32)
+            bmax = np.full(3, -np.inf, dtype=np.float32)
+        # ── 第一遍：解析几何（贴图/材质占了绝大部分耗时）并量出本地包围盒 ──
+        loaded: list[dict] = []
+        total = len(planes)
+        for i, plane in enumerate(planes):
+            self._raise_if_cancelled(cancel_event)
+            label = plane.get("display_name") or plane.get("plane_id") or ""
+            if progress_cb:
+                progress_cb(progress_base + progress_span * i / max(1, total),
+                            f"加载舰载机 {label}")
+            plane_id = plane.get("plane_id") or ""
+            folder = self.plane_model_folder(plane_id, extractor)
+            if not folder:
+                geom.stats.setdefault("warnings", []).append(
+                    f"舰载机 {label}: 客户端未随包该机型几何，已跳过")
+                continue
+            src = self._load_mount_model(folder, extractor, {}, COMPONENT_AIRCRAFT,
+                                         cancel_event=cancel_event)
+            if not src or not src["meshes"]:
+                continue
+            mn = np.full(3, np.inf, dtype=np.float32)
+            mx = np.full(3, -np.inf, dtype=np.float32)
+            for hm in src["meshes"]:
+                if not hm.positions.size:
+                    continue
+                mn = np.minimum(mn, hm.positions.min(axis=0))
+                mx = np.maximum(mx, hm.positions.max(axis=0))
+            if not np.isfinite(mn).all():
+                continue
+            arms: list[dict] = []
+            if armament:
+                for meta in self.plane_armament(plane_id, folder, extractor):
+                    asrc = self._load_mount_model(
+                        meta["folder"], extractor, {}, COMPONENT_AIRCRAFT,
+                        cancel_event=cancel_event)
+                    if not asrc or not asrc["meshes"]:
+                        geom.stats.setdefault("warnings", []).append(
+                            f"舰载机 {label}: 弹药 {meta['label']} 模型缺失，已跳过")
+                        continue
+                    arms.append({**meta, "src": asrc,
+                                 "rb": self._mount_root_blend(meta["folder"])})
+            loaded.append({"plane_id": plane_id, "label": label, "folder": folder,
+                           "src": src, "type_label": plane.get("type_label") or "",
+                           "mn": mn, "mx": mx, "arms": arms})
+        if not loaded:
+            geom.stats["aircraft"] = 0
+            geom.stats["aircraft_names"] = []
+            return 0
+        # 同一机型名出现在多个机队（如 BTD 既当轰炸机又当鱼雷机）时用机种区分
+        counts: dict[str, int] = {}
+        for it in loaded:
+            counts[it["label"]] = counts.get(it["label"], 0) + 1
+        for it in loaded:
+            if counts.get(it["label"], 0) > 1 and it["type_label"]:
+                it["label"] = f"{it['label']}（{it['type_label']}）"
+
+        negz = np.diag([1.0, 1.0, -1.0, 1.0]).astype(np.float32)
+        plane_groups: dict[str, list] = {}   # 模型目录 → [(label, mtx, armor_mtx)]
+        #: (弹药模型目录, 机型名, 弹药名) → [(label, mtx, armor_mtx)]
+        #: 按「机型 + 弹药」分开，才能把弹药挂到各自机型的分组下
+        ammo_groups: dict[tuple, list] = {}
+        srcs: dict[str, dict] = {it["folder"]: it["src"] for it in loaded}
+        for it in loaded:
+            for arm in it["arms"]:
+                srcs[arm["folder"]] = arm["src"]
+
+        def _place(item: dict, base: np.ndarray, pre: np.ndarray | None = None) -> None:
+            """按 game 空间挂载矩阵 base（+ 可选渲染空间基准 pre）放置一架及其弹药。
+
+            ⚠️ 飞机**不套** Root_BlendBone：机型几何与自身骨架同向（`HP_Air_enginelight_*`
+            就在机头 +Z、螺旋桨也落在模型 +Z），再套挂载用的 rb 修正会把机头拧到机尾
+            （BTD/SBU 的 rb 是 Z 镜像）。弹药模型没有 Root_BlendBone（恒等），照旧处理。
+            """
+            mtx = negz @ base @ negz
+            if pre is not None:
+                mtx = pre @ mtx
+            plane_groups.setdefault(item["folder"], []).append(
+                (item["label"], mtx, mtx))
+            for arm in item["arms"]:
+                for _bone, bone_mat in arm["bones"]:
+                    am = negz @ (base @ bone_mat @ arm["rb"]) @ negz
+                    if pre is not None:
+                        am = pre @ am
+                    ammo_groups.setdefault(
+                        (arm["folder"], item["label"], arm["label"]), []).append(
+                        (arm["label"], am, am))
+
+        if slot_order and mount_points:
+            # 游戏口径：第 i 个停机位放第 i 架（同一机型连续占位）
+            for idx, (_hp, m_deck) in enumerate(mount_points[:len(slot_order)]):
+                self._raise_if_cancelled(cancel_event)
+                plane = slot_order[idx]
+                item = next((it for it in loaded
+                             if it["plane_id"] == plane.get("plane_id")), None)
+                if item is not None:
+                    _place(item, m_deck)
+            instances = len(mount_points[:len(slot_order)])
+        elif mount_points and len(mount_points) >= len(loaded):
+            # 机型循环填满点位（没有 flightControl / deckPlaceCount 数据时）
+            for idx, (_hp, m_deck) in enumerate(mount_points):
+                self._raise_if_cancelled(cancel_event)
+                _place(loaded[idx % len(loaded)], m_deck)
+            instances = len(mount_points)
+        else:
+            # 回退：整排布局（船上方 / 自成一行，按机身长度对中）
+            sizes = [(max(float(it["mx"][0] - it["mn"][0]), 0.5),
+                      max(float(it["mx"][2] - it["mn"][2]), 0.5)) for it in loaded]
+            gap = 0.25
+            span = sum(length * 1.15 for _w, length in sizes) + gap * (len(loaded) - 1)
+            z_cursor = -span * 0.5
+            if over_ship:
+                # 排在桅顶之上：默认镜头是侧视，贴着船壳/甲板会被船体挡住
+                y_pos = float(bmax[1]) + 0.35
+                x_mid = float(bmin[0] + bmax[0]) * 0.5
+            else:
+                y_pos = 0.0
+                x_mid = 0.0
+            for it, (_w, length) in zip(loaded, sizes):
+                mat = np.eye(4, dtype=np.float32)
+                mat[0, 3] = x_mid - (float(it["mn"][0]) + float(it["mx"][0])) * 0.5
+                mat[1, 3] = y_pos - float(it["mn"][1])
+                mat[2, 3] = z_cursor - float(it["mn"][2])
+                z_cursor += length * 1.15 + gap
+                _place(it, np.eye(4, dtype=np.float32), pre=mat)
+            instances = len(loaded)
+
+        names: list[str] = []
+        for folder, items in plane_groups.items():
+            before = len(geom.mounts)
+            bmin, bmax = self._emit_instanced_mount(
+                geom, srcs[folder], folder, COMPONENT_AIRCRAFT, items, bmin, bmax)
+            group = f"{COMPONENT_AIRCRAFT}/{items[0][0]}"
+            for mm in geom.mounts[before:]:
+                mm.name = items[0][0]
+                mm.part_group = group
+            if items[0][0] and items[0][0] not in names:
+                names.append(items[0][0])
+        for (folder, plane_label, ammo_label), items in ammo_groups.items():
+            before = len(geom.mounts)
+            bmin, bmax = self._emit_instanced_mount(
+                geom, srcs[folder], folder, COMPONENT_AIRCRAFT, items, bmin, bmax)
+            group = f"{COMPONENT_AIRCRAFT}/{plane_label}/{ammo_label}"
+            for mm in geom.mounts[before:]:
+                mm.name = ammo_label
+                mm.part_group = group
+        if np.isfinite(bmin).all():
+            geom.bounds_min, geom.bounds_max = bmin, bmax
+        self._dedupe_mount_instances(geom)
+        geom.stats["aircraft"] = len(plane_groups)
+        geom.stats["aircraft_instances"] = instances
+        geom.stats["aircraft_ammo"] = len({
+            key[0] for key in ammo_groups})
+        geom.stats["aircraft_names"] = names
+        return len(plane_groups)
 
     @staticmethod
     def _folder_from_model_path(model_path: str) -> str:
@@ -3440,6 +4072,10 @@ class GeometryService:
     def clear(self):
         self._ships = None
         self._ship_snapshot_cache.clear()
+        self._aircraft_cache.clear()
+        self._plane_folder_cache.clear()
+        self._armament_cache.clear()
+        self._deck_config_cache.clear()
         self._release_extractor()
 
     def _clear_per_load_caches(self) -> None:
