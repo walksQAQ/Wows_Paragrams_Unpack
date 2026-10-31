@@ -7,8 +7,8 @@
 1. CI（GitHub Actions）中被 push 的 tag（GITHUB_REF_NAME，去掉 v 前缀）：
    打 release/pre-release tag 触发构建时，exe 版本严格等于正在发布的 tag，
    不依赖 master 状态，避免「同一 tag 重复 build 时版本随 master 漂移」；
-2. HEAD 可达的最近 tag（本地打 tag 构建直接反映该 tag，含 -beta/-rc/-alpha 等）；
-3. master 分支可达的最近 tag（HEAD 无 tag 时的兜底，反映主干最新发布）；
+2. master 分支可达的最近 tag（无论当前工作分支为何，默认反映主干最新发布）；
+3. HEAD 可达的最近 tag（master 不可用时反映当前提交）；
 4. 均无 tag 时用 setuptools-scm 推导 dev 版本，最后保底 0.0.0-dev。
 
 本项目历史 tag 形如 v3.2.2-fix / v3.2.2-test2（非 PEP 440），直接取 tag
@@ -86,14 +86,14 @@ def _ci_ref_name() -> str | None:
 def generate_version():
     # 版本识别顺序（含 pre-release）：
     # 1) CI 中被 push 的 tag（GITHUB_REF_NAME）——最精确，build 版本严格等于发布 tag；
-    # 2) HEAD 可达最近 tag（本地打 tag 构建直接反映，含 pre-release）；
-    # 3) master 可达最近 tag（HEAD 无 tag 时兜底，反映主干最新发布）。
+    # 2) master 可达最近 tag——默认以主干版本作为构建版本；
+    # 3) HEAD 可达最近 tag——master 不可用时反映当前提交。
     ci_tag = _ci_ref_name()
     master_ref = _resolve_master_ref()
     version_str = (
         (_strip_v(ci_tag) if ci_tag else None)
-        or _describe_tag("HEAD")
         or (_describe_tag(master_ref) if master_ref else None)
+        or _describe_tag("HEAD")
         or _scm_version()
         or "0.0.0-dev"
     )
