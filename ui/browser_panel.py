@@ -1,7 +1,7 @@
 """
 BrowserPanel —— 文件列表面板（300px 固定宽度）。
 
-支持按国籍/舰种/等级多选筛选舰船，按本地化舰名或编号搜索。
+支持按国籍/舰种/等级多选筛选舰船，按本地化舰名、编号或 ShipID 搜索。
 可切换「本地化缺失」筛选，只显示语言文件里没有对应键、名称回退到数据文件名的舰船；
 键存在但原值为空的条目不进该筛选，改在名称后标「⚠ 未翻译」（见 utils/loc_status.py）。
 """
@@ -263,7 +263,9 @@ class BrowserPanel(QWidget):
         self.btn_missing_loc.setVisible(is_ship)
         self.btn_reset.setVisible(is_ship or is_crew)
 
-        if is_ship or is_crew:
+        if is_ship:
+            self.search_box.setPlaceholderText("🔍 搜索舰名、编号或 ShipID...")
+        elif is_crew:
             self.search_box.setPlaceholderText("🔍 搜索名称或编号...")
         else:
             self.search_box.setPlaceholderText("🔍 搜索文件名...")
@@ -314,7 +316,7 @@ class BrowserPanel(QWidget):
                                       NULLIF(TRIM(nm.lang_zh), '')) IS NULL
                              AND (nmd.id IS NOT NULL OR nm.id IS NOT NULL)
                         THEN 1 ELSE 0 END AS loc_blank,
-                   e.nation, b.shiptype, b.tier, b.group_status_key
+                   e.nation, b.shiptype, b.tier, b.group_status_key, b.ship_id_num
             FROM entity_registry e
             LEFT JOIN ship_basic_info b ON b.version_code=e.version_code AND b.ship_id = e.entity_id
             LEFT JOIN name_mappings nmd ON nmd.id = b.name_mapping_id
@@ -445,7 +447,10 @@ class BrowserPanel(QWidget):
             if missing_loc_only and not ent.get("loc_missing"):
                 continue
 
-            if keyword and keyword not in dname.lower() and keyword not in eid.lower():
+            ship_id_num = str(ent.get("ship_id_num") or "")
+            if (keyword and keyword not in dname.lower()
+                    and keyword not in eid.lower()
+                    and keyword not in ship_id_num.lower()):
                 continue
 
             # 条目文本只放船名（纯文本，便于 Ctrl+C / 复制不带图标）；
